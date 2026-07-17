@@ -28,8 +28,8 @@ docker pull oorabona/openresty:latest
 # Run with custom configuration
 docker run -d \
   --name openresty \
-  -p 80:80 \
-  -p 443:443 \
+  -p 8080:8080 \
+  -p 8443:8443 \
   -v ./conf.d:/usr/local/openresty/nginx/conf/conf.d:ro \
   -v ./lua:/usr/local/openresty/lualib/app:ro \
   ghcr.io/oorabona/openresty:latest
@@ -53,20 +53,13 @@ services:
   openresty:
     image: ghcr.io/oorabona/openresty:latest
     ports:
-      - "80:80"
-      - "443:443"
+      - "8080:8080"
+      - "8443:8443"
     volumes:
       - ./conf.d:/usr/local/openresty/nginx/conf/conf.d:ro
       - ./lua:/usr/local/openresty/lualib/app:ro
-    read_only: true
-    tmpfs:
-      - /var/run/openresty
-      - /var/cache/nginx
-      - /tmp
     cap_drop:
       - ALL
-    cap_add:
-      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
 ```
@@ -78,7 +71,7 @@ Place your nginx configuration in `conf.d/`:
 ```nginx
 # conf.d/default.conf
 server {
-    listen 80;
+    listen 8080;
     server_name localhost;
 
     location / {
@@ -120,13 +113,23 @@ end
 
 ### Installing Lua Packages
 
-```bash
-# Install a package with LuaRocks
-docker exec openresty luarocks install lua-resty-jwt
+The image runs as the non-root `nginx` user, which can't write the system
+LuaRocks tree under `/usr/local`. Install packages **at build time in a
+derived Dockerfile** — reset to `USER root` first, since the base image's
+final `USER nginx` otherwise carries into your `RUN` steps:
 
-# List installed packages
-docker exec openresty luarocks list
+```dockerfile
+FROM ghcr.io/oorabona/openresty:latest
+USER root
+RUN luarocks install lua-resty-jwt   # into the system tree, on OpenResty's lua_package_path
+USER nginx
 ```
+
+Runtime `luarocks install --local` also works, but it installs into the
+nginx user's home tree, which is not on OpenResty's default
+`lua_package_path` — you'd have to extend `lua_package_path` /
+`lua_package_cpath` in your nginx config for `require` to find it. Build-time
+install into the system tree is the simpler path.
 
 ## Build Arguments
 
@@ -178,76 +181,86 @@ OpenResty uses standard Nginx environment variables:
 
 | Port | Protocol | Description |
 |------|----------|-------------|
-| 80 | HTTP | Default HTTP port |
-| 443 | HTTPS | Default HTTPS port |
+| 8080 | HTTP | Default HTTP port |
+| 8443 | HTTPS | Conventional non-root HTTPS port (opt-in — provide a cert + `listen 8443 ssl;`) |
 
-Configure custom ports in your nginx configuration. For non-privileged operation, use ports > 1024.
+The image runs fully as the non-root `nginx` user, which cannot bind a
+privileged port, so it listens on 8080 by default (8443 for TLS). Publish
+these to any host port you like; if you mount your own config, listen on a
+port ≥ 1024.
 
 ## Security
 
 ### Process Security
 
-- **Master Process**: Runs as root (required for binding to ports 80/443)
-- **Worker Processes**: Run as non-root `nginx` user (uid 101, gid 101)
+- **Master and Worker Processes**: Both run as the non-root `nginx` user (uid 101, gid 101). The stock config listens on the unprivileged port 8080 (8443 is the conventional, opt-in HTTPS port), so the image needs no capabilities at all — compatible with `cap_drop: ALL` and `no-new-privileges`.
 - **No Shell**: nginx user has `/sbin/nologin` shell
 - **Signal Handling**: Uses SIGQUIT for clean shutdown
 
 ### Runtime Hardening
 
-The included docker-compose.yml demonstrates security best practices:
+The included docker-compose.yml demonstrates security best practices — a
+non-root image on unprivileged ports, zero capabilities, and an immutable
+root filesystem:
 
 ```yaml
 services:
   openresty:
     image: ghcr.io/oorabona/openresty:latest
-    read_only: true              # Immutable filesystem
-    tmpfs:
-      - /var/run/openresty       # Writable runtime directory
-      - /var/cache/nginx         # Writable cache directory
-      - /tmp                     # Writable temp directory
+    read_only: true              # Immutable root filesystem
+    volumes:
+      # nginx (non-root) writes its pid/cache/temp files into image-created
+      # dirs; a tmpfs over an existing dir isn't reliably writable by the
+      # non-root user with the short-form `tmpfs:` list (it can't set a mode),
+      # so use the long-form with an octal `mode: 01777` (some Compose versions
+      # accept it only as an unquoted integer). One per writable dir:
+      - { type: tmpfs, target: /var/run/openresty, tmpfs: { mode: 01777 } }
+      - { type: tmpfs, target: /var/cache/nginx, tmpfs: { mode: 01777 } }
+      - { type: tmpfs, target: /tmp, tmpfs: { mode: 01777 } }
+      - { type: tmpfs, target: /usr/local/openresty/nginx/client_body_temp, tmpfs: { mode: 01777 } }
+      - { type: tmpfs, target: /usr/local/openresty/nginx/proxy_temp, tmpfs: { mode: 01777 } }
+      - { type: tmpfs, target: /usr/local/openresty/nginx/fastcgi_temp, tmpfs: { mode: 01777 } }
+      - { type: tmpfs, target: /usr/local/openresty/nginx/uwsgi_temp, tmpfs: { mode: 01777 } }
+      - { type: tmpfs, target: /usr/local/openresty/nginx/scgi_temp, tmpfs: { mode: 01777 } }
     cap_drop:
-      - ALL                      # Drop all capabilities
-    cap_add:
-      - NET_BIND_SERVICE         # Only allow binding privileged ports
+      - ALL                      # Drop all capabilities (none are needed)
     security_opt:
       - no-new-privileges:true   # Prevent privilege escalation
-```
-
-### Non-Privileged Port Alternative
-
-For maximum security without root at all:
-
-```yaml
-services:
-  openresty:
-    image: ghcr.io/oorabona/openresty:latest
-    user: "101:101"              # Run as nginx:nginx
-    read_only: true
-    tmpfs:
-      - /var/run/openresty
-      - /var/cache/nginx
-      - /tmp
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
     ports:
-      - "8080:8080"
-      - "8443:8443"
+      - "8080:8080"              # HTTP
+      - "8443:8443"              # HTTPS — nothing listens here until you add a
+                                 #         `listen 8443 ssl;` server + a cert
 ```
 
-Note: Requires nginx configuration to listen on 8080/8443 instead of 80/443.
+On a normal (writable) rootfs the tmpfs mounts aren't needed — the image
+writes only to its own already-chowned dirs — so `read_only` plus the tmpfs
+block is the extra step for an immutable filesystem.
+
+Because it runs as a non-root user, binds only unprivileged ports, and needs
+no capabilities, the image is a good fit for **Kubernetes' restricted Pod
+Security Standard** — set the corresponding pod `securityContext`
+(`runAsNonRoot: true`, `runAsUser: 101`, `allowPrivilegeEscalation: false`,
+`capabilities.drop: ["ALL"]`, and a `seccompProfile`); a Compose
+`cap_drop`/`security_opt` is not itself a Kubernetes manifest.
 
 ### Healthcheck
 
-Built-in healthcheck verifies OpenResty is responding:
+The built-in healthcheck verifies OpenResty is responding. It uses
+BusyBox `wget` (curl is not in the runtime image) against `/` on the
+non-privileged port the non-root server listens on:
 
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost/nginx_status || exit 1
+    CMD wget -q -O /dev/null http://localhost:8080/ || exit 1
 ```
 
-Ensure your nginx configuration includes a status endpoint:
+The built-in check targets `:8080` — the port the stock config listens on.
+If you mount a config that listens only on a different port (e.g. `8443`,
+or another unprivileged port), override the healthcheck to match, or the
+container will report unhealthy even while serving.
+
+If you'd rather probe a dedicated status endpoint, add one to your nginx
+configuration and point a custom healthcheck at it:
 
 ```nginx
 location /nginx_status {
@@ -356,7 +369,7 @@ upstream backend {
 }
 
 server {
-    listen 80;
+    listen 8080;
 
     location /api/v1 {
         access_by_lua_block {
@@ -405,7 +418,7 @@ end
 proxy_cache_path /var/cache/nginx levels=1:2 keys_zone=cache:10m max_size=1g inactive=60m;
 
 server {
-    listen 80;
+    listen 8080;
 
     location / {
         proxy_cache cache;

@@ -109,7 +109,7 @@ OpenResty (Nginx + LuaJIT) with customizable modules.
 
 ### Ports
 
-Default: 80, 443 (via nginx config)
+Default listener: 8080 (non-root image on an unprivileged port). 8443 is exposed as the conventional HTTPS port but has no default server — TLS is opt-in (add a `listen 8443 ssl;` server and a cert). Configurable via nginx config.
 
 ### Usage
 

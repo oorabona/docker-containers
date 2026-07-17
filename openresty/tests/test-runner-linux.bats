@@ -75,6 +75,9 @@ setup() {
     # include), so the location would never match.
     # Note: no "daemon off;" here — the image CMD already passes -g "daemon off;"
     NGINX_CONF="$(mktemp /tmp/openresty-bats-nginx-XXXXXX.conf)"
+    # mktemp creates 0600; the image runs as the non-root nginx user (uid 101),
+    # which must be able to read the bind-mounted config, so make it readable.
+    chmod 0644 "$NGINX_CONF"
     cat > "$NGINX_CONF" <<'NGINX'
 worker_processes 1;
 events { worker_connections 64; }

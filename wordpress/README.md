@@ -23,7 +23,7 @@ services:
   openresty:
     image: ghcr.io/oorabona/openresty:latest
     ports:
-      - "8080:80"
+      - "8080:8080"
     volumes:
       - ./nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
     depends_on:

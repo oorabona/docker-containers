@@ -97,4 +97,25 @@ else
     exit 1
 fi
 
+# Test: OpenResty reachable on its PUBLISHED host port — guards both the
+# non-root port migration and the compose `ports:` mapping (catches a wrong
+# listen port, failed startup, broken FastCGI proxy, or a bad host mapping)
+echo "  Checking OpenResty on its published host port..."
+host_addr=$(docker compose -f "$COMPOSE_FILE" port openresty 8080 2>/dev/null || true)
+if [ -z "$host_addr" ]; then
+    echo "  FAIL: container port 8080 is not published (check the ports: mapping)"
+    exit 1
+fi
+# `docker compose port` may print a wildcard host (0.0.0.0 / [::]); curl needs
+# a routable loopback address.
+host_addr="${host_addr/#0.0.0.0:/127.0.0.1:}"
+host_addr="${host_addr/#\[::\]:/[::1]:}"
+status=$(curl -sS -o /dev/null -w '%{http_code}' "http://${host_addr}/" 2>/dev/null || true)
+if echo "$status" | grep -qE '^[23][0-9][0-9]$'; then
+    echo "  OK OpenResty serving on the published port (HTTP $status)"
+else
+    echo "  FAIL: OpenResty did not return 2xx/3xx on the published port (got: ${status:-no response})"
+    exit 1
+fi
+
 echo "  All WordPress SQLite Stack tests passed"

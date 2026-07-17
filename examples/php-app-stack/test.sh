@@ -38,7 +38,7 @@ sleep 5
 # Test: OpenResty responds with PHP content (use PHP curl)
 echo "  Checking OpenResty -> PHP-FPM..."
 response=$(docker compose -f "$COMPOSE_FILE" exec -T php php -r '
-    $ch = curl_init("http://openresty:80/");
+    $ch = curl_init("http://openresty:8080/");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     echo curl_exec($ch);
     curl_close($ch);
@@ -65,6 +65,26 @@ if echo "$response" | grep -q "admin@example.com"; then
     echo "  OK Sample data loaded"
 else
     echo "  FAIL: Sample data not found"
+    exit 1
+fi
+
+# Test: OpenResty reachable on its PUBLISHED host port — guards the compose
+# `ports:` mapping (a broken host mapping is invisible to the internal checks)
+echo "  Checking OpenResty on its published host port..."
+host_addr=$(docker compose -f "$COMPOSE_FILE" port openresty 8080 2>/dev/null || true)
+if [ -z "$host_addr" ]; then
+    echo "  FAIL: container port 8080 is not published (check the ports: mapping)"
+    exit 1
+fi
+# `docker compose port` may print a wildcard host (0.0.0.0 / [::]); curl needs
+# a routable loopback address.
+host_addr="${host_addr/#0.0.0.0:/127.0.0.1:}"
+host_addr="${host_addr/#\[::\]:/[::1]:}"
+status=$(curl -sS -o /dev/null -w '%{http_code}' "http://${host_addr}/" 2>/dev/null || true)
+if echo "$status" | grep -qE '^[23][0-9][0-9]$'; then
+    echo "  OK OpenResty serving on the published port (HTTP $status)"
+else
+    echo "  FAIL: OpenResty did not return 2xx/3xx on the published port (got: ${status:-no response})"
     exit 1
 fi
 

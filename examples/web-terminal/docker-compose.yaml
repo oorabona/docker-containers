@@ -17,14 +17,19 @@
 services:
   openresty:
     image: ghcr.io/oorabona/openresty:latest
+    # Container listens on 8080 now — the image runs fully as the non-root
+    # nginx user and can't bind a privileged port. Host port is unchanged.
     ports:
-      - "8080:80"
+      - "8080:8080"
     volumes:
       - ./nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
       - ./htpasswd:/etc/nginx/htpasswd:ro
     depends_on:
       web-shell:
         condition: service_healthy
+    # Non-root image + unprivileged port means it needs no capabilities at all.
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
     networks:
