@@ -1,14 +1,28 @@
 ---
 layout: post
-title: "A Hardened OpenVPN Server in Docker: 15 MB Alpine Image, PKCS11-Ready, Zero-Privilege"
-description: "Run OpenVPN in a minimal Alpine container with Easy-RSA, PKCS11 hardware token support, and dropped capabilities except NET_ADMIN. 15 MB compressed."
+title: "A Hardened OpenVPN Server in Docker: 15 MB Alpine Image, PKCS11-Ready, Least-Privilege"
+description: "Run OpenVPN in a minimal Alpine container with Easy-RSA and PKCS11 hardware-token support, under cap_drop: ALL with NET_ADMIN + SETUID/SETGID; the server worker drops to nobody. 15 MB compressed."
 date: 2026-05-04 10:00:00 +0000
+updated: 2026-07-17
 tags: [openvpn, docker, security, alpine, networking, pkcs11]
 ---
 
 The [sslh post]({{ '/blog/sslh-docker-port-multiplexing/' | relative_url }}) showed how to multiplex OpenVPN on port 443 alongside SSH and HTTPS. This post is the companion: the OpenVPN server itself, in a 15 MB hardened container.
 
-Running OpenVPN in Docker is [famously easy to get wrong](https://github.com/kylemanna/docker-openvpn/issues). The default answer is `--privileged` because the daemon needs to create a `tun` device. The better answer is: `cap_drop: ALL` + `cap_add: NET_ADMIN` and let the kernel mediate exactly what OpenVPN can do.
+Running OpenVPN in Docker is [famously easy to get wrong](https://github.com/kylemanna/docker-openvpn/issues). The default answer is `--privileged` because the daemon needs to create a `tun` device. The better answer is: `cap_drop: ALL` and add back only the capabilities it truly needs — and let the kernel mediate exactly what OpenVPN can do.
+
+> **Correction (2026-07-17).** An earlier version of this post recommended
+> `cap_drop: ALL` with **`NET_ADMIN` only** and claimed OpenVPN needs "exactly
+> one" capability. That is wrong: this image's server drops to the unprivileged
+> `nobody`/`nogroup` user, and under `cap_drop: ALL` that drop needs `CAP_SETUID`
+> and `CAP_SETGID` too — without them OpenVPN aborts at startup
+> (`setgid('nogroup') failed: Operation not permitted`). The correct minimal set
+> is **`NET_ADMIN` + `SETUID` + `SETGID`**, and the capability blocks below have
+> been fixed. Separately, the `ovpn_genconfig` / `ovpn_initpki` / `ovpn_getclient`
+> / `easyrsa` commands in the setup steps are from kylemanna's image and are **not
+> present here** — this image uses its own `ovpn` installer driven by
+> `AUTO_INSTALL` / `AUTO_START`. For a working, maintained walkthrough use the
+> [container README](https://github.com/oorabona/docker-containers/tree/master/openvpn).
 
 ## What's in the image
 
@@ -25,7 +39,7 @@ docker pull ghcr.io/oorabona/openvpn:v2.7.2-alpine
 
 ## Why capabilities matter
 
-`--privileged` gives the container effectively all the root privileges of the host: it can mount filesystems, load kernel modules, access any device. OpenVPN needs **exactly one** of those: `CAP_NET_ADMIN`, to open a `tun` device and configure routes.
+`--privileged` gives the container effectively all the root privileges of the host: it can mount filesystems, load kernel modules, access any device. OpenVPN needs only a **handful** of those: `CAP_NET_ADMIN` to open a `tun` device and configure routes, plus `CAP_SETUID` and `CAP_SETGID` so it can drop the running server to the unprivileged `nobody`/`nogroup` user after setup (a root euid does not bypass that check under `cap_drop: ALL`).
 
 ```yaml
 # compose.yml
@@ -35,6 +49,8 @@ services:
     cap_drop: [ALL]
     cap_add:
       - NET_ADMIN          # create tun0, manipulate routes
+      - SETUID             # drop the running server to nobody
+      - SETGID             # drop the running server to nogroup
     devices:
       - /dev/net/tun:/dev/net/tun
     ports:
@@ -52,6 +68,16 @@ volumes:
 This runs with fewer privileges than `--privileged` by a wide margin. A container compromise doesn't grant the attacker arbitrary kernel actions — just the TUN/network bits OpenVPN itself already has.
 
 ## Initial setup
+
+> **⚠️ Outdated commands.** The `ovpn_genconfig` / `ovpn_initpki` / `easyrsa` /
+> `ovpn_getclient` invocations below are from kylemanna's image and do **not**
+> exist in this one — they will fail with "command not found". This image
+> instead runs a single `ovpn` installer driven by env vars: first run with
+> `-e AUTO_INSTALL=y -e AUTO_START=y` to generate the PKI + `server.conf` and
+> start the server, re-run the container to manage clients, and retrieve the
+> generated client config from the `/etc/openvpn` volume. See the maintained
+> [container README](https://github.com/oorabona/docker-containers/tree/master/openvpn)
+> for the current, tested walkthrough.
 
 Create a CA and the first client cert:
 
@@ -136,7 +162,7 @@ Pipe to Prometheus via an exporter, alert on drops. The Vector container ([post]
 - **`/dev/net/tun` must exist on the host.** On hardened hosts (podman in some configs), you may need `modprobe tun` or a sysctl.
 - **UFW / firewalld** on the host can block the VPN's forwarded traffic even though the container is up. Check `iptables-save` if clients connect but can't reach anything.
 - **IPv6** — enabling requires `sysctl net.ipv6.conf.all.disable_ipv6=0` on the host and `tun-ipv6` in server.conf. More trouble than it's worth for most deployments.
-- **Client cert revocation** — run `easyrsa revoke` and `easyrsa gen-crl`, then `docker compose restart openvpn` so the daemon reloads the CRL.
+- **Client cert revocation** — done through the `ovpn` installer's management menu (re-run the container with a config already present), not a bare `easyrsa` command — `easyrsa` is not on `PATH` in this image. The menu revokes the client and regenerates the CRL; restart the container so the daemon reloads it.
 - **NAT-ed behind a router** — port-forward UDP 1194 and make sure the router doesn't "optimize" UDP flows (some consumer routers break long-lived UDP).
 
 ## Comparison
@@ -145,19 +171,17 @@ Pipe to Prometheus via an exporter, alert on drops. The Vector container ([post]
 |---|---|---|---|
 | `kylemanna/openvpn` | ~50 MB | yes | yes |
 | `linuxserver/openvpn-as` | ~300 MB | yes | yes (it's the full Access Server) |
-| `oorabona/openvpn` | **15 MB** | minimal | NET_ADMIN only (not full ADMIN) |
+| `oorabona/openvpn` | **15 MB** | minimal | NET_ADMIN + SETUID/SETGID (not full ADMIN) |
 
-Kylemanna's image is the gold standard of reference material — our image follows the same setup scripts (`ovpn_genconfig`, `ovpn_initpki`, `ovpn_getclient`). The differences are the Alpine base, smaller footprint, PKCS11 support compiled in, and the capability model.
+Kylemanna's image is the gold standard of reference material, but our image does **not** ship its `ovpn_genconfig` / `ovpn_initpki` / `ovpn_getclient` scripts — it uses its own env-driven `ovpn` installer (`AUTO_INSTALL` / `AUTO_START`). The other differences are the Alpine base, smaller footprint, PKCS11 support compiled in, and the capability model.
 
 ## TL;DR
 
 ```bash
-# compose up
+# grab the reference compose (already uses cap_drop: ALL + NET_ADMIN/SETUID/SETGID)
 curl -O https://raw.githubusercontent.com/oorabona/docker-containers/master/openvpn/docker-compose.yml
-# edit vpn.example.com, then:
-docker compose run --rm openvpn ovpn_genconfig -u udp://vpn.example.com
-docker compose run --rm openvpn ovpn_initpki
-docker compose up -d
+# first run: AUTO_INSTALL=y generates the PKI + server.conf, AUTO_START=y starts it
+AUTO_INSTALL=y docker compose up -d
 ```
 
 Full config reference and client examples at the [container dashboard](/docker-containers/container/openvpn/).
