@@ -9,11 +9,19 @@ build_args:
   OS_VERSION: "latest"
   PKCS11_HELPER_VERSION: "1.31.0"
   EASYRSA_VERSION: "3.2.6"
+  # Pinned EasyRSA release-signing key fingerprint (primary). SINGLE SOURCE OF TRUTH:
+  # consumed as a --build-arg by the Dockerfile bake (exactly-one-key + fingerprint
+  # assertion) AND read by the GPG key-lifecycle monitor (scripts/check-gpg-keys.sh).
+  EASYRSA_KEY_FPR: "6F4056821152F03B6B24F2FCF8489F839D7367F3"
 dependency_sources:
   OS_VERSION:
     monitor: false
     lifecycle: untracked
     reason: "Base image tag fallback, not a version to track"
+  EASYRSA_KEY_FPR:
+    monitor: false
+    lifecycle: untracked
+    reason: "Pinned EasyRSA signing-key fingerprint (see EASYRSA_VERSION.gpg_key); a constant, not a tracked version"
   PKCS11_HELPER_VERSION:
     lifecycle: tracked
     type: github-release
@@ -25,4 +33,10 @@ dependency_sources:
     type: github-release
     repo: OpenVPN/easy-rsa
     strip_v: true
+    gpg_key:
+      file: easyrsa-signing-key.asc
+      expiry_warn_days: 60
+      fingerprint_arg: EASYRSA_KEY_FPR
+      release_asset_template: "EasyRSA-{version}.tgz"
+      release_tag_template: "v{version}"
 value_proposition: OpenVPN server image with sane defaults and signed verifiable supply chain. Multi-arch, lightweight.
