@@ -263,6 +263,8 @@ runs:
         source "${GITHUB_ACTION_PATH}/../../../helpers/coverage-checkpoint-utils.sh"
         # shellcheck disable=SC1091  # path resolved at runtime in the action dir
         source "${GITHUB_ACTION_PATH}/../../../helpers/container-scopes.sh"
+        # shellcheck disable=SC1091  # path resolved at runtime in the action dir
+        source "${GITHUB_ACTION_PATH}/../../../helpers/pr-changed-files.sh"
         diff_rc=0
         changed_files=""
         coverage_fallback=false
@@ -344,12 +346,19 @@ runs:
             set -e
             [[ $diff_rc -ne 0 ]] && { echo "⚠️ Git diff failed (push/non-master event.before..after)"; changed_files=""; }
           elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            # For PRs, compare with base and head SHAs from the event (robust, does not require fetch)
+            # PRs diff merge-base..head: only PR-owned changes, excluding base-only changes.
             set +e
-            changed_files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null)
+            changed_files=$(pr_changed_files \
+              "${{ github.event.pull_request.base.sha }}" \
+              "${{ github.event.pull_request.head.sha }}")
             diff_rc=$?
             set -e
-            [[ $diff_rc -ne 0 ]] && { echo "⚠️ Git diff failed (pull request event)"; changed_files=""; }
+            if [[ $diff_rc -ne 0 ]]; then
+              echo "⚠️  PR diff could not be scoped from merge-base..head; " \
+                "building all containers with retained version expansion"
+              coverage_fallback=true
+              changed_files=""
+            fi
           else
             # For manual triggers (workflow_dispatch)
             # rebuild != none OR force_rebuild=true → build ALL containers
