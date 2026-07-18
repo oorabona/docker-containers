@@ -7,10 +7,11 @@ ARG VERSION
 ARG UPSTREAM_VERSION
 ARG PKCS11_HELPER_VERSION
 ARG EASYRSA_VERSION
+ARG EASYRSA_KEY_FPR
 ARG NPROC
 
 # Validate required build args
-RUN : "${VERSION:?required}" "${PKCS11_HELPER_VERSION:?required}" "${EASYRSA_VERSION:?required}" "${NPROC:?required}"
+RUN : "${VERSION:?required}" "${PKCS11_HELPER_VERSION:?required}" "${EASYRSA_VERSION:?required}" "${EASYRSA_KEY_FPR:?required}" "${NPROC:?required}"
 
 # EasyRSA release signing key (Eric F Crist, the EasyRSA maintainer; fingerprint
 # 6F40 5682 1152 F03B 6B24 F2FC F848 9F83 9D73 67F3). Vendored as the trust
@@ -93,7 +94,7 @@ RUN set -ex \
     # `gpg --verify` can only accept that key's signatures (a vendored file with a
     # second key would otherwise widen trust silently).
     && [ "$(gpg --batch --list-keys --with-colons | grep -c '^pub:')" = "1" ] \
-    && [ "$(gpg --batch --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')" = "6F4056821152F03B6B24F2FCF8489F839D7367F3" ] \
+    && [ "$(gpg --batch --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')" = "${EASYRSA_KEY_FPR}" ] \
     && gpg --batch --verify "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz.sig" "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz" \
     && rm -rf "$GNUPGHOME" "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz.sig" \
     && unset GNUPGHOME \

@@ -2974,6 +2974,25 @@ EOF
         { echo "liveness loop missing SCOPE_CONTAINER guard"; return 1; }
 }
 
+@test "harden: check-gpg-keys tokened issue path checks out master with least-privilege App token" {
+    # Mutation trace: remove the checkout ref pin, App token permission scoping,
+    # or master-ref token guard and this test goes RED.
+    local wf="$REPO_ROOT/.github/workflows/upstream-monitor.yaml"
+
+    local checkout_ref contents_perm issues_perm token_if issue_if
+    checkout_ref=$(yq -r '.jobs."check-gpg-keys".steps[] | select(.name == "Checkout") | .with.ref // ""' "$wf")
+    contents_perm=$(yq -r '.jobs."check-gpg-keys".steps[] | select(.id == "app-token") | .with."permission-contents" // ""' "$wf")
+    issues_perm=$(yq -r '.jobs."check-gpg-keys".steps[] | select(.id == "app-token") | .with."permission-issues" // ""' "$wf")
+    token_if=$(yq -r '.jobs."check-gpg-keys".steps[] | select(.id == "app-token") | .if // ""' "$wf")
+    issue_if=$(yq -r '.jobs."check-gpg-keys".steps[] | select(.name == "Open or refresh GPG key lifecycle issues") | .if // ""' "$wf")
+
+    [ "$checkout_ref" = "master" ] || { echo "check-gpg-keys checkout ref is '$checkout_ref'"; return 1; }
+    [ "$contents_perm" = "read" ] || { echo "App token permission-contents is '$contents_perm'"; return 1; }
+    [ "$issues_perm" = "write" ] || { echo "App token permission-issues is '$issues_perm'"; return 1; }
+    [[ "$token_if" == *"github.ref == 'refs/heads/master'"* ]] || { echo "App token if missing master guard: $token_if"; return 1; }
+    [[ "$issue_if" == *"github.ref == 'refs/heads/master'"* ]] || { echo "Issue step if missing master guard: $issue_if"; return 1; }
+}
+
 @test "harden: liveness retries with GET range 0-0 when HEAD returns non-2xx" {
     # Mutation trace: remove the GET-range retry and this test goes RED —
     # the workflow would mark HEAD-allergic CDN endpoints as dead even when

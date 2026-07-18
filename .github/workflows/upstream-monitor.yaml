@@ -253,6 +253,93 @@ jobs:
             exit 1
           fi
 
+  check-gpg-keys:
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: gpg-key-lifecycle-${{ github.workflow }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: master
+
+      - name: Install yq
+        uses: ./.github/actions/retry-run
+        with:
+          run: |
+            sudo wget -qO /usr/local/bin/yq \
+              https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+            echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+            sudo chmod +x /usr/local/bin/yq
+            yq --version
+          max-attempts: '3'
+          timeout: '60s'
+
+      - name: Check GPG signing key lifecycle
+        id: gpg
+        env:
+          SCOPE_CONTAINER: ${{ github.event.inputs.container || '' }}
+          # Run unauthenticated: daily single-container checks are well under
+          # GitHub's unauthenticated rate limit, and the shared release resolver
+          # can expose bearer tokens in curl argv. Hardening that helper is a
+          # separate repo-wide concern (also affects
+          # check-dependency-versions.sh) and is out of scope here.
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$SCOPE_CONTAINER" ]]; then
+            scripts/check-gpg-keys.sh "$SCOPE_CONTAINER" --json > findings.json
+          else
+            scripts/check-gpg-keys.sh --all --json > findings.json
+          fi
+
+          has_findings="$(jq -r '
+            any(.[]; (
+              .expiry.severity == "warn"
+              or .expiry.severity == "high"
+              or .rotation.status == "error"
+              or .rotation.status == "rotation"
+              or .rotation.severity == "high"
+              or .contract.status == "error"
+              or .contract.severity == "high"
+              or ((.config // []) | length > 0)
+            ))
+          ' findings.json)"
+          if [[ "$has_findings" == "true" ]]; then
+            echo "has_findings=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_findings=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # workflow_dispatch using branch YAML is a pre-existing repo-wide
+      # property for tokened jobs; this guard hardens this new GPG issue path.
+      - name: Generate App token
+        if: >-
+          steps.gpg.outputs.has_findings == 'true' &&
+          github.ref == 'refs/heads/master'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-issues: write
+
+      - name: Open or refresh GPG key lifecycle issues
+        if: >-
+          steps.gpg.outputs.has_findings == 'true' &&
+          github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: scripts/open-key-lifecycle-issue.sh --json-file findings.json
+
   create-update-prs:
     # check-source-liveness runs as a parallel sibling job (no needs:
     # dependency here). GitHub Actions' implicit `success()` gating combined

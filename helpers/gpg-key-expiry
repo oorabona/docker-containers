@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+GNUPG_TMP=""
+GPG_BIN="${GPG_KEYS_GPG_BIN:-$(command -v gpg || true)}"
+JQ_BIN="${GPG_KEYS_JQ_BIN:-$(command -v jq || true)}"
+
+cleanup() {
+    if [[ -n "$GNUPG_TMP" && -d "$GNUPG_TMP" ]]; then
+        rm -rf "$GNUPG_TMP"
+    fi
+}
+trap cleanup EXIT
+
+main() {
+    if [[ $# -ne 1 ]]; then
+        echo "usage: gpg-key-expiry <keyfile>" >&2
+        return 1
+    fi
+
+    local keyfile="$1"
+    if [[ -z "$GPG_BIN" || ! -x "$GPG_BIN" ]]; then
+        echo "gpg-key-expiry: unable to resolve gpg; set GPG_KEYS_GPG_BIN" >&2
+        return 1
+    fi
+    if [[ -z "$JQ_BIN" || ! -x "$JQ_BIN" ]]; then
+        echo "gpg-key-expiry: unable to resolve jq; set GPG_KEYS_JQ_BIN" >&2
+        return 1
+    fi
+    if [[ ! -f "$keyfile" ]]; then
+        echo "gpg-key-expiry: key file not found: ${keyfile}" >&2
+        return 1
+    fi
+
+    GNUPG_TMP="$(mktemp -d)"
+    chmod 700 "$GNUPG_TMP"
+    export GNUPGHOME="$GNUPG_TMP"
+
+    local colon
+    if ! colon="$("$GPG_BIN" --batch --show-keys --with-colons "$keyfile" 2>/dev/null)"; then
+        echo "gpg-key-expiry: failed to read key metadata: ${keyfile}" >&2
+        return 1
+    fi
+
+    local parsed
+    parsed="$(printf '%s\n' "$colon" | awk -F: '
+        function validity_is_usable(validity) {
+            return validity !~ /^[erid]$/
+        }
+        function validity_is_signing_capable(validity) {
+            return validity !~ /^[rid]$/
+        }
+        function capability_is_signing(caps) {
+            return caps ~ /[sS]/
+        }
+        function include_expiry_candidate(fpr, expires) {
+            if (expires != "" && (earliest_expires == "" || expires + 0 < earliest_expires + 0)) {
+                earliest_expires = expires
+                earliest_fpr = fpr
+            }
+        }
+        function include_capable_signing_candidate(fpr, expires) {
+            if (capable_signing_fpr == "" || (expires != "" && (capable_signing_expires == "" || expires + 0 < capable_signing_expires + 0))) {
+                capable_signing_expires = expires
+                capable_signing_fpr = fpr
+            }
+        }
+        ($1 == "pub" || $1 == "sub") {
+            primary_pending = 0
+            primary_signing_pending = 0
+            primary_signing_capable_pending = 0
+            valid_signing_subkey_pending = 0
+            capable_signing_subkey_pending = 0
+            if ($1 == "pub") {
+                primary_count += 1
+                if (capability_is_signing($12) && validity_is_signing_capable($2)) {
+                    signing_capable = 1
+                }
+                if (primary_count == 1) {
+                    primary_pending = 1
+                    pending_primary_keyid = $5
+                    pending_primary_validity = $2
+                    pending_primary_expires = $7
+                    if (capability_is_signing($12) && validity_is_usable($2)) {
+                        primary_signing_pending = 1
+                    }
+                    if (capability_is_signing($12) && validity_is_signing_capable($2)) {
+                        primary_signing_capable_pending = 1
+                    }
+                }
+            }
+            if ($1 == "sub" && capability_is_signing($12) && validity_is_signing_capable($2)) {
+                signing_capable = 1
+                pending_subkey_expires = $7
+                capable_signing_subkey_pending = 1
+            }
+            if ($1 == "sub" && capability_is_signing($12) && validity_is_usable($2)) {
+                pending_subkey_expires = $7
+                valid_signing_subkey_pending = 1
+            }
+            next
+        }
+        $1 == "fpr" {
+            if (primary_pending == 1) {
+                primary_keyid = pending_primary_keyid
+                primary_validity = pending_primary_validity
+                primary_fpr = $10
+                include_expiry_candidate($10, pending_primary_expires)
+                if (primary_signing_pending == 1) {
+                    signing_usable = 1
+                }
+                if (primary_signing_capable_pending == 1) {
+                    include_capable_signing_candidate($10, pending_primary_expires)
+                }
+            }
+            if (valid_signing_subkey_pending == 1) {
+                signing_usable = 1
+                include_expiry_candidate($10, pending_subkey_expires)
+            }
+            if (capable_signing_subkey_pending == 1) {
+                include_capable_signing_candidate($10, pending_subkey_expires)
+            }
+            primary_pending = 0
+            primary_signing_pending = 0
+            primary_signing_capable_pending = 0
+            valid_signing_subkey_pending = 0
+            capable_signing_subkey_pending = 0
+        }
+        END {
+            if (primary_count == 0) {
+                print "NO_PRIMARY"
+            } else if (signing_capable == 1 && signing_usable != 1 && capable_signing_fpr != "") {
+                print primary_fpr "|" primary_keyid "|" primary_count "|" primary_validity "|" capable_signing_fpr "|" capable_signing_expires "|" (signing_usable == 1 ? "true" : "false") "|" (signing_capable == 1 ? "true" : "false")
+            } else if (earliest_fpr != "") {
+                print primary_fpr "|" primary_keyid "|" primary_count "|" primary_validity "|" earliest_fpr "|" earliest_expires "|" (signing_usable == 1 ? "true" : "false") "|" (signing_capable == 1 ? "true" : "false")
+            } else {
+                print primary_fpr "|" primary_keyid "|" primary_count "|" primary_validity "|" primary_fpr "|" "|" (signing_usable == 1 ? "true" : "false") "|" (signing_capable == 1 ? "true" : "false")
+            }
+        }
+    ')"
+
+    if [[ "$parsed" == "NO_PRIMARY" ]]; then
+        echo "gpg-key-expiry: no primary key found in ${keyfile}" >&2
+        return 1
+    fi
+
+    local primary_fpr primary_keyid primary_count primary_validity signing_fpr expires_ts signing_usable signing_capable
+    IFS='|' read -r primary_fpr primary_keyid primary_count primary_validity signing_fpr expires_ts signing_usable signing_capable <<< "$parsed"
+    if [[ -z "$primary_fpr" || -z "$signing_fpr" ]]; then
+        echo "gpg-key-expiry: key is missing primary key metadata: ${keyfile}" >&2
+        return 1
+    fi
+    if [[ -z "$primary_count" ]]; then
+        primary_count=0
+    fi
+    if [[ ! "$primary_count" =~ ^[0-9]+$ ]]; then
+        echo "gpg-key-expiry: invalid primary key count: ${primary_count}" >&2
+        return 1
+    fi
+
+    local expires_date=""
+    if [[ -n "$expires_ts" ]]; then
+        if ! expires_date="$(date -u -d "@${expires_ts}" +%F 2>/dev/null)"; then
+            echo "gpg-key-expiry: invalid signing key expiry timestamp: ${expires_ts}" >&2
+            return 1
+        fi
+    fi
+
+    # shellcheck disable=SC2016
+    "$JQ_BIN" -nc \
+        --arg primary_fpr "$primary_fpr" \
+        --arg primary_keyid "$primary_keyid" \
+        --arg primary_count "$primary_count" \
+        --arg primary_validity "$primary_validity" \
+        --arg signing_fpr "$signing_fpr" \
+        --arg expires_ts "$expires_ts" \
+        --arg expires "$expires_date" \
+        --arg signing_usable "$signing_usable" \
+        --arg signing_capable "$signing_capable" '
+        {
+          primary_fpr: $primary_fpr,
+          primary_keyid: $primary_keyid,
+          primary_count: ($primary_count | tonumber),
+          primary_validity: $primary_validity,
+          signing_capable: ($signing_capable == "true"),
+          signing_usable: ($signing_usable == "true"),
+          signing_fpr: $signing_fpr,
+          expires_ts: (if $expires_ts == "" then null else ($expires_ts | tonumber) end),
+          expires: (if $expires == "" then null else $expires end),
+          no_expiry: ($expires_ts == "")
+        }'
+}
+
+main "$@"
