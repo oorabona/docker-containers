@@ -3401,7 +3401,7 @@ jobs:
           echo "failed_this_run=${ftr_safe}" >> "$GITHUB_OUTPUT"
 
   summary:
-    needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, sync-registries, publish-coverage-checkpoint, bake-build-amd64, bake-build-arm64, bake-merge, bake-attest]
+    needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, sync-registries, publish-coverage-checkpoint, bake-build-amd64, bake-build-arm64, bake-merge, bake-attest, e2e-gate]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -3441,6 +3441,9 @@ jobs:
           # (a dedicated GHCR→DockerHub sync, not a non-blocking by design).
           # A 'skipped' result is NOT a failure (non-postgres builds legitimately
           # skip the extension jobs).
+          # e2e-gate is included: it aggregates the container e2e run and passes
+          # on a legitimate skip (non-PR / no eligible change), so its failure
+          # means a container e2e regression that must surface as a build failure.
           # ---------------------------------------------------------------
           detect_result="${{ needs.detect-containers.result }}"
           bap_result="${{ needs.build-and-push.result }}"
@@ -3450,13 +3453,15 @@ jobs:
           bake_amd64_result="${{ needs.bake-build-amd64.result }}"
           bake_arm64_result="${{ needs.bake-build-arm64.result }}"
           bake_merge_result="${{ needs.bake-merge.result }}"
+          e2egate_result="${{ needs.e2e-gate.result }}"
           dry_run_flag="${{ env.DRY_RUN }}"
 
           # build_failed: any monitored pipeline job failed or cancelled.
           # Includes bake jobs so a bake-only master run surfaces failures correctly.
           build_failed=false
           for _r in "$detect_result" "$bap_result" "$bex_result" "$mem_result" "$cm_result" \
-                    "$bake_amd64_result" "$bake_arm64_result" "$bake_merge_result"; do
+                    "$bake_amd64_result" "$bake_arm64_result" "$bake_merge_result" \
+                    "$e2egate_result"; do
             if [ "$_r" = "failure" ] || [ "$_r" = "cancelled" ]; then
               build_failed=true
             fi
