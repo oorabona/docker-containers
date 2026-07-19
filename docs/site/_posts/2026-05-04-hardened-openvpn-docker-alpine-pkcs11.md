@@ -3,7 +3,7 @@ layout: post
 title: "A Hardened OpenVPN Server in Docker: 15 MB Alpine Image, PKCS11-Ready, Least-Privilege"
 description: "Run OpenVPN in a minimal Alpine container with Easy-RSA and PKCS11 hardware-token support, under cap_drop: ALL with NET_ADMIN + SETUID/SETGID; the server worker drops to nobody. 15 MB compressed."
 date: 2026-05-04 10:00:00 +0000
-updated: 2026-07-17
+updated: 2026-07-19
 tags: [openvpn, docker, security, alpine, networking, pkcs11]
 ---
 
@@ -69,34 +69,39 @@ This runs with fewer privileges than `--privileged` by a wide margin. A containe
 
 ## Initial setup
 
-> **⚠️ Outdated commands.** The `ovpn_genconfig` / `ovpn_initpki` / `easyrsa` /
-> `ovpn_getclient` invocations below are from kylemanna's image and do **not**
-> exist in this one — they will fail with "command not found". This image
-> instead runs a single `ovpn` installer driven by env vars: first run with
-> `-e AUTO_INSTALL=y -e AUTO_START=y` to generate the PKI + `server.conf` and
-> start the server, re-run the container to manage clients, and retrieve the
-> generated client config from the `/etc/openvpn` volume. See the maintained
-> [container README](https://github.com/oorabona/docker-containers/tree/master/openvpn)
-> for the current, tested walkthrough.
+This image does not use kylemanna's `ovpn_genconfig`/`ovpn_getclient` helpers. It runs a single
+`ovpn` installer (from [`oorabona/scripts`](https://github.com/oorabona/scripts/tree/main/openvpn))
+driven by environment variables.
 
-Create a CA and the first client cert:
+**Bootstrap the server** on an empty volume — the installer generates the CA and `server.conf`
+and starts OpenVPN:
 
 ```bash
-# Initialise the server (first run)
-docker compose run --rm openvpn ovpn_genconfig -u udp://vpn.example.com
-docker compose run --rm openvpn ovpn_initpki
-
-# Start the server
-docker compose up -d
-
-# Issue a client cert
-docker compose run --rm openvpn easyrsa build-client-full alice nopass
-
-# Export the client .ovpn file
-docker compose run --rm openvpn ovpn_getclient alice > alice.ovpn
+# AUTO_INSTALL=y generates the PKI + server.conf; AUTO_START=y launches the server;
+# START_EXISTING=y makes later restarts bring the existing server back up non-interactively,
+# so `restart: unless-stopped` is safe. Set ENDPOINT to your public host so the installer
+# does not probe for it.
+AUTO_INSTALL=y ENDPOINT=vpn.example.com docker compose up -d
 ```
 
-The `.ovpn` bundle embeds the CA, client cert, and key. Hand it to the client, they import it into their OpenVPN client, and they're connected.
+**Add a client** through the installer's management menu — a one-shot interactive container
+against the same config volume, with `START_EXISTING`/`AUTO_INSTALL` cleared (either would start
+the server instead of opening the menu):
+
+```bash
+docker compose run --rm -e START_EXISTING= -e AUTO_INSTALL= openvpn
+# → choose "1) Add a new user", then enter the client name (e.g. alice)
+```
+
+The installer writes the client bundle to `/root/<name>.ovpn` inside that container (not the
+`/etc/openvpn` volume) and can optionally serve it once over a temporary download port. The
+`.ovpn` embeds the CA, client cert, and key — plus, if you enabled Google Authenticator at
+install, the client's 2FA enrolment (the per-user secret lives under `/etc/openvpn/otp/`). Hand
+it to the client, who imports it and connects. Revoke a client the same way, via the menu's
+"2) Revoke existing user" option.
+
+The maintained [container README](https://github.com/oorabona/docker-containers/tree/master/openvpn)
+carries the current, tested commands.
 
 ## PKCS11: hardware tokens
 
