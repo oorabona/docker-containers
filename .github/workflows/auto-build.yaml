@@ -242,6 +242,7 @@ jobs:
       builds_count: ${{ steps.detect.outputs.builds_count }}
       bake_builds: ${{ steps.detect.outputs.bake_builds }}
       matrix_builds: ${{ steps.detect.outputs.matrix_builds }}
+      e2e_builds: ${{ steps.detect.outputs.e2e_builds }}
       extension_builds: ${{ steps.detect.outputs.extension_builds }}
       bake_final_builds: ${{ steps.detect.outputs.bake_final_builds }}
       postgres_matrix_builds: ${{ steps.detect.outputs.postgres_matrix_builds }}
@@ -270,6 +271,60 @@ jobs:
           event_name: ${{ github.event_name }}
           build_all_retained: ${{ github.event.inputs.build_all_retained || inputs.build_all_retained || false }}
           run_tests: ${{ github.event.inputs.run_tests || inputs.run_tests || 'false' }}
+
+  e2e-test:
+    name: E2E ${{ matrix.build.container }}:${{ matrix.build.tag }}
+    needs: [detect-containers]
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.fork == false
+      && needs.detect-containers.outputs.e2e_builds != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJson(needs.detect-containers.outputs.e2e_builds) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Ensure /dev/net/tun
+        shell: bash
+        run: sudo modprobe tun 2>/dev/null || { sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200 && sudo chmod 600 /dev/net/tun; }; test -c /dev/net/tun
+
+      - name: Build loadable e2e image
+        uses: ./.github/actions/build-container
+        with:
+          container: ${{ matrix.build.container }}
+          version: ${{ matrix.build.version }}
+          tag: ${{ matrix.build.tag }}
+          platform: linux/amd64
+          use_base_cache: 'false'
+          scan_vulnerabilities: 'false'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          REMOTE_CR: docker.io
+
+      - name: Run e2e
+        shell: bash
+        run: |
+          E2E_IMAGE="ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}:${{ matrix.build.tag }}" \
+            tests/e2e-test.sh "${{ matrix.build.container }}"
+
+  e2e-gate:
+    name: e2e-gate
+    needs: [detect-containers, e2e-test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          r='${{ needs.e2e-test.result }}'
+          case "$r" in
+            success|skipped) echo "e2e-gate PASS ($r)" ;;
+            *) echo "e2e-gate FAIL ($r)"; exit 1 ;;
+          esac
 
   # Build and push PostgreSQL extension images if postgres is in the build list.
   # Runs as a two-leg arch matrix (amd64 + arm64) on native runners so each leg

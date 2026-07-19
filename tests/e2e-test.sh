@@ -10,12 +10,14 @@
 #   ./e2e-test.sh --no-build               # Skip build, use existing images
 #
 # For containers with variants, version is required (e.g., postgres:16)
+# Set E2E_IMAGE=<image-ref> to test a preloaded image directly.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/helpers/logging.sh"
-source "$SCRIPT_DIR/helpers/variant-utils.sh"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$REPO_ROOT/helpers/logging.sh"
+source "$REPO_ROOT/helpers/variant-utils.sh"
 
 BUILD=true
 CONTAINERS=""
@@ -60,13 +62,87 @@ echo "🧪 E2E Container Tests"
 echo "======================"
 echo ""
 
+resolve_e2e_image() {
+    local container="$1"
+    local image_tag="${2:-}"
+
+    if [ -n "${E2E_IMAGE:-}" ]; then
+        printf '%s\n' "$E2E_IMAGE"
+        return 0
+    fi
+
+    if [ -n "$image_tag" ]; then
+        printf 'docker.io/%s/%s:%s\n' "$GITHUB_REPOSITORY_OWNER" "$container" "$image_tag"
+        return 0
+    fi
+
+    local images=""
+    images=$(docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' 2>/dev/null) || true
+
+    local ids
+    ids=$(printf '%s\n' "$images" | awk -v owner="$GITHUB_REPOSITORY_OWNER" -v container="$container" '
+        function starts_with(value, prefix) {
+            return substr(value, 1, length(prefix)) == prefix
+        }
+        starts_with($2, "ghcr.io/" owner "/" container ":") ||
+        starts_with($2, "docker.io/" owner "/" container ":") ||
+        starts_with($2, container ":") {
+            print $1
+        }
+    ' | sort -u)
+
+    local count
+    if [ -z "$ids" ]; then
+        count=0
+    else
+        count=$(printf '%s\n' "$ids" | grep -c .)
+    fi
+
+    if [ "$count" -eq 0 ]; then
+        log_error "No image found for $container; build it first, pass container:tag, or set E2E_IMAGE"
+        return 1
+    fi
+
+    if [ "$count" -gt 1 ]; then
+        log_error "Ambiguous local images for $container ($count distinct image IDs); set E2E_IMAGE"
+        printf '%s\n' "$images" | awk -v owner="$GITHUB_REPOSITORY_OWNER" -v container="$container" '
+            function starts_with(value, prefix) {
+                return substr(value, 1, length(prefix)) == prefix
+            }
+            starts_with($2, "ghcr.io/" owner "/" container ":") ||
+            starts_with($2, "docker.io/" owner "/" container ":") ||
+            starts_with($2, container ":") {
+                print "  " $1 " " $2
+            }
+        ' >&2
+        return 1
+    fi
+
+    local image
+    image=$(printf '%s\n' "$images" | awk -v id="$ids" -v owner="$GITHUB_REPOSITORY_OWNER" -v container="$container" '
+        function starts_with(value, prefix) {
+            return substr(value, 1, length(prefix)) == prefix
+        }
+        $1 == id && (
+            starts_with($2, "ghcr.io/" owner "/" container ":") ||
+            starts_with($2, "docker.io/" owner "/" container ":") ||
+            starts_with($2, container ":")
+        ) {
+            print $2
+            exit
+        }
+    ')
+
+    printf '%s\n' "$image"
+}
+
 # Test a single container (or variant)
 # Usage: test_container <container> [image_tag]
 test_container() {
     local container="$1"
     local image_tag="${2:-}"
     local container_name="e2e-$container"
-    local test_script="$SCRIPT_DIR/$container/test.sh"
+    local test_script="$REPO_ROOT/$container/test.sh"
 
     # Build test name for display
     local test_name="$container"
@@ -75,7 +151,7 @@ test_container() {
     log_step "Testing $test_name..."
 
     # Build if requested (only for non-variant tests or when no tag specified)
-    if [ "$BUILD" = true ] && [ -z "$image_tag" ]; then
+    if [ -z "${E2E_IMAGE:-}" ] && [ "$BUILD" = true ] && [ -z "$image_tag" ]; then
         log_info "Building $container..."
         if ! ./make build "$container" 2>&1 | tail -5; then
             log_error "Build failed for $container"
@@ -85,16 +161,8 @@ test_container() {
 
     # Determine image name
     local image
-    if [ -n "$image_tag" ]; then
-        # Use specific tag provided
-        image="docker.io/$GITHUB_REPOSITORY_OWNER/$container:$image_tag"
-    else
-        # Find the most recently built image for this container
-        image=$(docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=*/$container:*" | head -1) || true
-        if [ -z "$image" ]; then
-            # Fallback: try local name
-            image=$(docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=$container:*" | head -1) || true
-        fi
+    if ! image=$(resolve_e2e_image "$container" "$image_tag"); then
+        return 1
     fi
     if [ -z "$image" ]; then
         log_error "No image found for $test_name"
@@ -213,11 +281,22 @@ test_container() {
 
 # Run tests
 for arg in $CONTAINERS; do
+    if [ -n "${E2E_IMAGE:-}" ]; then
+        container="${arg%%:*}"
+        echo ""
+        if test_container "$container"; then
+            PASSED+=("$container")
+        else
+            FAILED+=("$container")
+        fi
+        continue
+    fi
+
     # Check if argument contains a tag (container:tag format)
     if [[ "$arg" == *":"* ]]; then
         container="${arg%%:*}"
         tag_part="${arg#*:}"
-        container_dir="$SCRIPT_DIR/$container"
+        container_dir="$REPO_ROOT/$container"
 
         # Determine if tag_part is a version (e.g., "16") or a full tag (e.g., "16-full-alpine")
         if [[ "$tag_part" =~ ^[0-9]+$ ]]; then
@@ -272,7 +351,7 @@ for arg in $CONTAINERS; do
         fi
     else
         container="$arg"
-        container_dir="$SCRIPT_DIR/$container"
+        container_dir="$REPO_ROOT/$container"
 
         # Check if container has variants
         if has_variants "$container_dir"; then

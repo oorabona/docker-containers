@@ -1,6 +1,9 @@
 # Ansible Container Variants
 build:
   version_retention: 3
+tests:
+  e2e:
+    enabled: true
 versions:
   - tag: 14.2.0-ubuntu
   - tag: 14.1.0-ubuntu
