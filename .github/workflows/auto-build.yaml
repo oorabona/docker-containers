@@ -282,13 +282,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Least privilege: this job checks out and runs branch-controlled build/test
-    # code. It needs the tree (read) and packages:write only so the build's
-    # registry buildcache (--cache-to) can write the owner's own cache; it does
-    # NOT need the workflow's global id-token / attestations / security-events /
-    # issues grants.
+    # code. It reads the tree and the shared registry cache/base mirror only —
+    # it never writes the cache or pushes an image (see BUILD_CACHE_EXPORT below),
+    # so packages:read is enough and none of the workflow's global id-token /
+    # attestations / security-events / issues grants are needed.
     permissions:
       contents: read
-      packages: write
+      packages: read
+    env:
+      # Throwaway PR build: read the shared registry cache but never export it,
+      # so PR-built layers can't land in the canonical <ref>:buildcache
+      # (mirrors the bake engine's PR guard).
+      BUILD_CACHE_EXPORT: 'false'
     strategy:
       fail-fast: false
       matrix:
@@ -317,11 +322,11 @@ jobs:
           variant: ${{ matrix.build.variant }}
           dockerfile: ${{ matrix.build.dockerfile }}
           platform: linux/amd64
-          use_base_cache: 'false'
+          # Use the production base path (default GHCR mirror + REMOTE_CR) so the
+          # e2e build exercises the same base source as normal builds and avoids
+          # anonymous Docker Hub pulls.
           scan_vulnerabilities: 'false'
           github_token: ${{ secrets.GITHUB_TOKEN }}
-        env:
-          REMOTE_CR: docker.io
 
       - name: Run e2e
         shell: bash
