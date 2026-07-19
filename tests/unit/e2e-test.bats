@@ -121,3 +121,24 @@ SH
     [[ "$output" == *"Ambiguous local images for debian"* ]]
     ! grep -q '^run ' "$DOCKER_LOG"
 }
+
+@test "sslh run profile: args-only command, port 443, NET_BIND_SERVICE (entrypoint+healthcheck match)" {
+    mkdir -p "$FIXTURE_REPO/sslh"
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export DOCKER_PS_OUTPUT="e2e-sslh"
+    export E2E_IMAGE="ghcr.io/example/sslh:e2e"
+
+    run "$FIXTURE_REPO/tests/e2e-test.sh" sslh
+
+    [ "$status" -eq 0 ]
+    run_line=$(grep '^run ' "$DOCKER_LOG")
+    # image ENTRYPOINT is sslh-ev → command is ARGS ONLY (no re-specified binary)
+    [[ "$run_line" == *"--foreground"* ]]
+    [[ "$run_line" != *"sslh-ev --foreground"* ]]
+    # front port 443 to match the image HEALTHCHECK (nc -z 443), not 8443
+    [[ "$run_line" == *"-p 0.0.0.0:443"* ]]
+    [[ "$run_line" != *"0.0.0.0:8443"* ]]
+    # nobody must be able to bind the privileged port
+    [[ "$run_line" == *"--cap-add NET_BIND_SERVICE"* ]]
+}

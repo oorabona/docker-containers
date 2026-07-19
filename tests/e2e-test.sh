@@ -200,8 +200,13 @@ test_container() {
             run_cmd="sleep infinity"
             ;;
         sslh)
-            # SSLH needs explicit config to start - use test mode
-            run_cmd="sslh-ev --foreground -p 0.0.0.0:8443 --ssh 127.0.0.1:22 --tls 127.0.0.1:443"
+            # sslh-ev is the image ENTRYPOINT, so pass ARGS ONLY (no binary name,
+            # else it runs "sslh-ev sslh-ev ..." with a bogus first argument).
+            # Listen on 443 to satisfy the image HEALTHCHECK (busybox nc -z 443);
+            # the image runs as nobody, so grant NET_BIND_SERVICE to bind the
+            # privileged port. Backends need not be reachable for sslh to listen.
+            run_opts="$run_opts --cap-add NET_BIND_SERVICE"
+            run_cmd="--foreground -p 0.0.0.0:443 --ssh 127.0.0.1:22 --tls 127.0.0.1:8443"
             ;;
     esac
 
