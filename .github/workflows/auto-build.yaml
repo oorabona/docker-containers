@@ -338,6 +338,13 @@ jobs:
           E2E_IMAGE="ghcr.io/${OWNER}/${CONTAINER}:${TAG}" \
             tests/e2e-test.sh "${CONTAINER}"
 
+      - name: openvpn restart lifecycle
+        if: matrix.build.container == 'openvpn'
+        shell: bash
+        env:
+          OPENVPN_IMAGE: ghcr.io/${{ github.repository_owner }}/openvpn:${{ matrix.build.tag }}
+        run: openvpn/tests/restart-lifecycle.sh
+
   e2e-gate:
     name: e2e-gate
     needs: [detect-containers, e2e-test]

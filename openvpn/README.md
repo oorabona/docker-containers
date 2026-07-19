@@ -46,6 +46,7 @@ docker run -d --name openvpn \
     --sysctl net.ipv6.conf.all.forwarding=1 \
     --sysctl net.ipv4.ip_forward=1 \
     --sysctl net.ipv4.conf.all.forwarding=1 \
+    -e START_EXISTING=y \
     -e AUTO_INSTALL=y \
     -e AUTO_START=y \
     oorabona/openvpn
@@ -69,13 +70,16 @@ services:
   openvpn:
     image: oorabona/openvpn
     container_name: openvpn
-    # Bootstrap-and-run (see "Lifecycle" below): AUTO_INSTALL=y generates the PKI
-    # + server.conf into the empty named volume, AUTO_START=y launches the
-    # server. Do NOT combine AUTO_INSTALL=y with restart: unless-stopped — the
-    # installer re-runs setup on every restart. See #912.
+    # First run bootstraps the PKI + server.conf into the empty named volume
+    # (AUTO_INSTALL=y) and starts the server (AUTO_START=y). START_EXISTING=y makes
+    # every subsequent start bring up the existing server non-interactively, so this
+    # is safe under `restart: unless-stopped` (see "Lifecycle" below). Set
+    # ENDPOINT=<host> for a fully non-interactive first install.
     environment:
+      - START_EXISTING=y
       - AUTO_INSTALL=y
       - AUTO_START=y
+      - ENDPOINT=vpn.example.com # Set to the real public host/IP.
     cap_add:
       - NET_ADMIN
       - SETUID
@@ -95,23 +99,34 @@ services:
       - 1194:1194/udp
     volumes:
       - openvpn_config:/etc/openvpn
+    restart: unless-stopped
 
 volumes:
   openvpn_config:
 ```
 
-### Lifecycle (important)
+### Lifecycle
 
-This image's entrypoint (the `ovpn` installer) is **bootstrap-and-run**, not an
-unattended daemon. On an empty volume, `AUTO_INSTALL=y` + `AUTO_START=y`
-generates the config and starts the server. But once a config exists it has no
-clean restart path: `AUTO_INSTALL=y` **re-runs setup** (can overwrite your
-PKI/config), while leaving it unset opens an **interactive management menu**
-instead of starting. So do not run a `restart: unless-stopped` service with a
-persisted `AUTO_INSTALL=y`, and do not expect a plain `docker compose up -d`
-after bootstrap to start the server. Bootstrap once, then manage/run the server
-via the installer's documented commands (see below). This limitation is tracked
-in [#912](https://github.com/oorabona/docker-containers/issues/912).
+On an empty volume, `AUTO_INSTALL=y` + `AUTO_START=y` generates the PKI +
+`server.conf` and starts the server (set `ENDPOINT=<host>` for a fully
+non-interactive first install). **`START_EXISTING=y`** then makes every
+subsequent start bring up the already-installed server non-interactively — it
+takes precedence over `AUTO_INSTALL` when a config already exists — so the
+container is safe to run as a `restart: unless-stopped` service: a restart brings
+the VPN back up instead of re-running setup or dropping into the management menu.
+To manage clients (add/revoke), open the installer's management menu with a
+**one-shot interactive** Compose run against the deployed config volume while
+clearing `START_EXISTING` and `AUTO_INSTALL` (those would start the server
+instead of the menu): `docker compose run --rm -e START_EXISTING= -e
+AUTO_INSTALL= openvpn`.
+
+`START_EXISTING` applies to this Alpine image and expects the installer-generated
+foreground config; a config carrying a `daemon` directive is rejected up front.
+Restart-safety assumes the **first install completed**: `START_EXISTING` starts
+whatever config exists, so if the initial bootstrap is interrupted after
+`server.conf` is written but before the PKI finishes, reset the config volume and
+bootstrap again rather than looping on a half-installed config. (Resolves
+[#912](https://github.com/oorabona/docker-containers/issues/912).)
 
 ## Configuration
 
@@ -143,12 +158,13 @@ This file is generated from the script `setup.sh` located in `/usr/local/bin` an
 
 For details about the meaning of each variable, please refer to the [documentation](https://github.com/oorabona/scripts/tree/main/openvpn).
 
-Two variables control the container's first-run lifecycle:
+Three variables control the container's lifecycle:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AUTO_INSTALL` | `n` | `y` runs a **non-interactive** install (generates the PKI + `server.conf`) when no config exists. Left unset with a config already present, the entrypoint opens an interactive management menu instead of starting the server. |
 | `AUTO_START` | `n` | `y` starts the OpenVPN server after install (required for the server to actually run on this Alpine image). |
+| `START_EXISTING` | `n` | `y` starts an already-installed server **non-interactively** on restart, taking precedence over `AUTO_INSTALL` when a config exists — makes the container safe under `restart: unless-stopped`. Alpine (`OS=other`), installer-generated foreground configs only. |
 
 ### Google Authenticator
 
