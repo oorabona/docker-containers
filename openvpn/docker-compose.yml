@@ -38,15 +38,20 @@ services:
       - net.ipv4.conf.all.forwarding=1
       - net.ipv6.conf.all.disable_ipv6=0
       - net.ipv6.conf.all.forwarding=1
-    # Bootstrap the empty volume once: `AUTO_INSTALL=y docker compose up -d`
-    # generates the PKI + server.conf. Heads-up on the entrypoint's lifecycle
-    # (tracked in #912): with a config already present, AUTO_INSTALL=y re-runs
-    # setup and AUTO_INSTALL unset/n opens an interactive management menu instead
-    # of starting — so this installer does not support a clean unattended restart
-    # loop out of the box. See openvpn/README.md "Lifecycle" and #912.
+    # Idempotent lifecycle: START_EXISTING=y starts an already-installed server
+    # non-interactively on restart (it takes precedence over AUTO_INSTALL when a
+    # config already exists), so `restart: unless-stopped` brings the VPN back up
+    # cleanly instead of re-running setup or opening the management menu. For the
+    # FIRST run on an empty volume, bootstrap the PKI + server.conf non-interactively
+    # with `AUTO_INSTALL=y ENDPOINT=<host> docker compose up -d` (or run the
+    # installer once interactively). Restart-safety assumes the first install
+    # finished; if it was interrupted mid-bootstrap, reset the volume. See
+    # openvpn/README.md "Lifecycle".
     environment:
+      - START_EXISTING=${START_EXISTING:-y}
       - AUTO_INSTALL=${AUTO_INSTALL:-n}
       - AUTO_START=${AUTO_START:-y}
+      - ENDPOINT=${ENDPOINT:-}
     volumes:
       - openvpn_config:/etc/openvpn
     restart: unless-stopped
