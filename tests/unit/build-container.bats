@@ -288,6 +288,38 @@ EOF
     unset GITHUB_REPOSITORY_OWNER
 }
 
+@test "build_container omits cache export when BUILD_CACHE_EXPORT=false" {
+    export GITHUB_ACTIONS="true"
+    export MULTIPLATFORM_SUPPORTED="false"
+    export GITHUB_REPOSITORY_OWNER="testowner"
+    export BUILD_CACHE_EXPORT="false"
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+echo "ARGS: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    create_mock_container "testcontainer" "1.0.0"
+
+    source_build_script
+
+    cd "$TEST_TEMP_DIR"
+    run build_container "testcontainer" "1.0.0" "1.0.0"
+
+    # Still READS the shared cache (fast builds)...
+    grep -q "cache-from" "$TEST_TEMP_DIR/docker_calls.log"
+    # ...but never WRITES it, so throwaway/PR builds can't poison :buildcache
+    ! grep -q "cache-to" "$TEST_TEMP_DIR/docker_calls.log"
+
+    unset GITHUB_ACTIONS
+    unset GITHUB_REPOSITORY_OWNER
+    unset BUILD_CACHE_EXPORT
+}
+
 # =============================================================================
 # build_container tagging tests
 # =============================================================================

@@ -97,9 +97,20 @@ _configure_cache() {
     _RUNTIME_INFO=""
 
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        _CACHE_ARGS="--cache-from type=registry,ref=$cache_image --cache-to type=registry,ref=$cache_image,mode=max"
-        _RUNTIME_INFO="GitHub Actions (registry cache)"
-        log_success "Using registry cache: $cache_image"
+        # Always read from the shared registry cache. Exporting (--cache-to)
+        # writes the canonical <ref>:buildcache; throwaway PR builds (e.g. the
+        # e2e job) set BUILD_CACHE_EXPORT=false so PR-built layers never land in
+        # the canonical cache — matching the bake engine's PR guard. Default
+        # keeps export on so normal builds are unchanged.
+        _CACHE_ARGS="--cache-from type=registry,ref=$cache_image"
+        if [[ "${BUILD_CACHE_EXPORT:-true}" == "true" ]]; then
+            _CACHE_ARGS="$_CACHE_ARGS --cache-to type=registry,ref=$cache_image,mode=max"
+            _RUNTIME_INFO="GitHub Actions (registry cache)"
+            log_success "Using registry cache: $cache_image"
+        else
+            _RUNTIME_INFO="GitHub Actions (registry cache, export disabled)"
+            log_success "Using registry cache (read-only, export disabled): $cache_image"
+        fi
     elif docker version 2>/dev/null | grep -q "Docker Engine"; then
         if docker pull "$cache_image" 2>/dev/null; then
             _CACHE_ARGS="--cache-from type=registry,ref=$cache_image"

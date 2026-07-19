@@ -1,6 +1,9 @@
 # Debian Container Variants
 build:
   version_retention: 3
+tests:
+  e2e:
+    enabled: true
 
 versions:
   - tag: "trixie"

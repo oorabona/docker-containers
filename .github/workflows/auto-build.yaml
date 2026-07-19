@@ -242,6 +242,7 @@ jobs:
       builds_count: ${{ steps.detect.outputs.builds_count }}
       bake_builds: ${{ steps.detect.outputs.bake_builds }}
       matrix_builds: ${{ steps.detect.outputs.matrix_builds }}
+      e2e_builds: ${{ steps.detect.outputs.e2e_builds }}
       extension_builds: ${{ steps.detect.outputs.extension_builds }}
       bake_final_builds: ${{ steps.detect.outputs.bake_final_builds }}
       postgres_matrix_builds: ${{ steps.detect.outputs.postgres_matrix_builds }}
@@ -270,6 +271,93 @@ jobs:
           event_name: ${{ github.event_name }}
           build_all_retained: ${{ github.event.inputs.build_all_retained || inputs.build_all_retained || false }}
           run_tests: ${{ github.event.inputs.run_tests || inputs.run_tests || 'false' }}
+
+  e2e-test:
+    name: E2E ${{ matrix.build.container }}:${{ matrix.build.tag }}
+    needs: [detect-containers]
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.fork == false
+      && needs.detect-containers.outputs.e2e_builds != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Least privilege: this job checks out and runs branch-controlled build/test
+    # code. It reads the tree and the shared registry cache/base mirror only —
+    # it never writes the cache or pushes an image (see BUILD_CACHE_EXPORT below),
+    # so packages:read is enough and none of the workflow's global id-token /
+    # attestations / security-events / issues grants are needed.
+    permissions:
+      contents: read
+      packages: read
+    env:
+      # Throwaway PR build: read the shared registry cache but never export it,
+      # so PR-built layers can't land in the canonical <ref>:buildcache
+      # (mirrors the bake engine's PR guard).
+      BUILD_CACHE_EXPORT: 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJson(needs.detect-containers.outputs.e2e_builds) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Ensure /dev/net/tun
+        shell: bash
+        run: sudo modprobe tun 2>/dev/null || { sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200 && sudo chmod 600 /dev/net/tun; }; test -c /dev/net/tun
+
+      - name: Build loadable e2e image
+        uses: ./.github/actions/build-container
+        with:
+          container: ${{ matrix.build.container }}
+          version: ${{ matrix.build.version }}
+          tag: ${{ matrix.build.tag }}
+          # Pass the full build cell through so an e2e-enabled variant / alternate
+          # Dockerfile builds and tests the SAME image the detector selected.
+          # (Current opt-ins are flavor-less, so these are empty today.)
+          flavor: ${{ matrix.build.flavor }}
+          build_flavor: ${{ matrix.build.build_flavor }}
+          variant: ${{ matrix.build.variant }}
+          dockerfile: ${{ matrix.build.dockerfile }}
+          platform: linux/amd64
+          # Use the production base path (default GHCR mirror + REMOTE_CR) so the
+          # e2e build exercises the same base source as normal builds and avoids
+          # anonymous Docker Hub pulls.
+          scan_vulnerabilities: 'false'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run e2e
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+          CONTAINER: ${{ matrix.build.container }}
+          TAG: ${{ matrix.build.tag }}
+        run: |
+          E2E_IMAGE="ghcr.io/${OWNER}/${CONTAINER}:${TAG}" \
+            tests/e2e-test.sh "${CONTAINER}"
+
+  e2e-gate:
+    name: e2e-gate
+    needs: [detect-containers, e2e-test]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - shell: bash
+        run: |
+          d='${{ needs.detect-containers.result }}'
+          r='${{ needs.e2e-test.result }}'
+          # A detection failure means we never computed what to test — do not pass.
+          if [ "$d" != "success" ]; then
+            echo "e2e-gate FAIL (detect-containers=$d)"; exit 1
+          fi
+          case "$r" in
+            success|skipped) echo "e2e-gate PASS (detect=$d e2e=$r)" ;;
+            *) echo "e2e-gate FAIL (e2e-test=$r)"; exit 1 ;;
+          esac
 
   # Build and push PostgreSQL extension images if postgres is in the build list.
   # Runs as a two-leg arch matrix (amd64 + arm64) on native runners so each leg
@@ -3313,7 +3401,7 @@ jobs:
           echo "failed_this_run=${ftr_safe}" >> "$GITHUB_OUTPUT"
 
   summary:
-    needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, sync-registries, publish-coverage-checkpoint, bake-build-amd64, bake-build-arm64, bake-merge, bake-attest]
+    needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, sync-registries, publish-coverage-checkpoint, bake-build-amd64, bake-build-arm64, bake-merge, bake-attest, e2e-gate]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -3353,6 +3441,9 @@ jobs:
           # (a dedicated GHCR→DockerHub sync, not a non-blocking by design).
           # A 'skipped' result is NOT a failure (non-postgres builds legitimately
           # skip the extension jobs).
+          # e2e-gate is included: it aggregates the container e2e run and passes
+          # on a legitimate skip (non-PR / no eligible change), so its failure
+          # means a container e2e regression that must surface as a build failure.
           # ---------------------------------------------------------------
           detect_result="${{ needs.detect-containers.result }}"
           bap_result="${{ needs.build-and-push.result }}"
@@ -3362,13 +3453,15 @@ jobs:
           bake_amd64_result="${{ needs.bake-build-amd64.result }}"
           bake_arm64_result="${{ needs.bake-build-arm64.result }}"
           bake_merge_result="${{ needs.bake-merge.result }}"
+          e2egate_result="${{ needs.e2e-gate.result }}"
           dry_run_flag="${{ env.DRY_RUN }}"
 
           # build_failed: any monitored pipeline job failed or cancelled.
           # Includes bake jobs so a bake-only master run surfaces failures correctly.
           build_failed=false
           for _r in "$detect_result" "$bap_result" "$bex_result" "$mem_result" "$cm_result" \
-                    "$bake_amd64_result" "$bake_arm64_result" "$bake_merge_result"; do
+                    "$bake_amd64_result" "$bake_arm64_result" "$bake_merge_result" \
+                    "$e2egate_result"; do
             if [ "$_r" = "failure" ] || [ "$_r" = "cancelled" ]; then
               build_failed=true
             fi

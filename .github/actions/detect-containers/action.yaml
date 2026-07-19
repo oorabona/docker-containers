@@ -89,6 +89,9 @@ outputs:
   matrix_builds:
     description: 'JSON array of builds routed to the flat matrix engine (all non-bake containers)'
     value: ${{ steps.split-build-engine.outputs.matrix_builds }}
+  e2e_builds:
+    description: 'JSON array of changed latest Linux builds eligible for e2e tests'
+    value: ${{ steps.split-build-engine.outputs.e2e_builds }}
   extension_builds:
     description: 'JSON array of distinct detected containers that have extensions/config.yaml'
     value: ${{ steps.split-build-engine.outputs.extension_builds }}
@@ -707,13 +710,37 @@ runs:
         extension_builds=$(extension_containers_in "$builds_input" "any")
         bake_final_builds=$(extension_containers_in "$bake_builds" "final")
         postgres_matrix_builds=$(echo "$matrix_builds" | jq -c '[.[] | select(.container == "postgres")]')
+        e2e_builds='[]'
+
+        while IFS= read -r build; do
+          [[ -z "$build" ]] && continue
+
+          container=$(echo "$build" | jq -r '.container // ""')
+          is_latest_version=$(echo "$build" | jq -r '.is_latest_version // false')
+          os=$(echo "$build" | jq -r '.os // "linux"')
+
+          if [[ -z "$container" || "$is_latest_version" != "true" || "$os" == "windows" ]]; then
+            continue
+          fi
+
+          e2e_enabled=false
+          if [[ -f "$container/variants.yaml" ]]; then
+            e2e_enabled=$(yq -r '.tests.e2e.enabled // false' "$container/variants.yaml" 2>/dev/null || echo "false")
+          fi
+
+          if [[ "$e2e_enabled" == "true" ]]; then
+            e2e_builds=$(jq -c --argjson build "$build" '. + [$build]' <<< "$e2e_builds")
+          fi
+        done < <(echo "$builds_input" | jq -c '.[]')
 
         bake_count=$(echo "$bake_builds" | jq 'length')
         matrix_count=$(echo "$matrix_builds" | jq 'length')
+        e2e_count=$(echo "$e2e_builds" | jq 'length')
 
         echo "bake_builds=$bake_builds" >> "$GITHUB_OUTPUT"
         echo "matrix_builds=$matrix_builds" >> "$GITHUB_OUTPUT"
+        echo "e2e_builds=$e2e_builds" >> "$GITHUB_OUTPUT"
         echo "extension_builds=$extension_builds" >> "$GITHUB_OUTPUT"
         echo "bake_final_builds=$bake_final_builds" >> "$GITHUB_OUTPUT"
         echo "postgres_matrix_builds=$postgres_matrix_builds" >> "$GITHUB_OUTPUT"
-        echo "::notice::Build engine split: bake=$bake_count matrix=$matrix_count (force_matrix=${force_matrix} event=${EVENT_NAME})"
+        echo "::notice::Build engine split: bake=$bake_count matrix=$matrix_count e2e=$e2e_count (force_matrix=${force_matrix} event=${EVENT_NAME})"

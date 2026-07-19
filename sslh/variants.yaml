@@ -1,6 +1,9 @@
 # SSLH Container Variants
 build:
   version_retention: 3
+tests:
+  e2e:
+    enabled: true
 versions:
   - tag: v2.3.1-alpine
   - tag: "v2.3.0-alpine"
