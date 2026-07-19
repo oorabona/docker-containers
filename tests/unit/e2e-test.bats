@@ -142,3 +142,10 @@ SH
     # nobody must be able to bind the privileged port
     [[ "$run_line" == *"--cap-add NET_BIND_SERVICE"* ]]
 }
+
+@test "sslh/test.sh proves liveness without pgrep (scratch image lacks it)" {
+    # The sslh image is FROM scratch: no pgrep. The smoke check must use the
+    # busybox nc applet that ships in the image, not pgrep.
+    ! grep -qE '\bpgrep\b' "$PROJECT_ROOT/sslh/test.sh"
+    grep -q '/bin/busybox nc' "$PROJECT_ROOT/sslh/test.sh"
+}

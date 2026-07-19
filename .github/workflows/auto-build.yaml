@@ -281,6 +281,14 @@ jobs:
       && needs.detect-containers.outputs.e2e_builds != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Least privilege: this job checks out and runs branch-controlled build/test
+    # code. It needs the tree (read) and packages:write only so the build's
+    # registry buildcache (--cache-to) can write the owner's own cache; it does
+    # NOT need the workflow's global id-token / attestations / security-events /
+    # issues grants.
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -288,6 +296,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Ensure /dev/net/tun
         shell: bash
@@ -299,6 +309,13 @@ jobs:
           container: ${{ matrix.build.container }}
           version: ${{ matrix.build.version }}
           tag: ${{ matrix.build.tag }}
+          # Pass the full build cell through so an e2e-enabled variant / alternate
+          # Dockerfile builds and tests the SAME image the detector selected.
+          # (Current opt-ins are flavor-less, so these are empty today.)
+          flavor: ${{ matrix.build.flavor }}
+          build_flavor: ${{ matrix.build.build_flavor }}
+          variant: ${{ matrix.build.variant }}
+          dockerfile: ${{ matrix.build.dockerfile }}
           platform: linux/amd64
           use_base_cache: 'false'
           scan_vulnerabilities: 'false'
@@ -308,22 +325,33 @@ jobs:
 
       - name: Run e2e
         shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+          CONTAINER: ${{ matrix.build.container }}
+          TAG: ${{ matrix.build.tag }}
         run: |
-          E2E_IMAGE="ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}:${{ matrix.build.tag }}" \
-            tests/e2e-test.sh "${{ matrix.build.container }}"
+          E2E_IMAGE="ghcr.io/${OWNER}/${CONTAINER}:${TAG}" \
+            tests/e2e-test.sh "${CONTAINER}"
 
   e2e-gate:
     name: e2e-gate
     needs: [detect-containers, e2e-test]
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - shell: bash
         run: |
+          d='${{ needs.detect-containers.result }}'
           r='${{ needs.e2e-test.result }}'
+          # A detection failure means we never computed what to test — do not pass.
+          if [ "$d" != "success" ]; then
+            echo "e2e-gate FAIL (detect-containers=$d)"; exit 1
+          fi
           case "$r" in
-            success|skipped) echo "e2e-gate PASS ($r)" ;;
-            *) echo "e2e-gate FAIL ($r)"; exit 1 ;;
+            success|skipped) echo "e2e-gate PASS (detect=$d e2e=$r)" ;;
+            *) echo "e2e-gate FAIL (e2e-test=$r)"; exit 1 ;;
           esac
 
   # Build and push PostgreSQL extension images if postgres is in the build list.

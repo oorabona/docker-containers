@@ -13,12 +13,14 @@ docker exec "$CONTAINER_NAME" sslh-ev --version 2>&1 | head -1 || \
 docker exec "$CONTAINER_NAME" sslh --version 2>&1 | head -1 || \
 echo "  (version check returned error, may be normal)"
 
-# Check process is running
-echo "  Checking SSLH process..."
-if docker exec "$CONTAINER_NAME" pgrep -f "sslh" &>/dev/null; then
-    echo "  ✅ SSLH process running"
+# The image is FROM scratch (no pgrep/shell), so prove sslh is actually
+# multiplexing by connecting to its listen port with the busybox nc applet
+# that ships in the image — the same tool the container HEALTHCHECK uses.
+echo "  Checking SSLH is listening on 443..."
+if docker exec "$CONTAINER_NAME" /bin/busybox nc -z 127.0.0.1 443; then
+    echo "  ✅ SSLH is listening on 443"
 else
-    echo "  ❌ SSLH not running"
+    echo "  ❌ SSLH not listening on 443"
     exit 1
 fi
 
