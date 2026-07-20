@@ -661,7 +661,7 @@ runs:
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' }}
       id: sarif-upload
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+      uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
       with:
         sarif_file: 'trivy-results.sarif'
         category: 'container-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}-${{ inputs.platform }}'
@@ -676,7 +676,7 @@ runs:
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' && steps.sarif-upload.outcome == 'failure' }}
       id: sarif-upload-retry
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+      uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
       with:
         sarif_file: 'trivy-results.sarif'
         category: 'container-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}-${{ inputs.platform }}'
