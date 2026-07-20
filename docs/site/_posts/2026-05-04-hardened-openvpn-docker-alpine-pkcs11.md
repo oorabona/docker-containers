@@ -3,7 +3,7 @@ layout: post
 title: "A Hardened OpenVPN Server in Docker: 15 MB Alpine Image, PKCS11-Ready, Least-Privilege"
 description: "Run OpenVPN in a minimal Alpine container with Easy-RSA and PKCS11 hardware-token support, under cap_drop: ALL with NET_ADMIN + SETUID/SETGID; the server worker drops to nobody. 15 MB compressed."
 date: 2026-05-04 10:00:00 +0000
-updated: 2026-07-19
+updated: 2026-07-20
 tags: [openvpn, docker, security, alpine, networking, pkcs11]
 ---
 
@@ -27,11 +27,11 @@ Running OpenVPN in Docker is [famously easy to get wrong](https://github.com/kyl
 ## What's in the image
 
 ```bash
-docker pull ghcr.io/oorabona/openvpn:v2.7.2-alpine
+docker pull ghcr.io/oorabona/openvpn:v2.7.5-alpine
 # 15 MB compressed, multi-arch (amd64 + arm64)
 ```
 
-- **OpenVPN 2.7.x** (tracked from [yrutschle's OpenVPN fork is unrelated; we follow OpenVPN/openvpn])
+- **OpenVPN 2.7.x** (tracked from [OpenVPN/openvpn](https://github.com/OpenVPN/openvpn))
 - **Easy-RSA 3.2.x** for certificate generation
 - **pkcs11-helper** for hardware-token-backed keys (YubiKey, OpenSC, etc.)
 - **Alpine base** — static-linking where possible, no shell in the final image layer
@@ -45,7 +45,7 @@ docker pull ghcr.io/oorabona/openvpn:v2.7.2-alpine
 # compose.yml
 services:
   openvpn:
-    image: ghcr.io/oorabona/openvpn:v2.7.2-alpine
+    image: ghcr.io/oorabona/openvpn:v2.7.5-alpine
     cap_drop: [ALL]
     cap_add:
       - NET_ADMIN          # create tun0, manipulate routes
@@ -57,6 +57,16 @@ services:
       - "1194:1194/udp"
     volumes:
       - openvpn-data:/etc/openvpn
+    environment:
+      # This sample sets START_EXISTING=y and AUTO_START=y (AUTO_INSTALL stays n);
+      # the image itself defaults all three to n, so these values live in the
+      # compose file, not the container image. Set AUTO_INSTALL=y (and ENDPOINT)
+      # on the first boot to bootstrap; later `docker compose up -d` brings the
+      # existing server back up non-interactively.
+      - START_EXISTING=${START_EXISTING:-y}
+      - AUTO_INSTALL=${AUTO_INSTALL:-n}
+      - AUTO_START=${AUTO_START:-y}
+      - ENDPOINT=${ENDPOINT:-}
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
@@ -70,8 +80,9 @@ This runs with fewer privileges than `--privileged` by a wide margin. A containe
 ## Initial setup
 
 This image does not use kylemanna's `ovpn_genconfig`/`ovpn_getclient` helpers. It runs a single
-`ovpn` installer (from [`oorabona/scripts`](https://github.com/oorabona/scripts/tree/main/openvpn))
-driven by environment variables.
+`ovpn` installer (from [`oorabona/scripts`](https://github.com/oorabona/scripts/tree/main/openvpn),
+baked at a pinned commit — see [`openvpn/Dockerfile`](https://github.com/oorabona/docker-containers/blob/master/openvpn/Dockerfile)
+for the exact revision) driven by environment variables.
 
 **Bootstrap the server** on an empty volume — the installer generates the CA and `server.conf`
 and starts OpenVPN:
@@ -93,12 +104,25 @@ docker compose run --rm -e START_EXISTING= -e AUTO_INSTALL= openvpn
 # → choose "1) Add a new user", then enter the client name (e.g. alice)
 ```
 
-The installer writes the client bundle to `/root/<name>.ovpn` inside that container (not the
-`/etc/openvpn` volume) and can optionally serve it once over a temporary download port. The
-`.ovpn` embeds the CA, client cert, and key — plus, if you enabled Google Authenticator at
-install, the client's 2FA enrolment (the per-user secret lives under `/etc/openvpn/otp/`). Hand
-it to the client, who imports it and connects. Revoke a client the same way, via the menu's
-"2) Revoke existing user" option.
+The installer writes the client bundle to `/etc/openvpn/clients/<name>.ovpn` (mode 600,
+root-owned) on the persistent `/etc/openvpn` volume, so it survives the one-shot menu container.
+Retrieve it from the running server:
+
+```bash
+docker compose cp openvpn:/etc/openvpn/clients/alice.ovpn .
+```
+
+This `/etc/openvpn/clients` location is the current behavior; images built earlier wrote client
+configs to the ephemeral `/root` instead, so pull a current image if `docker compose cp` from
+`/etc/openvpn/clients` finds nothing.
+
+The `.ovpn` embeds the CA, client cert, key, and tls-crypt/tls-auth key — but no 2FA material. If
+you enabled Google Authenticator at install, the client's OTP enrolment is a separate per-user
+artifact under `/etc/openvpn/otp/` (the QR/secret to load into an authenticator app); provision it
+to the client out of band. Hand the `.ovpn` to the client, who imports it and connects. Revoke a
+client the same way, via the menu's "2) Revoke existing user" option, then restart the server
+(`docker compose restart openvpn`) so it reloads the regenerated CRL — revocation only takes
+effect after the reload.
 
 The maintained [container README](https://github.com/oorabona/docker-containers/tree/master/openvpn)
 carries the current, tested commands.
