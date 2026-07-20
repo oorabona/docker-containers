@@ -106,3 +106,19 @@ Build status will be available in GitHub Actions after merge.
 - Variant: 2.335.1-windows-ltsc2022, base mcr.microsoft.com/windows/server:ltsc2022
   Old digest: sha256:cb330037cc8e00785a8fe1066ea701e8fa0f370263dcc5d179118d75e0f568e8
   New digest: sha256:854b5f1bcfc96a5981fd10811058f8eddd507f2c9ecf1c799bd263b4465f850b
+
+<!-- drift-content-hash: e03464b4cfc3f06a run:29728907400 -->
+## base-digest-drift (2026-07-20)
+
+- Variant: 2.333.1-debian-trixie-dev, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:c88c8e8bbdd5a2b81d62a426f38b3a6ff289e6dcf4d8e4621a6b751cb83a0ae8
+  New digest: sha256:1fb2564ee0193d308e5297b2dc3ec2a76000260a5dcf5fa29db48c35798464fb
+- Variant: 2.333.1-debian-trixie, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:c88c8e8bbdd5a2b81d62a426f38b3a6ff289e6dcf4d8e4621a6b751cb83a0ae8
+  New digest: sha256:1fb2564ee0193d308e5297b2dc3ec2a76000260a5dcf5fa29db48c35798464fb
+- Variant: 2.334.0-debian-trixie-dev, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:c88c8e8bbdd5a2b81d62a426f38b3a6ff289e6dcf4d8e4621a6b751cb83a0ae8
+  New digest: sha256:1fb2564ee0193d308e5297b2dc3ec2a76000260a5dcf5fa29db48c35798464fb
+- Variant: 2.334.0-debian-trixie, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:c88c8e8bbdd5a2b81d62a426f38b3a6ff289e6dcf4d8e4621a6b751cb83a0ae8
+  New digest: sha256:1fb2564ee0193d308e5297b2dc3ec2a76000260a5dcf5fa29db48c35798464fb
