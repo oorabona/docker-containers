@@ -8,5 +8,5 @@ build:
   retention_strategy: latest_per_major
   retained_majors: [7, 6]
 versions:
-  - tag: 7.0.1-alpine
+  - tag: 7.0.2-alpine
   - tag: 6.9.4-alpine
