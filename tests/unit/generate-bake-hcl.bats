@@ -1584,7 +1584,27 @@ YAML
 
     local actual_keys
     actual_keys=$(echo "$output" | jq -cS '.target | keys')
-    local expected_keys='["debian_trixie","github_runner_2_335_1_debian_trixie_base","github_runner_2_335_1_debian_trixie_dev","github_runner_2_335_1_ubuntu_2404_base","github_runner_2_335_1_ubuntu_2404_dev"]'
+
+    # The github-runner cell keys embed the current (latest) runner version, which the
+    # upstream monitor bumps regularly; derive it from the graph instead of pinning it,
+    # then assert the exact default key set (the debian dependency target + the four
+    # github-runner cells: {debian-trixie, ubuntu-2404} x {base, dev}).
+    local runner_ver
+    runner_ver=$(echo "$output" | jq -r '
+        [ .target | keys[]
+          | select(startswith("github_runner_"))
+          | capture("^github_runner_(?<v>[0-9]+(?:_[0-9]+)*)_").v
+        ] | unique | if length == 1 then .[0] else "AMBIGUOUS" end')
+    [ -n "$runner_ver" ] && [ "$runner_ver" != "AMBIGUOUS" ]
+
+    local expected_keys
+    expected_keys=$(jq -cn --arg v "$runner_ver" '[
+        "debian_trixie",
+        "github_runner_\($v)_debian_trixie_base",
+        "github_runner_\($v)_debian_trixie_dev",
+        "github_runner_\($v)_ubuntu_2404_base",
+        "github_runner_\($v)_ubuntu_2404_dev"
+    ] | sort')
 
     [ "$actual_keys" = "$expected_keys" ]
 }
