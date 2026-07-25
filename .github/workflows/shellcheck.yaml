@@ -33,9 +33,51 @@ jobs:
         run: |
           set -euo pipefail
 
+          scripts=()
+
+          # Discovery has to fail closed, and a find inside a process
+          # substitution does the opposite: it reports nothing when it fails,
+          # the reading loop then ends normally, and a scan that broke is
+          # indistinguishable from a repository holding no scripts — on which
+          # this job reports every one of them passing. Every collector
+          # therefore goes through here, where the search completes into a file
+          # whose pipeline status is checked, under pipefail, before a single
+          # path is added.
+          #
+          # Paths are carried NUL-delimited so a newline in one cannot split a
+          # single entry into several, and what may then be linted is confined
+          # to an allowlist of characters rather than escaped wherever it is
+          # later printed. The failure list is interpolated into the step
+          # summary as Markdown and into the log, so a backtick, a newline, a
+          # carriage return or a colon in a pathname can close a code span,
+          # forge a link, or open a workflow command in either sink. Escaping
+          # each sink means getting every sink right for ever; refusing the
+          # character set at the one point where a path enters means the sinks
+          # can only ever receive names that are inert in both.
+          collect() {
+            local sorted f bad=
+            sorted=$(mktemp)
+            if ! find "$@" -print0 | sort -z > "$sorted"; then
+              rm -f "$sorted"
+              echo "::error::script discovery failed: find $*"
+              exit 1
+            fi
+            while IFS= read -r -d '' f; do
+              case $f in
+                *[!A-Za-z0-9._/-]*) bad=$f; break ;;
+              esac
+              scripts+=("$f")
+            done < "$sorted"
+            rm -f "$sorted"
+            if [[ -n $bad ]]; then
+              echo "::error::refusing to lint a path outside [A-Za-z0-9._/-]: $(printf '%q' "$bad")"
+              exit 1
+            fi
+          }
+
           # Collect build-system shell scripts only (not container runtime scripts)
           # Container entrypoints/install scripts have different constraints
-          mapfile -t scripts < <(find ./scripts ./helpers -name '*.sh' -type f 2>/dev/null | sort)
+          collect ./scripts ./helpers -name '*.sh' -type f
 
           # Add project-root scripts
           for f in ./make ./test-all-containers.sh ./validate-version-scripts.sh ./generate-dashboard.sh; do
@@ -43,9 +85,18 @@ jobs:
           done
 
           # Add per-container test and version scripts (not runtime)
-          while IFS= read -r f; do
-            scripts+=("$f")
-          done < <(find . -maxdepth 2 \( -name 'test.sh' -o -name 'version.sh' \) -not -path './archive/*' -type f | sort)
+          collect . -maxdepth 2 \( -name 'test.sh' -o -name 'version.sh' \) -not -path './archive/*' -type f
+
+          # Every shell script under a container's own tests/, at any depth, so a
+          # helper the test sources is linted too. The pattern is anchored on the
+          # first path component rather than written with -path, whose * crosses
+          # slashes and so would also collect nested tests/ trees, the
+          # repository-root one included; that tree has its own workflow. The two
+          # trees the first collector already walks are left out so a script
+          # under one of them is not linted, and counted, twice.
+          collect . -mindepth 3 -regextype posix-extended \
+            -regex '\./[^/]+/tests/.+\.sh' \
+            -not -path './archive/*' -not -path './scripts/*' -not -path './helpers/*' -type f
 
           total=${#scripts[@]}
           passed=0
