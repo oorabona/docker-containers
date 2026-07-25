@@ -296,9 +296,11 @@ assert_client_configs() {
     local out
 
     # This test covers where the profile lands, byte-for-byte agreement with the
-    # server's own material, agreement with the server configuration, and
-    # preservation across restart. It does not cover certificate identity or
-    # client connectivity.
+    # server's own material, agreement with the server configuration, the subject
+    # each certificate carries, and preservation across restart. It does not cover
+    # client connectivity: nothing here completes a handshake, so CRL enforcement
+    # and the server's actual use of the material it is configured with stay
+    # unproved (#965).
     # A generated .ovpn embeds the client private key, so it must land on the
     # persistent /etc/openvpn volume in a root-only directory, mode 600 — not in
     # the container-local /root, which earlier builds wrote to and which is lost
@@ -468,10 +470,9 @@ work=$(mktemp -d /tmp/openvpn-client-check.XXXXXX)
 trap "rm -rf \"$work\"" EXIT
 
 # easy-rsa stores an issued certificate with a human-readable dump ahead of the
-# PEM, so only the PEM section is comparable. The certificate subject is not
-# asserted yet because the image currently pins an installer with
-# oorabona/docker-containers#959; the assertion lands when the fixed upstream
-# oorabona/scripts installer is pinned.
+# PEM, so only the PEM section is comparable. The subject is read back from this
+# extracted PEM further down rather than from the dump, which is not the
+# certificate and could disagree with it.
 sed -n "/^-----BEGIN CERTIFICATE-----/,/^-----END CERTIFICATE-----/p" \
     "$pki/issued/$EXPECTED_CLIENT.crt" > "$work/issued.pem"
 
@@ -576,6 +577,22 @@ openssl verify -no-CApath -no-CAstore -purpose sslclient \
     -CAfile "$ca_file" "$work/issued.pem" >/dev/null ||
     { echo "$expected client certificate does not verify against the server CA"; exit 1; }
 
+# Verifying against the CA proves the CA signed it; it proves nothing about whose
+# name it carries, and every check above passes just as well when the PKI issues
+# one shared name to everything it signs. The subject is the field a client
+# checks, so it is asserted directly, on the client certificate here and on the
+# server certificate below. Exactly one commonName is required: a certificate
+# carrying two would satisfy a match against either.
+expect_cn() {   # expect_cn <certificate> <expected common name> <what it is>
+    cn_subject=$(openssl x509 -noout -subject -nameopt multiline -in "$1") ||
+        { echo "could not read the subject of $1"; exit 1; }
+    cn_value=$(echo "$cn_subject" | sed -n "s/^[[:space:]]*commonName[[:space:]]*=[[:space:]]*//p")
+    [ -n "$cn_value" ] && [ "$(echo "$cn_value" | wc -l)" -eq 1 ] ||
+        { echo "$1 must carry exactly one commonName, found [$cn_value]"; exit 1; }
+    [ "$cn_value" = "$2" ] || { echo "$3 is named [$cn_value], expected [$2]"; exit 1; }
+}
+expect_cn "$work/issued.pem" "$EXPECTED_CLIENT" "the certificate issued to $EXPECTED_CLIENT"
+
 # The configured CRL must be byte-identical to the CRL the PKI generated during
 # this run; semantic validity alone would also accept a stale CRL signed by the same CA.
 cmp -s "$crl_file" "$pki/crl.pem" || {
@@ -589,13 +606,15 @@ openssl verify -no-CApath -no-CAstore -purpose sslclient \
     -CAfile "$ca_file" -CRLfile "$crl_file" -crl_check "$work/issued.pem" >/dev/null ||
     { echo "$expected client certificate is revoked or does not verify against the server CRL"; exit 1; }
 
-# The configured server certificate has to be usable for the server role too.
-# Its subject is not asserted yet because the image currently pins an installer
-# with oorabona/docker-containers#959; the assertion lands when the fixed
-# upstream oorabona/scripts installer is pinned.
+# The configured server certificate has to be usable for the server role too, and
+# to carry the name the profile pins. That pin is written from the certificate
+# file base (verify-x509-name, asserted below), which a client cannot check
+# against anything unless the subject matches it — so the two are tied together
+# here rather than each being compared only to itself.
 openssl verify -no-CApath -no-CAstore -purpose sslserver \
     -CAfile "$ca_file" "$server_cert_file" >/dev/null ||
     { echo "$conf server certificate does not verify against the configured CA"; exit 1; }
+expect_cn "$server_cert_file" "$server_cert" "$conf server certificate"
 
 # The template must contain no inline material, so an extra block in both the
 # template and profile cannot hide from the remainder comparison below. The tag
@@ -663,7 +682,7 @@ expect_directive "proto $proto"
 expect_directive "remote $EXPECTED_ENDPOINT $port"
 expect_directive "verify-x509-name $server_cert name"
 
-echo "verified $expected byte for byte against the server PKI, minus subject identity"
+echo "verified $expected byte for byte against the server PKI"
 ' 2>&1)"; then
         printf 'openvpn restart lifecycle: %s\n' "$out" >&2
         show_logs_tail "$container"
