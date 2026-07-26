@@ -154,9 +154,24 @@ This file is generated from the script `setup.sh` located in `/usr/local/bin` an
 - SUBNET_IPv6
 - SUBNET_MASKv4
 - SUBNET_MASKv6
-- ENDPOIN
+- ENDPOINT
 
 For details about the meaning of each variable, please refer to the [documentation](https://github.com/oorabona/scripts/tree/main/openvpn).
+
+Two more variables name the PKI. Both are optional; left unset, the installer
+generates a random name as before.
+
+| Variable | Names | Description |
+|----------|-------|-------------|
+| `OPENVPN_SERVER_CN` | the CA | The common name of the certificate authority the install creates. |
+| `OPENVPN_SERVER_NAME` | the server certificate | The name the server's own certificate is issued to. Client profiles pin it with `verify-x509-name`, so it is the name a client checks the server by. It cannot equal `CLIENT` — the server certificate and the first client would collide. |
+
+Both take effect only while the PKI is being built — that is, while
+`/etc/openvpn/easy-rsa` is not yet a directory. A fresh volume qualifies, even
+though `/etc/openvpn` itself already exists as the mount point. Once the PKI is
+there the names are fixed: setting either variable has no effect on it, and
+changing them means building a new PKI on an empty volume. The installer may
+print a note when it ignores one, but do not rely on seeing it.
 
 Three variables control the container's lifecycle:
 
@@ -178,6 +193,37 @@ docker exec -it openvpn cat /etc/openvpn/otp/username.png
 ```
 
 More information can be found on the [wiki](https://github.com/oorabona/scripts/wiki/OpenVPN-OTP).
+
+#### Upgrading an OTP deployment created before this image
+
+`/etc/openvpn/otp` holds one-time password secrets, and the installer checks that
+an existing one is private before writing into it. Earlier images created that
+directory with the default mode, usually `755`, so on a volume carried over from
+one of them adding another OTP client fails with:
+
+```
+Refusing to write one-time password secrets: /etc/openvpn/otp must give its owner rwx and neither group nor other any access (found mode 755).
+```
+
+That directory was created by root, so tightening it needs no capability beyond
+what the container already has. Existing secrets are untouched and no reinstall
+is needed:
+
+```bash
+docker exec openvpn chmod 700 /etc/openvpn/otp &&
+    docker exec openvpn stat -c '%U %a' /etc/openvpn/otp
+```
+
+Expect `root 700`. Anything else means the change did not take, and the cause is
+worth identifying rather than guessing: a read-only or root-squashed mount, a
+filesystem that carries no POSIX modes (some host bind mounts), or a directory
+whose owner is not root. That last case cannot be repaired from inside the
+container — the run command above drops every capability except `NET_ADMIN`,
+`SETUID` and `SETGID`, so `chown` is unavailable. Fix ownership on the host, or
+move `/etc/openvpn` to a named volume.
+
+`/etc/openvpn/clients`, which holds client profiles and their keys, is checked
+the same way and can need the same treatment.
 
 ## Build Arguments
 

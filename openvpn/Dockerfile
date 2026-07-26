@@ -69,7 +69,7 @@ RUN set -ex \
     && make install-exec \
     && apk del .build-deps \
     && cd /usr/local/bin \
-    && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://raw.githubusercontent.com/oorabona/scripts/45afb5d9a321980c87f174e92d2c81f53f872b29/openvpn/setup.sh --output ovpn \
+    && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://raw.githubusercontent.com/oorabona/scripts/f596677ab2f15da3a88a7b5f1e81b83ba25bf458/openvpn/setup.sh --output ovpn \
     && chmod +x ovpn \
     # Bake EasyRSA at build time so first-run setup is hermetic (#918): fetch the
     # pinned tarball and its GPG signature and verify it against the vendored
