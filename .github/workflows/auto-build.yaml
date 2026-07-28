@@ -279,7 +279,7 @@ jobs:
     needs: [detect-containers]
     if: >-
       github.event_name == 'pull_request'
-      && github.event.pull_request.head.repo.fork == false
+      && github.event.pull_request.head.repo.full_name == github.repository
       && needs.detect-containers.outputs.e2e_builds != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
