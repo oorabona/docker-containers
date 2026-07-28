@@ -120,7 +120,7 @@ docker build \
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ADDONSCRIPT` | Path to custom initialization script | `/default-addon.sh` |
+| `ADDONSCRIPT` | Path to custom initialization script | (unset — no script runs) |
 | `WAIT_BEFORE_EXIT` | Wait for keypress before container exits | (unset) |
 | `VIRTUAL_ENV` | Python virtual environment path | `/opt/ansible-venv` |
 | `PATH` | Updated to include venv binaries | `/opt/ansible-venv/bin:$PATH` |
@@ -138,10 +138,12 @@ services:
       - ./scripts:/scripts:ro
 ```
 
-Set to empty string to skip addon script execution:
-```bash
-docker run --rm -e ADDONSCRIPT="" ghcr.io/oorabona/ansible ansible --version
-```
+Nothing runs when it is unset, which is the default. Pointing it at a path that
+is not executable is an error and stops the container, so that a mistyped path
+fails loudly instead of silently skipping your initialization.
+
+The image also carries `/addon.sh`, the example from this repository. It is not
+the default and nothing runs it unless you name it.
 
 ### WAIT_BEFORE_EXIT
 Useful for debugging or interactive sessions. Container will wait for Enter key before exiting:
