@@ -363,10 +363,12 @@ jobs:
           DETECT_RESULT: ${{ needs.detect-containers.result }}
           E2E_RESULT: ${{ needs.e2e-test.result }}
           E2E_BUILDS: ${{ needs.detect-containers.outputs.e2e_builds }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           d="$DETECT_RESULT"
           r="$E2E_RESULT"
           b="$E2E_BUILDS"
+          e="$EVENT_NAME"
           # A detection failure means we never computed what to test — do not pass.
           if [ "$d" != "success" ]; then
             echo "e2e-gate FAIL (detect-containers=$d)"; exit 1
@@ -374,12 +376,18 @@ jobs:
           case "$r" in
             success) echo "e2e-gate PASS (detect=$d e2e=$r)" ;;
             skipped)
-              # Skipped is only honest when there was nothing to run. The job is
-              # also skipped for a pull request from a fork, which cannot be given
-              # the registry access e2e needs — and passing there would report a
-              # suite as verified that never executed.
+              # Three ways the job is skipped, and only one of them is a lie.
+              #   nothing eligible          — honest, nothing to run
+              #   not a pull request        — honest, e2e is pull-request-only by
+              #                               design, so a push or a dispatch was
+              #                               never going to run it
+              #   eligible, on a PR         — the fork guard fired, and reporting
+              #                               success would call a suite verified
+              #                               that never executed
               if [ -z "$b" ] || [ "$b" = '[]' ]; then
                 echo "e2e-gate PASS (detect=$d e2e=skipped, nothing eligible)"
+              elif [ "$e" != "pull_request" ]; then
+                echo "e2e-gate PASS (detect=$d e2e=skipped, event=$e runs no e2e)"
               else
                 echo "e2e-gate FAIL: e2e was eligible ($b) but the job did not run."
                 echo "A pull request from a fork cannot run it; a maintainer has to run this branch."
