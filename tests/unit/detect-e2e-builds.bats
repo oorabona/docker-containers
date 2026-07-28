@@ -7,17 +7,19 @@ setup() {
 }
 
 teardown() {
-    unset BUILDS EVENT_NAME BUILD_ALL_RETAINED RUN_TESTS GITHUB_ACTION_PATH GITHUB_OUTPUT
+    unset BUILDS VERIFICATION_BUILDS EVENT_NAME BUILD_ALL_RETAINED RUN_TESTS GITHUB_ACTION_PATH GITHUB_OUTPUT
     teardown_temp_dir
 }
 
 run_split_build_engine_step() {
     local builds="$1"
+    local verification_builds="${2:-[]}"
     local script="$TEST_TEMP_DIR/split-build-engine.sh"
     yq -r '.runs.steps[] | select(.id == "split-build-engine") | .run' \
         "$PROJECT_ROOT/.github/actions/detect-containers/action.yaml" > "$script"
 
     export BUILDS="$builds"
+    export VERIFICATION_BUILDS="$verification_builds"
     export EVENT_NAME="pull_request"
     export BUILD_ALL_RETAINED="false"
     export RUN_TESTS="false"
@@ -32,7 +34,7 @@ output_value() {
     sed -n "s/^${name}=//p" "$GITHUB_OUTPUT" | tail -1
 }
 
-@test "S4: e2e_builds is filtered from the pre-split builds union for changed sslh only" {
+@test "S4: deleting e2e filtering would stop an enabled changed container from running its latest Linux suite" {
     builds=$(jq -cn '
       [
         {"container":"sslh","version":"v2.3.1","tag":"v2.3.1-alpine","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"},
@@ -49,7 +51,7 @@ output_value() {
     [ "$(echo "$e2e_builds" | jq -r '.[0].tag')" = "v2.3.1-alpine" ]
 }
 
-@test "S5: non-enabled changed container produces empty e2e_builds" {
+@test "S5: deleting the e2e opt-in check would run a non-enabled container's suite" {
     builds=$(jq -cn '
       [
         {"container":"wordpress","version":"6.5.0","tag":"latest-6.5.0","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"}
@@ -60,4 +62,46 @@ output_value() {
     [ "$status" -eq 0 ]
     e2e_builds=$(output_value e2e_builds)
     [ "$e2e_builds" = "[]" ]
+}
+
+@test "S6: deleting the cell dedupe would run the same e2e variant twice for mixed source and test changes" {
+    build=$(jq -cn '
+      {"container":"sslh","version":"v2.3.1","tag":"v2.3.1-alpine","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"}')
+
+    run_split_build_engine_step "[$build]" "[$build]"
+
+    [ "$status" -eq 0 ]
+    [ "$(output_value bake_builds)" != "[]" ]
+    [ "$(output_value matrix_builds)" = "[]" ]
+    e2e_builds=$(output_value e2e_builds)
+    [ "$(echo "$e2e_builds" | jq 'length')" -eq 1 ]
+    [ "$(echo "$e2e_builds" | jq -r '.[0].container + ":" + .[0].tag')" = "sslh:v2.3.1-alpine" ]
+}
+
+@test "S7: deleting production isolation would schedule bake or matrix builds for a verification-only change" {
+    verification_builds=$(jq -cn '
+      [
+        {"container":"sslh","version":"v2.3.1","tag":"v2.3.1-alpine","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"}
+      ]')
+
+    run_split_build_engine_step "[]" "$verification_builds"
+
+    [ "$status" -eq 0 ]
+    [ "$(output_value bake_builds)" = "[]" ]
+    [ "$(output_value matrix_builds)" = "[]" ]
+    [ "$(echo "$(output_value e2e_builds)" | jq 'length')" -eq 1 ]
+}
+
+@test "S8: deleting the e2e opt-in check would run a verification-only non-enabled container" {
+    verification_builds=$(jq -cn '
+      [
+        {"container":"wordpress","version":"6.5.0","tag":"latest-6.5.0","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"}
+      ]')
+
+    run_split_build_engine_step "[]" "$verification_builds"
+
+    [ "$status" -eq 0 ]
+    [ "$(output_value bake_builds)" = "[]" ]
+    [ "$(output_value matrix_builds)" = "[]" ]
+    [ "$(output_value e2e_builds)" = "[]" ]
 }
