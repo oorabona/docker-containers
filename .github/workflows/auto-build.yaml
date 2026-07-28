@@ -356,15 +356,36 @@ jobs:
       contents: read
     steps:
       - shell: bash
+        # Through the environment, not expression interpolation: e2e_builds
+        # carries container names and upstream-derived versions, and expressions
+        # are expanded before bash parses this script.
+        env:
+          DETECT_RESULT: ${{ needs.detect-containers.result }}
+          E2E_RESULT: ${{ needs.e2e-test.result }}
+          E2E_BUILDS: ${{ needs.detect-containers.outputs.e2e_builds }}
         run: |
-          d='${{ needs.detect-containers.result }}'
-          r='${{ needs.e2e-test.result }}'
+          d="$DETECT_RESULT"
+          r="$E2E_RESULT"
+          b="$E2E_BUILDS"
           # A detection failure means we never computed what to test — do not pass.
           if [ "$d" != "success" ]; then
             echo "e2e-gate FAIL (detect-containers=$d)"; exit 1
           fi
           case "$r" in
-            success|skipped) echo "e2e-gate PASS (detect=$d e2e=$r)" ;;
+            success) echo "e2e-gate PASS (detect=$d e2e=$r)" ;;
+            skipped)
+              # Skipped is only honest when there was nothing to run. The job is
+              # also skipped for a pull request from a fork, which cannot be given
+              # the registry access e2e needs — and passing there would report a
+              # suite as verified that never executed.
+              if [ -z "$b" ] || [ "$b" = '[]' ]; then
+                echo "e2e-gate PASS (detect=$d e2e=skipped, nothing eligible)"
+              else
+                echo "e2e-gate FAIL: e2e was eligible ($b) but the job did not run."
+                echo "A pull request from a fork cannot run it; a maintainer has to run this branch."
+                exit 1
+              fi
+              ;;
             *) echo "e2e-gate FAIL (e2e-test=$r)"; exit 1 ;;
           esac
 

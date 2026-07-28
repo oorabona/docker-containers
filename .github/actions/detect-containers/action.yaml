@@ -286,10 +286,19 @@ runs:
         echo "🔍 Getting list of valid containers from make script..."
         valid_containers=$(cd "$GITHUB_WORKSPACE" && ./make list)
 
+        # A container opts into e2e in its variants.yaml. An absent file means the
+        # container simply has no suite; a file that will not parse means we
+        # cannot tell, and answering "not enabled" there would silently drop a
+        # suite from verification. So the two cases are separated: absent is a
+        # quiet no, unreadable stops detection rather than guessing.
         container_e2e_enabled() {
-          local container="$1"
-          [[ -f "$container/variants.yaml" ]] \
-            && [[ "$(yq -r '.tests.e2e.enabled // false' "$container/variants.yaml" 2>/dev/null)" == "true" ]]
+          local container="$1" enabled
+          [[ -f "$container/variants.yaml" ]] || return 1
+          if ! enabled=$(yq -r '.tests.e2e.enabled // false' "$container/variants.yaml"); then
+            echo "::error::Cannot read $container/variants.yaml — refusing to decide e2e eligibility for $container"
+            exit 1
+          fi
+          [[ "$enabled" == "true" ]]
         }
 
         if [[ -z "$valid_containers" ]]; then
