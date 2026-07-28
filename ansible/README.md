@@ -138,9 +138,11 @@ services:
       - ./scripts:/scripts:ro
 ```
 
-Nothing runs when it is unset, which is the default. Pointing it at a path that
-is not executable is an error and stops the container, so that a mistyped path
-fails loudly instead of silently skipping your initialization.
+Nothing runs when it is unset or empty, which is the default. A value naming
+something that is not executable stops the container with a message. Anything
+executable is sourced — and note that a directory is executable, so a path that
+points at one is sourced, fails, and the container carries on: the check is a
+guard against a typo, not a validation of the script.
 
 The image also carries `/addon.sh`, the example from this repository. It is not
 the default and nothing runs it unless you name it.

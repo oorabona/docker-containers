@@ -11,16 +11,22 @@
 
 load "../test_helper"
 
-# Directories holding a Dockerfile that is not generated from a template.
+# Any directory holding a Dockerfile, not only those with a variants.yaml — the
+# build helpers support containers without one, and they can carry the glob too.
 container_dirs() {
     local d
     for d in "$PROJECT_ROOT"/*/; do
-        [ -f "${d}variants.yaml" ] || continue
+        compgen -G "${d}Dockerfile*" > /dev/null || continue
         printf '%s\n' "${d%/}"
     done
 }
 
-@test "no Dockerfile globs *.sh out of a directory that also holds host-side scripts" {
+# What this checks and what it does not: it reads Dockerfile text for a copy whose
+# source is a bare `*.sh` glob. It cannot prove that no host-side script reaches an
+# image — only a built image can show that, and a `.dockerignore`, a directory
+# copy or a multi-stage indirection would all escape a text scan. It exists to stop
+# the one spelling that put test.sh into two published images from coming back.
+@test "no Dockerfile copies a bare *.sh glob out of a directory holding host-side scripts" {
     local offenders=""
     local dir name df line
 
@@ -32,9 +38,14 @@ container_dirs() {
 
         for df in "$dir"/Dockerfile*; do
             [ -f "$df" ] || continue
+            # Two steps rather than one expression: first the instructions that
+            # bring files in, then a bare `*.sh` token anywhere among their
+            # arguments. Written as one regex it silently stopped matching the
+            # plainest spelling of all.
             while IFS= read -r line; do
                 offenders="$offenders  $name/$(basename "$df"): $line"$'\n'
-            done < <(grep -iE '^[[:space:]]*COPY([[:space:]]+--[^[:space:]]+)*[[:space:]]+(\./)?\*\.sh[[:space:]]' "$df" || true)
+            done < <(grep -iE '^[[:space:]]*(COPY|ADD)([[:space:]]|$)' "$df" |
+                     grep -E '(^|[[:space:]"[])(\./)?\*\.sh([[:space:]",]|$)' || true)
         done
     done < <(container_dirs)
 
@@ -52,22 +63,40 @@ container_dirs() {
         "$PROJECT_ROOT/wordpress/Dockerfile"
 }
 
-@test "every container's declared entrypoint script is one the Dockerfile copies" {
-    # The failure this catches is narrowing a COPY past what the image invokes.
-    local dir name df entry
-    while IFS= read -r dir; do
-        name=$(basename "$dir")
-        df="$dir/Dockerfile"
-        [ -f "$df" ] || continue
-        entry=$(grep -oE '^[[:space:]]*ENTRYPOINT[[:space:]]*\[[[:space:]]*"[^"]+"' "$df" 2>/dev/null |
-            grep -oE '"[^"]+"' | tr -d '"' | xargs -r basename 2>/dev/null || true)
-        [ -n "$entry" ] || continue
-        # Only check entrypoints that live in the container directory as a script.
-        [ -f "$dir/$entry" ] || continue
-        if ! grep -qE "^[[:space:]]*COPY.*([[:space:]]|/)${entry}([[:space:]]|$)" "$df" &&
-           ! grep -qE '^[[:space:]]*COPY.*\*\.sh' "$df"; then
-            printf '%s declares ENTRYPOINT %s but no COPY brings it in\n' "$name" "$entry" >&2
-            return 1
-        fi
-    done < <(container_dirs)
+# The matcher above is the part that can fail silently: tightened or loosened, it
+# stops reporting and the suite stays green. It gets its own table of spellings —
+# written after a "broadening" edit quietly stopped matching `COPY *.sh /`, the
+# plainest form of the defect and the one that shipped.
+matches_glob() { # dockerfile line
+    printf '%s\n' "$1" |
+        grep -iE '^[[:space:]]*(COPY|ADD)([[:space:]]|$)' |
+        grep -qE '(^|[[:space:]"[])(\./)?\*\.sh([[:space:]",]|$)'
 }
+
+@test "the glob matcher catches every spelling that would ship the scripts" {
+    matches_glob 'COPY *.sh /'
+    matches_glob 'COPY --chmod=755 *.sh /'
+    matches_glob 'copy *.sh /'
+    matches_glob 'ADD *.sh /'
+    matches_glob 'COPY entrypoint.sh *.sh /'
+    matches_glob 'COPY ["*.sh", "/"]'
+    matches_glob 'COPY ./*.sh /'
+    matches_glob '    COPY *.sh /'
+}
+
+@test "the glob matcher leaves alone what does not ship them" {
+    ! matches_glob 'COPY docker-entrypoint.sh /'
+    ! matches_glob 'COPY scripts/*.sh /'
+    ! matches_glob 'COPY --from=builder /out/x.sh /'
+    ! matches_glob 'RUN ls x*.sh'
+    ! matches_glob 'RUN echo hi'
+}
+
+# A further check lived here and was removed rather than repaired: "every
+# container's declared entrypoint script is one the Dockerfile copies". Deciding
+# that from Dockerfile text needs stage-aware source/destination parsing, and the
+# grep standing in for it mistook a wrapper entrypoint for the script it wraps,
+# read only the canonical Dockerfile while its sibling read every variant, and
+# silently skipped whatever it could not parse. A check that skips what it cannot
+# read reports success for the cases it is least able to judge. What actually
+# proves an image runs is the e2e suite, against a built image.
