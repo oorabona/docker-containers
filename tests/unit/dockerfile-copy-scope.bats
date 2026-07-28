@@ -11,8 +11,10 @@
 
 load "../test_helper"
 
-# Any directory holding a Dockerfile, not only those with a variants.yaml — the
-# build helpers support containers without one, and they can carry the glob too.
+# Top-level container directories holding a Dockerfile, whether or not they carry
+# a variants.yaml — the build helpers support both. Deliberately not recursive:
+# what this protects is the published images, and a Dockerfile under examples/ is
+# illustration, not a tag anyone pulls.
 container_dirs() {
     local d
     for d in "$PROJECT_ROOT"/*/; do
@@ -21,12 +23,22 @@ container_dirs() {
     done
 }
 
+# Logical instructions, not physical lines: a continued `COPY --chmod=755 \`
+# followed by `*.sh /` satisfies neither line on its own. Lines whose source is a
+# build stage are dropped — `COPY --from=…` does not reach into the directory
+# holding test.sh, so matching it would be a false alarm.
+copy_instructions() { # dockerfile
+    sed -e :a -e '/\\$/N; s/\\\n[[:space:]]*/ /; ta' "$1" |
+        grep -iE '^[[:space:]]*(COPY|ADD)([[:space:]]|$)' |
+        grep -ivE '^[[:space:]]*(COPY|ADD)([[:space:]]+--[^[:space:]]+)*[[:space:]]+--from=' || true
+}
+
 # What this checks and what it does not: it reads Dockerfile text for a copy whose
 # source is a bare `*.sh` glob. It cannot prove that no host-side script reaches an
 # image — only a built image can show that, and a `.dockerignore`, a directory
 # copy or a multi-stage indirection would all escape a text scan. It exists to stop
 # the one spelling that put test.sh into two published images from coming back.
-@test "no Dockerfile copies a bare *.sh glob out of a directory holding host-side scripts" {
+@test "no container Dockerfile copies a bare *.sh glob out of its own directory" {
     local offenders=""
     local dir name df line
 
@@ -38,13 +50,13 @@ container_dirs() {
 
         for df in "$dir"/Dockerfile*; do
             [ -f "$df" ] || continue
-            # Two steps rather than one expression: first the instructions that
-            # bring files in, then a bare `*.sh` token anywhere among their
-            # arguments. Written as one regex it silently stopped matching the
-            # plainest spelling of all.
+            # Two steps rather than one expression: the instructions that bring
+            # files in, then a bare `*.sh` token anywhere among their arguments.
+            # Written as one regex it silently stopped matching the plainest
+            # spelling of all.
             while IFS= read -r line; do
                 offenders="$offenders  $name/$(basename "$df"): $line"$'\n'
-            done < <(grep -iE '^[[:space:]]*(COPY|ADD)([[:space:]]|$)' "$df" |
+            done < <(copy_instructions "$df" |
                      grep -E '(^|[[:space:]"[])(\./)?\*\.sh([[:space:]",]|$)' || true)
         done
     done < <(container_dirs)
@@ -67,10 +79,10 @@ container_dirs() {
 # stops reporting and the suite stays green. It gets its own table of spellings —
 # written after a "broadening" edit quietly stopped matching `COPY *.sh /`, the
 # plainest form of the defect and the one that shipped.
-matches_glob() { # dockerfile line
-    printf '%s\n' "$1" |
-        grep -iE '^[[:space:]]*(COPY|ADD)([[:space:]]|$)' |
-        grep -qE '(^|[[:space:]"[])(\./)?\*\.sh([[:space:]",]|$)'
+matches_glob() { # dockerfile text, possibly multi-line
+    local f="$BATS_TEST_TMPDIR/df"
+    printf '%s\n' "$1" > "$f"
+    copy_instructions "$f" | grep -qE '(^|[[:space:]"[])(\./)?\*\.sh([[:space:]",]|$)'
 }
 
 @test "the glob matcher catches every spelling that would ship the scripts" {
@@ -82,6 +94,9 @@ matches_glob() { # dockerfile line
     matches_glob 'COPY ["*.sh", "/"]'
     matches_glob 'COPY ./*.sh /'
     matches_glob '    COPY *.sh /'
+    # Continued across lines: neither line satisfies the match on its own.
+    matches_glob 'COPY --chmod=755 \
+    *.sh /'
 }
 
 @test "the glob matcher leaves alone what does not ship them" {
@@ -90,6 +105,10 @@ matches_glob() { # dockerfile line
     ! matches_glob 'COPY --from=builder /out/x.sh /'
     ! matches_glob 'RUN ls x*.sh'
     ! matches_glob 'RUN echo hi'
+    # A build stage is not the directory holding test.sh, so a glob out of one is
+    # not this defect.
+    ! matches_glob 'COPY --from=builder *.sh /usr/local/bin/'
+    ! matches_glob 'COPY --chmod=755 --from=builder *.sh /'
 }
 
 # A further check lived here and was removed rather than repaired: "every
