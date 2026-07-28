@@ -93,6 +93,8 @@ on:
       - '!**/CHANGELOG*'                        # Changelogs
       - '!**/docs/**'                           # Nested docs subdirs inside container dirs
       - '!**/tests/**'                          # Nested test subdirs inside container dirs
+      - '*/tests/**'                             # Re-include container tests: verification only, never a production build input
+      - 'tests/e2e-test.sh'                      # Re-include shared e2e harness: verifies all opted-in containers
       - '**/LAST_REBUILD.md'                    # Re-include — upstream-monitor's explicit retained-rebuild trigger marker (overrides !**/*.md)
   # Triggered on merge to master (actual deployment)
   push:
@@ -277,7 +279,7 @@ jobs:
     needs: [detect-containers]
     if: >-
       github.event_name == 'pull_request'
-      && github.event.pull_request.head.repo.fork == false
+      && github.event.pull_request.head.repo.full_name == github.repository
       && needs.detect-containers.outputs.e2e_builds != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -354,15 +356,44 @@ jobs:
       contents: read
     steps:
       - shell: bash
+        # Through the environment, not expression interpolation: e2e_builds
+        # carries container names and upstream-derived versions, and expressions
+        # are expanded before bash parses this script.
+        env:
+          DETECT_RESULT: ${{ needs.detect-containers.result }}
+          E2E_RESULT: ${{ needs.e2e-test.result }}
+          E2E_BUILDS: ${{ needs.detect-containers.outputs.e2e_builds }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          d='${{ needs.detect-containers.result }}'
-          r='${{ needs.e2e-test.result }}'
+          d="$DETECT_RESULT"
+          r="$E2E_RESULT"
+          b="$E2E_BUILDS"
+          e="$EVENT_NAME"
           # A detection failure means we never computed what to test — do not pass.
           if [ "$d" != "success" ]; then
             echo "e2e-gate FAIL (detect-containers=$d)"; exit 1
           fi
           case "$r" in
-            success|skipped) echo "e2e-gate PASS (detect=$d e2e=$r)" ;;
+            success) echo "e2e-gate PASS (detect=$d e2e=$r)" ;;
+            skipped)
+              # Three ways the job is skipped, and only one of them is a lie.
+              #   nothing eligible          — honest, nothing to run
+              #   not a pull request        — honest, e2e is pull-request-only by
+              #                               design, so a push or a dispatch was
+              #                               never going to run it
+              #   eligible, on a PR         — the fork guard fired, and reporting
+              #                               success would call a suite verified
+              #                               that never executed
+              if [ -z "$b" ] || [ "$b" = '[]' ]; then
+                echo "e2e-gate PASS (detect=$d e2e=skipped, nothing eligible)"
+              elif [ "$e" != "pull_request" ]; then
+                echo "e2e-gate PASS (detect=$d e2e=skipped, event=$e runs no e2e)"
+              else
+                echo "e2e-gate FAIL: e2e was eligible ($b) but the job did not run."
+                echo "A pull request from a fork cannot run it; a maintainer has to run this branch."
+                exit 1
+              fi
+              ;;
             *) echo "e2e-gate FAIL (e2e-test=$r)"; exit 1 ;;
           esac
 

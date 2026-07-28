@@ -68,6 +68,9 @@ outputs:
   containers:
     description: 'JSON array of containers that need building (converted from CSV for matrix compatibility)'
     value: ${{ steps.find-containers.outputs.containers }}
+  containers_to_verify:
+    description: 'JSON array of verification-only containers (test changes not already queued for a build)'
+    value: ${{ steps.find-containers.outputs.containers_to_verify }}
   count:
     description: 'Number of containers to build'
     value: ${{ steps.find-containers.outputs.count }}
@@ -272,6 +275,7 @@ runs:
         changed_files=""
         coverage_fallback=false
         containers_to_build=()
+        containers_to_verify=()
         normalized_container_scopes=""
 
         if [[ -n "${CONTAINER_SCOPES_INPUT:-}" ]]; then
@@ -281,6 +285,21 @@ runs:
         # Get list of valid containers from make script (source of truth)
         echo "🔍 Getting list of valid containers from make script..."
         valid_containers=$(cd "$GITHUB_WORKSPACE" && ./make list)
+
+        # A container opts into e2e in its variants.yaml. An absent file means the
+        # container simply has no suite; a file that will not parse means we
+        # cannot tell, and answering "not enabled" there would silently drop a
+        # suite from verification. So the two cases are separated: absent is a
+        # quiet no, unreadable stops detection rather than guessing.
+        container_e2e_enabled() {
+          local container="$1" enabled
+          [[ -f "$container/variants.yaml" ]] || return 1
+          if ! enabled=$(yq -r '.tests.e2e.enabled // false' "$container/variants.yaml"); then
+            echo "::error::Cannot read $container/variants.yaml — refusing to decide e2e eligibility for $container"
+            exit 1
+          fi
+          [[ "$enabled" == "true" ]]
+        }
 
         if [[ -z "$valid_containers" ]]; then
           echo "⚠️  No valid containers found in make script"
@@ -422,45 +441,72 @@ runs:
             # is a broader policy; tracked as follow-up to avoid over-engineering here.
           fi
 
-          if [[ -n "$changed_files" ]]; then
-            # Extract container names from changed file paths
-            while IFS= read -r file; do
-              # Skip root-level files (no slash in path)
-              if [[ ! "$file" =~ / ]]; then
-                continue
-              fi
+        if [[ -n "$changed_files" ]]; then
+          # Extract container names from changed file paths
+          while IFS= read -r file; do
+            # Skip root-level files (no slash in path)
+            if [[ ! "$file" =~ / ]]; then
+              continue
+            fi
 
-              # Docs/metadata never affect build inputs — mirrors this workflow's
-              # own trigger-path exclusions. Without this, a per-container README
-              # bundled into a wider diff (e.g. via the coverage-checkpoint
-              # baseline window) wrongly queues that container for a rebuild.
-              # LAST_REBUILD.md is the one exception: it's an explicit
-              # rebuild-signal marker consumed by the smart-rebuild digest.
-              case "$file" in
-                */LAST_REBUILD.md) ;;
-                *.md|*/README*|*/LICENSE*|*/CHANGELOG*|*/docs/*|*/tests/*)
-                  continue
-                  ;;
-              esac
-
-              # Extract the top-level directory from the file path
-              container="${file%%/*}"
-              
-              # Skip if already processed
-              if [[ " ${containers_to_build[*]} " =~ " ${container} " ]]; then
+            # Verification inputs deliberately do not affect the production build
+            # queue. Container-local tests verify that container; the shared e2e
+            # harness verifies every container that explicitly opts in.
+            case "$file" in
+              */tests/*)
+                container="${file%%/*}"
+                if echo "$valid_containers" | grep -Fxq "$container" \
+                  && container_e2e_enabled "$container" \
+                  && [[ ! " ${containers_to_verify[*]} " =~ " ${container} " ]]; then
+                  echo "🧪 Container needs verification: $container (container test changed)"
+                  containers_to_verify+=("$container")
+                fi
                 continue
-              fi
-              
-              # Verify container is in make's valid list (source of truth)
-              if echo "$valid_containers" | grep -qx "$container"; then
-                echo "📦 Container needs building: $container (changed files detected, validated by make)"
-                containers_to_build+=("$container")
-              fi
-            done <<< "$changed_files"
-          else
-            echo "ℹ️  No git diff available or manual trigger without specific container"
-            echo "ℹ️  Skipping auto-detection (use container input for manual builds)"
-          fi
+                ;;
+              tests/e2e-test.sh)
+                while IFS= read -r container; do
+                  [[ -z "$container" ]] && continue
+                  if container_e2e_enabled "$container" \
+                    && [[ ! " ${containers_to_verify[*]} " =~ " ${container} " ]]; then
+                    echo "🧪 Container needs verification: $container (shared e2e harness changed)"
+                    containers_to_verify+=("$container")
+                  fi
+                done <<< "$valid_containers"
+                continue
+                ;;
+            esac
+
+            # Docs/metadata never affect build inputs — mirrors this workflow's
+            # own trigger-path exclusions. Without this, a per-container README
+            # bundled into a wider diff (e.g. via the coverage-checkpoint
+            # baseline window) wrongly queues that container for a rebuild.
+            # LAST_REBUILD.md is the one exception: it's an explicit
+            # rebuild-signal marker consumed by the smart-rebuild digest.
+            case "$file" in
+              */LAST_REBUILD.md) ;;
+              *.md|*/README*|*/LICENSE*|*/CHANGELOG*|*/docs/*|*/tests/*)
+                continue
+                ;;
+            esac
+
+            # Extract the top-level directory from the file path
+            container="${file%%/*}"
+
+            # Skip if already processed
+            if [[ " ${containers_to_build[*]} " =~ " ${container} " ]]; then
+              continue
+            fi
+
+            # Verify container is in make's valid list (source of truth)
+            if echo "$valid_containers" | grep -qx "$container"; then
+              echo "📦 Container needs building: $container (changed files detected, validated by make)"
+              containers_to_build+=("$container")
+            fi
+          done <<< "$changed_files"
+        else
+          echo "ℹ️  No git diff available or manual trigger without specific container"
+          echo "ℹ️  Skipping auto-detection (use container input for manual builds)"
+        fi
         fi
 
         # Shared build-infra canary: if only shared build/cache logic changed
@@ -514,8 +560,25 @@ runs:
           fi
         fi
 
+        # A container changed in both a build input and a verification input is
+        # built once through the normal path; it must not receive a duplicate
+        # verification expansion. Do this after every build-list augmentation.
+        containers_to_verify_only=()
+        for container in "${containers_to_verify[@]}"; do
+          [[ " ${containers_to_build[*]} " =~ " ${container} " ]] && continue
+          [[ " ${containers_to_verify_only[*]} " =~ " ${container} " ]] && continue
+          containers_to_verify_only+=("$container")
+        done
+
         # Create outputs (CSV first, then JSON for matrix compatibility)
         echo "container_scopes=$normalized_container_scopes" >> $GITHUB_OUTPUT
+        if [ ${#containers_to_verify_only[@]} -eq 0 ]; then
+          echo "containers_to_verify=[]" >> $GITHUB_OUTPUT
+        else
+          containers_to_verify_json=$(printf '%s\n' "${containers_to_verify_only[@]}" | jq -R . | jq -s -c .)
+          echo "containers_to_verify=$containers_to_verify_json" >> $GITHUB_OUTPUT
+          echo "🧪 Found containers to verify without building: ${containers_to_verify_only[*]}"
+        fi
         if [ ${#containers_to_build[@]} -eq 0 ]; then
           echo "containers_list=" >> $GITHUB_OUTPUT
           echo "containers=[]" >> $GITHUB_OUTPUT
@@ -648,11 +711,72 @@ runs:
         echo "📋 Total builds: $builds_count"
         echo "$builds_json" | jq .
 
+    - name: Compute versions for verification-only containers
+      id: compute-verification-versions
+      if: steps.find-containers.outputs.containers_to_verify != '[]'
+      shell: bash
+      env:
+        CONTAINERS_TO_VERIFY: ${{ steps.find-containers.outputs.containers_to_verify }}
+      run: |
+        set -e
+        containers_json="${CONTAINERS_TO_VERIFY:-[]}"
+        versions_json="{}"
+
+        while IFS= read -r container; do
+          [[ -z "$container" ]] && continue
+          echo "🔍 Getting verification version for $container..."
+          if version=$(./make version "$container" 2>/dev/null); then
+            :
+          else
+            version=""
+          fi
+          if [[ -z "$version" || "$version" == "unknown" ]]; then
+            version="latest"
+          fi
+          echo "  → $container: $version"
+          versions_json=$(echo "$versions_json" | jq -c --arg c "$container" --arg v "$version" '. + {($c): $v}')
+        done < <(jq -r '.[]' <<< "$containers_json")
+
+        echo "versions=$(echo "$versions_json" | jq -c .)" >> "$GITHUB_OUTPUT"
+
+    - name: Expand verification variants for containers
+      id: expand-verification-variants
+      if: steps.find-containers.outputs.containers_to_verify != '[]'
+      shell: bash
+      env:
+        SCOPE_VERSIONS: ${{ inputs.scope_versions }}
+        SCOPE_FLAVORS: ${{ inputs.scope_flavors }}
+        BUILD_SCOPE: ${{ inputs.scope }}
+        CONTAINERS_TO_VERIFY: ${{ steps.find-containers.outputs.containers_to_verify }}
+        VERIFICATION_VERSIONS: ${{ steps.compute-verification-versions.outputs.versions }}
+      run: |
+        set -e
+        # shellcheck disable=SC1091
+        source "${GITHUB_ACTION_PATH}/../../../helpers/variant-utils.sh"
+        # shellcheck disable=SC1091
+        source "${GITHUB_ACTION_PATH}/../../../helpers/container-scopes.sh"
+        containers_json="${CONTAINERS_TO_VERIFY:-[]}"
+        versions_json="${VERIFICATION_VERSIONS:-{}}"
+        verification_expand_map=$(echo "$containers_json" | jq -c 'reduce .[] as $container ({}; . + {($container): false})')
+
+        verification_builds=$(expand_variants_for_containers \
+          "$containers_json" \
+          "$versions_json" \
+          "$verification_expand_map" \
+          "" \
+          "$SCOPE_VERSIONS" \
+          "$SCOPE_FLAVORS" \
+          "$BUILD_SCOPE")
+
+        echo "builds=$verification_builds" >> "$GITHUB_OUTPUT"
+        echo "📋 Verification builds: $(echo "$verification_builds" | jq 'length')"
+
     - name: Split builds by engine (bake vs matrix)
       id: split-build-engine
       shell: bash
       env:
         BUILDS: ${{ steps.expand-variants.outputs.builds }}
+        VERIFICATION_BUILDS: ${{ steps.expand-verification-variants.outputs.builds }}
         EVENT_NAME: ${{ github.event_name }}
         BUILD_ALL_RETAINED: ${{ inputs.build_all_retained }}
         RUN_TESTS: ${{ inputs.run_tests }}
@@ -669,6 +793,8 @@ runs:
         # empty — treat as an empty array so consumers always get valid JSON.
         builds_input="${BUILDS:-[]}"
         [[ -z "$builds_input" ]] && builds_input="[]"
+        verification_builds_input="${VERIFICATION_BUILDS:-[]}"
+        [[ -z "$verification_builds_input" ]] && verification_builds_input="[]"
 
         # force_matrix=true disables bake routing — all cells go to the flat matrix.
         # Scope inputs do NOT force the matrix: expand-variants has already filtered
@@ -710,6 +836,12 @@ runs:
         extension_builds=$(extension_containers_in "$builds_input" "any")
         bake_final_builds=$(extension_containers_in "$bake_builds" "final")
         postgres_matrix_builds=$(echo "$matrix_builds" | jq -c '[.[] | select(.container == "postgres")]')
+        # Only e2e sees verification candidates. Production routing and all
+        # checkpoint inputs remain derived from builds_input above.
+        e2e_candidates=$(jq -cn \
+          --argjson builds "$builds_input" \
+          --argjson verification "$verification_builds_input" \
+          '$builds + $verification | unique_by(.container, .tag)')
         e2e_builds='[]'
 
         while IFS= read -r build; do
@@ -731,7 +863,7 @@ runs:
           if [[ "$e2e_enabled" == "true" ]]; then
             e2e_builds=$(jq -c --argjson build "$build" '. + [$build]' <<< "$e2e_builds")
           fi
-        done < <(echo "$builds_input" | jq -c '.[]')
+        done < <(echo "$e2e_candidates" | jq -c '.[]')
 
         bake_count=$(echo "$bake_builds" | jq 'length')
         matrix_count=$(echo "$matrix_builds" | jq 'length')
@@ -743,4 +875,8 @@ runs:
         echo "extension_builds=$extension_builds" >> "$GITHUB_OUTPUT"
         echo "bake_final_builds=$bake_final_builds" >> "$GITHUB_OUTPUT"
         echo "postgres_matrix_builds=$postgres_matrix_builds" >> "$GITHUB_OUTPUT"
-        echo "::notice::Build engine split: bake=$bake_count matrix=$matrix_count e2e=$e2e_count (force_matrix=${force_matrix} event=${EVENT_NAME})"
+        verification_notice=""
+        if [[ "$bake_count" -eq 0 && "$matrix_count" -eq 0 && "$e2e_count" -gt 0 ]]; then
+          verification_notice=" verification-only: no production build cells scheduled"
+        fi
+        echo "::notice::Build engine split: bake=$bake_count matrix=$matrix_count e2e=$e2e_count (force_matrix=${force_matrix} event=${EVENT_NAME})${verification_notice}"
