@@ -48,7 +48,12 @@ RUN set -ex; \
     wp --info --allow-root
 
 # Copy entrypoint scripts
-COPY --chmod=755 *.sh /usr/local/bin/
+# Named rather than globbed. This directory also holds test.sh, which the e2e
+# harness runs from the host against a running container, and version.sh, which
+# the build system runs to discover the upstream release. Neither has a role
+# inside the image, and the glob shipped both — putting test code in a published
+# image, and making every edit to either one rebuild that image.
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/
 
 # Setup directories and download WordPress core + SQLite drop-in
 ARG VERSION
