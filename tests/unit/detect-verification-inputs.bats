@@ -4,6 +4,7 @@ load "../test_helper"
 
 setup() {
     setup_temp_dir
+    export CONTAINER_SCOPES_INPUT=""
 }
 
 teardown() {
@@ -51,6 +52,14 @@ output_value() {
     [ "$status" -eq 0 ]
     [ "$(output_value containers)" = "[]" ]
     [ "$(output_value containers_to_verify)" = '["sslh"]' ]
+}
+
+@test "deleting nested-test e2e opt-in classification would verify a non-enabled container" {
+    run_find_containers_step "github-runner/tests/unit.bats"
+
+    [ "$status" -eq 0 ]
+    [ "$(output_value containers)" = "[]" ]
+    [ "$(output_value containers_to_verify)" = "[]" ]
 }
 
 @test "deleting shared-harness fanout would leave opted-in e2e suites unverified" {

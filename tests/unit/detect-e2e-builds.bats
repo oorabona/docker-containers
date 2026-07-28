@@ -4,10 +4,11 @@ load "../test_helper"
 
 setup() {
     setup_temp_dir
+    export IS_FORK_PR="false"
 }
 
 teardown() {
-    unset BUILDS VERIFICATION_BUILDS EVENT_NAME BUILD_ALL_RETAINED RUN_TESTS GITHUB_ACTION_PATH GITHUB_OUTPUT
+    unset BUILDS VERIFICATION_BUILDS EVENT_NAME BUILD_ALL_RETAINED RUN_TESTS IS_FORK_PR GITHUB_ACTION_PATH GITHUB_OUTPUT
     teardown_temp_dir
 }
 

@@ -286,6 +286,12 @@ runs:
         echo "🔍 Getting list of valid containers from make script..."
         valid_containers=$(cd "$GITHUB_WORKSPACE" && ./make list)
 
+        container_e2e_enabled() {
+          local container="$1"
+          [[ -f "$container/variants.yaml" ]] \
+            && [[ "$(yq -r '.tests.e2e.enabled // false' "$container/variants.yaml" 2>/dev/null)" == "true" ]]
+        }
+
         if [[ -z "$valid_containers" ]]; then
           echo "⚠️  No valid containers found in make script"
           exit 1
@@ -441,6 +447,7 @@ runs:
               */tests/*)
                 container="${file%%/*}"
                 if echo "$valid_containers" | grep -Fxq "$container" \
+                  && container_e2e_enabled "$container" \
                   && [[ ! " ${containers_to_verify[*]} " =~ " ${container} " ]]; then
                   echo "🧪 Container needs verification: $container (container test changed)"
                   containers_to_verify+=("$container")
@@ -449,10 +456,9 @@ runs:
                 ;;
               tests/e2e-test.sh)
                 while IFS= read -r container; do
-                  [[ -z "$container" || ! -f "$container/variants.yaml" ]] && continue
-                  e2e_enabled=$(yq -r '.tests.e2e.enabled // false' "$container/variants.yaml" 2>/dev/null || echo "false")
-                  if [[ "$e2e_enabled" == "true" \
-                    && ! " ${containers_to_verify[*]} " =~ " ${container} " ]]; then
+                  [[ -z "$container" ]] && continue
+                  if container_e2e_enabled "$container" \
+                    && [[ ! " ${containers_to_verify[*]} " =~ " ${container} " ]]; then
                     echo "🧪 Container needs verification: $container (shared e2e harness changed)"
                     containers_to_verify+=("$container")
                   fi
@@ -700,20 +706,27 @@ runs:
       id: compute-verification-versions
       if: steps.find-containers.outputs.containers_to_verify != '[]'
       shell: bash
+      env:
+        CONTAINERS_TO_VERIFY: ${{ steps.find-containers.outputs.containers_to_verify }}
       run: |
         set -e
-        containers_json='${{ steps.find-containers.outputs.containers_to_verify }}'
+        containers_json="${CONTAINERS_TO_VERIFY:-[]}"
         versions_json="{}"
 
-        for container in $(echo "$containers_json" | jq -r '.[]'); do
+        while IFS= read -r container; do
+          [[ -z "$container" ]] && continue
           echo "🔍 Getting verification version for $container..."
-          version=$(./make version "$container" 2>/dev/null || echo "latest")
+          if version=$(./make version "$container" 2>/dev/null); then
+            :
+          else
+            version=""
+          fi
           if [[ -z "$version" || "$version" == "unknown" ]]; then
             version="latest"
           fi
           echo "  → $container: $version"
           versions_json=$(echo "$versions_json" | jq -c --arg c "$container" --arg v "$version" '. + {($c): $v}')
-        done
+        done < <(jq -r '.[]' <<< "$containers_json")
 
         echo "versions=$(echo "$versions_json" | jq -c .)" >> "$GITHUB_OUTPUT"
 
@@ -725,14 +738,16 @@ runs:
         SCOPE_VERSIONS: ${{ inputs.scope_versions }}
         SCOPE_FLAVORS: ${{ inputs.scope_flavors }}
         BUILD_SCOPE: ${{ inputs.scope }}
+        CONTAINERS_TO_VERIFY: ${{ steps.find-containers.outputs.containers_to_verify }}
+        VERIFICATION_VERSIONS: ${{ steps.compute-verification-versions.outputs.versions }}
       run: |
         set -e
         # shellcheck disable=SC1091
         source "${GITHUB_ACTION_PATH}/../../../helpers/variant-utils.sh"
         # shellcheck disable=SC1091
         source "${GITHUB_ACTION_PATH}/../../../helpers/container-scopes.sh"
-        containers_json='${{ steps.find-containers.outputs.containers_to_verify }}'
-        versions_json='${{ steps.compute-verification-versions.outputs.versions }}'
+        containers_json="${CONTAINERS_TO_VERIFY:-[]}"
+        versions_json="${VERIFICATION_VERSIONS:-{}}"
         verification_expand_map=$(echo "$containers_json" | jq -c 'reduce .[] as $container ({}; . + {($container): false})')
 
         verification_builds=$(expand_variants_for_containers \
