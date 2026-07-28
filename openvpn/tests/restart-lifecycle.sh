@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+#
+# Run by the e2e job in auto-build.yaml, against an image built for the occasion.
+# A change to this file now queues its container for verification on its own —
+# the e2e runs, and no production build is scheduled for it.
 set -euo pipefail
 
 if [ "$#" -gt 1 ]; then
