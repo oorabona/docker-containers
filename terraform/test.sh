@@ -45,19 +45,21 @@ th_group "Entrypoint dependencies"
 # The image entrypoint renders *.tf.j2 through jinja2 before running terraform,
 # so a missing jinja2 breaks every templated configuration while `terraform
 # version` still answers.
-if docker exec "$CONTAINER_NAME" which jinja2 >/dev/null 2>&1; then
+if docker exec "$CONTAINER_NAME" sh -c 'command -v jinja2 >/dev/null 2>&1'; then
     th_pass "jinja2 is installed for the entrypoint's template rendering"
 else
-    th_fail "jinja2 is installed for the entrypoint's template rendering" "which jinja2 failed"
+    th_fail "jinja2 is installed for the entrypoint's template rendering" "command -v jinja2 found nothing"
 fi
 
 th_group "Tools"
 
 for tool in git curl jq; do
-    if docker exec "$CONTAINER_NAME" which "$tool" >/dev/null 2>&1; then
+    # `command -v` is a POSIX shell builtin; `which` is a separate package that
+    # RHEL-family minimal images do not ship.
+    if docker exec "$CONTAINER_NAME" sh -c 'command -v "$1" >/dev/null 2>&1' _ "$tool"; then
         th_pass "$tool is on PATH"
     else
-        th_fail "$tool is on PATH" "which $tool failed"
+        th_fail "$tool is on PATH" "command -v $tool found nothing"
     fi
 done
 

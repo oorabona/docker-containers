@@ -47,10 +47,12 @@ fi
 th_group "Tools"
 
 for tool in bash git curl jq htop; do
-    if docker exec "$CONTAINER_NAME" which "$tool" >/dev/null 2>&1; then
+    # `command -v` is a POSIX shell builtin; `which` is a separate package the
+    # rocky variant does not ship, so testing with it failed every tool there.
+    if docker exec "$CONTAINER_NAME" sh -c 'command -v "$1" >/dev/null 2>&1' _ "$tool"; then
         th_pass "$tool is on PATH"
     else
-        th_fail "$tool is on PATH" "which $tool failed"
+        th_fail "$tool is on PATH" "command -v $tool found nothing"
     fi
 done
 

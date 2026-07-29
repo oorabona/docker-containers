@@ -39,10 +39,12 @@ fi
 th_group "Core tools"
 
 for tool in bash cat ls; do
-    if docker exec "$CONTAINER_NAME" which "$tool" >/dev/null 2>&1; then
+    # `command -v` is a POSIX shell builtin; `which` is a separate package that
+    # RHEL-family minimal images do not ship.
+    if docker exec "$CONTAINER_NAME" sh -c 'command -v "$1" >/dev/null 2>&1' _ "$tool"; then
         th_pass "$tool is on PATH"
     else
-        th_fail "$tool is on PATH" "which $tool failed"
+        th_fail "$tool is on PATH" "command -v $tool found nothing"
     fi
 done
 
