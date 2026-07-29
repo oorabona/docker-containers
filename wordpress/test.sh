@@ -18,8 +18,8 @@ th_init --name "WordPress E2E" --report "${REPORT_FORMAT:-table}"
 th_group "Interpreter"
 
 # Was printed and never read.
-version=$(docker exec "$CONTAINER_NAME" php -v 2>/dev/null | head -1)
-th_assert_contains "php reports its version" "$version" "PHP"
+th_assert_cmd_contains "php reports its version" "PHP" \
+    docker exec "$CONTAINER_NAME" php -v
 
 th_group "WordPress"
 
@@ -30,20 +30,28 @@ else
     th_fail "the WordPress core files are in place" "/var/www/html/wp-settings.php is absent"
 fi
 
-wp=$(docker exec "$CONTAINER_NAME" wp --version --allow-root 2>/dev/null | head -1)
-th_assert_contains "wp-cli is installed" "$wp" "WP-CLI"
+th_assert_cmd_contains "wp-cli is installed" "WP-CLI" \
+    docker exec "$CONTAINER_NAME" wp --version --allow-root
 
 th_group "Extensions"
 
 # mysqli is how WordPress reaches its database; without it the image cannot serve
 # a site at all. It was reported as a warning.
-modules=$(docker exec "$CONTAINER_NAME" php -m 2>/dev/null)
-for ext in mysqli json curl; do
-    if printf '%s\n' "$modules" | grep -qix "$ext"; then
-        th_pass "extension $ext is loaded"
-    else
-        th_fail "extension $ext is loaded" "not present in php -m"
-    fi
-done
+#
+# One capture feeds all three checks. If it fails, that single failure is
+# recorded and the per-extension checks are skipped: a `php -m` that did not run
+# says nothing about which extensions are loaded, so reporting three failures —
+# or three passes — would both be inventions.
+if th_capture "php -m lists the loaded extensions" \
+        docker exec "$CONTAINER_NAME" php -m; then
+    modules=$TH_OUTPUT
+    for ext in mysqli json curl; do
+        if printf '%s\n' "$modules" | grep -qix "$ext"; then
+            th_pass "extension $ext is loaded"
+        else
+            th_fail "extension $ext is loaded" "not present in php -m"
+        fi
+    done
+fi
 
 th_summary

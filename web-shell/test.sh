@@ -18,8 +18,8 @@ th_init --name "Web Shell E2E" --report "${REPORT_FORMAT:-table}"
 
 th_group "Terminal service"
 
-version=$(docker exec "$CONTAINER_NAME" ttyd --version 2>/dev/null | head -1)
-th_assert_contains "ttyd reports its version" "$version" "ttyd"
+th_assert_cmd_contains "ttyd reports its version" "ttyd" \
+    docker exec "$CONTAINER_NAME" ttyd --version
 
 # The token endpoint is what a browser fetches before opening the socket, so it
 # proves the service is serving rather than merely running.
@@ -30,26 +30,38 @@ th_assert_contains "ttyd reports its version" "$version" "ttyd"
 # produces. Parsing also catches the failed transfer that a discarded exit status
 # would otherwise let through.
 #
-# The value is deliberately not asserted: with no credential configured ttyd
-# answers {"token": ""}, and a deployment that sets one answers differently
-# without being broken. The type is the contract.
-token=$(docker exec "$CONTAINER_NAME" curl -fsS http://localhost:7681/token 2>/dev/null)
-if printf '%s' "$token" | jq -e 'has("token") and (.token | type == "string")' >/dev/null 2>&1; then
-    th_pass "the token endpoint answers a JSON object with a string token"
-else
-    # The body is described, never echoed: on a deployment that does configure a
-    # credential, a malformed response could carry a live token straight into the
-    # CI log. Length and parse status are enough to tell the failures apart.
-    th_fail "the token endpoint answers a JSON object with a string token" \
-        "response of ${#token} bytes did not parse as {\"token\": <string>}"
+# The value is deliberately not asserted, only its type: with no credential
+# configured ttyd answers an empty token, and that is the configuration the e2e
+# runs — the harness starts the image with no TTYD_CREDENTIAL, no TLS and the
+# default port. This probe is written for exactly that shape and is not valid
+# against an authenticated, TLS or alternate-port deployment; the image's own
+# healthcheck is what handles those.
+token_check="the token endpoint answers a JSON object with a string token"
+if th_capture "$token_check" \
+        docker exec "$CONTAINER_NAME" curl -fsS --connect-timeout 5 --max-time 15 \
+        http://localhost:7681/token; then
+    if printf '%s' "$TH_OUTPUT" | jq -e 'has("token") and (.token | type == "string")' \
+            >/dev/null 2>&1; then
+        th_pass "$token_check"
+    else
+        # The body is described, never echoed: on a deployment that does configure
+        # a credential, a malformed response could carry a live token straight
+        # into the CI log. Length is enough to tell the failures apart.
+        th_fail "$token_check" \
+            "response of ${#TH_OUTPUT} bytes did not parse as {\"token\": <string>}"
+    fi
 fi
 
 th_group "Shell environment"
 
 # The image names its unprivileged shell user in the environment; a terminal
 # whose user does not exist opens onto nothing.
-shell_user=$(docker exec "$CONTAINER_NAME" printenv SHELL_USER 2>/dev/null)
-th_assert_not_empty "SHELL_USER is set in the image" "$shell_user"
+shell_user=""
+if th_capture "SHELL_USER is set in the image" \
+        docker exec "$CONTAINER_NAME" printenv SHELL_USER; then
+    shell_user=$TH_OUTPUT
+    th_assert_not_empty "SHELL_USER is set in the image" "$shell_user"
+fi
 
 if [ -n "$shell_user" ] && docker exec "$CONTAINER_NAME" id "$shell_user" >/dev/null 2>&1; then
     th_pass "the shell user '$shell_user' exists"

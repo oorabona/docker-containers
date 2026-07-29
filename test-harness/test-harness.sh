@@ -375,6 +375,51 @@ th_assert_matches() {
 }
 
 # ---------------------------------------------------------------------------
+# Command probes
+# ---------------------------------------------------------------------------
+#
+# Asserting on the text a command printed, without also requiring the command to
+# have SUCCEEDED, is a false-green channel: a producer can print plausible output
+# and then exit non-zero — a truncated HTTP transfer, a tool that prints a banner
+# before failing, a `docker exec` that never reached the binary — and the text
+# assertion passes anyway. `value=$(cmd)` discards that status silently, and no
+# amount of care at the call site makes the omission visible.
+#
+# These probes take the command instead of its output, so the status cannot be
+# dropped on the way. Stderr is discarded, as the direct captures they replace
+# did; the exit status is what carries failure now.
+
+# Run a command, and record a failure if it did not succeed. On success its
+# stdout is in $TH_OUTPUT and the caller's own validation may run; on failure
+# $TH_OUTPUT is empty and this returns non-zero, so a caller chaining with `&&`
+# cannot assert against output the command failed to produce.
+#
+# Usage: th_capture "name" cmd args... && th_assert_contains "name" "$TH_OUTPUT" x
+th_capture() {
+    local name="$1"; shift
+    local status=0
+    TH_OUTPUT=$("$@" 2>/dev/null) || status=$?
+    if (( status != 0 )); then
+        TH_OUTPUT=""
+        _th_record fail "$name" "command exited $status: $*"
+        return 1
+    fi
+    return 0
+}
+
+# Assert a command succeeds AND its output contains needle. Both are part of the
+# assertion; either one failing fails the test.
+#
+# Usage: th_assert_cmd_contains "name" "needle" cmd args...
+th_assert_cmd_contains() {
+    local name="$1" needle="$2"; shift 2
+    if th_capture "$name" "$@"; then
+        th_assert_contains "$name" "$TH_OUTPUT" "$needle"
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Manual results
 # ---------------------------------------------------------------------------
 

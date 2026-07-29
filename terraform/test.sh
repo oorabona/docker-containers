@@ -20,8 +20,8 @@ th_init --name "Terraform E2E" --report "${REPORT_FORMAT:-table}"
 
 th_group "Binary"
 
-version=$(docker exec "$CONTAINER_NAME" terraform version 2>/dev/null | head -1)
-th_assert_contains "terraform reports its version" "$version" "Terraform"
+th_assert_cmd_contains "terraform reports its version" "Terraform" \
+    docker exec "$CONTAINER_NAME" terraform version
 
 th_group "Configuration handling"
 

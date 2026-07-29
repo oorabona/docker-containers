@@ -18,17 +18,17 @@ th_init --name "Jekyll E2E" --report "${REPORT_FORMAT:-table}"
 th_group "Ruby toolchain"
 
 # Was printed and never read, so an image with no ruby reached the end.
-ruby=$(docker exec "$CONTAINER_NAME" ruby --version 2>/dev/null | head -1)
-th_assert_contains "ruby reports its version" "$ruby" "ruby"
+th_assert_cmd_contains "ruby reports its version" "ruby" \
+    docker exec "$CONTAINER_NAME" ruby --version
 
 # Bundler 4 prints a bare version number — no "Bundler" anywhere in it — so the
 # assertion is on the shape of what it prints, not on a word.
-bundler=$(docker exec "$CONTAINER_NAME" bundle --version 2>/dev/null | head -1)
-th_assert_matches "bundler reports a version" "$bundler" '[0-9]+\.[0-9]+'
+th_capture "bundler reports a version" docker exec "$CONTAINER_NAME" bundle --version &&
+    th_assert_matches "bundler reports a version" "$TH_OUTPUT" '[0-9]+\.[0-9]+'
 
 th_group "Jekyll"
 
-jekyll=$(docker exec "$CONTAINER_NAME" jekyll --version 2>/dev/null | head -1)
-th_assert_contains "jekyll reports its version" "$jekyll" "jekyll"
+th_assert_cmd_contains "jekyll reports its version" "jekyll" \
+    docker exec "$CONTAINER_NAME" jekyll --version
 
 th_summary
