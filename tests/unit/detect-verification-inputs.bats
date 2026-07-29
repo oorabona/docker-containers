@@ -62,6 +62,52 @@ output_value() {
     [ "$(output_value containers_to_verify)" = "[]" ]
 }
 
+@test "deleting entrypoint classification would rebuild an image for a test-script edit" {
+    # <container>/test.sh is what the harness actually runs. It sits beside the
+    # Dockerfile, which is what used to make it a build input; no image copies it.
+    run_find_containers_step "sslh/test.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$(output_value containers)" = "[]" ]
+    [ "$(output_value containers_to_verify)" = '["sslh"]' ]
+}
+
+@test "deleting the one-level guard would cancel the build of a nested script" {
+    # A case glob spans slashes, so */test.sh also matches a nested path. That
+    # file may well be copied into the image; classing it as verification would
+    # suppress the build it needs, silently.
+    run_find_containers_step "sslh/scripts/test.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$(output_value containers)" = '["sslh"]' ]
+    [ "$(output_value containers_to_verify)" = "[]" ]
+}
+
+@test "a test.sh outside any container is neither built nor verified" {
+    run_find_containers_step "examples/wordpress-stack/test.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$(output_value containers)" = "[]" ]
+    [ "$(output_value containers_to_verify)" = "[]" ]
+}
+
+@test "deleting the entrypoint opt-in check would verify a container with no e2e" {
+    # php has a test.sh and does not opt into e2e, so there is nothing to run.
+    run_find_containers_step "php/test.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$(output_value containers)" = "[]" ]
+    [ "$(output_value containers_to_verify)" = "[]" ]
+}
+
+@test "deleting the subtraction would verify a container its own source change already builds" {
+    run_find_containers_step $'sslh/Dockerfile\nsslh/test.sh'
+
+    [ "$status" -eq 0 ]
+    [ "$(output_value containers)" = '["sslh"]' ]
+    [ "$(output_value containers_to_verify)" = "[]" ]
+}
+
 @test "deleting shared-harness fanout would leave opted-in e2e suites unverified" {
     run_find_containers_step "tests/e2e-test.sh"
 

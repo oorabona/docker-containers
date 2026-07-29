@@ -301,6 +301,24 @@ runs:
           [[ "$enabled" == "true" ]]
         }
 
+        # Every verification path answers the same three questions before adding a
+        # container: is it one make knows, does it run an e2e at all, and is it
+        # already in the list. Written once so a fourth path cannot answer them
+        # differently.
+        # Cheapest question first: a container already in the list needs no further
+        # thought, and reading its variants.yaml again would spawn one yq per
+        # changed file. A pull request touching many files under one container
+        # would otherwise pay that cost once per file.
+        note_verification() {
+          local container="$1" reason="$2"
+          [[ -n "$container" ]] || return 0
+          [[ " ${containers_to_verify[*]} " =~ " ${container} " ]] && return 0
+          echo "$valid_containers" | grep -Fxq "$container" || return 0
+          container_e2e_enabled "$container" || return 0
+          echo "🧪 Container needs verification: $container ($reason)"
+          containers_to_verify+=("$container")
+        }
+
         if [[ -z "$valid_containers" ]]; then
           echo "⚠️  No valid containers found in make script"
           exit 1
@@ -454,23 +472,30 @@ runs:
             # harness verifies every container that explicitly opts in.
             case "$file" in
               */tests/*)
-                container="${file%%/*}"
-                if echo "$valid_containers" | grep -Fxq "$container" \
-                  && container_e2e_enabled "$container" \
-                  && [[ ! " ${containers_to_verify[*]} " =~ " ${container} " ]]; then
-                  echo "🧪 Container needs verification: $container (container test changed)"
-                  containers_to_verify+=("$container")
-                fi
+                note_verification "${file%%/*}" "container test changed"
                 continue
+                ;;
+              */test.sh)
+                # The entrypoint the e2e harness runs. It lives at the top of the
+                # container directory next to the Dockerfile, which is what made
+                # it a build input; no image copies it any more, so a change to it
+                # verifies the container without rebuilding it.
+                #
+                # A `case` glob spans slashes, so this pattern also matches a
+                # nested <container>/anywhere/test.sh — which may be a genuine
+                # build input, and treating it as verification would silently
+                # cancel its build. Only the file directly beside the Dockerfile
+                # is the harness entrypoint; anything deeper falls through to
+                # normal build classification below.
+                if [[ "${file#*/}" == "test.sh" ]]; then
+                  note_verification "${file%%/*}" "container e2e entrypoint changed"
+                  continue
+                fi
                 ;;
               tests/e2e-test.sh)
                 while IFS= read -r container; do
                   [[ -z "$container" ]] && continue
-                  if container_e2e_enabled "$container" \
-                    && [[ ! " ${containers_to_verify[*]} " =~ " ${container} " ]]; then
-                    echo "🧪 Container needs verification: $container (shared e2e harness changed)"
-                    containers_to_verify+=("$container")
-                  fi
+                  note_verification "$container" "shared e2e harness changed"
                 done <<< "$valid_containers"
                 continue
                 ;;

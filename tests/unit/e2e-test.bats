@@ -96,6 +96,38 @@ SH
     ! grep -q '^images ' "$DOCKER_LOG"
 }
 
+@test "deleting the missing-script check would pass a run that verified nothing" {
+    # Everything before the per-container script is a generic liveness check that
+    # any image passes. Skipping a deleted script in silence turned a suite into
+    # "the container started" while still reporting success — which is how this
+    # harness came to sit unrun for months.
+    add_openvpn_fixture
+    rm "$FIXTURE_REPO/openvpn/test.sh"
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+
+    run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"no test script"* ]]
+}
+
+@test "deleting the executable check would pass a script that cannot run" {
+    # A checkout or an archive can drop the mode bit without touching a byte of
+    # the script.
+    add_openvpn_fixture
+    chmod -x "$FIXTURE_REPO/openvpn/test.sh"
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+
+    run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not executable"* ]]
+}
+
 @test "S6: fallback image discovery errors on zero matches" {
     mkdir -p "$FIXTURE_REPO/debian"
     install_docker_stub
@@ -124,6 +156,10 @@ SH
 
 @test "sslh run profile: args-only command, port 443, NET_BIND_SERVICE (entrypoint+healthcheck match)" {
     mkdir -p "$FIXTURE_REPO/sslh"
+    # The real container has one, and the harness now requires it — this fixture
+    # stands in for it so the assertions below stay about the run profile.
+    printf '#!/bin/bash\nexit 0\n' > "$FIXTURE_REPO/sslh/test.sh"
+    chmod +x "$FIXTURE_REPO/sslh/test.sh"
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export DOCKER_PS_OUTPUT="e2e-sslh"

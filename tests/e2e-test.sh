@@ -267,14 +267,29 @@ test_container() {
         return 1
     fi
 
-    # Run custom test script if exists
-    if [ -x "$test_script" ]; then
-        log_info "Running custom tests for $container..."
-        if ! CONTAINER_NAME="$container_name" "$test_script"; then
-            log_error "Custom tests failed for $container"
-            docker rm -f "$container_name" 2>/dev/null || true
-            return 1
-        fi
+    # The per-container script is the point of this run, not an optional extra:
+    # everything above it is a generic liveness check that any image passes. A
+    # missing or non-executable script used to be skipped in silence, so deleting
+    # one — or losing its mode in a checkout — turned a suite into a container
+    # that merely started, and the run still reported success. This harness has
+    # been silently unrun once already; it says so now.
+    if [ ! -e "$test_script" ]; then
+        log_error "$container has no test script at ${test_script#"$REPO_ROOT"/}"
+        log_error "Nothing container-specific would be verified — refusing to report success."
+        docker rm -f "$container_name" 2>/dev/null || true
+        return 1
+    fi
+    if [ ! -x "$test_script" ]; then
+        log_error "${test_script#"$REPO_ROOT"/} is not executable, so it cannot run."
+        docker rm -f "$container_name" 2>/dev/null || true
+        return 1
+    fi
+
+    log_info "Running custom tests for $container..."
+    if ! CONTAINER_NAME="$container_name" "$test_script"; then
+        log_error "Custom tests failed for $container"
+        docker rm -f "$container_name" 2>/dev/null || true
+        return 1
     fi
 
     # Cleanup
