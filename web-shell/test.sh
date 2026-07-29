@@ -63,10 +63,15 @@ if th_capture "SHELL_USER is set in the image" \
     th_assert_not_empty "SHELL_USER is set in the image" "$shell_user"
 fi
 
-if [ -n "$shell_user" ] && docker exec "$CONTAINER_NAME" id "$shell_user" >/dev/null 2>&1; then
+# Only ask whether the user exists once its name is known. Reporting `id` as
+# failed when it was never run inflates the count and blames the wrong command —
+# the unreadable name is already recorded above.
+if [ -z "$shell_user" ]; then
+    th_skip "the shell user exists" "SHELL_USER was not readable"
+elif docker exec "$CONTAINER_NAME" id "$shell_user" >/dev/null 2>&1; then
     th_pass "the shell user '$shell_user' exists"
 else
-    th_fail "the shell user exists" "id '${shell_user:-<unset>}' failed"
+    th_fail "the shell user '$shell_user' exists" "id '$shell_user' failed"
 fi
 
 th_group "Tools"

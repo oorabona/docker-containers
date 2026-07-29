@@ -382,8 +382,14 @@ th_assert_matches() {
 # have SUCCEEDED, is a false-green channel: a producer can print plausible output
 # and then exit non-zero — a truncated HTTP transfer, a tool that prints a banner
 # before failing, a `docker exec` that never reached the binary — and the text
-# assertion passes anyway. `value=$(cmd)` discards that status silently, and no
-# amount of care at the call site makes the omission visible.
+# assertion passes anyway.
+#
+# `value=$(cmd)` does not hide that status; it lands in `$?`, and under `errexit`
+# a plain assignment aborts on it. The suites here run WITHOUT errexit and never
+# read `$?`, so nothing acts on it. (The form that genuinely discards it is
+# `local value=$(cmd)`: the builtin's own status wins, and errexit does not fire.)
+# Either way the omission is invisible at the call site, which is why the probe
+# takes the command rather than trusting each caller to check.
 #
 # These probes take the command instead of its output, so the status cannot be
 # dropped on the way. Stderr is discarded, as the direct captures they replace

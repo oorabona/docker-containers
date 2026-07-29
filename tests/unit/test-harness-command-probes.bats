@@ -1,8 +1,10 @@
 #!/usr/bin/env bats
 #
-# The command probes exist because `value=$(cmd)` drops the exit status, so a
-# producer that prints plausible output and then fails passes a text assertion.
-# These tests pin that they close it, and that they do not reopen it elsewhere.
+# The command probes exist because a suite that captures output and asserts only
+# on its text passes when the producer printed something plausible and then
+# failed. The status is not hidden by `value=$(cmd)` — it is in `$?` — but these
+# suites run without `errexit` and never read it. These tests pin that the probes
+# close that gap, and that they do not reopen it elsewhere.
 
 setup() {
     PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"

@@ -89,10 +89,16 @@ Passes if `$value` matches the bash regex `$regex` (uses `[[ =~ ]]`).
 
 Assert on what a command printed **and** on the fact that it succeeded. Passing
 the command rather than its output is what makes the second half impossible to
-forget: `value=$(cmd)` discards the exit status, so a producer that prints
-plausible output and then fails — a truncated transfer, a tool that prints a
-banner before erroring, a `docker exec` that never reached the binary — passes a
-text assertion anyway.
+forget.
+
+`value=$(cmd)` does not hide the exit status — it lands in `$?`, and under
+`errexit` a plain assignment aborts on it. What goes wrong is that suites run
+without `errexit` and never read `$?`, so a producer that prints plausible output
+and then fails — a truncated transfer, a tool that prints a banner before
+erroring, a `docker exec` that never reached the binary — flows straight into a
+text assertion that only sees what was printed. One form does discard the status
+outright: `local value=$(cmd)`, where the builtin's own status wins and errexit
+does not fire.
 
 Stderr is discarded. Failure details name the command but never its **arguments**:
 results reach the table, the TAP stream and the JSON report, all of which land in
