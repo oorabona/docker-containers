@@ -68,6 +68,13 @@ extensions:
       - llvm-dev
       - openssl-dev
       - icu-dev
+      # 0.25.0 links pg_search against OpenBLAS; without this the build fails at
+      # the link step with `ld: cannot find -lopenblas`.
+      - openblas-dev
+    # Needed in the final image too: the extension is dynamically linked, so
+    # libopenblas.so.3 must be present where postgres loads pg_search.
+    runtime_deps:
+      - openblas
     shared_preload: false # Not required for PG17+
     priority: 3
     # EXPERIMENTAL: Alpine/musl build with RUSTFLAGS="-C target-feature=-crt-static"
