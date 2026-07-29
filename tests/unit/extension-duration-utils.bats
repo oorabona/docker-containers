@@ -144,7 +144,7 @@ _write_ext_lineage() {
 # ---------------------------------------------------------------------------
 
 # Case 1: all 3 lineage files present → sum = 100 + 200 + 50 = 350
-@test "1: flavor=full, all 3 lineage files present → sum of durations" {
+@test "flavor=full, all 3 lineage files present → sum of durations" {
     _write_ext_lineage "pgvector"  "$MAJOR_VER" "0.8.0"  100
     _write_ext_lineage "paradedb"  "$MAJOR_VER" "0.15.0" 200
     _write_ext_lineage "pg_cron"   "$MAJOR_VER" "1.6.4"  50
@@ -155,7 +155,7 @@ _write_ext_lineage() {
 }
 
 # Case 2: 2 lineage files present, 1 skipped (pg_cron absent) → 100 + 200 = 300
-@test "2: flavor=full, 2 of 3 lineage files present (1 skipped) → sum of 2" {
+@test "flavor=full, 2 of 3 lineage files present (1 skipped) → sum of 2" {
     _write_ext_lineage "pgvector"  "$MAJOR_VER" "0.8.0"  100
     _write_ext_lineage "paradedb"  "$MAJOR_VER" "0.15.0" 200
     # pg_cron lineage NOT written (cached, skipped)
@@ -166,7 +166,7 @@ _write_ext_lineage() {
 }
 
 # Case 3: "base" flavor has no extensions → 0 (flavor exists, just no compiled extensions)
-@test "3: flavor=base with no extensions → 0" {
+@test "flavor=base with no extensions → 0" {
     _mock_flavor_base_empty
 
     run sum_flavor_extension_durations "postgres" "base" "$MAJOR_VER"
@@ -175,7 +175,7 @@ _write_ext_lineage() {
 }
 
 # Case 4: all 3 lineage files absent (all extensions cached/skipped) → 0
-@test "4: flavor=full, 0 lineage files (all skipped) → 0" {
+@test "flavor=full, 0 lineage files (all skipped) → 0" {
     # No lineage files written
 
     run sum_flavor_extension_durations "postgres" "full" "$MAJOR_VER"
@@ -184,7 +184,7 @@ _write_ext_lineage() {
 }
 
 # Case 5: config.yaml missing → "null"
-@test "5: config.yaml missing → null" {
+@test "config.yaml missing → null" {
     rm -f "$EXT_DIR/config.yaml"
 
     run sum_flavor_extension_durations "postgres" "full" "$MAJOR_VER"
@@ -195,7 +195,7 @@ _write_ext_lineage() {
 # Case 7: backfill scenario — ceiling lineage file absent, older-version files present
 # Before the fix: function only looks up ext-<ext>-pg<major>-<ceiling>.json → 0
 # After the fix: function sums all ext-<ext>-pg<major>-*.json present → non-zero
-@test "7: backfill — ceiling absent, two older-version lineage files present → sum of older files" {
+@test "backfill — ceiling absent, two older-version lineage files present → sum of older files" {
     # pgvector's ceiling (0.8.0) was already in registry — no lineage written this run.
     # But two older retained versions were backfilled and DID produce lineage files.
     _write_ext_lineage "pgvector"  "$MAJOR_VER" "0.7.0"  120
@@ -211,7 +211,7 @@ _write_ext_lineage() {
 }
 
 # Case 8: versionset artifact file is excluded from duration sum (no duration_seconds field)
-@test "8: versionset artifact not counted in duration sum" {
+@test "versionset artifact not counted in duration sum" {
     # Write a normal lineage file and also a versionset artifact (no duration_seconds)
     _write_ext_lineage "pgvector"  "$MAJOR_VER" "0.8.0"  150
     # Write a versionset artifact (the kind written by build-extensions.sh for multi-version)
@@ -230,7 +230,7 @@ _write_ext_lineage() {
 
 # Case 6: ext_config returns empty version for all → no lineage files exist → returns 0
 # (get_flavor_extensions still returns the 3 extensions, but no builds ran for them)
-@test "6: ext_config returns empty version → no lineage files → returns 0" {
+@test "ext_config returns empty version → no lineage files → returns 0" {
     _mock_ext_config_no_version
     # No lineage files written — in practice, build-extensions.sh only writes
     # ext-<ext>-pg<major>-<version>.json with a concrete version; empty-version
@@ -375,7 +375,7 @@ _write_arch_lineage() {
 #   calling sum_flavor_extension_durations → no files → sum returns 0.
 # This test asserts the behavior of the utility with no files present (as produced
 # by a fully-cleaned all-cached run).
-@test "FF-dur: no per-version files (cleaned by caller) → sum returns 0 for no-op run" {
+@test "no per-version files (cleaned by caller) → sum returns 0 for no-op run" {
     # Simulate the post-cleanup state: no per-version duration files exist.
     # (build-extensions.sh removed them; sum_flavor_extension_durations should return 0.)
 

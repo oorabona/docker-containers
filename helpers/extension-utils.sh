@@ -877,7 +877,7 @@ generate_dockerfile() {
                 local available_count
                 available_count=$(echo "$_versionset_json" | jq '.available | length' 2>/dev/null || echo 0)
 
-                # AO-4: whenever available has exactly ONE entry, that entry MUST
+                # whenever available has exactly ONE entry, that entry MUST
                 # equal the configured ceiling.  This applies to BOTH the self-heal
                 # path (_versionset_from_selfheal=true) AND the on-disk artifact path.
                 # A stale or corrupt artifact with available:["<older>"] (single entry

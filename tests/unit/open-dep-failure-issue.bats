@@ -1229,7 +1229,7 @@ GHEOF
     fi
 }
 
-@test "FIX5: --mode recovery --container 'a b' is rejected, exit 0, no gh close (DRY_RUN)" {
+@test "--mode recovery --container 'a b' is rejected, exit 0, no gh close (DRY_RUN)" {
     mkdir -p "$TEST_TEMP_DIR/bin"
     local call_log="$TEST_TEMP_DIR/gh_calls.log"
     cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
@@ -1269,7 +1269,7 @@ GHEOF
 # must exit 0 (best-effort) with a warning, not abort under set -euo pipefail.
 # ---------------------------------------------------------------------------
 
-@test "FIX2: --mode recovery --container postgres, gh issue list fails → exit 0, no gh close (set -e safe)" {
+@test "--mode recovery --container postgres, gh issue list fails → exit 0, no gh close (set -e safe)" {
     # close_container_build_failure_on_recovery uses `if ! x=$(cmd); then` pattern.
     # Under set -euo pipefail, the old `x=$(cmd); rc=$?; if rc -ne 0` was dead code:
     # set -e aborted before the rc check.  The fix must keep exit 0 (best-effort).
@@ -1417,7 +1417,7 @@ GHEOF
 # F3 — FAILED_ALLOWLIST cross-check in auto-detect path
 # ---------------------------------------------------------------------------
 
-@test "F3: FAILED_ALLOWLIST set, detected container absent → exits 1 (skip, no spurious issue)" {
+@test "FAILED_ALLOWLIST set, detected container absent → exits 1 (skip, no spurious issue)" {
     # deps(php) commit detected, but FAILED_ALLOWLIST=['other'] — php is not in the failure set.
     # Script must exit 1 (no-op, same as no-dep-bump) without opening a gh issue.
     export COMMIT_SUBJECT="deps(php): bump to 8.3"
@@ -1429,7 +1429,7 @@ GHEOF
     [ "$status" -eq 1 ]
 }
 
-@test "F3: FAILED_ALLOWLIST set, detected container present → proceeds (exits 0 in DRY_RUN)" {
+@test "FAILED_ALLOWLIST set, detected container present → proceeds (exits 0 in DRY_RUN)" {
     # deps(php) commit detected, FAILED_ALLOWLIST=['php'] — php IS in the failure set.
     # Script must proceed to open the issue (DRY_RUN → exit 0 with dry-run output).
     export COMMIT_SUBJECT="deps(php): bump to 8.3"
@@ -1441,7 +1441,7 @@ GHEOF
     [ "$status" -eq 0 ]
 }
 
-@test "F3: FAILED_ALLOWLIST unset → no cross-check, original behaviour (exits 0 in DRY_RUN)" {
+@test "FAILED_ALLOWLIST unset → no cross-check, original behaviour (exits 0 in DRY_RUN)" {
     # No FAILED_ALLOWLIST → non-checkpoint run; original #514 behaviour preserved.
     # deps(php) commit detected, no allowlist → proceeds unconditionally.
     export COMMIT_SUBJECT="deps(php): bump to 8.3"
@@ -1452,7 +1452,7 @@ GHEOF
     [ "$status" -eq 0 ]
 }
 
-@test "F3: FAILED_ALLOWLIST='' (empty string) → no cross-check, original behaviour" {
+@test "FAILED_ALLOWLIST='' (empty string) → no cross-check, original behaviour" {
     # Empty string (checkpoint skipped/guard-break) → same as unset → no allowlist check.
     export COMMIT_SUBJECT="deps(php): bump to 8.3"
     export FAILED_ALLOWLIST=""
@@ -1466,7 +1466,7 @@ GHEOF
 # F4 — --container with no value exits 2 (usage error, distinct from 1)
 # ---------------------------------------------------------------------------
 
-@test "F4: --container with no value → exit 2 + warning (not exit 1 no-dep-bump)" {
+@test "--container with no value → exit 2 + warning (not exit 1 no-dep-bump)" {
     # Under set -u, bare --container with no $2 would crash with "unbound variable".
     # With ${2:-} guard it must exit 2 (usage error) with a warning, not exit 1.
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure --container
@@ -1478,7 +1478,7 @@ GHEOF
 # F2 — invalid --container name in failure mode → exit 3 (downgrade, not 0)
 # ---------------------------------------------------------------------------
 
-@test "F2: --mode failure --container 'Bad.Name' (invalid chars) → exit 3, not 0" {
+@test "--mode failure --container 'Bad.Name' (invalid chars) → exit 3, not 0" {
     # An invalid container name must return 3 (gh/op failure class) so that
     # the checkpoint loop's `|| issue_open_failed=true` fires → issue_mode
     # downgrades per-container→generic → generic backstop alerts.
@@ -1487,7 +1487,7 @@ GHEOF
     [ "$status" -eq 3 ]
 }
 
-@test "F2: --mode recovery --container 'Bad.Name' (invalid chars) → exit 0 (best-effort close, unchanged)" {
+@test "--mode recovery --container 'Bad.Name' (invalid chars) → exit 0 (best-effort close, unchanged)" {
     # Recovery path keeps best-effort return 0 for invalid names — close has no alert
     # obligation, so fail-open is correct there.  This test confirms the asymmetry.
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery --container "Bad.Name"

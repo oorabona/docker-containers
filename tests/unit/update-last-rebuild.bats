@@ -19,14 +19,14 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# r21-A3: grep option injection — container name '--help' as CLI arg
+# grep option injection — container name '--help' as CLI arg
 # update-last-rebuild.sh calls `grep -qxF "$CONTAINER"` at line 68.
 # Without `--`, passing '--help' as $1 causes grep to print help and exit 0,
 # bypassing the container validation entirely.
 # Mutation guard: removing `--` from the grep call → grep treats '--help' as
 # option → exits 0 → script proceeds past validation with the poisoned name.
 # ---------------------------------------------------------------------------
-@test "r21-A3: container name '--help' is rejected as invalid (not a grep option)" {
+@test "container name '--help' is rejected as invalid (not a grep option)" {
     # Create a fake ./make script that returns a valid container list
     local fake_project="$TEST_TEMP_DIR/project"
     mkdir -p "$fake_project"
@@ -47,7 +47,7 @@ teardown() {
     grep -q "not a valid container" "$TEST_TEMP_DIR/r21a3-stderr.txt"
 }
 
-@test "r21-A3b: container name '-n' is rejected as invalid (not a grep option)" {
+@test "container name '-n' is rejected as invalid (not a grep option)" {
     local fake_project="$TEST_TEMP_DIR/project"
     mkdir -p "$fake_project"
     printf '%s\n' '#!/usr/bin/env bash' 'echo "foo"' > "$fake_project/make"
@@ -123,7 +123,7 @@ _setup_r27c_project_b() {
     ]' > "$base/drift-b.json"
 }
 
-@test "r25-B1: running script twice same day with IDENTICAL drift produces exactly one section" {
+@test "running script twice same day with IDENTICAL drift produces exactly one section" {
     local fake_project
     fake_project=$(_setup_r25b_project)
 
@@ -153,7 +153,7 @@ _setup_r27c_project_b() {
     [ "$count" -eq 1 ]
 }
 
-@test "r25-B1-notice: second run with same content emits ::notice:: about skipping" {
+@test "second run with same content emits ::notice:: about skipping" {
     local fake_project
     fake_project=$(_setup_r25b_project)
 
@@ -175,19 +175,19 @@ _setup_r27c_project_b() {
     ) || rc=$?
 
     [ "$rc" -eq 0 ]
-    # r27-C: skip message changed from "already present" to "already recorded"
+    # skip message changed from "already present" to "already recorded"
     printf '%s' "$stderr_output" | grep -qF "already recorded"
 }
 
 # ---------------------------------------------------------------------------
-# r27-C: two invocations same day with DIFFERENT drift content → 2 sections
+# two invocations same day with DIFFERENT drift content → 2 sections
 # Regression test for the false-negative path Copilot identified:
 # drift A merges in the morning → LAST_REBUILD.md updated → rebuild →
 # drift B (different variants) occurs same day → r25 heading-only dedupe
 # would skip → no file change → no PR trigger → silent false negative.
 # With content-hash dedupe the different-content event appends a new section.
 # ---------------------------------------------------------------------------
-@test "r27-C1: same day different drift content produces two distinct sections" {
+@test "same day different drift content produces two distinct sections" {
     local fake_project
     fake_project=$(_setup_r25b_project)
     _setup_r27c_project_b "$fake_project"
@@ -223,7 +223,7 @@ _setup_r27c_project_b() {
     [ "$hash_count" -eq 2 ]
 }
 
-@test "r27-C2: first section contains hash marker above the heading" {
+@test "first section contains hash marker above the heading" {
     local fake_project
     fake_project=$(_setup_r25b_project)
 
@@ -241,7 +241,7 @@ _setup_r27c_project_b() {
     grep -qF '<!-- drift-content-hash:' "$target"
 }
 
-@test "r25-B2: warning emission for invalid container escapes %0A via _escape_gha_command" {
+@test "warning emission for invalid container escapes %0A via _escape_gha_command" {
     # Gate r25, Defect A applied to update-last-rebuild.sh:
     # a container name containing literal %0A must appear as %250A in the
     # warning (% encoded to %25 first, then 0A suffix), not as a raw sequence
@@ -262,7 +262,7 @@ _setup_r27c_project_b() {
 }
 
 # ---------------------------------------------------------------------------
-# r29-1: run-id-scoped dedupe (gate r29, Finding 1 — cross-run recoverability)
+# run-id-scoped dedupe (gate r29, Finding 1 — cross-run recoverability)
 #
 # The r27 content-hash marker without run-id made identical-content drift
 # unrecoverable across runs: failed rebuild + same drift next run → hash
@@ -273,7 +273,7 @@ _setup_r27c_project_b() {
 # Same hash + different run_id → new run re-detecting same drift → append.
 # ---------------------------------------------------------------------------
 
-@test "r29-1a: same hash same GITHUB_RUN_ID invoked twice → exactly one section" {
+@test "same hash same GITHUB_RUN_ID invoked twice → exactly one section" {
     local fake_project
     fake_project=$(_setup_r25b_project)
 
@@ -304,7 +304,7 @@ _setup_r27c_project_b() {
     [ "$count" -eq 1 ]
 }
 
-@test "r29-1b: same hash different GITHUB_RUN_ID → two sections (cross-run re-detection)" {
+@test "same hash different GITHUB_RUN_ID → two sections (cross-run re-detection)" {
     local fake_project
     fake_project=$(_setup_r25b_project)
 
@@ -343,7 +343,7 @@ _setup_r27c_project_b() {
     [ "$r2_count" -eq 1 ]
 }
 
-@test "r29-1c: unset GITHUB_RUN_ID falls back to run:local and dedupes within same local session" {
+@test "unset GITHUB_RUN_ID falls back to run:local and dedupes within same local session" {
     local fake_project
     fake_project=$(_setup_r25b_project)
 

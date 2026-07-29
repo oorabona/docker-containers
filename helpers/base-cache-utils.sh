@@ -268,7 +268,8 @@ collect_all_cache_images() {
 #
 # Pure function — no I/O, no docker calls, fully bats-testable.
 # Called by emit_reachable_cache_args as the single source of truth for the
-# REMOTE_CR applicability decision; also directly testable via BCU-16..21.
+# REMOTE_CR applicability decision; also covered directly by the
+# remote_cr_applicable cases in tests/unit/base-cache-utils.bats.
 #
 # Rules:
 #   - No new-style entries → print "n/a" (REMOTE_CR not relevant).

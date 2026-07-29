@@ -140,7 +140,7 @@ setup() {
 
 # ── XX: config_file parameter — resolver reads from caller-supplied config ────
 
-@test "XX-temp-config: resolve_version_set uses caller-supplied config, not hard-coded default" {
+@test "resolve_version_set uses caller-supplied config, not hard-coded default" {
     # Write a temp config with a DIFFERENT extension at a DIFFERENT ceiling,
     # using the same resolver path (timescaledb-ha.sh).
     # Before fix: reads postgres/extensions/config.yaml → returns real timescaledb set.
@@ -173,7 +173,7 @@ YAMLEOF
     [[ "$count" -eq 1 ]]
 }
 
-@test "XX-temp-config-ceiling: resolver ceiling is read from caller-supplied config" {
+@test "resolver ceiling is read from caller-supplied config" {
     # Write a temp config with timescaledb at ceiling 2.25.0 (below the real default 2.27.1).
     # Use a resolver path pointing to the real timescaledb-ha.sh resolver.
     # After fix: the ceiling passed to the resolver must be 2.25.0 (from temp config),
@@ -206,7 +206,7 @@ YAMLEOF
     [[ "$last" == "2.25.0" ]]
 }
 
-@test "XX-default-fallback: no config_file arg still resolves correctly via default" {
+@test "no config_file arg still resolves correctly via default" {
     # Regression: direct invocation without a config_file must still work correctly
     # using the implicit default (postgres/extensions/config.yaml).
     # Default retain_count=12 in config.yaml so count must be exactly 12.
@@ -228,7 +228,7 @@ YAMLEOF
 
 # ── RC: retain_count config key threading ────────────────────────────────────
 
-@test "RC-config-retain5: retain_count=5 in config threads through to resolver" {
+@test "retain_count=5 in config threads through to resolver" {
     # A temp config with retain_count=5 must produce <=5 versions, ceiling last.
     local tmp_config
     tmp_config="$(mktemp --suffix=.yaml)"
@@ -256,7 +256,7 @@ YAMLEOF
     [[ "$last" == "2.27.1" ]]
 }
 
-@test "RC-config-no-retain: absent retain_count in config defaults to 12" {
+@test "absent retain_count in config defaults to 12" {
     # A temp config without retain_count must apply the default of 12.
     # pg16 has 45 versions in the fixture; result must be 12.
     local tmp_config
@@ -286,7 +286,7 @@ YAMLEOF
 
 # ── BA-4: missing version in non-resolver ext → fail fast, NOT ["null"] ──────
 
-@test "BA4-null-version-failclosed: non-resolver ext with no version field → non-zero exit, no null in output" {
+@test "non-resolver ext with no version field → non-zero exit, no null in output" {
     # Before fix: yq returns "null" for missing field → emit ["null"] → bogus set.
     # After fix:  detect null/empty version → fail fast with non-zero exit.
 
@@ -310,7 +310,7 @@ YAMLEOF
     [[ "$output" != *'["null"]'* ]]
 }
 
-@test "BA4-empty-version-failclosed: non-resolver ext with empty version string → non-zero exit" {
+@test "non-resolver ext with empty version string → non-zero exit" {
     # An extension with version: "" (empty string) must also fail fast, not emit [""].
 
     local tmp_config
@@ -334,7 +334,7 @@ YAMLEOF
 
 # ── CV: _read_committed_versionset — committed file fast path ─────────────────
 
-@test "CV-hit: _read_committed_versionset returns committed slice when file+major present" {
+@test "_read_committed_versionset returns committed slice when file+major present" {
     # Write a minimal committed file with a pg18 entry.
     local tmp_committed
     tmp_committed="$(mktemp)"
@@ -354,7 +354,7 @@ JSONEOF
     [[ "$output" == '["2.24.0","2.25.0","2.27.2"]' ]]
 }
 
-@test "CV-miss-absent: _read_committed_versionset exits non-zero when file is absent" {
+@test "_read_committed_versionset exits non-zero when file is absent" {
     run bash -c "
         source \"$HELPER\"
         _COMMITTED_VERSIONSET_FILE=\"/nonexistent/timescaledb-version-set.json\"
@@ -364,7 +364,7 @@ JSONEOF
     [[ -z "$output" ]]
 }
 
-@test "CV-miss-major: _read_committed_versionset exits non-zero when major key missing" {
+@test "_read_committed_versionset exits non-zero when major key missing" {
     # File present but pg15 key absent.
     local tmp_committed
     tmp_committed="$(mktemp)"
@@ -383,7 +383,7 @@ JSONEOF
     [[ -z "$output" ]]
 }
 
-@test "CV-miss-ext: _read_committed_versionset exits non-zero when ext key missing" {
+@test "_read_committed_versionset exits non-zero when ext key missing" {
     # File present but pgvector key absent (only timescaledb in file).
     local tmp_committed
     tmp_committed="$(mktemp)"
@@ -402,7 +402,7 @@ JSONEOF
     [[ -z "$output" ]]
 }
 
-@test "CV-hit-no-live: resolve_version_set uses committed slice, live resolver NOT called" {
+@test "resolve_version_set uses committed slice, live resolver NOT called" {
     # Wire: committed file has a pg18 entry with ceiling=2.27.2 (matches config ceiling)
     # AND committed_len (12) >= retain_count (12) — both acceptance conditions satisfied.
     # The live resolver (timescaledb-ha.sh) is pointed at a nonexistent fixture so any
@@ -444,7 +444,7 @@ YAMLEOF
     [[ "$output" == '["2.22.0","2.23.0","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.2"]' ]]
 }
 
-@test "CV-miss-fallback: resolve_version_set falls through to live resolver on committed miss" {
+@test "resolve_version_set falls through to live resolver on committed miss" {
     # Committed file exists but covers only pg18 (not pg19 → miss).
     # The live resolver is timescaledb-ha.sh pointed at a nonexistent fixture → fails.
     # Proof: overall exit is non-zero (live resolver was invoked and failed on miss,
@@ -489,7 +489,7 @@ YAMLEOF
 
 # ── CV-trim: committed fast path respects retain_count ───────────────────────
 
-@test "CV-trim-retain5: committed fast path trims to retain_count when slice is larger" {
+@test "committed fast path trims to retain_count when slice is larger" {
     # Committed file has 12 versions for pg18, caller config has retain_count=5.
     # Fast path must return only the last 5 (newest, ceiling-inclusive), not all 12.
     local tmp_committed
@@ -537,7 +537,7 @@ YAMLEOF
     [[ "$first" == "2.26.1" ]]
 }
 
-@test "CV-under-retain-fallthrough: committed fast path bypassed when committed_len < retain_count" {
+@test "committed fast path bypassed when committed_len < retain_count" {
     # Finding 1 fix: when committed_len (2) < retain_count (5), the fast path must NOT
     # serve the committed slice (would silently under-retain). It must fall through to
     # the live resolver. Observable: exit non-zero because the live resolver's fixture
@@ -581,7 +581,7 @@ YAMLEOF
 
 # ── CVS: _committed_versionset_satisfies — shared acceptance predicate ────────
 
-@test "CVS-hit: _committed_versionset_satisfies returns 0 when ceiling+len match" {
+@test "_committed_versionset_satisfies returns 0 when ceiling+len match" {
     local tmp_committed
     tmp_committed="$(mktemp)"
     # 12-entry pg18 slice with ceiling 2.27.2 matches config ceiling and retain_count=12.
@@ -598,7 +598,7 @@ JSONEOF
     [[ "$status" -eq 0 ]]
 }
 
-@test "CVS-miss-ceiling: _committed_versionset_satisfies returns 1 on ceiling mismatch" {
+@test "_committed_versionset_satisfies returns 1 on ceiling mismatch" {
     local tmp_committed
     tmp_committed="$(mktemp)"
     cat > "$tmp_committed" <<'JSONEOF'
@@ -614,7 +614,7 @@ JSONEOF
     [[ "$status" -ne 0 ]]
 }
 
-@test "CVS-miss-len: _committed_versionset_satisfies returns 1 when committed_len < retain_count" {
+@test "_committed_versionset_satisfies returns 1 when committed_len < retain_count" {
     local tmp_committed
     tmp_committed="$(mktemp)"
     # 2-entry slice, ceiling matches, but retain_count=5 requires at least 5 entries.
@@ -631,7 +631,7 @@ JSONEOF
     [[ "$status" -ne 0 ]]
 }
 
-@test "CVS-miss-absent: _committed_versionset_satisfies returns 1 when file absent" {
+@test "_committed_versionset_satisfies returns 1 when file absent" {
     run bash -c "
         source \"$HELPER\"
         _COMMITTED_VERSIONSET_FILE=\"/nonexistent/timescaledb-version-set.json\"
@@ -640,7 +640,7 @@ JSONEOF
     [[ "$status" -ne 0 ]]
 }
 
-@test "CVS-miss-major: _committed_versionset_satisfies returns 1 when major key missing" {
+@test "_committed_versionset_satisfies returns 1 when major key missing" {
     local tmp_committed
     tmp_committed="$(mktemp)"
     cat > "$tmp_committed" <<'JSONEOF'
@@ -660,7 +660,7 @@ JSONEOF
 # These tests call the predicate DIRECTLY with invalid retain_count values to
 # verify normalization happens inside the function (not only via the fast path).
 
-@test "CVS-raw-zero: _committed_versionset_satisfies with retain_count=0 normalizes to 12, does not abort" {
+@test "_committed_versionset_satisfies with retain_count=0 normalizes to 12, does not abort" {
     # A 12-entry committed slice with ceiling=2.27.2.
     # Passing retain_count=0 (invalid) directly → must normalize to 12 → 12 >= 12 → exit 0.
     local tmp_committed
@@ -683,7 +683,7 @@ JSONEOF
     [[ "$output" == "rc=0" ]]
 }
 
-@test "CVS-raw-empty: _committed_versionset_satisfies with empty retain_count normalizes to 12, does not abort" {
+@test "_committed_versionset_satisfies with empty retain_count normalizes to 12, does not abort" {
     # Passing retain_count="" directly → must normalize to 12 → 12 >= 12 → exit 0.
     local tmp_committed
     tmp_committed="$(mktemp)"
@@ -704,7 +704,7 @@ JSONEOF
     [[ "$output" == "rc=0" ]]
 }
 
-@test "CVS-raw-bogus: _committed_versionset_satisfies with retain_count=bogus normalizes to 12, does not abort" {
+@test "_committed_versionset_satisfies with retain_count=bogus normalizes to 12, does not abort" {
     # Passing retain_count="bogus" directly → must normalize to 12 → 12 >= 12 → exit 0.
     local tmp_committed
     tmp_committed="$(mktemp)"
@@ -727,43 +727,43 @@ JSONEOF
 
 # ── NRC: _normalize_retain_count — shared normalization helper ────────────────
 
-@test "NRC-positive: _normalize_retain_count returns valid positive int unchanged" {
+@test "_normalize_retain_count returns valid positive int unchanged" {
     run bash -c "source \"$HELPER\"; _normalize_retain_count 5"
     [[ "$status" -eq 0 ]]
     [[ "$output" == "5" ]]
 }
 
-@test "NRC-twelve: _normalize_retain_count returns 12 for default" {
+@test "_normalize_retain_count returns 12 for default" {
     run bash -c "source \"$HELPER\"; _normalize_retain_count 12"
     [[ "$status" -eq 0 ]]
     [[ "$output" == "12" ]]
 }
 
-@test "NRC-zero: _normalize_retain_count treats 0 as invalid → defaults to 12" {
+@test "_normalize_retain_count treats 0 as invalid → defaults to 12" {
     run bash -c "source \"$HELPER\"; _normalize_retain_count 0"
     [[ "$status" -eq 0 ]]
     [[ "$output" == "12" ]]
 }
 
-@test "NRC-negative: _normalize_retain_count treats negative as invalid → defaults to 12" {
+@test "_normalize_retain_count treats negative as invalid → defaults to 12" {
     run bash -c "source \"$HELPER\"; _normalize_retain_count -- -1"
     [[ "$status" -eq 0 ]]
     [[ "$output" == "12" ]]
 }
 
-@test "NRC-empty: _normalize_retain_count treats empty string as invalid → defaults to 12" {
+@test "_normalize_retain_count treats empty string as invalid → defaults to 12" {
     run bash -c "source \"$HELPER\"; _normalize_retain_count ''"
     [[ "$status" -eq 0 ]]
     [[ "$output" == "12" ]]
 }
 
-@test "NRC-nonnumeric: _normalize_retain_count treats non-numeric as invalid → defaults to 12" {
+@test "_normalize_retain_count treats non-numeric as invalid → defaults to 12" {
     run bash -c "source \"$HELPER\"; _normalize_retain_count 'abc'"
     [[ "$status" -eq 0 ]]
     [[ "$output" == "12" ]]
 }
 
-@test "NRC-leadingzero: _normalize_retain_count treats leading-zero number as invalid → defaults to 12" {
+@test "_normalize_retain_count treats leading-zero number as invalid → defaults to 12" {
     run bash -c "source \"$HELPER\"; _normalize_retain_count '05'"
     [[ "$status" -eq 0 ]]
     [[ "$output" == "12" ]]
@@ -774,7 +774,7 @@ JSONEOF
 # same way as the live resolver — invalid values (0, empty, non-numeric) all
 # behave as 12 and do NOT abort under set -u.
 
-@test "NRC-FP-zero: committed fast path with retain_count=0 behaves as 12, does not abort" {
+@test "committed fast path with retain_count=0 behaves as 12, does not abort" {
     # Committed file has 12 entries for pg18 (ceiling=2.27.2).
     # Config sets retain_count=0 (invalid) → must normalize to 12 → fast path accepted.
     local tmp_committed
@@ -814,7 +814,7 @@ YAMLEOF
     [[ "$count" -eq 12 ]]
 }
 
-@test "NRC-FP-empty: committed fast path with empty retain_count behaves as 12, does not abort" {
+@test "committed fast path with empty retain_count behaves as 12, does not abort" {
     # Config has no retain_count key → yq returns "" → must normalize to 12.
     local tmp_committed
     tmp_committed="$(mktemp)"
@@ -851,7 +851,7 @@ YAMLEOF
     [[ "$count" -eq 12 ]]
 }
 
-@test "NRC-FP-nonnumeric: committed fast path with non-numeric retain_count behaves as 12, does not abort" {
+@test "committed fast path with non-numeric retain_count behaves as 12, does not abort" {
     # Config sets retain_count="bogus" → must normalize to 12 (not abort/miscompare).
     local tmp_committed
     tmp_committed="$(mktemp)"

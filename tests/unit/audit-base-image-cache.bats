@@ -8,25 +8,25 @@
 #
 # Tests:
 #   normalize_image_source
-#     NIS-01  <unresolved:REMOTE_CR>/ prefix stripped → library/postgres
-#     NIS-02  docker.io/ prefix stripped              → library/nginx
-#     NIS-03  library/<x> emits bare alias            → ubuntu emitted alongside library/ubuntu
-#     NIS-04  bare name untouched                     → ubuntu stays ubuntu
-#     NIS-05  plain resolved name (no prefix)         → composer:2.9.8 source
+#     <unresolved:REMOTE_CR>/ prefix stripped → library/postgres
+#     docker.io/ prefix stripped              → library/nginx
+#     library/<x> emits bare alias            → ubuntu emitted alongside library/ubuntu
+#     bare name untouched                     → ubuntu stays ubuntu
+#     plain resolved name (no prefix)         → composer:2.9.8 source
 #   is_cached
-#     ABA-01  new-style FROM ${REMOTE_CR}/library/postgres → source: library/postgres = CACHED
-#     ABA-02  old-style FROM ${BASE_IMAGE}:${VERSION}, build_args.BASE_IMAGE=ubuntu → CACHED (no regression)
-#     ABA-03  genuine mismatch (mysql vs library/postgres) → NOT cached
-#     ABA-04  FROM docker.io/library/nginx vs source: library/nginx → CACHED
-#     ABA-05  REMOTE_CR in build_args (resolves to docker.io then stripped) → CACHED
-#     ABA-06  bare source: debian matches FROM ${BASE_IMAGE} resolved to debian → CACHED
+#     new-style FROM ${REMOTE_CR}/library/postgres → source: library/postgres = CACHED
+#     old-style FROM ${BASE_IMAGE}:${VERSION}, build_args.BASE_IMAGE=ubuntu → CACHED (no regression)
+#     genuine mismatch (mysql vs library/postgres) → NOT cached
+#     FROM docker.io/library/nginx vs source: library/nginx → CACHED
+#     REMOTE_CR in build_args (resolves to docker.io then stripped) → CACHED
+#     bare source: debian matches FROM ${BASE_IMAGE} resolved to debian → CACHED
 #   is_expected_uncached
-#     ABA-07  ghcr.io/oorabona/postgres:17-alpine → matches self-ref pattern
-#     ABA-13  <unresolved:REMOTE_CR>/php:latest (single-seg own container) → expected-uncached
+#     ghcr.io/oorabona/postgres:17-alpine → matches self-ref pattern
+#     <unresolved:REMOTE_CR>/php:latest (single-seg own container) → expected-uncached
 #     ABA-13b <unresolved:REMOTE_CR>/library/ubuntu (multi-seg DockerHub mirror) → GAP (NOT exempt)
 #     ABA-13c <unresolved:OTHER_REG>/mysql:8 → GAP (only REMOTE_CR single-seg is exempt)
 #   Full audit run (real repo — integration smoke)
-#     SMOKE-01  postgres has no GAP in full audit run
+#     postgres has no GAP in full audit run
 
 SCRIPT="$BATS_TEST_DIRNAME/../../scripts/audit-base-image-cache.sh"
 ORIG_DIR="$BATS_TEST_DIRNAME/../.."
@@ -62,7 +62,7 @@ write_config() {
 
 # ─── normalize_image_source ───────────────────────────────────────────────────
 
-@test "NIS-01: <unresolved:REMOTE_CR>/ prefix is stripped, leaving library/postgres" {
+@test "<unresolved:REMOTE_CR>/ prefix is stripped, leaving library/postgres" {
     run normalize_image_source "<unresolved:REMOTE_CR>/library/postgres"
     [ "$status" -eq 0 ]
     # First line: normalized form
@@ -71,28 +71,28 @@ write_config() {
     [[ "${lines[1]}" == "postgres" ]]
 }
 
-@test "NIS-02: docker.io/ prefix is stripped, leaving library/nginx" {
+@test "docker.io/ prefix is stripped, leaving library/nginx" {
     run normalize_image_source "docker.io/library/nginx"
     [ "$status" -eq 0 ]
     [[ "${lines[0]}" == "library/nginx" ]]
     [[ "${lines[1]}" == "nginx" ]]
 }
 
-@test "NIS-03: library/<x> emits both library/ubuntu and bare ubuntu" {
+@test "library/<x> emits both library/ubuntu and bare ubuntu" {
     run normalize_image_source "library/ubuntu"
     [ "$status" -eq 0 ]
     [[ "${lines[0]}" == "library/ubuntu" ]]
     [[ "${lines[1]}" == "ubuntu" ]]
 }
 
-@test "NIS-04: bare name (no prefix) passes through unchanged, no alias emitted" {
+@test "bare name (no prefix) passes through unchanged, no alias emitted" {
     run normalize_image_source "ubuntu"
     [ "$status" -eq 0 ]
     [[ "${lines[0]}" == "ubuntu" ]]
     [ "${#lines[@]}" -eq 1 ]
 }
 
-@test "NIS-05: namespaced source (hashicorp/terraform) passes through, no alias" {
+@test "namespaced source (hashicorp/terraform) passes through, no alias" {
     run normalize_image_source "hashicorp/terraform"
     [ "$status" -eq 0 ]
     [[ "${lines[0]}" == "hashicorp/terraform" ]]
@@ -101,10 +101,10 @@ write_config() {
 
 # ─── is_cached ────────────────────────────────────────────────────────────────
 
-# ABA-01: new-style — REMOTE_CR not in build_args → resolves to <unresolved:REMOTE_CR>
+# new-style — REMOTE_CR not in build_args → resolves to <unresolved:REMOTE_CR>
 # The resolved FROM is "<unresolved:REMOTE_CR>/library/postgres:<unresolved:VERSION>"
 # After tag strip + normalization it must match source: library/postgres
-@test "ABA-01: new-style REMOTE_CR unresolved matches source: library/postgres" {
+@test "new-style REMOTE_CR unresolved matches source: library/postgres" {
     write_config "mypostgres/config.yaml" \
 'base_image_cache:
   - source: library/postgres
@@ -115,9 +115,9 @@ write_config() {
     [ "$status" -eq 0 ]
 }
 
-# ABA-02: old-style — FROM ${BASE_IMAGE}:${VERSION}, build_args.BASE_IMAGE=ubuntu
+# old-style — FROM ${BASE_IMAGE}:${VERSION}, build_args.BASE_IMAGE=ubuntu
 # resolve_image_ref returns "ubuntu:<unresolved:VERSION>"; is_cached must match source: ubuntu
-@test "ABA-02: old-style ubuntu matches source: ubuntu (no regression)" {
+@test "old-style ubuntu matches source: ubuntu (no regression)" {
     write_config "myubuntu/config.yaml" \
 'base_image_cache:
   - arg: BASE_IMAGE
@@ -131,8 +131,8 @@ build_args:
     [ "$status" -eq 0 ]
 }
 
-# ABA-03: genuine mismatch — mysql resolved from a postgres source cache → NOT cached
-@test "ABA-03: genuine mismatch mysql vs source: library/postgres is NOT cached" {
+# genuine mismatch — mysql resolved from a postgres source cache → NOT cached
+@test "genuine mismatch mysql vs source: library/postgres is NOT cached" {
     write_config "mymysql/config.yaml" \
 'base_image_cache:
   - source: library/postgres
@@ -142,8 +142,8 @@ build_args:
     [ "$status" -ne 0 ]
 }
 
-# ABA-04: docker.io/ explicit prefix — FROM docker.io/library/nginx vs source: library/nginx
-@test "ABA-04: FROM docker.io/library/nginx matches source: library/nginx" {
+# docker.io/ explicit prefix — FROM docker.io/library/nginx vs source: library/nginx
+@test "FROM docker.io/library/nginx matches source: library/nginx" {
     write_config "mynginx/config.yaml" \
 'base_image_cache:
   - source: library/nginx
@@ -153,8 +153,8 @@ build_args:
     [ "$status" -eq 0 ]
 }
 
-# ABA-05: REMOTE_CR resolved to docker.io via build_args
-@test "ABA-05: REMOTE_CR resolved to docker.io, then stripped, matches library/postgres" {
+# REMOTE_CR resolved to docker.io via build_args
+@test "REMOTE_CR resolved to docker.io, then stripped, matches library/postgres" {
     write_config "pgwithargs/config.yaml" \
 'base_image_cache:
   - source: library/postgres
@@ -167,8 +167,8 @@ build_args:
     [ "$status" -eq 0 ]
 }
 
-# ABA-06: bare source: debian matches resolved "debian:<unresolved:VERSION>"
-@test "ABA-06: bare source: debian matches resolved debian image" {
+# bare source: debian matches resolved "debian:<unresolved:VERSION>"
+@test "bare source: debian matches resolved debian image" {
     write_config "mydebian/config.yaml" \
 'base_image_cache:
   - arg: BASE_IMAGE
@@ -182,12 +182,12 @@ build_args:
     [ "$status" -eq 0 ]
 }
 
-# ABA-10: cross-registry NO-FALSE-NEGATIVE guard
+# cross-registry NO-FALSE-NEGATIVE guard
 # A FROM that uses the same path ("library/postgres") but on a non-docker.io
 # registry (ghcr.io, quay.io) must NOT match source: library/postgres.
 # The normalization must only strip docker.io/ and <unresolved:VAR>/ — never
 # an arbitrary third-party registry prefix.
-@test "ABA-10: ghcr.io/library/postgres is NOT cached against source: library/postgres (no false negative)" {
+@test "ghcr.io/library/postgres is NOT cached against source: library/postgres (no false negative)" {
     write_config "nfn/config.yaml" \
 'base_image_cache:
   - source: library/postgres
@@ -202,11 +202,11 @@ build_args:
     [ "$status" -ne 0 ]
 }
 
-# ABA-11: chained-on-own-build marker — source: /php → is_cached returns 0 (CACHED)
+# chained-on-own-build marker — source: /php → is_cached returns 0 (CACHED)
 # Regression lock for gate r4 Bug 1: the yq-read source value retained the leading slash
 # while the candidates list stripped it, so the comparison always failed.  The fix adds
 # cache_source="${cache_source#/}" after the yq read so "/php" == "php" comparison works.
-@test "ABA-11: chained-on-own-build source:/php matches FROM php: — CACHED (gate r4 regression lock)" {
+@test "chained-on-own-build source:/php matches FROM php: — CACHED (gate r4 regression lock)" {
     write_config "mywp/config.yaml" \
 'base_image_cache:
   - source: /php
@@ -218,8 +218,8 @@ build_args:
     [ "$status" -eq 0 ]
 }
 
-# ABA-12: chained-on-own-build marker with REMOTE_CR prefix — same invariant
-@test "ABA-12: chained-on-own-build source:/php matches unresolved REMOTE_CR/php: — CACHED" {
+# chained-on-own-build marker with REMOTE_CR prefix — same invariant
+@test "chained-on-own-build source:/php matches unresolved REMOTE_CR/php: — CACHED" {
     write_config "mywp2/config.yaml" \
 'base_image_cache:
   - source: /php
@@ -231,12 +231,12 @@ build_args:
     [ "$status" -eq 0 ]
 }
 
-# ABA-13: ${REMOTE_CR}/<own-container>:<tag> without REMOTE_CR in build_args — single-segment
+# ${REMOTE_CR}/<own-container>:<tag> without REMOTE_CR in build_args — single-segment
 # path is exempt ONLY when the name is a known project container (top-level dir with config.yaml).
 # Regression lock for #666: removing wordpress base_image_cache must not create a spurious gap.
 # Mutation this test catches: exempting a single-segment REMOTE_CR ref without verifying the
 # name is an actual project container would hide real cache gaps for Docker Hub official images.
-@test "ABA-13: <unresolved:REMOTE_CR>/php:latest (project container with config.yaml) is expected-uncached" {
+@test "<unresolved:REMOTE_CR>/php:latest (project container with config.yaml) is expected-uncached" {
     # php must exist as a project container in ROOT_DIR for the exemption to fire.
     mkdir -p "$TEST_DIR/php"
     touch "$TEST_DIR/php/config.yaml"
@@ -244,33 +244,33 @@ build_args:
     [ "$status" -eq 0 ]
 }
 
-# ABA-13b: ${REMOTE_CR}/library/ubuntu (Docker Hub mirror, multi-segment) must NOT be exempt —
+# ${REMOTE_CR}/library/ubuntu (Docker Hub mirror, multi-segment) must NOT be exempt —
 # if base_image_cache is missing it must surface as a GAP, not be silently suppressed.
-@test "ABA-13b: <unresolved:REMOTE_CR>/library/ubuntu (multi-segment) is NOT expected-uncached" {
+@test "<unresolved:REMOTE_CR>/library/ubuntu (multi-segment) is NOT expected-uncached" {
     run is_expected_uncached "<unresolved:REMOTE_CR>/library/ubuntu:latest"
     [ "$status" -ne 0 ]
 }
 
-# ABA-13c: other unresolved registry vars remain gaps regardless of path
-@test "ABA-13c: <unresolved:OTHER_REG>/mysql:8 is NOT expected-uncached" {
+# other unresolved registry vars remain gaps regardless of path
+@test "<unresolved:OTHER_REG>/mysql:8 is NOT expected-uncached" {
     run is_expected_uncached "<unresolved:OTHER_REG>/mysql:8"
     [ "$status" -ne 0 ]
 }
 
-# ABA-13d: ${REMOTE_CR}/ubuntu:latest — single-segment but NOT a project container (no ubuntu/
+# ${REMOTE_CR}/ubuntu:latest — single-segment but NOT a project container (no ubuntu/
 # config.yaml in repo) — must NOT be exempt; codex-flagged regression: the prior broad
 # single-segment exemption silently suppressed this legitimate cache gap.
 # Mutation this test catches: exempting a single-segment name without checking config.yaml
 # would hide a real cache gap (ubuntu is a Docker Hub official image, not our output).
-@test "ABA-13d: <unresolved:REMOTE_CR>/ubuntu:latest (no ubuntu/config.yaml) is NOT expected-uncached" {
+@test "<unresolved:REMOTE_CR>/ubuntu:latest (no ubuntu/config.yaml) is NOT expected-uncached" {
     # Ensure ubuntu/ has no config.yaml (cleanup any stray fixture from other tests)
     rm -rf "$TEST_DIR/ubuntu"
     run is_expected_uncached "<unresolved:REMOTE_CR>/ubuntu:latest"
     [ "$status" -ne 0 ]
 }
 
-# ABA-13e: ${REMOTE_CR}/mysql:8 — single-segment, not a project container → GAP, not exempt.
-@test "ABA-13e: <unresolved:REMOTE_CR>/mysql:8 (no mysql/config.yaml) is NOT expected-uncached" {
+# ${REMOTE_CR}/mysql:8 — single-segment, not a project container → GAP, not exempt.
+@test "<unresolved:REMOTE_CR>/mysql:8 (no mysql/config.yaml) is NOT expected-uncached" {
     rm -rf "$TEST_DIR/mysql"
     run is_expected_uncached "<unresolved:REMOTE_CR>/mysql:8"
     [ "$status" -ne 0 ]
@@ -278,27 +278,27 @@ build_args:
 
 # ─── is_expected_uncached ─────────────────────────────────────────────────────
 
-@test "ABA-07: ghcr.io/oorabona/* self-ref matches expected-uncached pattern" {
+@test "ghcr.io/oorabona/* self-ref matches expected-uncached pattern" {
     run is_expected_uncached "ghcr.io/oorabona/postgres:17-alpine"
     [ "$status" -eq 0 ]
 }
 
-@test "ABA-08: mcr.microsoft.com/* matches expected-uncached pattern" {
+@test "mcr.microsoft.com/* matches expected-uncached pattern" {
     run is_expected_uncached "mcr.microsoft.com/windows/servercore:ltsc2022"
     [ "$status" -eq 0 ]
 }
 
-@test "ABA-09: random external image does NOT match expected-uncached pattern" {
+@test "random external image does NOT match expected-uncached pattern" {
     run is_expected_uncached "docker.io/library/mysql:8.0"
     [ "$status" -ne 0 ]
 }
 
 # ─── Integration smoke: real audit run ───────────────────────────────────────
 
-# SMOKE-01: run the full audit against the real repo.
+# run the full audit against the real repo.
 # postgres must NOT appear as GAP (new-style FROM ${REMOTE_CR}/library/postgres).
 # Old-style containers must still show as cached (no regression).
-@test "SMOKE-01: full repo audit — postgres has no GAP, old-style containers still cached" {
+@test "full repo audit — postgres has no GAP, old-style containers still cached" {
     run bash "$SCRIPT"
     [ "$status" -eq 0 ]
 

@@ -2,9 +2,9 @@
 
 # Unit tests: lifecycle schema validation across all container config.yaml files
 #
-# AC-1  every dependency_sources entry has a valid lifecycle:
-# AC-2  schema test green (valid lifecycle + required fields per lifecycle)
-# AC-14 lifecycle: REQUIRED on every entry; no implicit default
+# every dependency_sources entry has a valid lifecycle:
+# schema test green (valid lifecycle + required fields per lifecycle)
+# lifecycle: REQUIRED on every entry; no implicit default
 # AC-17 type: github-tag/gitlab-tags requires tag_filter: and version_extract:
 # AC-18 tracked/stable-pin/eol-migrate require type: + per-type locator
 # AC-19 every stable-pin entry declares supported_until_source:
@@ -34,7 +34,7 @@ setup() {
 VALID_LIFECYCLES="tracked stable-pin eol-migrate untracked"
 
 # ---------------------------------------------------------------------------
-# T1 AC-1: every entry has a lifecycle: field
+# every entry has a lifecycle: field
 # ---------------------------------------------------------------------------
 
 @test "every dependency_sources entry has a lifecycle field" {
@@ -70,7 +70,7 @@ VALID_LIFECYCLES="tracked stable-pin eol-migrate untracked"
 }
 
 # ---------------------------------------------------------------------------
-# T1 AC-2: lifecycle value is in the valid enum
+# lifecycle value is in the valid enum
 # ---------------------------------------------------------------------------
 
 @test "every lifecycle value is in the valid enum {tracked,stable-pin,eol-migrate,untracked}" {
@@ -108,7 +108,7 @@ VALID_LIFECYCLES="tracked stable-pin eol-migrate untracked"
 }
 
 # ---------------------------------------------------------------------------
-# T1 AC-2: stable-pin and eol-migrate entries require liveness_url:
+# stable-pin and eol-migrate entries require liveness_url:
 # ---------------------------------------------------------------------------
 
 @test "stable-pin and eol-migrate entries declare liveness_url" {
@@ -147,7 +147,7 @@ VALID_LIFECYCLES="tracked stable-pin eol-migrate untracked"
 }
 
 # ---------------------------------------------------------------------------
-# T1 AC-2: stable-pin entries require supported_until: (ISO date)
+# stable-pin entries require supported_until: (ISO date)
 # ---------------------------------------------------------------------------
 
 @test "stable-pin entries declare supported_until" {
@@ -225,7 +225,7 @@ VALID_LIFECYCLES="tracked stable-pin eol-migrate untracked"
 }
 
 # ---------------------------------------------------------------------------
-# T1 AC-18: tracked/stable-pin/eol-migrate entries require type: field
+# tracked/stable-pin/eol-migrate entries require type: field
 # ---------------------------------------------------------------------------
 
 @test "tracked, stable-pin, eol-migrate entries declare type" {
@@ -264,7 +264,7 @@ VALID_LIFECYCLES="tracked stable-pin eol-migrate untracked"
 }
 
 # ---------------------------------------------------------------------------
-# T1 AC-18: per-type locator check (repo/project_path/package/gem)
+# per-type locator check (repo/project_path/package/gem)
 # ---------------------------------------------------------------------------
 
 @test "each type has the required locator (github-tag/release=repo, gitlab-tags=project_path, pypi=package, rubygems=gem)" {
@@ -377,7 +377,7 @@ VALID_LIFECYCLES="tracked stable-pin eol-migrate untracked"
 # ---------------------------------------------------------------------------
 # Negative test: schema rejects an entry missing lifecycle (fail-closed)
 # This test uses a synthetic config in BATS_TEST_TMPDIR.
-# AC-14: lifecycle is REQUIRED; no implicit default.
+# lifecycle is REQUIRED; no implicit default.
 # ---------------------------------------------------------------------------
 
 @test "schema test FAILS for an entry missing lifecycle (fail-closed regression lock)" {
@@ -408,7 +408,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# P1-SECURITY regression lock: yq query injection via dep name special chars
+# Security regression lock: yq query injection via dep name special chars
 #
 # A dep name containing yq special characters (e.g. a dot, bracket) MUST
 # be treated as a literal key lookup — NOT reshaping the query path.
@@ -440,7 +440,7 @@ EOF
 #   4. Restore safe form → GREEN.
 # ---------------------------------------------------------------------------
 
-@test "P1-SECURITY: dep name with dot is treated as literal key (strenv() injection guard)" {
+@test "dep name with dot is treated as literal key (strenv() injection guard)" {
     local tmpconfig="$BATS_TEST_TMPDIR/injection-config.yaml"
     cat > "$tmpconfig" <<'EOF'
 build_args:

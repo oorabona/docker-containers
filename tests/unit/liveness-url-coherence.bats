@@ -10,7 +10,7 @@
 # Strategy: parse the Dockerfile's RUN … curl … -o lines, interpolate the
 # version values using the config's build_args, and compare to liveness_url.
 #
-# AC-10: drift between config and Dockerfile-constructed URL is a test failure.
+# drift between config and Dockerfile-constructed URL is a test failure.
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 
@@ -292,7 +292,7 @@ _dockerfile_urls_for() {
 #   3. Restore the P3 block → GREEN.
 # ---------------------------------------------------------------------------
 
-@test "P3: pagination bound reached with more pages exits non-zero (sourced helper)" {
+@test "pagination bound reached with more pages exits non-zero (sourced helper)" {
     # Mutation trace: remove the P3 guard block from helpers/latest-github-tag
     # (the `if [[ "$pages_fetched" -ge "$max_pages" && -n "$url" ]]` block) and
     # this test goes RED — the helper exits 0 with truncated tags when max_pages
@@ -372,7 +372,7 @@ _dockerfile_urls_for() {
 #   3. Restore liveness_url_template → GREEN.
 # ---------------------------------------------------------------------------
 
-@test "Fix-R8: all stable-pin entries with liveness_url also declare liveness_url_template" {
+@test "all stable-pin entries with liveness_url also declare liveness_url_template" {
     local bad=0
     local bad_list=""
 

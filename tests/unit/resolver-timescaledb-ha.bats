@@ -226,7 +226,7 @@ setup() {
 
 # ── H: actionable error messages reach stderr ─────────────────────────────────
 
-@test "H-unsupported-pg: unknown PG_MAJOR exits non-zero and emits 'no HA tags' on stderr" {
+@test "unknown PG_MAJOR exits non-zero and emits 'no HA tags' on stderr" {
     local combined
     combined=$(env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
@@ -241,7 +241,7 @@ setup() {
 # When the ceiling is absent from HA tags, the resolver must INJECT it and
 # return a non-empty set (at least [ceiling]), not hard-fail.
 
-@test "RR-ceiling-not-in-HA: ceiling absent from HA tags → injected into output, exit 0" {
+@test "ceiling absent from HA tags → injected into output, exit 0" {
     # CEILING_VERSION=2.27.2 is NOT in the fixture (max is 2.27.1).
     # Before fix: hard-fails (exits non-zero). After fix: exits 0, includes 2.27.2.
     run env \
@@ -255,7 +255,7 @@ setup() {
     echo "$output" | jq -e 'map(select(. == "2.27.1")) | length > 0' > /dev/null
 }
 
-@test "RR-ceiling-injected-is-last: injected ceiling appears as last (highest) element" {
+@test "injected ceiling appears as last (highest) element" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.2 \
@@ -265,7 +265,7 @@ setup() {
     [[ "$last" == "2.27.2" ]]
 }
 
-@test "RR-HA-newer-excluded: HA tag above ceiling is dropped; ceiling present in output" {
+@test "HA tag above ceiling is dropped; ceiling present in output" {
     # Fixture contains tags up to 2.27.1. Append a hypothetical 2.28.0 above ceiling 2.27.1.
     local above_fixture
     above_fixture="$(mktemp)"
@@ -284,7 +284,7 @@ setup() {
     echo "$output" | jq -e 'map(select(. == "2.27.1")) | length > 0' > /dev/null
 }
 
-@test "RR-empty-HA-degrade: empty HA response + valid CEILING_VERSION → exits non-zero (fail-closed)" {
+@test "empty HA response + valid CEILING_VERSION → exits non-zero (fail-closed)" {
     # When HA returns no tags at all the resolver has lost its discovery basis.
     # On the publish path this must be fatal (fail-closed): a transient HA-metadata
     # outage must not silently emit [ceiling] and drop every retained older version.
@@ -314,7 +314,7 @@ setup() {
     [[ -z "$stdout_only" ]]
 }
 
-@test "RR-garbled-HA-degrade: garbled HA response (no valid ts tags) + valid CEILING_VERSION → exits non-zero (fail-closed)" {
+@test "garbled HA response (no valid ts tags) + valid CEILING_VERSION → exits non-zero (fail-closed)" {
     # A garbled registry response that contains lines but no recognisable HA tags
     # is indistinguishable from a network corruption — fail-closed.
     local garbled_fixture
@@ -338,7 +338,7 @@ setup() {
     [[ -z "$stdout_only" ]]
 }
 
-@test "RR-ceiling-already-in-HA-idempotent: ceiling present in HA tags is not duplicated" {
+@test "ceiling present in HA tags is not duplicated" {
     # When ceiling IS in HA tags, injecting it must be idempotent (no duplicate).
     # The standard fixture has pg18 up to 2.27.1, so ceiling=2.27.1 is present.
     run env \
@@ -364,7 +364,7 @@ setup() {
 
 # ── RETAIN_COUNT: cap the retained window to N most-recent versions ───────────
 
-@test "RC-default: RETAIN_COUNT unset defaults to 12" {
+@test "RETAIN_COUNT unset defaults to 12" {
     # No RETAIN_COUNT in env — default of 12 applies.
     # pg16 has 45 versions in the fixture; result must be exactly 12.
     run env \
@@ -376,7 +376,7 @@ setup() {
     [[ "$count" -eq 12 ]]
 }
 
-@test "RC-ceiling-always-present: ceiling is the last element after cap" {
+@test "ceiling is the last element after cap" {
     # After capping to N, the ceiling (highest) must still be the last element.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
@@ -387,7 +387,7 @@ setup() {
     [[ "$last" == "2.27.1" ]]
 }
 
-@test "RC-retain-1: RETAIN_COUNT=1 returns only [ceiling]" {
+@test "RETAIN_COUNT=1 returns only [ceiling]" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 RETAIN_COUNT=1 \
@@ -399,7 +399,7 @@ setup() {
     [[ "$ver" == "2.27.1" ]]
 }
 
-@test "RC-over-window: RETAIN_COUNT larger than window keeps all versions" {
+@test "RETAIN_COUNT larger than window keeps all versions" {
     # pg18 has 13 versions; RETAIN_COUNT=100 must keep all 13.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
@@ -410,7 +410,7 @@ setup() {
     [[ "$count" -eq 13 ]]
 }
 
-@test "RC-invalid-alpha: invalid RETAIN_COUNT 'abc' falls back to 12" {
+@test "invalid RETAIN_COUNT 'abc' falls back to 12" {
     # Non-numeric RETAIN_COUNT must be treated as if unset — default 12 applies.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
@@ -421,7 +421,7 @@ setup() {
     [[ "$count" -eq 12 ]]
 }
 
-@test "RC-invalid-zero: RETAIN_COUNT=0 falls back to 12" {
+@test "RETAIN_COUNT=0 falls back to 12" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 RETAIN_COUNT=0 \
@@ -431,7 +431,7 @@ setup() {
     [[ "$count" -eq 12 ]]
 }
 
-@test "RC-invalid-negative: RETAIN_COUNT=-3 falls back to 12" {
+@test "RETAIN_COUNT=-3 falls back to 12" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 RETAIN_COUNT=-3 \
@@ -441,7 +441,7 @@ setup() {
     [[ "$count" -eq 12 ]]
 }
 
-@test "RC-oldest-first: capped output is sorted oldest-first with ceiling last" {
+@test "capped output is sorted oldest-first with ceiling last" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 RETAIN_COUNT=5 \
@@ -456,7 +456,7 @@ setup() {
     [[ "$output" == "$sorted" ]]
 }
 
-@test "RC-ceiling-in-window: ceiling injected above-HA is last element even after cap" {
+@test "ceiling injected above-HA is last element even after cap" {
     # Use a ceiling not in the fixture (2.27.2) — it gets injected.
     # After cap, it must still be the last element.
     run env \

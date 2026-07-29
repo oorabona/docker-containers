@@ -68,7 +68,7 @@ source_dashboard_fns() {
 # Pipeline: _prepare_build_args → _resolve_base_image → _emit_build_lineage
 # Assert: base_image_ref concrete, lineage_schema_version=2
 # ---------------------------------------------------------------------------
-@test "SMOKE-01: Monolithic fixture produces concrete base_image_ref (Fix A1)" {
+@test "Monolithic fixture produces concrete base_image_ref (Fix A1)" {
     local work="$TEST_TEMP_DIR/mono"
     mkdir -p "$work"
     cp "$FIXTURE_MONO/config.yaml"   "$work/"
@@ -104,7 +104,7 @@ source_dashboard_fns() {
     [[ "$base_image_ref" == "alpine:3.21" ]]
 }
 
-@test "SMOKE-02: Monolithic fixture lineage_schema_version equals 2" {
+@test "Monolithic fixture lineage_schema_version equals 2" {
     local work="$TEST_TEMP_DIR/mono2"
     mkdir -p "$work"
     cp "$FIXTURE_MONO/config.yaml"   "$work/"
@@ -137,7 +137,7 @@ source_dashboard_fns() {
 # Pipeline: template generation → _resolve_base_image with from_generated=1
 # Assert: base_image_ref = "alpine:3.21" (from generated Dockerfile, not config)
 # ---------------------------------------------------------------------------
-@test "SMOKE-03: Template fixture (alpine) produces alpine:3.21 (Fix A2)" {
+@test "Template fixture (alpine) produces alpine:3.21 (Fix A2)" {
     local work="$TEST_TEMP_DIR/tpl"
     mkdir -p "$work"
     cp "$FIXTURE_TPL/config.yaml"          "$work/"
@@ -183,7 +183,7 @@ source_dashboard_fns() {
     [[ "$base_image_ref" == "alpine:3.21" ]]
 }
 
-@test "SMOKE-04: Template fixture (debian) produces concrete debian base_image_ref" {
+@test "Template fixture (debian) produces concrete debian base_image_ref" {
     local work="$TEST_TEMP_DIR/tpl-deb"
     mkdir -p "$work"
     cp "$FIXTURE_TPL/config.yaml"          "$work/"
@@ -226,7 +226,7 @@ source_dashboard_fns() {
 # Smoke 5 — Dashboard read fast-path (Fix B)
 # resolve_lineage_file must NOT call any network helpers
 # ---------------------------------------------------------------------------
-@test "SMOKE-05: Dashboard resolve_lineage_file does NOT invoke network helpers" {
+@test "Dashboard resolve_lineage_file does NOT invoke network helpers" {
     local work="$TEST_TEMP_DIR/dash"
     local lineage_dir="$work/.build-lineage"
     local container_dir="$work/test-container"
@@ -260,7 +260,7 @@ source_dashboard_fns() {
     [ "$network_calls" -eq 0 ]
 }
 
-@test "SMOKE-06: Dashboard resolves multi_arch_index_digest enriched field from lineage" {
+@test "Dashboard resolves multi_arch_index_digest enriched field from lineage" {
     local work="$TEST_TEMP_DIR/dash2"
     local lineage_dir="$work/.build-lineage"
     local container_dir="$work/enrich-test"
@@ -289,7 +289,7 @@ source_dashboard_fns() {
 # ---------------------------------------------------------------------------
 # Mutation guard: disabling A1 substitution pass causes ${...} to survive
 # ---------------------------------------------------------------------------
-@test "SMOKE-07: Mutation guard — disabling A1 substitution pass leaks placeholder" {
+@test "Mutation guard — disabling A1 substitution pass leaks placeholder" {
     local work="$TEST_TEMP_DIR/mut"
     mkdir -p "$work"
     cp "$FIXTURE_MONO/config.yaml"   "$work/"
@@ -323,7 +323,7 @@ source_dashboard_fns() {
 # base_image_ref containing ${...} (copilot HIGH finding)
 # Pre-v2 lineage files with leaked placeholders survive in multi-variant path.
 # ---------------------------------------------------------------------------
-@test "SMOKE-08: resolve_variant_lineage_json sanitizes pre-v2 leaked base_image_ref" {
+@test "resolve_variant_lineage_json sanitizes pre-v2 leaked base_image_ref" {
     local work="$TEST_TEMP_DIR/f3"
     local lineage_dir="$work/.build-lineage"
     local container_dir="$work/web-shell"
@@ -366,7 +366,7 @@ source_dashboard_fns() {
 # A v1 lineage file (no lineage_schema_version) with a CONCRETE base_image_ref
 # must be preserved, not blanked to "unknown".
 # ---------------------------------------------------------------------------
-@test "SMOKE-09: v1 lineage file with concrete base_image_ref is preserved, not blanked" {
+@test "v1 lineage file with concrete base_image_ref is preserved, not blanked" {
     local work="$TEST_TEMP_DIR/f1-concrete"
     local lineage_dir="$work/.build-lineage"
     local container_dir="$work/mycontainer"
@@ -415,7 +415,7 @@ source_dashboard_fns() {
 # decision (#648): even local/standalone builds resolve bases through the
 # mirror rather than Docker Hub. So _BASE_IMAGE_REF = "ghcr.io/oorabona/library/alpine:3.21".
 # ---------------------------------------------------------------------------
-@test "SMOKE-10: Template container resolves \${REMOTE_CR} to the GHCR mirror default (no placeholder leak)" {
+@test "Template container resolves \${REMOTE_CR} to the GHCR mirror default (no placeholder leak)" {
     # Simulates web-shell alpine variant local build (no REMOTE_CR in env).
     # The generated Dockerfile declares ARG REMOTE_CR=ghcr.io/oorabona (matching the
     # real web-shell/Dockerfile) and _prepare_build_args defaults REMOTE_CR to the
@@ -475,7 +475,7 @@ DOCKERFILE
 # jq "// default" guards.  A v2 lineage file with the new fields must not
 # cause any consumer to error or silently skip.
 # ---------------------------------------------------------------------------
-@test "SMOKE-11: enrich-lineage and extension-duration consumers do not error on v2 lineage" {
+@test "enrich-lineage and extension-duration consumers do not error on v2 lineage" {
     local work="$TEST_TEMP_DIR/schema-v2-audit"
     local lineage_dir="$work/.build-lineage"
     mkdir -p "$lineage_dir"

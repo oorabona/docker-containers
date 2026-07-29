@@ -6,11 +6,11 @@
 # avoid touching the real project containers or .build-lineage directory.
 #
 # Mutation guards:
-#   MG1: Remove internal-ref check → external library/php matches as php
-#   MG2: Remove self-dep check → container A listed as its own dep
-#   MG3: Remove sidecar skip → sidecar .sbom.json parsed as lineage
-#   MG4: Remove cycle detection → _depgraph_validate_no_cycles returns 0 on cycle
-#   MG5: Remove transitive dedup → diamond deps appear twice
+#   Remove internal-ref check → external library/php matches as php
+#   Remove self-dep check → container A listed as its own dep
+#   Remove sidecar skip → sidecar .sbom.json parsed as lineage
+#   Remove cycle detection → _depgraph_validate_no_cycles returns 0 on cycle
+#   Remove transitive dedup → diamond deps appear twice
 
 load "../test_helper"
 
@@ -57,7 +57,7 @@ _write_lineage() {
 
 # ---------------------------------------------------------------------------
 # Scenario 2: External-only — debian with library/debian:trixie → no internal dep
-# MG1: verifies external library/ is NOT classified as internal
+# verifies external library/ is NOT classified as internal
 # ---------------------------------------------------------------------------
 @test "depgraph: debian lineage with library/debian:trixie → empty deps (external)" {
     _write_lineage "debian" "trixie" "library/debian:trixie"
@@ -120,7 +120,7 @@ _write_lineage() {
 
 # ---------------------------------------------------------------------------
 # Scenario 6: Cycle detection — A→B→A → validate_no_cycles exits 1
-# MG4: if cycle detection removed, this test would fail
+# if cycle detection removed, this test would fail
 # ---------------------------------------------------------------------------
 @test "depgraph: cycle detection — A→B→A → _depgraph_validate_no_cycles exits 1" {
     _write_lineage "containerA" "1.0" "ghcr.io/oorabona/containerB:latest"
@@ -134,7 +134,7 @@ _write_lineage() {
 
 # ---------------------------------------------------------------------------
 # Scenario 7: Sidecar skip — .sbom.json not counted as lineage
-# MG3: if sidecar skip removed, the sidecar would be parsed as a dep
+# if sidecar skip removed, the sidecar would be parsed as a dep
 # ---------------------------------------------------------------------------
 @test "depgraph: sidecar skip — .sbom.json not parsed as lineage" {
     # Write a sidecar file that references php — should NOT be read as a lineage
@@ -180,7 +180,7 @@ _write_lineage() {
 
 # ---------------------------------------------------------------------------
 # Scenario 10: External-namespace overlap — library/php NOT our php
-# MG1: the key case — library/php must NOT match internal container "php"
+# the key case — library/php must NOT match internal container "php"
 # ---------------------------------------------------------------------------
 @test "depgraph: library/php is external, NOT matched to internal php container" {
     _write_lineage "wordpress" "latest" "library/php:8.4-fpm-alpine"
@@ -207,7 +207,7 @@ _write_lineage() {
 
 # ---------------------------------------------------------------------------
 # Scenario 12: Deduplication — same dep across multiple variant files listed once
-# MG5: if dedup removed, same dep would appear twice
+# if dedup removed, same dep would appear twice
 # ---------------------------------------------------------------------------
 @test "depgraph: dedup — two variant files with same base ref → dep listed once" {
     _write_lineage "wordpress" "6.9.1-alpine" "ghcr.io/oorabona/php:latest"
@@ -223,7 +223,7 @@ _write_lineage() {
 
 # ---------------------------------------------------------------------------
 # Scenario 13: Transitive with diamond — A→B, A→C, B→C: transitive(A) = "C B" (C once)
-# MG5: if dedup removed in transitive, C would appear twice
+# if dedup removed in transitive, C would appear twice
 # ---------------------------------------------------------------------------
 @test "depgraph: transitive diamond dedup — A→B, A→C, B→C: C appears once" {
     export _DEPGRAPH_CONTAINERS_OVERRIDE="containerA containerB containerC"
@@ -308,9 +308,9 @@ _write_lineage() {
 # It then asserts the result contains php and debian but NOT any banner token.
 #
 # Mutation guards:
-#   MG-F2a: reverting 2>/dev/null → 2>&1: banner leaks into output; "Found"
+#   reverting 2>/dev/null → 2>&1: banner leaks into output; "Found"
 #            appears in the valid-container set and this test fails.
-#   MG-F2b: removing the grep -E filter: banner tokens on stdout (if any)
+#   removing the grep -E filter: banner tokens on stdout (if any)
 #            would not be stripped; test would catch future regressions.
 # ---------------------------------------------------------------------------
 
@@ -666,9 +666,9 @@ _write_lineage() {
 # for both the lineage-file path and the config.yaml fallback path.
 #
 # Mutation guards:
-#   MG-D2a: checking [[ -n "$parent" ]] only (ignoring _iref_rc) → rc=2 swallowed
+#   checking [[ -n "$parent" ]] only (ignoring _iref_rc) → rc=2 swallowed
 #            (test "owner failure in lineage path → get_deps exits non-zero")
-#   MG-D2b: same for config.yaml fallback path
+#   same for config.yaml fallback path
 #            (test "owner failure in config.yaml fallback path → get_deps exits non-zero")
 # ---------------------------------------------------------------------------
 
@@ -820,10 +820,10 @@ _write_lineage() {
 # that a non-zero rc from _depgraph_get_deps NEVER silently continues.
 #
 # Mutation guards:
-#   MG-S1: restoring `-eq 2` in _depgraph_get_deps_transitive → status=0 on
+#   restoring `-eq 2` in _depgraph_get_deps_transitive → status=0 on
 #           rc=1 input, test fails — catches regression.
-#   MG-S2: restoring `-eq 2` in _depgraph_get_consumers → same.
-#   MG-S3: restoring `-eq 2` in _dfs_cycle → same.
+#   restoring `-eq 2` in _depgraph_get_consumers → same.
+#   restoring `-eq 2` in _dfs_cycle → same.
 # ---------------------------------------------------------------------------
 
 _make_list_ok_listbuilds_fail() {
@@ -849,7 +849,7 @@ EOF
     chmod +x "$mock_root/make"
 }
 
-@test "DefectS: rc=1 from _depgraph_get_deps propagates through _depgraph_get_deps_transitive" {
+@test "rc=1 from _depgraph_get_deps propagates through _depgraph_get_deps_transitive" {
     # _depgraph_get_deps returns rc=2 when list-builds fails (Defect Q path).
     # _depgraph_get_deps_transitive's old guard (-eq 2 only) already catches rc=2,
     # but with the new -ne 0 guard it also catches rc=1 if _depgraph_get_deps ever
@@ -874,7 +874,7 @@ EOF
     [[ "$output" == *"::error::"* ]]
 }
 
-@test "DefectS: rc=1 from _depgraph_get_deps propagates through _depgraph_get_consumers" {
+@test "rc=1 from _depgraph_get_deps propagates through _depgraph_get_consumers" {
     local mock_root="$TEST_TEMP_DIR/defects_consumers"
     _make_list_ok_listbuilds_fail "$mock_root"
     _write_lineage "wordpress" "6.9.4-alpine" "ghcr.io/oorabona/php:latest"
@@ -894,7 +894,7 @@ EOF
     [[ "$output" == *"::error::"* ]]
 }
 
-@test "DefectS: rc=1 from _depgraph_get_deps propagates through _depgraph_validate_no_cycles" {
+@test "rc=1 from _depgraph_get_deps propagates through _depgraph_validate_no_cycles" {
     local mock_root="$TEST_TEMP_DIR/defects_cycles"
     _make_list_ok_listbuilds_fail "$mock_root"
     _write_lineage "wordpress" "6.9.4-alpine" "ghcr.io/oorabona/php:latest"
@@ -981,8 +981,8 @@ EOF
 # that are never resolved.
 #
 # Mutation guards:
-#   MG-N1: removing the active-tag filter → stale-tag test gets dep=php (FAIL)
-#   MG-N2: fail-closed instead of fail-open → fallback test returns empty output (FAIL)
+#   removing the active-tag filter → stale-tag test gets dep=php (FAIL)
+#   fail-closed instead of fail-open → fallback test returns empty output (FAIL)
 # ---------------------------------------------------------------------------
 
 @test "depgraph: stale lineage tag excluded from deps when active filter is set (Defect N)" {
@@ -1074,9 +1074,9 @@ EOF
 # the caller skips this container for this cron run.
 #
 # Mutation guards:
-#   MG-Q1: restoring "return 0" on list-builds failure → test expecting rc=2
+#   restoring "return 0" on list-builds failure → test expecting rc=2
 #           gets rc=0, catching the regression immediately.
-#   MG-Q2: restoring ::warning:: instead of ::error:: → test checking stderr
+#   restoring ::warning:: instead of ::error:: → test checking stderr
 #           for "error" fails, catching the annotation severity regression.
 # ---------------------------------------------------------------------------
 
@@ -1198,9 +1198,9 @@ EOF
 # cascade:waiting-for-<dep> protection.
 #
 # Mutation guards:
-#   MG-P1: reverting found_any=true to before the placeholder check →
+#   reverting found_any=true to before the placeholder check →
 #           test 1 (the bug) returns "" instead of "debian" (FAIL).
-#   MG-P2: treating ${REMOTE_CR}/... as a placeholder →
+#   treating ${REMOTE_CR}/... as a placeholder →
 #           test 2 (REMOTE_CR authoritative) returns "" instead of "debian" (FAIL).
 # ---------------------------------------------------------------------------
 
@@ -1246,7 +1246,7 @@ EOF
     mkdir -p "$isolated_dir/web-shell"
 
     # Lineage file: ${REMOTE_CR}/debian:trixie — authoritative
-    # SC2016: single-quote stores literal ${REMOTE_CR} string intentionally
+    # single-quote stores literal ${REMOTE_CR} string intentionally
     # shellcheck disable=SC2016
     printf '{"container":"web-shell","tag":"1.7.7","base_image_ref":"${REMOTE_CR}/debian:trixie","base_image_digest":"sha256:%064d"}' 0 \
         > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-1.7.7.json"
@@ -1354,11 +1354,11 @@ EOF
 # run as a UNION with any lineage-derived deps → debian recovered.
 #
 # Mutation guards:
-#   MG-R1: reverting _saw_nonauthoritative flag + restoring "found_any==false" guard →
+#   reverting _saw_nonauthoritative flag + restoring "found_any==false" guard →
 #           test 1 (mixed external+placeholder) returns "" instead of "debian" (FAIL).
-#   MG-R2: removing dedup in config.yaml union path →
+#   removing dedup in config.yaml union path →
 #           test 2 (mixed, same parent) returns count>1 instead of "1" (FAIL).
-#   MG-R3: making _saw_nonauthoritative suppress found_any check →
+#   making _saw_nonauthoritative suppress found_any check →
 #           test 3 (all-authoritative no-regression) leaks config.yaml dep (FAIL).
 # ---------------------------------------------------------------------------
 
@@ -1508,10 +1508,10 @@ EOF
 # PROJECT_ROOT plays no role in selecting which code is sourced.
 #
 # Mutation guards:
-#   MG-SH1: reverting to `source "${PROJECT_ROOT}/helpers/lineage-utils.sh"` →
+#   reverting to `source "${PROJECT_ROOT}/helpers/lineage-utils.sh"` →
 #            test 1 (bogus PROJECT_ROOT, source succeeds + function available) FAILS:
 #            source errors out because /tmp/helpers/lineage-utils.sh doesn't exist.
-#   MG-SH2: same revert → test 2 (structural grep) FAILS: pattern not present.
+#   same revert → test 2 (structural grep) FAILS: pattern not present.
 # ---------------------------------------------------------------------------
 
 @test "depgraph: source-hijack prevention — bogus PROJECT_ROOT does not break sourcing of lineage-utils.sh" {
@@ -1567,15 +1567,15 @@ EOF
 # fail-closed list-builds call) when no non-sidecar lineage files exist.
 #
 # Mutation guards:
-#   MG-F2a: removing the no-lineage short-circuit (always running active-tag
+#   removing the no-lineage short-circuit (always running active-tag
 #            filter) → when list-builds returns empty, function returns rc=2
 #            instead of proceeding to config.yaml (test catches it).
-#   MG-F2b: weakening the Defect-N fail-closed (lineage-present + list-builds
+#   weakening the Defect-N fail-closed (lineage-present + list-builds
 #            failure → not rc=2) → stale retired-variant lineage could be
 #            resurrected (second test catches it).
 # ---------------------------------------------------------------------------
 
-@test "F2: no-lineage new container with config.yaml internal dep → returns dep via config fallback (exit 0)" {
+@test "no-lineage new container with config.yaml internal dep → returns dep via config fallback (exit 0)" {
     # Container "newcontainer" has NO lineage files (never built).
     # Its config.yaml references an internal base → dep must be returned via config fallback.
     # Uses ${REMOTE_CR}/debian pattern (matches the config-fallback grep and resolves
@@ -1605,7 +1605,7 @@ CONFIGEOF
     [ "$output" = "debian" ]
 }
 
-@test "F2: no-lineage container with no config.yaml internal dep → empty deps, exit 0 (not rc=2)" {
+@test "no-lineage container with no config.yaml internal dep → empty deps, exit 0 (not rc=2)" {
     # Container has no lineage and no internal dep in config.yaml → empty string, exit 0.
     local fake_root="$TEST_TEMP_DIR/fake-root-f2b"
     mkdir -p "$fake_root/newcontainer"
@@ -1702,9 +1702,9 @@ STUB
 #   separate command.
 #
 # Mutation guards:
-#   MG-INJ1: removing _escape_gha_command wrap on _file_tag at the ::notice::
+#   removing _escape_gha_command wrap on _file_tag at the ::notice::
 #             line → test 1 FAILS (raw newline + injected command on stderr).
-#   MG-INJ2: removing _escape_gha_command wrap on base_ref at the ::error::
+#   removing _escape_gha_command wrap on base_ref at the ::error::
 #             line → test 2 FAILS (raw "::set-env::" appears as own command).
 # ---------------------------------------------------------------------------
 

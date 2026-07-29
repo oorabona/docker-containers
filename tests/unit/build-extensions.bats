@@ -126,7 +126,7 @@ _setup_default_mocks() {
 # ---------------------------------------------------------------------------
 
 # Case 1: LOCAL_ONLY=true, image found locally, FORCE=false  →  skip (return 1)
-@test "1: LOCAL_ONLY=true, image present locally, FORCE=false → skip" {
+@test "LOCAL_ONLY=true, image present locally, FORCE=false → skip" {
     export LOCAL_ONLY=true
     export FORCE=false
     _mock_docker_present
@@ -137,7 +137,7 @@ _setup_default_mocks() {
 }
 
 # Case 2: LOCAL_ONLY=true, image found locally, FORCE=true  →  build (return 0)
-@test "2: LOCAL_ONLY=true, image present locally, FORCE=true → build" {
+@test "LOCAL_ONLY=true, image present locally, FORCE=true → build" {
     export LOCAL_ONLY=true
     export FORCE=true
     _mock_docker_present
@@ -147,7 +147,7 @@ _setup_default_mocks() {
 }
 
 # Case 3: LOCAL_ONLY=true, image absent locally  →  build (return 0)
-@test "3: LOCAL_ONLY=true, image absent locally → build" {
+@test "LOCAL_ONLY=true, image absent locally → build" {
     export LOCAL_ONLY=true
     export FORCE=false
     _mock_docker_absent
@@ -157,7 +157,7 @@ _setup_default_mocks() {
 }
 
 # Case 4: LOCAL_ONLY=false, FORCE=true  →  build regardless (return 0)
-@test "4: LOCAL_ONLY=false, FORCE=true → build regardless" {
+@test "LOCAL_ONLY=false, FORCE=true → build regardless" {
     export LOCAL_ONLY=false
     export FORCE=true
     # registry check is irrelevant when FORCE=true
@@ -168,7 +168,7 @@ _setup_default_mocks() {
 }
 
 # Case 5: LOCAL_ONLY=false, FORCE=false, image in registry  →  skip (return 1)
-@test "5: LOCAL_ONLY=false, FORCE=false, image in registry → skip" {
+@test "LOCAL_ONLY=false, FORCE=false, image in registry → skip" {
     export LOCAL_ONLY=false
     export FORCE=false
     _mock_registry_present
@@ -179,7 +179,7 @@ _setup_default_mocks() {
 }
 
 # Case 6: LOCAL_ONLY=false, FORCE=false, image absent  →  build (return 0)
-@test "6: LOCAL_ONLY=false, FORCE=false, image absent → build" {
+@test "LOCAL_ONLY=false, FORCE=false, image absent → build" {
     export LOCAL_ONLY=false
     export FORCE=false
     _mock_registry_absent
@@ -189,7 +189,7 @@ _setup_default_mocks() {
 }
 
 # Case 7: Dockerfile missing  →  skip with warning (return 1)
-@test "7: Dockerfile missing → skip with warning" {
+@test "Dockerfile missing → skip with warning" {
     export LOCAL_ONLY=false
     export FORCE=false
     rm -f "$EXT_DOCKERFILE"
@@ -203,7 +203,7 @@ _setup_default_mocks() {
 # Differs from case 4 (FORCE=true with registry PRESENT): exercises the
 # FORCE-short-circuit path BEFORE the registry probe so a registry outage
 # during a force rebuild can't accidentally skip.
-@test "8: LOCAL_ONLY=false, FORCE=true, image absent in registry → build (force short-circuits before probe)" {
+@test "LOCAL_ONLY=false, FORCE=true, image absent in registry → build (force short-circuits before probe)" {
     export LOCAL_ONLY=false
     export FORCE=true
     _mock_registry_absent

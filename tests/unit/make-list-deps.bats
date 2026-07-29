@@ -6,9 +6,9 @@
 # touching the real project state.
 #
 # Mutation guards:
-#   MG1: Remove validation → unknown container accepted
-#   MG2: Remove direct dep printing → output missing 'direct' line
-#   MG3: Remove transitive dep printing → output missing 'transitive' line
+#   Remove validation → unknown container accepted
+#   Remove direct dep printing → output missing 'direct' line
+#   Remove transitive dep printing → output missing 'transitive' line
 
 load "../test_helper"
 
@@ -42,7 +42,7 @@ _write_lineage() {
 
 # ---------------------------------------------------------------------------
 # Test 1: Known container with direct dep prints correct output
-# MG2: verifies 'direct:' line is present
+# verifies 'direct:' line is present
 # ---------------------------------------------------------------------------
 @test "make list-deps: known container prints direct and transitive" {
     export _DEPGRAPH_CONTAINERS_OVERRIDE="php wordpress"
@@ -56,7 +56,7 @@ _write_lineage() {
 
 # ---------------------------------------------------------------------------
 # Test 2: Unknown container exits non-zero with error message
-# MG1: verifies validation is present
+# verifies validation is present
 # ---------------------------------------------------------------------------
 @test "make list-deps: unknown container exits 1 with error" {
     export _DEPGRAPH_CONTAINERS_OVERRIDE="php wordpress"
@@ -67,7 +67,7 @@ _write_lineage() {
 
 # ---------------------------------------------------------------------------
 # Test 3: Container with no deps prints "(none)" messages
-# MG3: verifies no-dep case is explicitly shown
+# verifies no-dep case is explicitly shown
 # ---------------------------------------------------------------------------
 @test "make list-deps: container with no internal deps prints (none)" {
     export _DEPGRAPH_CONTAINERS_OVERRIDE="debian"

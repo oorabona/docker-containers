@@ -2,16 +2,16 @@
 # Unit tests for scripts/bake-merge-manifests.sh — ADR-013 R3 slice
 #
 # Mutation guards:
-#   MM1: Emit only versioned ref (omit :latest) → default variant misses rolling tag
-#   MM2: Include single-arch fallback path → strict guard violated
-#   MM5: Pass only -amd64 or only -arm64 → merge source always lists both arches
-#   MM6: Cell set diverges from generator bake mode → parity assertion fails
-#   MM7: Publish :latest for non-latest retained cell → retained version clobbers :latest (F2)
-#   MM8: Emit a docker.io ref → GHCR-only contract violated (egress-containment ADR-013)
-#   MM9: Route rolling alias by flavor → github-runner debian-trixie-base and -dev collide (FIX F)
-#   MM10: Skip duplicate-ref guard → silent manifest corruption on variant.yaml mistakes (FIX F guard)
-#   MM11: Suppress DRY-RUN stdout → documented dry-run contract unmet (FIX H)
-#   MM12: Allow --all-retained flag in containers input → multi-version bake with single-version artifact (FIX I)
+#   Emit only versioned ref (omit :latest) → default variant misses rolling tag
+#   Include single-arch fallback path → strict guard violated
+#   Pass only -amd64 or only -arm64 → merge source always lists both arches
+#   Cell set diverges from generator bake mode → parity assertion fails
+#   Publish :latest for non-latest retained cell → retained version clobbers :latest (F2)
+#   Emit a docker.io ref → GHCR-only contract violated (egress-containment ADR-013)
+#   Route rolling alias by flavor → github-runner debian-trixie-base and -dev collide (FIX F)
+#   Skip duplicate-ref guard → silent manifest corruption on variant.yaml mistakes (FIX F guard)
+#   Suppress DRY-RUN stdout → documented dry-run contract unmet (FIX H)
+#   Allow --all-retained flag in containers input → multi-version bake with single-version artifact (FIX I)
 
 load "../test_helper"
 
@@ -55,10 +55,10 @@ _run_merge() {
 }
 
 # ---------------------------------------------------------------------------
-# MM1: default variant (is_default=true) → GHCR imagetools create carries
+# default variant (is_default=true) → GHCR imagetools create carries
 # both the versioned ref AND :latest.
 # ---------------------------------------------------------------------------
-@test "BMM-01: default variant GHCR merge includes both versioned and :latest refs" {
+@test "default variant GHCR merge includes both versioned and :latest refs" {
     _run_merge debian
     [ "$status" -eq 0 ]
 
@@ -76,10 +76,10 @@ _run_merge() {
 }
 
 # ---------------------------------------------------------------------------
-# MM2: non-default flavored variant → GHCR line carries :latest-<flavor>
+# non-default flavored variant → GHCR line carries :latest-<flavor>
 # NOT bare :latest.
 # ---------------------------------------------------------------------------
-@test "BMM-02: non-default flavored variant GHCR merge carries :latest-<flavor>, not bare :latest" {
+@test "non-default flavored variant GHCR merge carries :latest-<flavor>, not bare :latest" {
     _run_merge web-shell
     [ "$status" -eq 0 ]
 
@@ -103,11 +103,11 @@ _run_merge() {
 }
 
 # ---------------------------------------------------------------------------
-# MM5: STRICT — both arch sources always present in every GHCR create call.
+# STRICT — both arch sources always present in every GHCR create call.
 # Assert every "imagetools create" line that has a ghcr.io -t ref also
 # passes both -amd64 and -arm64 sources.
 # ---------------------------------------------------------------------------
-@test "BMM-03: strict — every GHCR imagetools create call lists both -amd64 and -arm64 sources" {
+@test "strict — every GHCR imagetools create call lists both -amd64 and -arm64 sources" {
     _run_merge web-shell github-runner debian
     [ "$status" -eq 0 ]
 
@@ -128,7 +128,7 @@ _run_merge() {
 # line that lists ONLY -amd64 or ONLY -arm64 as its sole source for a
 # rolling/latest-tagged publish (the strict guard).
 # ---------------------------------------------------------------------------
-@test "BMM-04: no single-arch-only rolling publish line exists in dry-run output" {
+@test "no single-arch-only rolling publish line exists in dry-run output" {
     _run_merge debian web-shell
     [ "$status" -eq 0 ]
 
@@ -155,11 +155,11 @@ _run_merge() {
 }
 
 # ---------------------------------------------------------------------------
-# MM8: GHCR-only — no docker.io ref ever emitted.
+# GHCR-only — no docker.io ref ever emitted.
 # ADR-013 egress-containment: bake intermediates and final manifests are
 # GHCR-only. DockerHub publish is handled by the existing auto-build.yaml.
 # ---------------------------------------------------------------------------
-@test "BMM-05: GHCR-only — no docker.io ref emitted for any container" {
+@test "GHCR-only — no docker.io ref emitted for any container" {
     _run_merge debian web-shell
     [ "$status" -eq 0 ]
 
@@ -169,10 +169,10 @@ _run_merge() {
 }
 
 # ---------------------------------------------------------------------------
-# MM6: Cell-plan parity — the container/tag set from --cells matches the
+# Cell-plan parity — the container/tag set from --cells matches the
 # set that the merge script iterates (integration smoke).
 # ---------------------------------------------------------------------------
-@test "BMM-07: cell plan from --cells matches cells iterated by merge script for web-shell github-runner debian" {
+@test "cell plan from --cells matches cells iterated by merge script for web-shell github-runner debian" {
     _run_merge web-shell github-runner debian
     [ "$status" -eq 0 ]
 
@@ -227,7 +227,7 @@ CALLER
 # Catches MG7: if the is_latest_version gate is missing, both trixie and
 # bookworm would claim :latest, with the last-merged (older) version winning.
 # ---------------------------------------------------------------------------
-@test "BMM-09: F2 — retained non-latest cell publishes versioned ref only, not :latest" {
+@test "F2 — retained non-latest cell publishes versioned ref only, not :latest" {
     export REMOTE_CR="ghcr.io/oorabona"
 
     _call_merge_cell "debian" "bookworm" "" "true" \
@@ -244,7 +244,7 @@ CALLER
     [[ "$create_line" != *"ghcr.io/oorabona/debian:latest"* ]]
 }
 
-@test "BMM-10: F2 — latest cell (is_latest_version=true) DOES publish :latest" {
+@test "F2 — latest cell (is_latest_version=true) DOES publish :latest" {
     export REMOTE_CR="ghcr.io/oorabona"
 
     _call_merge_cell "debian" "trixie" "" "true" \
@@ -262,7 +262,7 @@ CALLER
 # FIX F / MM9: github-runner dry-run merge emits distinct rolling aliases.
 # debian-trixie-base and debian-trixie-dev must NOT share latest-debian-trixie.
 # ---------------------------------------------------------------------------
-@test "BMM-11: FIX F — github-runner merge emits latest-debian-trixie-base AND latest-debian-trixie-dev (distinct, no collision)" {
+@test "FIX F — github-runner merge emits latest-debian-trixie-base AND latest-debian-trixie-dev (distinct, no collision)" {
     export REMOTE_CR="ghcr.io/oorabona"
     _run_merge github-runner
     [ "$status" -eq 0 ]
@@ -286,7 +286,7 @@ CALLER
 # Provide a mock generate-bake-hcl.sh that outputs a dup-ref cell plan, then
 # invoke the real bake-merge-manifests.sh main() via a sourced caller.
 # ---------------------------------------------------------------------------
-@test "BMM-12: FIX F guard — merge aborts with error when two cells map to the same final ref" {
+@test "FIX F guard — merge aborts with error when two cells map to the same final ref" {
     export REMOTE_CR="ghcr.io/oorabona"
 
     # -----------------------------------------------------------------------
@@ -333,7 +333,7 @@ CALLER
 # Catches MM11: if the dry-run branch is removed, the command is captured
 # into err_output and never shown — the documented contract is broken.
 # ---------------------------------------------------------------------------
-@test "BMM-13: FIX H — DRY_RUN=true emits imagetools create command visibly and exits 0" {
+@test "FIX H — DRY_RUN=true emits imagetools create command visibly and exits 0" {
     export REMOTE_CR="ghcr.io/oorabona"
     export DRY_RUN="true"
 
@@ -376,21 +376,21 @@ _run_containers_guard() {
     run bash "$guard_script"
 }
 
-@test "BMM-14: FIX I/N — containers guard rejects --all-retained flag injection" {
+@test "FIX I/N — containers guard rejects --all-retained flag injection" {
     _run_containers_guard "--all-retained github-runner"
     [ "$status" -ne 0 ]
     [[ "$output" == *"invalid container token"* ]]
     [[ "$output" == *"--all-retained"* ]]
 }
 
-@test "BMM-14b: FIX N — containers guard rejects glob pattern (foo*)" {
+@test "FIX N — containers guard rejects glob pattern (foo*)" {
     _run_containers_guard "foo*"
     [ "$status" -ne 0 ]
     [[ "$output" == *"invalid container token"* ]]
     [[ "$output" == *"foo"* ]]
 }
 
-@test "BMM-15: FIX I/N — containers guard accepts valid bare container names" {
+@test "FIX I/N — containers guard accepts valid bare container names" {
     _run_containers_guard "github-runner debian"
     [ "$status" -eq 0 ]
     [[ "$output" == *"OK"* ]]
@@ -402,7 +402,7 @@ _run_containers_guard() {
 # expected arguments and the merge succeeds (no word-splitting regression).
 # ---------------------------------------------------------------------------
 
-@test "BMM-16: FIX U — quoted \$DOCKER invokes mock correctly with expected imagetools args" {
+@test "FIX U — quoted \$DOCKER invokes mock correctly with expected imagetools args" {
     _run_merge debian
     [ "$status" -eq 0 ]
 

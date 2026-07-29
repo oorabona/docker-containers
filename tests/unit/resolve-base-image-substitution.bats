@@ -73,7 +73,7 @@ make_dockerfile() {
 # Fix A1: build_args set substitution (the sslh root cause)
 # =============================================================================
 
-@test "RBIS-01: ARG-without-default substituted via build_args set (sslh root cause)" {
+@test "ARG-without-default substituted via build_args set (sslh root cause)" {
     # Dockerfile has ARG without defaults — values must come from _prepare_build_args
     make_dockerfile "ARG OS_IMAGE_BASE
 ARG OS_IMAGE_TAG" "FROM \${OS_IMAGE_BASE}:\${OS_IMAGE_TAG}"
@@ -97,7 +97,7 @@ ARG OS_IMAGE_TAG" "FROM \${OS_IMAGE_BASE}:\${OS_IMAGE_TAG}"
     }
 }
 
-@test "RBIS-02: CUSTOM_BUILD_ARGS precedence preserved (override wins over build_args set)" {
+@test "CUSTOM_BUILD_ARGS precedence preserved (override wins over build_args set)" {
     # REMOTE_CR cannot appear in config.yaml build_args (validator blocks it).
     # It arrives only via CUSTOM_BUILD_ARGS (CI-injected). Simulate that here:
     # build_args set contributes REMOTE_CR=ghcr.io/oorabona, but CUSTOM_BUILD_ARGS
@@ -120,7 +120,7 @@ ARG OS_IMAGE_TAG" "FROM \${OS_IMAGE_BASE}:\${OS_IMAGE_TAG}"
     }
 }
 
-@test "RBIS-03: build_args set wins over Dockerfile inline default" {
+@test "build_args set wins over Dockerfile inline default" {
     # Dockerfile has ARG with a default, but build_args in config.yaml overrides it
     make_dockerfile "ARG DEBIAN_TAG=stable" "FROM ghcr.io/oorabona/debian:\${DEBIAN_TAG}"
     make_config 'ghcr.io/oorabona/debian:${DEBIAN_TAG}' '  DEBIAN_TAG: "trixie"'
@@ -136,7 +136,7 @@ ARG OS_IMAGE_TAG" "FROM \${OS_IMAGE_BASE}:\${OS_IMAGE_TAG}"
     }
 }
 
-@test "RBIS-04: Undefined ARG produces empty base_image_ref with stderr warning" {
+@test "Undefined ARG produces empty base_image_ref with stderr warning" {
     make_dockerfile "ARG MYSTERY_TAG" "FROM \${MYSTERY_TAG}-base"
     make_config '${MYSTERY_TAG}-base'  # no build_args
 
@@ -165,7 +165,7 @@ ARG OS_IMAGE_TAG" "FROM \${OS_IMAGE_BASE}:\${OS_IMAGE_TAG}"
     }
 }
 
-@test "RBIS-05: CUSTOM_BUILD_ARGS with shell metacharacters does NOT execute" {
+@test "CUSTOM_BUILD_ARGS with shell metacharacters does NOT execute" {
     local marker="$TEST_DIR/marker_was_created"
     [[ ! -f "$marker" ]] || rm -f "$marker"
 
@@ -188,7 +188,7 @@ ARG OS_IMAGE_TAG" "FROM \${OS_IMAGE_BASE}:\${OS_IMAGE_TAG}"
     }
 }
 
-@test "RBIS-06: Cross-arg dependencies — chain resolves or terminates bounded" {
+@test "Cross-arg dependencies — chain resolves or terminates bounded" {
     # A depends on B, B depends on C, C is concrete.
     # Values with ${...} fail the validator so we seed _BUILD_ARGS_RESOLVED directly
     # (the production code path is: _prepare_build_args assembles the map; here we
@@ -218,7 +218,7 @@ ARG C" "FROM \${A}-base"
 # Fix A2: post-template-generation relocation
 # =============================================================================
 
-@test "RBIS-07: Template-driven container reads generator's concrete FROM (Fix A2)" {
+@test "Template-driven container reads generator's concrete FROM (Fix A2)" {
     # Set up a template fixture in TEST_DIR
     local fixture_dir="$TEST_DIR/template-fixture"
     cp -r "$FIXTURES_530/template/." "$fixture_dir/"
@@ -260,7 +260,7 @@ ARG C" "FROM \${A}-base"
     }
 }
 
-@test "RBIS-08: Monolithic container unaffected by A2 relocation" {
+@test "Monolithic container unaffected by A2 relocation" {
     # Copy monolithic fixture
     local fixture_dir="$TEST_DIR/monolithic-fixture"
     cp -r "$FIXTURES_530/monolithic/." "$fixture_dir/"
@@ -284,7 +284,7 @@ ARG C" "FROM \${A}-base"
 # Fix C + D: JSON safety and eval removal (invoked indirectly via _emit_build_lineage)
 # =============================================================================
 
-@test "RBIS-09: build_arg with quote character produces valid lineage JSON" {
+@test "build_arg with quote character produces valid lineage JSON" {
     make_dockerfile "" "FROM alpine:3.21"
     # Values with quotes fail the build_args validator (correct: unsafe shell chars).
     # We test _emit_build_lineage directly by writing config.yaml with special characters
@@ -343,7 +343,7 @@ CONFIG
     }
 }
 
-@test "RBIS-10: lineage_schema_version field equals 2 in emitted JSON" {
+@test "lineage_schema_version field equals 2 in emitted JSON" {
     make_dockerfile "" "FROM alpine:3.21"
     make_config "alpine:3.21"
 
@@ -381,7 +381,7 @@ CONFIG
 # (orthogonal gate codex HIGH finding)
 # =============================================================================
 
-@test "RBIS-11: _prepare_build_args propagates prepare_build_args failure; _BUILD_ARGS_RESOLVED stays empty" {
+@test "_prepare_build_args propagates prepare_build_args failure; _BUILD_ARGS_RESOLVED stays empty" {
     # Inject a config.yaml with a build_arg containing REMOTE_CR key — this triggers
     # the validator inside prepare_build_args → build_args_flags → _vbc_validate_build_args_config
     # to return non-zero. Pre-fix: _prepare_build_args ignores the error and populates
@@ -418,7 +418,7 @@ CONFIG
 # Post-fix: the reset is unconditional (before prepare_build_args invocation).
 # =============================================================================
 
-@test "RBIS-16: _BUILD_ARGS_RESOLVED is empty after failed second call, not carrying call-1 values" {
+@test "_BUILD_ARGS_RESOLVED is empty after failed second call, not carrying call-1 values" {
     # Call 1: valid config → populates _BUILD_ARGS_RESOLVED
     make_dockerfile "ARG OS_IMAGE_BASE
 ARG OS_IMAGE_TAG" "FROM \${OS_IMAGE_BASE}:\${OS_IMAGE_TAG}"
@@ -459,7 +459,7 @@ ARG OS_IMAGE_TAG" "FROM \${OS_IMAGE_BASE}:\${OS_IMAGE_TAG}"
 # when from_generated=0 (default; monolithic container, no template expansion, #530).
 # =============================================================================
 
-@test "RBIS-12: Unresolved placeholder in config.yaml is NOT replaced by multi-stage FROM scratch" {
+@test "Unresolved placeholder in config.yaml is NOT replaced by multi-stage FROM scratch" {
     # config.yaml::base_image contains an unresolvable ${MYSTERY_TAG}
     # Dockerfile is multi-stage; final non-AS stage is "FROM scratch"
     # Bug: the post-substitution fallback replaces the unresolved literal with "scratch"
@@ -515,7 +515,7 @@ DOCKER
 # Pre-fix regex '^ARG [A-Z_]+=' skips names containing digits (e.g. UBUNTU_2404_TAG).
 # =============================================================================
 
-@test "RBIS-13: ARG name with embedded digits is parsed and substituted (UBUNTU_2404_TAG)" {
+@test "ARG name with embedded digits is parsed and substituted (UBUNTU_2404_TAG)" {
     # github-runner ubuntu-2404 Dockerfile contains:
     #   ARG UBUNTU_2404_TAG=24.04
     # The pre-fix regex '^ARG [A-Z_]+=' skips this ARG entirely because '2404' contains digits,
@@ -540,7 +540,7 @@ DOCKER
     }
 }
 
-@test "RBIS-14: ARG name with leading letter then digits-and-underscore mixed (R3_BASE=r3)" {
+@test "ARG name with leading letter then digits-and-underscore mixed (R3_BASE=r3)" {
     # Verify that a name starting with a letter followed by mixed digits/underscores
     # is correctly parsed after the fix.
     make_dockerfile "ARG R3_BASE=r3-img" "FROM \${R3_BASE}:latest"
@@ -564,7 +564,7 @@ DOCKER
 # emitted.  Caller can detect failure via empty string.
 # =============================================================================
 
-@test "RBIS-15: Expanding build_args chain hits iteration cap and clears _BASE_IMAGE_REF" {
+@test "Expanding build_args chain hits iteration cap and clears _BASE_IMAGE_REF" {
     # A self-referential chain where each substitution introduces a new placeholder
     # without converging: A=x${A}y — the value grows each iteration, never stabilising.
     # The 10-iteration cap must fire AND _BASE_IMAGE_REF must be cleared to empty.

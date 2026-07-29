@@ -200,7 +200,7 @@ GH_SHIM
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-1: cache_hit_no_refetch — the Observable Success proof
+# cache_hit_no_refetch — the Observable Success proof
 # ---------------------------------------------------------------------------
 
 @test "content-digest extract: valid Docker-Content-Digest header returns hex" {
@@ -268,7 +268,7 @@ GH_SHIM
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-2: poisoned per-arch body (.errors envelope) → return 1, no cache file
+# poisoned per-arch body (.errors envelope) → return 1, no cache file
 # ---------------------------------------------------------------------------
 
 @test "poisoned per-arch body (.errors) returns 1 and writes no cache file" {
@@ -332,7 +332,7 @@ CURL_POISON
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-3: all-or-nothing — 1st arch valid, 2nd arch returns .errors → return 1 + zero stdout
+# all-or-nothing — 1st arch valid, 2nd arch returns .errors → return 1 + zero stdout
 # ---------------------------------------------------------------------------
 
 @test "all-or-nothing: valid 1st arch + errored 2nd arch returns 1 with zero stdout" {
@@ -400,7 +400,7 @@ CURL_MIXED
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-4: single-manifest image (no .manifests) — still emits amd64:<size>
+# single-manifest image (no .manifests) — still emits amd64:<size>
 #            and writes no perarch/*.body file (no per-arch loop executed)
 # ---------------------------------------------------------------------------
 
@@ -462,7 +462,7 @@ CURL_SINGLE
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-5: atomic-write correctness — cache bodies in perarch/ subdir,
+# atomic-write correctness — cache bodies in perarch/ subdir,
 #            no leftover .tmp.* files after successful write
 # ---------------------------------------------------------------------------
 
@@ -525,7 +525,7 @@ CURL_SINGLE
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-7: _ghcr_verify_content_digest — matching sha256 returns 0
+# _ghcr_verify_content_digest — matching sha256 returns 0
 # ---------------------------------------------------------------------------
 
 @test "content-digest verify: matching sha256 admits cache" {
@@ -541,7 +541,7 @@ CURL_SINGLE
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-8: _ghcr_verify_content_digest — mismatched sha256 returns 1
+# _ghcr_verify_content_digest — mismatched sha256 returns 1
 # ---------------------------------------------------------------------------
 
 @test "content-digest verify: mismatched sha256 rejects" {
@@ -557,7 +557,7 @@ CURL_SINGLE
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-9: _ghcr_verify_content_digest — missing file returns 1
+# _ghcr_verify_content_digest — missing file returns 1
 # ---------------------------------------------------------------------------
 
 @test "content-digest verify: missing file returns 1" {
@@ -569,7 +569,7 @@ CURL_SINGLE
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-10: _ghcr_verify_content_digest — trailing-newline-safe
+# _ghcr_verify_content_digest — trailing-newline-safe
 # Verifies that sha256sum operates on exact file bytes (no stripping).
 # ---------------------------------------------------------------------------
 
@@ -594,7 +594,7 @@ CURL_SINGLE
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-11: per-arch cache — tampered body (sha256 mismatch) is rejected
+# per-arch cache — tampered body (sha256 mismatch) is rejected
 # The OCI index carries the real digest; shim returns a different body.
 # ---------------------------------------------------------------------------
 
@@ -656,7 +656,7 @@ CURL_TAMPER
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-12: index cache — Docker-Content-Digest mismatch → body not cached
+# index cache — Docker-Content-Digest mismatch → body not cached
 # ---------------------------------------------------------------------------
 
 @test "index cache: Docker-Content-Digest mismatch body not cached" {
@@ -704,7 +704,7 @@ CURL_IDX_BAD
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-13: cache-dir warning emitted exactly once per run
+# cache-dir warning emitted exactly once per run
 # ---------------------------------------------------------------------------
 
 @test "cache-dir warning emitted once when cache dir cannot be created" {
@@ -736,7 +736,7 @@ CURL_IDX_BAD
 }
 
 # ---------------------------------------------------------------------------
-# D2-test-14: graceful degrade — unwritable cache dir must not prevent
+# graceful degrade — unwritable cache dir must not prevent
 # network fetches in _ghcr_fetch_index
 # ---------------------------------------------------------------------------
 
@@ -1059,7 +1059,7 @@ CURL_NL
 }
 
 # ---------------------------------------------------------------------------
-# r4-test-1: _ghcr_fetch_index — tampered cache body evicted and refetched
+# _ghcr_fetch_index — tampered cache body evicted and refetched
 # Pre-populate idx-*.body with bytes that don't match the Docker-Content-Digest
 # in idx-*.hdrs.  The valid body + headers come from curl.  The function must
 # evict the tampered file, emit ::warning::, and return the FRESH body.
@@ -1116,7 +1116,7 @@ CURL_NL
 }
 
 # ---------------------------------------------------------------------------
-# r4-test-2: _ghcr_fetch_index — valid cache hit uses fast path (no curl)
+# _ghcr_fetch_index — valid cache hit uses fast path (no curl)
 # Pre-populate with a body that MATCHES its Docker-Content-Digest.  The curl
 # shim is replaced with one that fails — it must not be called.
 # ---------------------------------------------------------------------------
@@ -1161,7 +1161,7 @@ CURL_FAIL
 }
 
 # ---------------------------------------------------------------------------
-# r4-test-3: per-arch cache hit — tampered body evicted and refetched
+# per-arch cache hit — tampered body evicted and refetched
 # Pre-populate perarch/<key>.body with bytes whose sha256 doesn't match
 # digest_hash.  The curl shim returns the valid body.  Function must succeed
 # with correct sizes, emit ::warning::, and replace the tampered file.
@@ -1202,7 +1202,7 @@ CURL_FAIL
 }
 
 # ---------------------------------------------------------------------------
-# r4-test-4: per-arch cache hit — valid digest → fast path (curl not called)
+# per-arch cache hit — valid digest → fast path (curl not called)
 # Pre-populate BOTH per-arch cache files with valid matching bytes.
 # Replace per-arch curl with a shim that fails on any sha256: request —
 # proving that neither cached arch triggers a network round-trip.
@@ -1283,7 +1283,7 @@ CURL_PERARCH_FAIL
 # returns 0 (data available from network) rather than failing.
 # ---------------------------------------------------------------------------
 
-@test "r6: digestless cache header evicts and refetches under set -euo pipefail (r8 security fix)" {
+@test "digestless cache header evicts and refetches under set -euo pipefail (r8 security fix)" {
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
 
@@ -1369,7 +1369,7 @@ CURL_FRESH
 # the warning a second time.
 # ---------------------------------------------------------------------------
 
-@test "r6: cache-dir warning emitted at least once across token + manifest_sizes calls (Defect B)" {
+@test "cache-dir warning emitted at least once across token + manifest_sizes calls (Defect B)" {
     # Run in a subshell; both stderr streams (token subshell + parent direct
     # call) are merged to stdout so bats captures them in $output.
     # NOTE: do NOT redirect the token subshell's stderr to the token variable —
@@ -1413,7 +1413,7 @@ CURL_FRESH
 # outer || true suppressor, leaking a confusing error line to CI logs.
 # ---------------------------------------------------------------------------
 
-@test "r6: token cache write to unwritable dir emits no shell redirect error (Defect B)" {
+@test "token cache write to unwritable dir emits no shell redirect error (Defect B)" {
     run --separate-stderr bash -c '
         source "'"$REPO_ROOT"'/helpers/logging.sh" 2>/dev/null || true
         source "'"$REPO_ROOT"'/helpers/registry-utils.sh"
@@ -1447,7 +1447,7 @@ CURL_FRESH
 }
 
 # ---------------------------------------------------------------------------
-# r7-A: strict digest parse — malformed multi-sha256 header rejected
+# strict digest parse — malformed multi-sha256 header rejected
 #
 # Regression guard: the old greedy sed 's/.*sha256://i' | head -c 64 would
 # extract the LAST sha256 token from a header like:
@@ -1460,7 +1460,7 @@ CURL_FRESH
 # "no header stored").
 # ---------------------------------------------------------------------------
 
-@test "r7-A: malformed multi-sha256 header rejected — strict parser evicts and refetches (r8 security fix)" {
+@test "malformed multi-sha256 header rejected — strict parser evicts and refetches (r8 security fix)" {
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
 
@@ -1528,7 +1528,7 @@ CURL_FRESH_R7A
 }
 
 # ---------------------------------------------------------------------------
-# r7-B: bats assertion correctness — direct string check catches "No such file"
+# bats assertion correctness — direct string check catches "No such file"
 #
 # Regression guard for Defect B: the original test used `! echo "$stderr" | grep`
 # which is unreliable under set -e when followed by other statements.  This test
@@ -1536,7 +1536,7 @@ CURL_FRESH_R7A
 # a synthesized stderr containing the forbidden phrase.
 # ---------------------------------------------------------------------------
 
-@test "r7-B: direct string assertion catches synthesized 'No such file or directory' in stderr" {
+@test "direct string assertion catches synthesized 'No such file or directory' in stderr" {
     # Synthesize a stderr that contains the forbidden phrase.
     local synthetic_stderr
     synthetic_stderr="bash: /proc/1/cannot-create: No such file or directory"
@@ -1558,7 +1558,7 @@ CURL_FRESH_R7A
 }
 
 # ---------------------------------------------------------------------------
-# r8: corrupted-hdrs poison-eviction regression
+# corrupted-hdrs poison-eviction regression
 #
 # Security regression guard for Defect A (r8 fix): an attacker who can write
 # to GHCR_CACHE_DIR pre-populates the body with poisoned bytes and removes the
@@ -1571,7 +1571,7 @@ CURL_FRESH_R7A
 # This proves the attack vector is closed: missing digest ≠ trust cache.
 # ---------------------------------------------------------------------------
 
-@test "r8: corrupted-hdrs (no digest) → evict + refetch, poison not served" {
+@test "corrupted-hdrs (no digest) → evict + refetch, poison not served" {
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
 
@@ -1642,10 +1642,10 @@ CURL_FRESH_R8
 }
 
 # ---------------------------------------------------------------------------
-# r9: Defect A — cache dir trust validation
+# Defect A — cache dir trust validation
 # ---------------------------------------------------------------------------
 
-@test "r9-A1: loose-mode cache dir (0777) is rejected — switches to private mktemp (not reused)" {
+@test "loose-mode cache dir (0777) is rejected — switches to private mktemp (not reused)" {
     # r10 fix: a dir owned by us but with mode != 0700 must be treated as
     # untrusted.  It may contain attacker-planted body+hdrs files with matching
     # digests written before we arrived; silent chmod-to-700 only closes future
@@ -1683,7 +1683,7 @@ CURL_FRESH_R8
     grep -q '::warning::.*untrusted' "$stderr_log"
 }
 
-@test "r9-A2: symlink cache dir is rejected — warning emitted and private mktemp used" {
+@test "symlink cache dir is rejected — warning emitted and private mktemp used" {
     # A symlink at GHCR_CACHE_DIR could point to attacker-controlled storage.
     # _ghcr_ensure_cachedir must detect the symlink and switch to a fresh dir.
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
@@ -1712,10 +1712,10 @@ CURL_FRESH_R8
 }
 
 # ---------------------------------------------------------------------------
-# r9: Defect B — fresh-fetch no-digest = skip-cache-but-return-body
+# Defect B — fresh-fetch no-digest = skip-cache-but-return-body
 # ---------------------------------------------------------------------------
 
-@test "r9-B: fresh response without Docker-Content-Digest — returns 1 (fail-closed, no body served)" {
+@test "fresh response without Docker-Content-Digest — returns 1 (fail-closed, no body served)" {
     # r10 fix: when a fresh GHCR response carries no Docker-Content-Digest header
     # the content cannot be cryptographically verified.  Returning the body to
     # the caller even "best-effort" allows a digest-stripping bypass for the
@@ -1778,11 +1778,11 @@ CURL_NODIGEST
 }
 
 # ---------------------------------------------------------------------------
-# r9: Defect B (r12) — env-var sentinel; no file sentinel created
+# Defect B (r12) — env-var sentinel; no file sentinel created
 # ---------------------------------------------------------------------------
 
-@test "r9-C: degraded mode uses env-var sentinel only — no .ghcr_cache_warned file created" {
-    # r12: the file-based PID sentinel (${TMPDIR:-/tmp}/.ghcr_cache_warned.$$)
+@test "degraded mode uses env-var sentinel only — no .ghcr_cache_warned file created" {
+    # the file-based PID sentinel (${TMPDIR:-/tmp}/.ghcr_cache_warned.$$)
     # was replaced by a pure env-var sentinel (_GHCR_CACHE_DIR_WARNED) to fix
     # PID-reuse flakes in shared /tmp environments. Verify: after degraded-mode
     # entry, no .ghcr_cache_warned.* file is created in TMPDIR.
@@ -1811,10 +1811,10 @@ CURL_NODIGEST
 }
 
 # ---------------------------------------------------------------------------
-# r10: New regression tests
+# New regression tests
 # ---------------------------------------------------------------------------
 
-@test "r10-A: loose-mode dir with pre-planted body+hdrs — switched to fresh mktemp, poison not visible" {
+@test "loose-mode dir with pre-planted body+hdrs — switched to fresh mktemp, poison not visible" {
     # Regression: r9 silently chmod'd a loose-mode dir we own, leaving any
     # pre-existing attacker-planted files accessible. r10 switches to a fresh
     # mktemp dir so the pre-existing content is structurally unreachable.
@@ -1849,7 +1849,7 @@ CURL_NODIGEST
     grep -q '::warning::.*untrusted' "$stderr_log"
 }
 
-@test "r10-B: mktemp-d failure after untrusted dir — GHCR_CACHE_DIR cleared, hostile path not used" {
+@test "mktemp-d failure after untrusted dir — GHCR_CACHE_DIR cleared, hostile path not used" {
     # Regression: when mktemp -d fails in the untrusted-dir path, the old code
     # left GHCR_CACHE_DIR pointing at the hostile original. r10 sets
     # GHCR_CACHE_DIR="" so _ghcr_temp_file falls back to TMPDIR, never touching
@@ -1896,7 +1896,7 @@ MKTEMP_FAIL
     grep -q '::warning::' "$stderr_log"
 }
 
-@test "r10-C: fresh fetch missing Docker-Content-Digest returns 1, malformed also returns 1" {
+@test "fresh fetch missing Docker-Content-Digest returns 1, malformed also returns 1" {
     # Regression guard for Defect C: both missing and malformed digest must
     # return 1 (fail-closed), not 0 with unverified body.
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
@@ -1971,7 +1971,7 @@ CURL_BADDIGEST_C
 # Marker file to detect writes older than our test.
 _r11_marker() { touch "${WORK_DIR}/.r11_marker"; }
 
-@test "r11: empty GHCR_CACHE_DIR — ghcr_get_token does not write to root paths and still returns token" {
+@test "empty GHCR_CACHE_DIR — ghcr_get_token does not write to root paths and still returns token" {
     # Use a simulated "root-like" dir to avoid actually touching / in CI.
     local fake_root="${WORK_DIR}/fakeroot"
     mkdir -p "$fake_root"
@@ -1999,7 +1999,7 @@ _r11_marker() { touch "${WORK_DIR}/.r11_marker"; }
     [ -z "${GHCR_CACHE_DIR:-}" ] || { echo "FAIL: GHCR_CACHE_DIR was set to '${GHCR_CACHE_DIR}' unexpectedly" >&2; return 1; }
 }
 
-@test "r11: empty GHCR_CACHE_DIR — ghcr_get_token does not read from root paths (hostile pre-placed token ignored)" {
+@test "empty GHCR_CACHE_DIR — ghcr_get_token does not read from root paths (hostile pre-placed token ignored)" {
     _r11_marker
 
     # Pre-place a hostile token at a path that WOULD have been constructed if
@@ -2026,7 +2026,7 @@ _r11_marker() { touch "${WORK_DIR}/.r11_marker"; }
     [ "$tok" = "x" ] || { echo "FAIL: unexpected token value '$tok'" >&2; return 1; }
 }
 
-@test "r11: empty GHCR_CACHE_DIR — invalidate functions are no-ops (no root file deletions)" {
+@test "empty GHCR_CACHE_DIR — invalidate functions are no-ops (no root file deletions)" {
     _r11_marker
 
     # Pre-place sentinel files at the root of WORK_DIR to simulate root-path risk.
@@ -2049,7 +2049,7 @@ _r11_marker() { touch "${WORK_DIR}/.r11_marker"; }
     [ -f "$sentinel_idx_hdrs" ] || { echo "FAIL: idx hdrs sentinel deleted by _ghcr_invalidate_index" >&2; return 1; }
 }
 
-@test "r11: mkdir TOCTOU — pre-existing symlink triggers mktemp fallback" {
+@test "mkdir TOCTOU — pre-existing symlink triggers mktemp fallback" {
     # Create a symlink at the intended cache dir location pointing to a
     # directory we control (simulating an attacker-controlled target).
     local target_dir="${WORK_DIR}/attacker-dir"
@@ -2095,11 +2095,11 @@ _r11_marker() { touch "${WORK_DIR}/.r11_marker"; }
 }
 
 # ---------------------------------------------------------------------------
-# r12: Defect A regression — invalidate must not delete through a symlinked
+# Defect A regression — invalidate must not delete through a symlinked
 # cache dir (_ghcr_cache_enabled now calls _ghcr_validate_cachedir).
 # ---------------------------------------------------------------------------
 
-@test "r12-A: ghcr_invalidate_token does not delete through a symlinked cache dir" {
+@test "ghcr_invalidate_token does not delete through a symlinked cache dir" {
     # Regression: _ghcr_cache_enabled only checked non-empty + dir + writable,
     # so a symlinked GHCR_CACHE_DIR would pass the guard.  ghcr_invalidate_token
     # would then rm -f a path under the symlink, potentially deleting files in
@@ -2135,7 +2135,7 @@ _r11_marker() { touch "${WORK_DIR}/.r11_marker"; }
     }
 }
 
-@test "r12-B: _ghcr_invalidate_index does not delete through a symlinked cache dir" {
+@test "_ghcr_invalidate_index does not delete through a symlinked cache dir" {
     # Companion to r12-A for the index invalidation path.
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
@@ -2173,7 +2173,7 @@ _r11_marker() { touch "${WORK_DIR}/.r11_marker"; }
 # r13 regression tests: _ghcr_fetch_index globals cleared on all fail-closed paths
 # ---------------------------------------------------------------------------
 
-@test "r13-A: globals cleared when fresh response lacks Docker-Content-Digest" {
+@test "globals cleared when fresh response lacks Docker-Content-Digest" {
     # Finding 3: _GHCR_IDX_BODY/_GHCR_IDX_HDRS must be empty after fail-closed
     # return on missing digest header — prevents caller from trusting stale data.
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
@@ -2219,7 +2219,7 @@ CURL_NODIGEST_R13A
     }
 }
 
-@test "r13-B: globals cleared when fresh response has malformed Docker-Content-Digest" {
+@test "globals cleared when fresh response has malformed Docker-Content-Digest" {
     # Finding 3: malformed digest (non-64-char) must clear globals before return 1.
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
@@ -2263,7 +2263,7 @@ CURL_BADDIGEST_R13B
     }
 }
 
-@test "r13-C: globals cleared when content-digest mismatch on fresh body" {
+@test "globals cleared when content-digest mismatch on fresh body" {
     # Finding 3: sha256 body-hash mismatch must clear globals before return 1.
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"

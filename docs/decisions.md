@@ -50,7 +50,7 @@ Affected containers (sslh, web-shell, wordpress) currently have v1 lineage files
 
 ### Integration smoke origin
 
-`tests/unit/dashboard-integration-smoke.bats` was added per `feedback_perf_integration_smoke_test.md`: a layer-shifting refactor (base_image written at build time, read at dashboard-regen time) requires an end-to-end mutation guard. Unit tests of each individual function are insufficient because the bug manifests at the seam between the write phase and the read phase. The smoke's SMOKE-01 and SMOKE-07 tests guard Fix A1 specifically: disabling the `_BUILD_ARGS_RESOLVED` substitution loop causes `base_image_ref` to read `${OS_IMAGE_BASE}:${OS_IMAGE_TAG}` in the written lineage file, which SMOKE-01 catches via a concrete-value assertion.
+`tests/unit/dashboard-integration-smoke.bats` was added per `feedback_perf_integration_smoke_test.md`: a layer-shifting refactor (base_image written at build time, read at dashboard-regen time) requires an end-to-end mutation guard. Unit tests of each individual function are insufficient because the bug manifests at the seam between the write phase and the read phase. Two of the smoke's cases guard the build-arg resolution specifically: disabling the `_BUILD_ARGS_RESOLVED` substitution loop causes `base_image_ref` to read `${OS_IMAGE_BASE}:${OS_IMAGE_TAG}` in the written lineage file, which the case asserting a concrete `base_image_ref` catches.
 
 ## #532 — Universal base-image digest drift detection cron
 

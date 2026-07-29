@@ -54,7 +54,7 @@ jobs:
   # liveness_url:, HTTP HEAD the URL. Non-2xx → ::warning:: + non-zero exit.
   # This step is intentionally SEPARATE so its failure does not cascade to
   # downstream PR-fanout jobs (non-cascading failure design, AC-12/AC-16).
-  # BOUNDED: --max-time + --retry (AC-14).
+  # BOUNDED: --max-time + --retry.
   #
   # P2: needs check-upstream-versions so that for tracked entries with
   # liveness_url_template, we substitute the DETECTED latest_version (not the
@@ -107,7 +107,7 @@ jobs:
           SCOPE_CONTAINER: ${{ github.event.inputs.container || '' }}
         shell: bash
         run: |
-          # Named constants (AC-14)
+          # Named constants
           LIVENESS_MAX_TIME=30
           LIVENESS_RETRY=2
 
@@ -143,7 +143,7 @@ jobs:
               # Template uses {version} placeholder.
               # P2: for tracked entries, prefer the detected latest_version over
               # the pinned current_version so liveness validates the candidate URL.
-              # P1-SECURITY: dep names from config.yaml are untrusted (a PR author
+              # dep names from config.yaml are untrusted (a PR author
               # controls the key names). yq query expressions must NOT be built via
               # shell "${dep}" interpolation — that allows injection of yq special
               # chars (., [], ", etc.) to reshape the query path.
@@ -1317,13 +1317,13 @@ jobs:
               name=$(echo "$update" | jq -r '.name')
               latest=$(echo "$update" | jq -r '.latest')
               echo "  Updating postgres extension $name to $latest"
-              # P1-SECURITY: pass name/latest via env-vars + strenv() to prevent
+              # pass name/latest via env-vars + strenv() to prevent
               # yq query injection if a dep name contains special chars.
               YQ_EXT="$name" YQ_VER="$latest" yq -i '.extensions[strenv(YQ_EXT)].version = strenv(YQ_VER)' "postgres/extensions/config.yaml" || { echo "::error::Failed to update postgres extension $(_gha_escape "${name}") config"; exit 1; }
             done < <(echo "$UPDATES" | jq -c '.[]')
           else
             # Other containers: apply pre-filtered to_apply set from Prepare step.
-            # P1-SECURITY: pass name/latest via env-vars + strenv() to prevent
+            # pass name/latest via env-vars + strenv() to prevent
             # yq query injection if a dep name contains special chars.
             while IFS= read -r update; do
               name=$(echo "$update" | jq -r '.name')
