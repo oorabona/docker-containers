@@ -362,16 +362,16 @@
       copyBtn.type = 'button';
       copyBtn.className = 'vab-copy-mini';
       copyBtn.setAttribute('data-vab-mini-copy', 'pull');
-      // S-4: dynamic label set here; _updateCollapsedActionsState keeps it in sync
+      // Dynamic label set here; _updateCollapsedActionsState keeps it in sync
       copyBtn.setAttribute('aria-label', this._buildCopyAriaLabel(this._selectedRegistry));
-      // S-2: explicit classes so _onMiniCopyClick can use stable selectors
+      // Explicit classes so _onMiniCopyClick can use stable selectors
       var icon = document.createElement('span');
       icon.className = 'vab-copy-mini__icon';
       icon.setAttribute('aria-hidden', 'true');
       icon.textContent = '⧉'; // ⧉
       copyBtn.appendChild(icon);
       var label = document.createElement('span');
-      // S-3: no leading space — gap is handled by CSS gap:4px on the parent
+      // No leading space — gap is handled by CSS gap:4px on the parent
       label.className = 'vab-copy-mini__label';
       label.textContent = 'pull';
       copyBtn.appendChild(label);
@@ -474,7 +474,7 @@
         var active = miniBtns[i].getAttribute('data-vab-mini-registry') === this._selectedRegistry;
         miniBtns[i].setAttribute('aria-pressed', active ? 'true' : 'false');
       }
-      // S-4: update mini copy button aria-label to reflect current registry
+      // Update the mini copy button's aria-label to reflect the current registry
       var copyBtn = this.querySelector('[data-vab-mini-copy]');
       if (copyBtn) { copyBtn.setAttribute('aria-label', this._buildCopyAriaLabel(this._selectedRegistry)); }
     }
@@ -600,7 +600,7 @@
     // Copy to clipboard
     // -------------------------------------------------------
 
-    // S-4: builds the dynamic aria-label for the mini copy button.
+    // Builds the dynamic aria-label for the mini copy button.
     _buildCopyAriaLabel(reg) {
       var name = reg === 'dockerhub' ? 'Docker Hub' : 'GHCR';
       return 'Copy ' + name + ' pull command';
@@ -634,7 +634,7 @@
       var btnEl = this.querySelector('[data-vab-copy="' + type + '"]');
       var iconEl = btnEl && btnEl.querySelector('.vab-copy-icon');
 
-      // M-A: confirmation only on success — .catch swallows silently
+      // Confirmation only on success — .catch swallows silently
       var showCopied = function () {
         if (iconEl) { iconEl.textContent = '✓'; } // ✓
         if (btnEl) { btnEl.classList.add('vab-copy-btn--copied'); }
@@ -656,15 +656,15 @@
       if (!codeEl) { return; }
       var text = codeEl.textContent || '';
 
-      // S-2: stable class selectors (not fragile attribute-presence selectors)
+      // Stable class selectors, not fragile attribute-presence selectors
       var miniBtn = this.querySelector('[data-vab-mini-copy]');
       var iconEl = miniBtn && miniBtn.querySelector('.vab-copy-mini__icon');
       var labelEl = miniBtn && miniBtn.querySelector('.vab-copy-mini__label');
 
-      // M-A: confirmation only on success — .catch swallows silently
+      // Confirmation only on success — .catch swallows silently
       var showCopied = function () {
         if (iconEl) { iconEl.textContent = '✓'; }
-        // S-3: no leading space — gap handled by CSS gap:4px on parent
+        // No leading space — gap handled by CSS gap:4px on parent
         if (labelEl) { labelEl.textContent = 'copied'; }
         if (miniBtn) { miniBtn.classList.add('vab-copy-mini--copied'); }
         setTimeout(function () {

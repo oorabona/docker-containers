@@ -6,7 +6,7 @@
     var currentSearch = '';
     var currentStatus = 'all';
 
-    // Announce status changes to screen readers (F-005: aria-live)
+    // Announce status changes to screen readers through the aria-live region
     function announceStatus(message) {
       var liveRegion = document.getElementById('status-live');
       if (liveRegion) {
@@ -295,7 +295,7 @@
       }
     }
 
-    // Event delegation (F-006: no inline onclick handlers)
+    // Event delegation — no inline onclick handlers
     document.addEventListener('DOMContentLoaded', function() {
       // Restore registry preference
       setGlobalRegistry(currentRegistry, false);

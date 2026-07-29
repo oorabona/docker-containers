@@ -324,7 +324,7 @@ EOF
 
 # --- Observability ---
 
-# --- yq Fallback Behavior (F-004) ---
+# --- yq Fallback Behavior ---
 
 # Helper: run compute_build_digest with yq hidden from PATH
 _run_without_yq() {
@@ -340,7 +340,7 @@ _run_without_yq() {
     PATH="$fake_bin" run compute_build_digest "$@"
 }
 
-@test "F-004a: yq fallback — postgres flavor uses raw file content instead of extension versions" {
+@test "yq fallback — postgres flavor uses raw file content instead of extension versions" {
     mkdir -p flavors extensions
     cat > flavors/vector.yaml <<'EOF'
 name: vector
@@ -381,7 +381,7 @@ EOF
     [ "$digest_before" == "$digest_after" ]
 }
 
-@test "F-004b: yq fallback — terraform variant uses raw variants.yaml content" {
+@test "yq fallback — terraform variant uses raw variants.yaml content" {
     cat > variants.yaml <<'EOF'
 versions:
   - variants:
@@ -410,7 +410,7 @@ EOF
     [ "$digest_with_yq" != "$digest_without_yq" ]
 }
 
-@test "F-004c: yq fallback — simple container uses raw config.yaml content" {
+@test "yq fallback — simple container uses raw config.yaml content" {
     cat > config.yaml <<'EOF'
 build_args:
   FOO: "1.0"
@@ -429,7 +429,7 @@ EOF
     [ "$digest_with_yq" != "$digest_without_yq" ]
 }
 
-@test "F-004d: yq fallback — still produces valid 12-char hex digest" {
+@test "yq fallback — still produces valid 12-char hex digest" {
     echo "FROM alpine" > Dockerfile
 
     _run_without_yq "Dockerfile" ""
@@ -442,9 +442,9 @@ EOF
     [[ "$digest" =~ ^[0-9a-f]{12}$ ]]
 }
 
-# --- Integration Smoke Tests (F-005) ---
+# --- Integration Smoke Tests ---
 
-@test "F-005a: integration — postgres real flavors produce different digests" {
+@test "integration — postgres real flavors produce different digests" {
     cd "$ORIG_DIR/postgres" || skip "postgres directory not found"
 
     local -A digests
@@ -465,7 +465,7 @@ EOF
     [ "$unique" -eq "${#values[@]}" ]
 }
 
-@test "F-005b: integration — terraform real flavors produce different digests" {
+@test "integration — terraform real flavors produce different digests" {
     cd "$ORIG_DIR/terraform" || skip "terraform directory not found"
     # Note: config.yaml already has build_args on disk — no need to source ./build
 
@@ -485,7 +485,7 @@ EOF
     [ "$unique" -eq "${#values[@]}" ]
 }
 
-@test "F-005c: integration — simple container (ansible) produces valid digest" {
+@test "integration — simple container (ansible) produces valid digest" {
     cd "$ORIG_DIR/ansible" || skip "ansible directory not found"
 
     run compute_build_digest "Dockerfile" ""

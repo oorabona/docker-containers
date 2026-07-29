@@ -244,7 +244,7 @@ th_init() {
         esac
     done
 
-    # Validate reporter (F-001: invalid value silently produced no output)
+    # Validate the reporter — an invalid value used to produce no output at all
     case "$_TH_REPORT" in
         table|tap|json) ;;
         *) printf 'test-harness: unknown reporter "%s", falling back to table\n' "$_TH_REPORT" >&2

@@ -139,7 +139,7 @@
       {{ content }}
     </main>
 
-    <!-- Live status region for screen readers (F-005) -->
+    <!-- Live status region for screen readers -->
     <div id="status-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
     <!-- Footer -->
@@ -148,7 +148,7 @@
 
   <!-- Vanilla web components (trust-strip, security-scan) — CSP-clean, no framework runtime -->
   <script defer src="{{ '/assets/js/components/trust-strip.js' | relative_url }}"></script>
-  <!-- JavaScript (F-006: addEventListener, F-007: IIFE) -->
+  <!-- JavaScript — listeners are bound with addEventListener, wrapped in an IIFE -->
   <script src="{{ site.baseurl }}/assets/js/theme.js"></script>
   <script src="{{ site.baseurl }}/assets/js/dashboard.js"></script>
 </body>

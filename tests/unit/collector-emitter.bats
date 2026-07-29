@@ -229,8 +229,8 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-# (d-2) ceiling absent from available → fail-closed
-@test "(d-2) ceiling absent from non-empty available[] → fail-closed" {
+# ceiling absent from available → fail-closed
+@test "ceiling absent from non-empty available[] → fail-closed" {
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.23.0","2.25.0","2.27.1"],"available":["2.23.0","2.25.0"],"excluded":[{"version":"2.27.1","reason":"not available"}]}
 EOF
