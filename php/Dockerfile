@@ -35,7 +35,16 @@ RUN set -ex \
 		libjpeg-turbo-dev \
 		libpng-dev \
 	&& docker-php-ext-configure gd --with-freetype --with-jpeg \
-	&& docker-php-ext-install -j$(nproc) gd mysqli opcache zip \
+# OPcache is NOT in this list on purpose: PHP 8.5 makes it non-optional and the
+# official image builds it statically, so asking docker-php-ext-install for it
+# exits non-zero — and everything listed after it in the same command is then
+# skipped silently. That is what left `zip` out of every published image, and
+# stopped the apcu step below from ever running.
+#
+# Since the version comes from a build arg, "the base image has OPcache" is an
+# assumption about an input rather than a fact, so it is asserted explicitly
+# further down instead of being trusted.
+	&& docker-php-ext-install -j$(nproc) gd mysqli zip \
 	&& pecl install apcu-${APCU_VERSION} && docker-php-ext-enable apcu \
 # - Detect Runtime Dependencies of the installed extensions. \
 # - src: https://github.com/docker-library/wordpress/blob/master/latest/php8.0/fpm-alpine/Dockerfile \
@@ -52,7 +61,15 @@ RUN set -ex \
 		# Uninstall Everything we Installed (minus the runtime Deps)
 		apk del --no-network .build-deps; \
 		# check for output like "PHP Warning:  PHP Startup: Unable to load dynamic library 'foo' (tried: ...)
-		err="$(php --version 3>&1 1>&2 2>&3)"; 	[ -z "$err" ] \
+		err="$(php --version 3>&1 1>&2 2>&3)"; 	[ -z "$err" ]; \
+		# That stderr check only catches a dynamic extension that failed to LOAD.
+		# It says nothing about one that was never there, so assert the set this
+		# image promises — including OPcache, which comes from the base image
+		# rather than from any step here.
+		for ext in gd mysqli zip apcu "Zend OPcache"; do \
+			php -r "exit(extension_loaded(\$argv[1]) ? 0 : 1);" "$ext" \
+				|| { echo "missing extension: $ext" >&2; exit 1; }; \
+		done \
 	&& rm -rf /var/cache/apk/* /tmp/* /var/tmp/* \
 	&& rm -f /usr/local/etc/php-fpm.d/*
 
