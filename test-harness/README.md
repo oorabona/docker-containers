@@ -100,9 +100,21 @@ text assertion that only sees what was printed. One form does discard the status
 outright: `local value=$(cmd)`, where the builtin's own status wins and errexit
 does not fire.
 
-Stderr is discarded. Failure details name the command but never its **arguments**:
-results reach the table, the TAP stream and the JSON report, all of which land in
-CI logs, and an argument list can carry a credential or a token.
+Stderr is discarded.
+
+**What reaches the logs.** Results go to the table, the TAP stream and the JSON
+report, all of which land in CI output. Failure details name the command but
+never its **arguments**, so an argument list cannot leak a credential. They *do*
+carry the captured output when a text assertion fails — that is what makes a
+failure diagnosable, and it is not something the harness can hide and stay
+useful.
+
+So the bound is on the caller, not the library: **do not point a probe at a
+command whose output is secret.** Every probe in this repository runs a version
+flag, a package query or a localhost endpoint against an image built here; none
+handles a credential. A suite that needs one should validate it itself and report
+a description rather than the value — `web-shell/test.sh` reports its token
+response's length for exactly this reason.
 
 **`th_assert_cmd_contains "desc" "needle" cmd args...`**
 

@@ -206,5 +206,7 @@ SH
     # Order matters as much as presence: an option placed after the image is a
     # container argument, not a docker option, so the override would silently
     # stop applying. One glob pins the sequence.
-    [[ "$run_line" == *"--entrypoint sleep"*"ghcr.io/example/terraform:e2e"*"infinity"* ]]
+    # The trailing space matters: without it `--entrypoint sleeper` satisfies the
+    # match while being an invalid entrypoint.
+    [[ "$run_line" == *"--entrypoint sleep "*"ghcr.io/example/terraform:e2e"*"infinity"* ]]
 }

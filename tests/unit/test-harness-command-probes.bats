@@ -36,13 +36,23 @@ secret_bearing() {
 
 @test "th_assert_cmd_contains passes when the command succeeds and matches" {
     run th_assert_cmd_contains "ruby reports its version" "ruby" succeeding
+    [ "$status" -eq 0 ]
     [[ "$output" == *"PASS"* ]]
     [[ "$output" != *"FAIL"* ]]
 }
 
 @test "th_assert_cmd_contains fails when the command succeeds but does not match" {
     run th_assert_cmd_contains "ruby reports its version" "python" succeeding
+    # Still returns 0: an assertion must never abort a suite under `set -e`.
+    [ "$status" -eq 0 ]
     [[ "$output" == *"FAIL"* ]]
+}
+
+@test "th_init clears TH_OUTPUT so a new suite cannot assert on the old one's output" {
+    th_capture "first suite" succeeding
+    [ -n "$TH_OUTPUT" ]
+    th_init --name "second suite" --report table --no-color >/dev/null
+    [ -z "$TH_OUTPUT" ]
 }
 
 @test "th_capture returns non-zero on failure so a chained assertion cannot run" {
@@ -93,5 +103,9 @@ secret_bearing() {
         th_assert_cmd_contains 'probe' 'x' secret_bearing --token s3cr3t
         th_summary
     "
+    # Assert the report is real before asserting what it lacks — an empty or
+    # malformed report would satisfy the absence check vacuously.
+    echo "$output" | jq -e '.tests | length == 1' >/dev/null
+    echo "$output" | jq -e '.tests[0].status == "fail"' >/dev/null
     [[ "$output" != *"s3cr3t"* ]]
 }

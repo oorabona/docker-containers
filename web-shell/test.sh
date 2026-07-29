@@ -40,15 +40,19 @@ token_check="the token endpoint answers a JSON object with a string token"
 if th_capture "$token_check" \
         docker exec "$CONTAINER_NAME" curl -fsS --connect-timeout 5 --max-time 15 \
         http://localhost:7681/token; then
-    if printf '%s' "$TH_OUTPUT" | jq -e 'has("token") and (.token | type == "string")' \
+    # Slurped, not streamed: `jq -e` on a stream takes its status from the LAST
+    # value, so `{"error":true}{"token":""}` would pass an assertion that says the
+    # response is one JSON object. Requiring exactly one is the assertion.
+    if printf '%s' "$TH_OUTPUT" |
+            jq -se 'length == 1 and (.[0] | has("token") and (.token | type == "string"))' \
             >/dev/null 2>&1; then
         th_pass "$token_check"
     else
         # The body is described, never echoed: on a deployment that does configure
         # a credential, a malformed response could carry a live token straight
-        # into the CI log. Length is enough to tell the failures apart.
+        # into the CI log. Its length is enough to tell the failures apart.
         th_fail "$token_check" \
-            "response of ${#TH_OUTPUT} bytes did not parse as {\"token\": <string>}"
+            "response of ${#TH_OUTPUT} characters did not parse as one {\"token\": <string>}"
     fi
 fi
 
