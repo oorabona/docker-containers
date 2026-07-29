@@ -178,7 +178,7 @@ get_registration_token() {
     response_file=$(mktemp)
     headers_file=$(mktemp)
 
-    # F-002: dump headers to a dedicated file so -w '%{http_code}' returns only
+    # Dump headers to a dedicated file so -w '%{http_code}' returns only
     # the numeric status code.  Previously -D - mixed headers into stdout,
     # causing $http_status to contain the full header block and the "201"
     # comparison to never match.
@@ -204,7 +204,7 @@ get_registration_token() {
       fi
       log_warn "Attempt ${attempt}/${max_attempts}: received 201 but token field is empty."
     elif [[ "$http_status" == "429" ]]; then
-      # F-003: read Retry-After from the headers file, not the response body.
+      # Read Retry-After from the headers file, not the response body.
       # The header is part of the HTTP response headers, not the JSON body.
       local retry_after
       retry_after=$(grep -i '^Retry-After:' "${headers_file}" | awk '{print $2}' | tr -d '\r' || true)
