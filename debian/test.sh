@@ -1,41 +1,49 @@
 #!/bin/bash
-# E2E test for debian container
+# E2E test for the debian base image.
+#
+# Uses the repository's test harness so the exit code is the verdict. Two checks
+# that were warnings are now assertions: each was measured against the published
+# image and holds, so each is a regression lock rather than a hope.
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../test-harness/test-harness.sh
+source "${SCRIPT_DIR}/../test-harness/test-harness.sh"
+
 CONTAINER_NAME="${CONTAINER_NAME:-e2e-debian}"
 
-echo "  Testing Debian base image..."
+th_init --name "Debian base image E2E" --report "${REPORT_FORMAT:-table}"
 
-# Test OS release
-echo "  Checking Debian version..."
-docker exec "$CONTAINER_NAME" cat /etc/debian_version
+th_group "Release"
 
-# Test locale is configured
-echo "  Checking locale..."
-if docker exec "$CONTAINER_NAME" locale 2>/dev/null | grep -q "UTF-8"; then
-    echo "  ✅ UTF-8 locale configured"
+release=$(docker exec "$CONTAINER_NAME" cat /etc/debian_version 2>/dev/null)
+th_assert_not_empty "/etc/debian_version identifies the release" "$release"
+
+th_group "Environment"
+
+# Was a warning reading "may be normal for minimal image". It holds on the
+# published image, and a base image that loses its UTF-8 locale breaks every
+# consumer assuming one, so it is asserted.
+locale_out=$(docker exec "$CONTAINER_NAME" locale 2>/dev/null)
+th_assert_contains "a UTF-8 locale is configured" "$locale_out" "UTF-8"
+
+# Also a warning. The image ships a default unprivileged user; if it stops, every
+# downstream USER directive naming it breaks.
+if docker exec "$CONTAINER_NAME" id debian >/dev/null 2>&1; then
+    th_pass "the default 'debian' user exists"
 else
-    echo "  ⚠️  UTF-8 locale not detected (may be normal for minimal image)"
+    th_fail "the default 'debian' user exists" "id debian failed"
 fi
 
-# Test user exists
-echo "  Checking user setup..."
-if docker exec "$CONTAINER_NAME" id debian &>/dev/null; then
-    echo "  ✅ Default user 'debian' exists"
-else
-    echo "  ⚠️  Default user 'debian' not found"
-fi
+th_group "Core tools"
 
-# Test basic tools
-echo "  Checking core tools..."
 for tool in bash cat ls; do
-    if docker exec "$CONTAINER_NAME" which "$tool" &>/dev/null; then
-        echo "    ✓ $tool"
+    if docker exec "$CONTAINER_NAME" which "$tool" >/dev/null 2>&1; then
+        th_pass "$tool is on PATH"
     else
-        echo "    ❌ $tool not found"
-        exit 1
+        th_fail "$tool is on PATH" "which $tool failed"
     fi
 done
 
-echo "  ✅ All Debian tests passed"
+th_summary
