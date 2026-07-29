@@ -33,13 +33,16 @@ RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}" "${RUST_VERSION:?requir
 ENV RUSTFLAGS="-C target-feature=-crt-static"
 
 # Install build dependencies
-# pgrx requires Rust, clang (for bindgen/libclang), and OpenSSL
+# pgrx requires Rust, clang (for bindgen/libclang), and OpenSSL.
+# openblas-dev arrived with 0.25.0: pg_search links against OpenBLAS, and without
+# it the build reaches the link step and stops at `ld: cannot find -lopenblas`.
 RUN apk add --no-cache \
     build-base \
     clang-dev \
     clang-libclang \
     openssl-dev \
     icu-dev \
+    openblas-dev \
     git \
     curl \
     pkgconf \
