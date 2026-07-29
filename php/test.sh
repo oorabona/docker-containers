@@ -2,10 +2,13 @@
 # E2E test for the php container.
 #
 # Uses the repository's test harness so the exit code is the verdict. The
-# extension checks were warnings; every one of them holds on the published image
-# and each is a dependency a PHP application will assume, so they are asserted.
-# The list is what was measured — pdo_mysql and opcache are not in the image and
-# are deliberately not claimed.
+# extension checks were warnings; each is a dependency a PHP application will
+# assume, so they are asserted.
+#
+# Extensions are checked with extension_loaded() rather than by grepping `php -m`.
+# That output is not a flat list of the names you pass elsewhere: OPcache appears
+# as "Zend OPcache" and is invisible to an exact-match grep, while `php --ri
+# opcache` denies it exists. Asking the engine avoids guessing at its spelling.
 
 set -uo pipefail
 
@@ -38,12 +41,30 @@ fi
 
 th_group "Extensions"
 
-modules=$(docker exec "$CONTAINER_NAME" php -m 2>/dev/null)
-for ext in pdo curl json mbstring mysqli gd; do
-    if printf '%s\n' "$modules" | grep -qix "$ext"; then
+loaded() { # extension name as the engine registers it
+    [ "$(docker exec "$CONTAINER_NAME" php -r "echo extension_loaded('$1') ? 'y' : 'n';" 2>/dev/null)" = "y" ]
+}
+
+# "Zend OPcache" is the registered name; the Dockerfile installs it and the image
+# description advertises it.
+for ext in PDO curl json mbstring mysqli gd "Zend OPcache"; do
+    if loaded "$ext"; then
         th_pass "extension $ext is loaded"
     else
-        th_fail "extension $ext is loaded" "not present in php -m"
+        th_fail "extension $ext is loaded" "extension_loaded() says no"
+    fi
+done
+
+# The Dockerfile installs zip and enables apcu, and neither is loaded in the
+# published image — there is no ini for either in conf.d (#982). That is an image
+# defect, not a test expectation to soften, so it is recorded rather than
+# asserted: the gap shows in every run without failing a pull request on a fault
+# it did not introduce. When the image carries them, these become assertions.
+for ext in zip apcu; do
+    if loaded "$ext"; then
+        th_pass "extension $ext is loaded"
+    else
+        th_skip "extension $ext is loaded" "installed by the Dockerfile, absent from the image"
     fi
 done
 

@@ -23,8 +23,13 @@ th_assert_contains "ttyd reports its version" "$version" "ttyd"
 
 # The token endpoint is what a browser fetches before opening the socket, so it
 # proves the service is serving rather than merely running.
-token=$(docker exec "$CONTAINER_NAME" curl -fsS http://localhost:7681/token 2>/dev/null)
-th_assert_contains "the token endpoint answers on :7681" "$token" "token"
+#
+# Matched on shape, not on the word: `contains "token"` would also accept an
+# error page that happens to mention it. Not on the value either — with no
+# credential configured ttyd answers {"token": ""}, and a deployment that sets one
+# would answer differently without being broken.
+token=$(docker exec "$CONTAINER_NAME" curl -fsS http://localhost:7681/token 2>/dev/null | tr -d '[:space:]')
+th_assert_matches "the token endpoint answers JSON on :7681" "$token" '^\{"token":'
 
 th_group "Shell environment"
 

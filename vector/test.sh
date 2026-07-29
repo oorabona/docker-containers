@@ -30,8 +30,9 @@ else
 fi
 
 # The API is what a consumer polls to know the pipeline is alive, so it is the
-# check that matters most here.
-health=$(docker exec "$CONTAINER_NAME" wget -qO- http://localhost:8686/health 2>/dev/null)
-th_assert_contains "the API health endpoint reports ok on :8686" "$health" "ok"
+# check that matters most here. Matched exactly rather than by substring: the
+# obvious `contains "ok"` also accepts a body reading "not ok".
+health=$(docker exec "$CONTAINER_NAME" wget -qO- http://localhost:8686/health 2>/dev/null | tr -d '[:space:]')
+th_assert_eq "the API health endpoint reports ok on :8686" "$health" '{"ok":true}'
 
 th_summary
