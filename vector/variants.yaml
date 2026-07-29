@@ -5,3 +5,6 @@ versions:
   - tag: 0.57.0-alpine
   - tag: 0.56.0-alpine
   - tag: 0.55.0-alpine
+tests:
+  e2e:
+    enabled: true

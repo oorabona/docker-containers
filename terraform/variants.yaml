@@ -219,3 +219,6 @@ versions:
           - AWS_CLI_VERSION
           - AZURE_CLI_VERSION
           - GCP_CLI_VERSION
+tests:
+  e2e:
+    enabled: true

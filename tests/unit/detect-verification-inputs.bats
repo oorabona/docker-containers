@@ -92,8 +92,11 @@ output_value() {
 }
 
 @test "deleting the entrypoint opt-in check would verify a container with no e2e" {
-    # php has a test.sh and does not opt into e2e, so there is nothing to run.
-    run_find_containers_step "php/test.sh"
+    # postgres has a test.sh and deliberately does not opt into e2e yet, so there
+    # is nothing for a change to it to run. Its suite is sound; enabling it means
+    # importing the heavy postgres build into every PR that touches it, which is
+    # a separate decision.
+    run_find_containers_step "postgres/test.sh"
 
     [ "$status" -eq 0 ]
     [ "$(output_value containers)" = "[]" ]

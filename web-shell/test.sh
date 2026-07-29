@@ -1,54 +1,52 @@
 #!/bin/bash
-# E2E test for web-shell container
+# E2E test for the web-shell container.
+#
+# Uses the repository's test harness so the exit code is the verdict. This suite
+# was already the strictest of the unrun ones — five hard checks and no
+# warnings — so the change is the summary carrying them, and every check being
+# reported rather than the run stopping at the first failure.
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../test-harness/test-harness.sh
+source "${SCRIPT_DIR}/../test-harness/test-harness.sh"
+
 CONTAINER_NAME="${CONTAINER_NAME:-e2e-web-shell}"
 
-echo "  Testing Web Shell..."
+th_init --name "Web Shell E2E" --report "${REPORT_FORMAT:-table}"
 
-# Test ttyd binary exists and version
-echo "  Checking ttyd version..."
-if docker exec "$CONTAINER_NAME" ttyd --version 2>/dev/null; then
-    echo "  ✅ ttyd binary found"
+th_group "Terminal service"
+
+version=$(docker exec "$CONTAINER_NAME" ttyd --version 2>/dev/null | head -1)
+th_assert_contains "ttyd reports its version" "$version" "ttyd"
+
+# The token endpoint is what a browser fetches before opening the socket, so it
+# proves the service is serving rather than merely running.
+token=$(docker exec "$CONTAINER_NAME" curl -fsS http://localhost:7681/token 2>/dev/null)
+th_assert_contains "the token endpoint answers on :7681" "$token" "token"
+
+th_group "Shell environment"
+
+# The image names its unprivileged shell user in the environment; a terminal
+# whose user does not exist opens onto nothing.
+shell_user=$(docker exec "$CONTAINER_NAME" printenv SHELL_USER 2>/dev/null)
+th_assert_not_empty "SHELL_USER is set in the image" "$shell_user"
+
+if [ -n "$shell_user" ] && docker exec "$CONTAINER_NAME" id "$shell_user" >/dev/null 2>&1; then
+    th_pass "the shell user '$shell_user' exists"
 else
-    echo "  ❌ ttyd binary not found"
-    exit 1
+    th_fail "the shell user exists" "id '${shell_user:-<unset>}' failed"
 fi
 
-# Check ttyd is listening (web terminal)
-echo "  Checking web terminal..."
-if docker exec "$CONTAINER_NAME" curl -fsS http://localhost:7681/token 2>/dev/null | grep -q "token"; then
-    echo "  ✅ Web terminal responding"
-else
-    echo "  ❌ Web terminal not responding"
-    exit 1
-fi
+th_group "Tools"
 
-# Check common tools are installed
-echo "  Checking installed tools..."
-TOOLS="bash git curl jq htop"
-for tool in $TOOLS; do
-    if docker exec "$CONTAINER_NAME" which "$tool" &>/dev/null; then
-        echo "    ✓ $tool"
+for tool in bash git curl jq htop; do
+    if docker exec "$CONTAINER_NAME" which "$tool" >/dev/null 2>&1; then
+        th_pass "$tool is on PATH"
     else
-        echo "  ❌ Missing tool: $tool"
-        exit 1
+        th_fail "$tool is on PATH" "which $tool failed"
     fi
 done
 
-# Check shell user exists (read SHELL_USER from the container's environment)
-echo "  Checking shell user..."
-SHELL_USER=$(docker exec "$CONTAINER_NAME" printenv SHELL_USER 2>/dev/null)
-if [[ -z "$SHELL_USER" ]]; then
-    echo "  ❌ Could not read SHELL_USER from container environment"
-    exit 1
-fi
-if docker exec "$CONTAINER_NAME" id "$SHELL_USER" &>/dev/null; then
-    echo "  ✅ Shell user '${SHELL_USER}' exists"
-else
-    echo "  ❌ Shell user '${SHELL_USER}' not found"
-    exit 1
-fi
-
-echo "  ✅ All Web Shell tests passed"
+th_summary

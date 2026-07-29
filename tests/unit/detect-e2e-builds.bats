@@ -55,7 +55,7 @@ output_value() {
 @test "S5: deleting the e2e opt-in check would run a non-enabled container's suite" {
     builds=$(jq -cn '
       [
-        {"container":"wordpress","version":"6.5.0","tag":"latest-6.5.0","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"}
+        {"container":"github-runner","version":"2.330.0","tag":"latest-2.330.0","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"}
       ]')
 
     run_split_build_engine_step "$builds"
@@ -96,7 +96,7 @@ output_value() {
 @test "S8: deleting the e2e opt-in check would run a verification-only non-enabled container" {
     verification_builds=$(jq -cn '
       [
-        {"container":"wordpress","version":"6.5.0","tag":"latest-6.5.0","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"}
+        {"container":"github-runner","version":"2.330.0","tag":"latest-2.330.0","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"}
       ]')
 
     run_split_build_engine_step "[]" "$verification_builds"

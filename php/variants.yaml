@@ -5,3 +5,6 @@ versions:
   - tag: 8.5.8-fpm-alpine
   - tag: 8.5.7-fpm-alpine
   - tag: 8.5.6-fpm-alpine
+tests:
+  e2e:
+    enabled: true
