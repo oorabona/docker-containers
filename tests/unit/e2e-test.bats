@@ -203,6 +203,8 @@ SH
     # entrypoint override `sleep infinity` arrives as terraform arguments and the
     # container is gone before the first probe. Overriding it is what keeps the
     # container alive; dropping this line makes every terraform probe unrunnable.
-    [[ "$run_line" == *"--entrypoint sleep"* ]]
-    [[ "$run_line" == *"infinity"* ]]
+    # Order matters as much as presence: an option placed after the image is a
+    # container argument, not a docker option, so the override would silently
+    # stop applying. One glob pins the sequence.
+    [[ "$run_line" == *"--entrypoint sleep"*"ghcr.io/example/terraform:e2e"*"infinity"* ]]
 }

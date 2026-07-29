@@ -37,7 +37,11 @@ token=$(docker exec "$CONTAINER_NAME" curl -fsS http://localhost:7681/token 2>/d
 if printf '%s' "$token" | jq -e 'has("token") and (.token | type == "string")' >/dev/null 2>&1; then
     th_pass "the token endpoint answers a JSON object with a string token"
 else
-    th_fail "the token endpoint answers a JSON object with a string token" "got: ${token:-<empty>}"
+    # The body is described, never echoed: on a deployment that does configure a
+    # credential, a malformed response could carry a live token straight into the
+    # CI log. Length and parse status are enough to tell the failures apart.
+    th_fail "the token endpoint answers a JSON object with a string token" \
+        "response of ${#token} bytes did not parse as {\"token\": <string>}"
 fi
 
 th_group "Shell environment"
