@@ -397,11 +397,22 @@ th_assert_matches() {
 # Usage: th_capture "name" cmd args... && th_assert_contains "name" "$TH_OUTPUT" x
 th_capture() {
     local name="$1"; shift
+    if (( $# == 0 )); then
+        # An empty "$@" is a successful empty command substitution, so without
+        # this a caller that dropped its command would silently pass.
+        TH_OUTPUT=""
+        _th_record fail "$name" "th_capture was given no command to run"
+        return 1
+    fi
     local status=0
     TH_OUTPUT=$("$@" 2>/dev/null) || status=$?
     if (( status != 0 )); then
         TH_OUTPUT=""
-        _th_record fail "$name" "command exited $status: $*"
+        # The command's ARGUMENTS are never recorded. Results reach the table,
+        # the TAP stream and the JSON report, all of which land in CI logs, and
+        # an argument list can carry a credential, a token or a signed URL. The
+        # test name already says what was being probed.
+        _th_record fail "$name" "command '$1' exited $status"
         return 1
     fi
     return 0

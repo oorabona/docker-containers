@@ -125,6 +125,23 @@ output_value() {
     [ "$actual" = "$expected" ]
 }
 
+@test "deleting assertion-library fanout would let a harness regression pass every suite silently" {
+    # Every opted-in suite sources this library and its return code IS their
+    # verdict, so a regression here can turn all of them green without touching
+    # a container. It must fan out exactly like the shared runner above.
+    run_find_containers_step "test-harness/test-harness.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$(output_value containers)" = "[]" ]
+    actual=$(output_value containers_to_verify | jq -c 'sort')
+    expected=$(for file in "$PROJECT_ROOT"/*/variants.yaml; do
+        if [[ "$(yq -r '.tests.e2e.enabled // false' "$file")" == "true" ]]; then
+            basename "$(dirname "$file")"
+        fi
+    done | jq -R . | jq -sc 'sort')
+    [ "$actual" = "$expected" ]
+}
+
 @test "deleting verification subtraction would duplicate a container changed in both source and tests" {
     run_find_containers_step $'sslh/Dockerfile\nsslh/tests/e2e.sh'
 

@@ -499,6 +499,19 @@ runs:
                 done <<< "$valid_containers"
                 continue
                 ;;
+              test-harness/*.sh)
+                # Every opted-in suite sources this library, and its return code
+                # IS their verdict — a regression here can turn all of them green
+                # without touching a single container. Same fan-out as the shared
+                # runner. `*` spans slashes in a case glob, so a nested
+                # test-harness/x/y.sh would match too; there is no such layout,
+                # and fanning out is the safe direction if one appears.
+                while IFS= read -r container; do
+                  [[ -z "$container" ]] && continue
+                  note_verification "$container" "shared assertion library changed"
+                done <<< "$valid_containers"
+                continue
+                ;;
             esac
 
             # Docs/metadata never affect build inputs — mirrors this workflow's

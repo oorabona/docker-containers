@@ -13,12 +13,12 @@ th_init --name "My Tests" --report table
 
 th_group "Connectivity"
 th_start
-result=$(my_command)
-th_assert_eq "command returns hello" "$result" "hello"
+th_assert_cmd_contains "command greets" "hello" my_command --flag
 
 th_group "Content"
 th_start
-th_assert_contains "output mentions version" "$result" "v1."
+th_capture "the version is readable" my_command --version &&
+    th_assert_contains "the version is readable" "$TH_OUTPUT" "v1."
 
 th_summary  # prints report, exits 0 if all pass / 1 if any fail
 ```
@@ -84,6 +84,40 @@ Passes if `$actual > $minimum` (numeric comparison).
 **`th_assert_matches "desc" "$value" "$regex"`**
 
 Passes if `$value` matches the bash regex `$regex` (uses `[[ =~ ]]`).
+
+### Command Probes
+
+Assert on what a command printed **and** on the fact that it succeeded. Passing
+the command rather than its output is what makes the second half impossible to
+forget: `value=$(cmd)` discards the exit status, so a producer that prints
+plausible output and then fails — a truncated transfer, a tool that prints a
+banner before erroring, a `docker exec` that never reached the binary — passes a
+text assertion anyway.
+
+Stderr is discarded. Failure details name the command but never its **arguments**:
+results reach the table, the TAP stream and the JSON report, all of which land in
+CI logs, and an argument list can carry a credential or a token.
+
+**`th_assert_cmd_contains "desc" "needle" cmd args...`**
+
+Passes if `cmd args...` exits zero and its stdout contains `needle`. Either half
+failing fails the test.
+
+**`th_capture "desc" cmd args...`**
+
+For a caller that needs its own validation of the output. On success the stdout
+is in `$TH_OUTPUT` and this returns 0; on failure it records the failure, empties
+`$TH_OUTPUT` and returns **1** — so chain the caller's own assertion with `&&`
+and it will not run against output the command failed to produce:
+
+```bash
+th_capture "the version is readable" my_command --version &&
+    th_assert_matches "the version is readable" "$TH_OUTPUT" '[0-9]+\.[0-9]+'
+```
+
+Note the non-zero return: under `set -e`, a bare `th_capture` on a failing
+command terminates the script before `th_summary` prints. Guard it with `&&`,
+`if`, or `||`.
 
 ### Manual Results
 
@@ -177,7 +211,10 @@ Buffers all results and emits a single JSON object when `th_summary` is called. 
 | 0 | All tests passed (or only skips, no failures) |
 | 1 | One or more tests failed |
 
-`th_summary` is the only function that returns a non-zero exit code. All assertions always return 0.
+Assertions always return 0, so a failing one never stops the script. Two
+functions do return non-zero: `th_summary`, whose code is the suite's verdict,
+and `th_capture`, which returns 1 when its command failed — guard that one with
+`&&`, `if` or `||` so a script under `set -e` still reaches its summary.
 
 ## Environment Variables
 
