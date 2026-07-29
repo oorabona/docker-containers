@@ -50,7 +50,7 @@ _install_gh_poison() {
 
 # ---------------------------------------------------------------------------
 
-@test "1: TRIVY_CACHE_FILE unset — uses API path, no file I/O" {
+@test "TRIVY_CACHE_FILE unset — uses API path, no file I/O" {
     unset TRIVY_CACHE_FILE
 
     GH_COUNTER_FILE=$(mktemp)
@@ -75,7 +75,7 @@ _install_gh_poison() {
     rm -f "${GH_COUNTER_FILE}"
 }
 
-@test "2: empty cache file falls through to API; file is written with JSON" {
+@test "empty cache file falls through to API; file is written with JSON" {
     local cache_file
     cache_file=$(mktemp)
     # Truncate to zero bytes (empty = cache miss).
@@ -105,7 +105,7 @@ _install_gh_poison() {
     rm -f "$cache_file" "${GH_COUNTER_FILE}"
 }
 
-@test "3: populated cache file is read; poison gh is NEVER called" {
+@test "populated cache file is read; poison gh is NEVER called" {
     local cache_file
     cache_file=$(mktemp)
 
@@ -141,7 +141,7 @@ _install_gh_poison() {
     rm -f "$cache_file" "${GH_COUNTER_FILE}"
 }
 
-@test "4: corrupt cache (non-JSON) does NOT leave garbage in _TRIVY_SUMMARY_MAP" {
+@test "corrupt cache (non-JSON) does NOT leave garbage in _TRIVY_SUMMARY_MAP" {
     local cache_file
     cache_file=$(mktemp)
     echo "not json" | tee "$cache_file" >/dev/null
@@ -166,7 +166,7 @@ _install_gh_poison() {
     rm -f "$cache_file" "${GH_COUNTER_FILE}"
 }
 
-@test "6: empty API result ({}) is cached cross-subshell — no second API call" {
+@test "empty API result ({}) is cached cross-subshell — no second API call" {
     local cache_file
     cache_file=$(mktemp)
     : > "$cache_file"
@@ -222,7 +222,7 @@ _install_gh_poison() {
     rm -f "$cache_file" "${GH_COUNTER_FILE}"
 }
 
-@test "5: sibling subshells share one API fetch via TRIVY_CACHE_FILE" {
+@test "sibling subshells share one API fetch via TRIVY_CACHE_FILE" {
     local cache_file
     cache_file=$(mktemp)
     # Ensure cache file exists but is empty (mktemp creates a non-empty tmp sometimes on some OS).

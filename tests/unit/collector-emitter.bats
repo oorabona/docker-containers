@@ -109,7 +109,7 @@ EOF
 # ---------------------------------------------------------------------------
 # (a) Artifact-present digest-pinned emission
 # ---------------------------------------------------------------------------
-@test "(a) artifact with version_digests → collector stage with digest-pinned per-version COPYs" {
+@test "artifact with version_digests → collector stage with digest-pinned per-version COPYs" {
     _write_versionset_with_digests "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -141,7 +141,7 @@ EOF
 # ---------------------------------------------------------------------------
 # (b) Self-heal tag-resolved emission
 # ---------------------------------------------------------------------------
-@test "(b) self-heal (no artifact) → collector stage with tag-based per-version COPYs" {
+@test "self-heal (no artifact) → collector stage with tag-based per-version COPYs" {
     # No artifact on disk → self-heal triggers
 
     resolve_version_set() {
@@ -177,7 +177,7 @@ EOF
 # ---------------------------------------------------------------------------
 # (c) Single-version unchanged — no collector emitted
 # ---------------------------------------------------------------------------
-@test "(c) single available version → single-version FROM path, no collector" {
+@test "single available version → single-version FROM path, no collector" {
     # Artifact with exactly one version (ceiling only)
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.27.1"],"available":["2.27.1"],"excluded":[]}
@@ -208,7 +208,7 @@ EOF
 # ---------------------------------------------------------------------------
 # (d) Empty available → fail-closed
 # ---------------------------------------------------------------------------
-@test "(d) empty available[] → generate_dockerfile fails closed" {
+@test "empty available[] → generate_dockerfile fails closed" {
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.23.0","2.27.1"],"available":[],"excluded":[]}
 EOF
@@ -247,7 +247,7 @@ EOF
 # ---------------------------------------------------------------------------
 # (e) Version in available but missing from version_digests → fail-closed
 # ---------------------------------------------------------------------------
-@test "(e) version in available[] absent from version_digests → fail-closed" {
+@test "version in available[] absent from version_digests → fail-closed" {
     # Artifact: 3 versions in available but version_digests only has 2
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.23.0","2.25.0","2.27.1"],"available":["2.23.0","2.25.0","2.27.1"],"excluded":[],"version_digests":{"2.25.0":"sha256:0000000000000000000000000000000000000000000000000000000000000001","2.27.1":"sha256:0000000000000000000000000000000000000000000000000000000000000002"}}
@@ -266,7 +266,7 @@ EOF
 # ---------------------------------------------------------------------------
 # (f) Depth: 30 synthetic versions → exactly ONE final-stage COPY
 # ---------------------------------------------------------------------------
-@test "(f) 30-version set → exactly ONE final-stage COPY (count-independent)" {
+@test "30-version set → exactly ONE final-stage COPY (count-independent)" {
     # Generate artifact with 30 versions
     local arr_json="["
     local vd_json="{"

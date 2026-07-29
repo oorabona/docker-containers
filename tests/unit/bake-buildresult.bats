@@ -2,12 +2,12 @@
 # Unit tests for helpers/bake-buildresult.sh — ADR-013 R2 slice (#595 emission)
 #
 # Mutation guards (named per test):
-#   MB1: Change success condition (e.g. ignore digest) → success count wrong
-#   MB2: Remove fail-closed on absent metadata → absent file yields success
-#   MB3: Use wrong field name (e.g. "status" instead of "result") → shape mismatch
-#   MB4: Use arch from cells instead of arg → arch field wrong
-#   MB5: Omit warning on absent metadata → no ::warning:: annotation
-#   MB6: target_id mismatch → all cells become failure even with valid metadata
+#   Change success condition (e.g. ignore digest) → success count wrong
+#   Remove fail-closed on absent metadata → absent file yields success
+#   Use wrong field name (e.g. "status" instead of "result") → shape mismatch
+#   Use arch from cells instead of arg → arch field wrong
+#   Omit warning on absent metadata → no ::warning:: annotation
+#   target_id mismatch → all cells become failure even with valid metadata
 
 load "../test_helper"
 
@@ -73,7 +73,7 @@ _partial_meta() {
 # MB1 + shape: all-success case — every emitted result is "success";
 #              shape is exactly {container, variant, tag, arch, result}.
 # ---------------------------------------------------------------------------
-@test "BBR-01: all cells success when metadata contains every target_id with digest" {
+@test "all cells success when metadata contains every target_id with digest" {
     local meta_file="$TEST_OUT_DIR/meta_all.json"
     _all_success_meta web-shell > "$meta_file"
 
@@ -100,9 +100,9 @@ _partial_meta() {
 }
 
 # ---------------------------------------------------------------------------
-# MB4: arch field in emitted files matches the supplied arch argument
+# arch field in emitted files matches the supplied arch argument
 # ---------------------------------------------------------------------------
-@test "BBR-02: emitted build-result files carry the supplied arch field" {
+@test "emitted build-result files carry the supplied arch field" {
     local meta_file="$TEST_OUT_DIR/meta_all.json"
     _all_success_meta web-shell > "$meta_file"
 
@@ -118,7 +118,7 @@ _partial_meta() {
 # ---------------------------------------------------------------------------
 # partial: missing target → failure; others → success
 # ---------------------------------------------------------------------------
-@test "BBR-03: partial metadata — cell absent from metadata emits result=failure" {
+@test "partial metadata — cell absent from metadata emits result=failure" {
     local meta_file="$TEST_OUT_DIR/meta_partial.json"
     _partial_meta web-shell > "$meta_file"
 
@@ -146,7 +146,7 @@ _partial_meta() {
 # ---------------------------------------------------------------------------
 # MB2 + MB5: absent metadata → fail-closed (all failure) + ::warning::
 # ---------------------------------------------------------------------------
-@test "BBR-04: absent metadata file → all cells failure (fail-closed)" {
+@test "absent metadata file → all cells failure (fail-closed)" {
     run bash "$BBR" "$TEST_OUT_DIR/nonexistent.json" amd64 "$TEST_OUT_DIR/out" web-shell 2>&1
     [ "$status" -eq 0 ]
 
@@ -162,7 +162,7 @@ _partial_meta() {
     [ "$file_count" -gt 0 ]
 }
 
-@test "BBR-05: absent metadata file emits a ::warning:: annotation" {
+@test "absent metadata file emits a ::warning:: annotation" {
     # Run with stderr captured to combined output (bats 'run' merges them)
     run bash "$BBR" "$TEST_OUT_DIR/nonexistent.json" amd64 "$TEST_OUT_DIR/out" web-shell 2>&1
     [ "$status" -eq 0 ]
@@ -173,7 +173,7 @@ _partial_meta() {
 # ---------------------------------------------------------------------------
 # File naming: build-result-<container>-<tag>-<arch>.json (parity with auto-build.yaml:1061)
 # ---------------------------------------------------------------------------
-@test "BBR-06: emitted filenames match build-result-<container>-<tag>-<arch>.json pattern" {
+@test "emitted filenames match build-result-<container>-<tag>-<arch>.json pattern" {
     local meta_file="$TEST_OUT_DIR/meta_all.json"
     _all_success_meta web-shell > "$meta_file"
 
@@ -197,7 +197,7 @@ _partial_meta() {
 # ---------------------------------------------------------------------------
 # Shape: emitted JSON has EXACTLY 5 keys (no extras)
 # ---------------------------------------------------------------------------
-@test "BBR-07: emitted JSON has exactly 5 keys: container variant tag arch result" {
+@test "emitted JSON has exactly 5 keys: container variant tag arch result" {
     local meta_file="$TEST_OUT_DIR/meta_all.json"
     _all_success_meta web-shell > "$meta_file"
 
@@ -213,7 +213,7 @@ _partial_meta() {
 # ---------------------------------------------------------------------------
 # container field matches the container arg
 # ---------------------------------------------------------------------------
-@test "BBR-08: emitted container field matches the requested container name" {
+@test "emitted container field matches the requested container name" {
     local meta_file="$TEST_OUT_DIR/meta_all.json"
     _all_success_meta web-shell > "$meta_file"
 
@@ -229,7 +229,7 @@ _partial_meta() {
 # ---------------------------------------------------------------------------
 # Cell count parity: number of emitted files equals number of --cells entries
 # ---------------------------------------------------------------------------
-@test "BBR-09: number of emitted build-result files equals --cells entry count for web-shell" {
+@test "number of emitted build-result files equals --cells entry count for web-shell" {
     local meta_file="$TEST_OUT_DIR/meta_all.json"
     _all_success_meta web-shell > "$meta_file"
 
@@ -246,10 +246,10 @@ _partial_meta() {
 }
 
 # ---------------------------------------------------------------------------
-# MB6: target_id key-join correctness — a metadata keyed by ACTUAL target_ids
+# target_id key-join correctness — a metadata keyed by ACTUAL target_ids
 # yields success; swapping to wrong keys yields failure (join is tight).
 # ---------------------------------------------------------------------------
-@test "BBR-10: wrong target_id keys in metadata → all cells failure (join must be tight)" {
+@test "wrong target_id keys in metadata → all cells failure (join must be tight)" {
     # Build a metadata file with wrong keys (e.g. containerids with a bogus prefix)
     jq -cn '{
         "WRONG_KEY_1": {"containerimage.digest":"sha256:aaa","image.name":"ghcr.io/test"},
@@ -269,7 +269,7 @@ _partial_meta() {
 # ---------------------------------------------------------------------------
 # tag field in emitted file matches cells tag (not overridden by arch arg)
 # ---------------------------------------------------------------------------
-@test "BBR-11: emitted tag field matches the cell tag (not the arch argument)" {
+@test "emitted tag field matches the cell tag (not the arch argument)" {
     local meta_file="$TEST_OUT_DIR/meta_all.json"
     _all_success_meta web-shell > "$meta_file"
 
@@ -292,7 +292,7 @@ _partial_meta() {
 # ---------------------------------------------------------------------------
 # ::notice:: summary always emitted (success path)
 # ---------------------------------------------------------------------------
-@test "BBR-12: ::notice:: summary is emitted on success" {
+@test "::notice:: summary is emitted on success" {
     local meta_file="$TEST_OUT_DIR/meta_all.json"
     _all_success_meta web-shell > "$meta_file"
 
@@ -313,7 +313,7 @@ _retained_cell_count() {
     bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained "$1" | jq 'length'
 }
 
-@test "BBR-13: without BAKE_GENERATE_ALL_RETAINED, emit covers latest-only cells" {
+@test "without BAKE_GENERATE_ALL_RETAINED, emit covers latest-only cells" {
     # terraform has more retained cells than latest-only cells (github-runner is
     # bake_latest_only, so it can't exercise the retained path).
     local latest_count
@@ -344,7 +344,7 @@ _retained_cell_count() {
     [ "$file_count" -eq "$latest_count" ]
 }
 
-@test "BBR-14: with BAKE_GENERATE_ALL_RETAINED=true, emit covers all retained cells" {
+@test "with BAKE_GENERATE_ALL_RETAINED=true, emit covers all retained cells" {
     # terraform has more retained cells than latest-only cells (github-runner is
     # bake_latest_only, so it can't exercise the retained path).
     local retained_count
@@ -370,7 +370,7 @@ _retained_cell_count() {
     [ "$file_count" -eq "$retained_count" ]
 }
 
-@test "BBR-15: scoped build-result enumeration ignores scoped-out terraform flavors" {
+@test "scoped build-result enumeration ignores scoped-out terraform flavors" {
     local scoped_cells
     scoped_cells=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" \
         --cells --scope-flavors aws terraform)
@@ -405,7 +405,7 @@ _retained_cell_count() {
     [ "$actual_tags" = "$expected_tags" ]
 }
 
-@test "BBR-16: container_scopes build-result enumeration ignores scoped-out github-runner flavors" {
+@test "container_scopes build-result enumeration ignores scoped-out github-runner flavors" {
     local container_scopes='{"github-runner":{"flavors":"debian-trixie"}}'
     local scoped_cells
     scoped_cells=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" \

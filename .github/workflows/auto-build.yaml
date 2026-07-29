@@ -409,8 +409,9 @@ jobs:
     needs: [detect-containers, sync-base-images]
     # Ordered after sync-base-images so the per-major-version GHCR probe below
     # (docker manifest inspect ghcr.io/<owner>/library/postgres:<ver>-alpine) runs
-    # AFTER sync-base-images has seeded that tag — fulfilling SC-18 (extensions use
-    # GHCR). The always() + result-in-(success,skipped) guard mirrors build-and-push
+    # AFTER sync-base-images has seeded that tag, which is what lets the extension
+    # builds resolve it from GHCR. The always() + result-in-(success,skipped) guard
+    # mirrors build-and-push
     # exactly: a skipped seed (fork PRs) or a failed seed (continue-on-error: true
     # means the job reports 'success' to dependents even on failure — but we guard
     # 'skipped' too for future-proofing) never blocks extensions. When the probe
@@ -541,7 +542,7 @@ jobs:
           # merge-extension-manifests (stage B) fuses them into multi-arch manifests.
           ARCH_SUFFIX: ${{ matrix.arch }}
           BUILD_PLATFORM: ${{ matrix.platform }}
-          # BB-1 supply-chain: same-repo PRs publish PR-scoped tags only so unreviewed
+          # supply-chain: same-repo PRs publish PR-scoped tags only so unreviewed
           # code never overwrites canonical production-consumed refs.  On push/dispatch
           # (master) PR_TAG_SUFFIX is empty → canonical refs published.
           # The shared registry build-cache lets master reuse the PR's compiled layers
@@ -814,17 +815,17 @@ jobs:
           CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
           VERSIONS_MAP: ${{ steps.ext-versions.outputs.versions_map }}
           REPO_OWNER: ${{ github.repository_owner }}
-          # BB-1: must match the suffix used by the build-extensions stage A leg so
+          # must match the suffix used by the build-extensions stage A leg so
           # stage B probes the correct scoped per-arch refs and publishes scoped targets.
           # BE-1: same-repo-only guard mirrors the build-extensions expression.
           PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
-          # BH-2b: thread the same rebuild/force signal as stage A so --finalize-multiarch
+          # thread the same rebuild/force signal as stage A so --finalize-multiarch
           # knows to skip canonical-first reuse and merge from freshly-built PR-scoped tags.
           REBUILD: ${{ env.REBUILD_MODE }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
 
-          # BH-2b: mirror stage A's --force logic so finalize skips canonical-first
+          # mirror stage A's --force logic so finalize skips canonical-first
           # reuse for versions that were explicitly rebuilt by stage A this run.
           force_arg=()
           if [[ "$REBUILD" == "force" || "$REBUILD" == "all" ]]; then
@@ -1101,7 +1102,7 @@ jobs:
     # different-container runs parallelize. Same-container races are rare in practice
     # (upstream-monitor serializes PR merges via concurrency on its own workflow).
     env:
-      # BC-1: export PR_TAG_SUFFIX so generate_dockerfile (called by ./make build postgres)
+      # export PR_TAG_SUFFIX so generate_dockerfile (called by ./make build postgres)
       # PR-scopes the non-resolver/single-version extension FROM refs and self-heal
       # per-version COPY refs.  Must match the expression used by build-extensions and
       # merge-extension-manifests so the postgres smoke consumes the PR's own extension

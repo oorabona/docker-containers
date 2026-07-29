@@ -10,10 +10,10 @@
 # GHCR owner is controlled via _VDRIFT_GHCR_OWNER_OVERRIDE.
 #
 # Mutation guards:
-#   MG1: Remove grace check → in_flight becomes drift (breaks test 3)
-#   MG2: Remove absent→drift branch → drift status never set (breaks test 2)
-#   MG3: Remove probe → absent always → in_sync never set (breaks test 1)
-#   MG4: Remove error propagation → error becomes in_sync (breaks test 6)
+#   Remove grace check → in_flight becomes drift (breaks test 3)
+#   Remove absent→drift branch → drift status never set (breaks test 2)
+#   Remove probe → absent always → in_sync never set (breaks test 1)
+#   Remove error propagation → error becomes in_sync (breaks test 6)
 
 load "../test_helper"
 
@@ -117,7 +117,7 @@ _make_probe_stub() {
 
 # ---------------------------------------------------------------------------
 # Test 1: in_sync — declared version published → no drift row, exit 0
-# MG3: if probe is removed, absent is returned → status would be drift, not in_sync
+# if probe is removed, absent is returned → status would be drift, not in_sync
 # ---------------------------------------------------------------------------
 @test "in_sync: declared version published → no drift row, exit 0" {
     local root
@@ -162,7 +162,7 @@ _make_probe_stub() {
 
 # ---------------------------------------------------------------------------
 # Test 2: drift — declared version absent, bump old → drift row, exit 1
-# MG2: if absent→drift branch is removed, status never becomes "drift" → test fails
+# if absent→drift branch is removed, status never becomes "drift" → test fails
 # ---------------------------------------------------------------------------
 @test "drift: declared-absent + old bump → drift row + exit 1" {
     local root
@@ -202,7 +202,7 @@ _make_probe_stub() {
 
 # ---------------------------------------------------------------------------
 # Test 3: in_flight — declared absent, bump ≤ grace hours → in_flight, exit 0
-# MG1: if grace check is removed, in_flight becomes drift → exit 1 not 0
+# if grace check is removed, in_flight becomes drift → exit 1 not 0
 # ---------------------------------------------------------------------------
 @test "in_flight: declared-absent + bump within grace → in_flight + exit 0" {
     local root
@@ -364,7 +364,7 @@ MAKE_EOF
 
 # ---------------------------------------------------------------------------
 # Test 6: probe error → error row, exit 2
-# MG4: if error propagation is removed, error becomes absent/in_sync → exit != 2
+# if error propagation is removed, error becomes absent/in_sync → exit != 2
 # ---------------------------------------------------------------------------
 @test "probe-error: probe returns error → error row + exit 2" {
     local root
@@ -662,7 +662,7 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
 # Test D5-1: auto-build.yaml summary job invokes check-version-drift.sh in
 #            post-build mode.
 # ---------------------------------------------------------------------------
-@test "D5-1: auto-build.yaml summary job invokes check-version-drift.sh --mode post-build" {
+@test "auto-build.yaml summary job invokes check-version-drift.sh --mode post-build" {
     [ -f "$AUTO_BUILD_YAML" ]
     grep -q 'check-version-drift.sh' "$AUTO_BUILD_YAML"
     grep -q -- '--mode post-build' "$AUTO_BUILD_YAML"
@@ -672,7 +672,7 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
 # Test D5-2: auto-build.yaml version-drift step is advisory (continue-on-error: true)
 #            and does NOT hard-exit on drift (no bare "exit 1" in advisory block).
 # ---------------------------------------------------------------------------
-@test "D5-2: auto-build.yaml version-drift step is advisory (continue-on-error: true, no hard exit on drift)" {
+@test "auto-build.yaml version-drift step is advisory (continue-on-error: true, no hard exit on drift)" {
     [ -f "$AUTO_BUILD_YAML" ]
     grep -q 'continue-on-error: true' "$AUTO_BUILD_YAML"
     # Extract the advisory step block and assert no unconditional "exit 1" for drift.
@@ -687,7 +687,7 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
 # ---------------------------------------------------------------------------
 # Test D5-3: version-drift.yaml exists with schedule + workflow_dispatch triggers.
 # ---------------------------------------------------------------------------
-@test "D5-3: version-drift.yaml exists with schedule and workflow_dispatch triggers" {
+@test "version-drift.yaml exists with schedule and workflow_dispatch triggers" {
     [ -f "$DRIFT_YAML" ]
     grep -q 'schedule:' "$DRIFT_YAML"
     grep -q 'cron:' "$DRIFT_YAML"
@@ -698,7 +698,7 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
 # Test D5-4: version-drift.yaml mints the GitHub App token via
 #            actions/create-github-app-token with BOT_APP_ID / BOT_APP_PRIVATE_KEY.
 # ---------------------------------------------------------------------------
-@test "D5-4: version-drift.yaml mints App token with BOT_APP_ID / BOT_APP_PRIVATE_KEY" {
+@test "version-drift.yaml mints App token with BOT_APP_ID / BOT_APP_PRIVATE_KEY" {
     [ -f "$DRIFT_YAML" ]
     grep -q 'create-github-app-token' "$DRIFT_YAML"
     grep -q 'BOT_APP_ID' "$DRIFT_YAML"
@@ -708,7 +708,7 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
 # ---------------------------------------------------------------------------
 # Test D5-5: version-drift.yaml invokes check-version-drift.sh --mode sweep.
 # ---------------------------------------------------------------------------
-@test "D5-5: version-drift.yaml runs check-version-drift.sh --mode sweep" {
+@test "version-drift.yaml runs check-version-drift.sh --mode sweep" {
     [ -f "$DRIFT_YAML" ]
     grep -q 'check-version-drift.sh' "$DRIFT_YAML"
     grep -q -- '--mode sweep' "$DRIFT_YAML"
@@ -718,7 +718,7 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
 # Test D5-6: auto-build.yaml advisory step uses $CONTAINER env var in the shell
 #            body, not raw ${{ matrix.* }} template expressions (injection-safe).
 # ---------------------------------------------------------------------------
-@test "D5-6: auto-build.yaml advisory step uses \$CONTAINER env var, not \${{ matrix.* }} in shell body" {
+@test "auto-build.yaml advisory step uses \$CONTAINER env var, not \${{ matrix.* }} in shell body" {
     [ -f "$AUTO_BUILD_YAML" ]
     grep -q 'CONTAINER=' "$AUTO_BUILD_YAML"
     # Extract the advisory step block and assert no ${{ matrix.* }} in it.
@@ -733,7 +733,7 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
 # Test D5-7: version-drift.yaml sweep has no raw ${{ matrix.* }} in the run shell
 #            body (sweep is non-matrix; no matrix context exists).
 # ---------------------------------------------------------------------------
-@test "D5-7: version-drift.yaml sweep run block has no raw \${{ matrix.* }} in shell body" {
+@test "version-drift.yaml sweep run block has no raw \${{ matrix.* }} in shell body" {
     [ -f "$DRIFT_YAML" ]
     local matrix_interp_count
     matrix_interp_count=$(grep -cE '\$\{\{ *matrix\.' "$DRIFT_YAML" || true)
@@ -743,7 +743,7 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
 # ---------------------------------------------------------------------------
 # FIX 1 — structural: advisory step is gated to non-PR events.
 # ---------------------------------------------------------------------------
-@test "FIX1: advisory step has 'if: github.event_name != pull_request' guard" {
+@test "advisory step has 'if: github.event_name != pull_request' guard" {
     [ -f "$AUTO_BUILD_YAML" ]
     # Extract the advisory step using a robust awk that starts at the step name
     # and stops at the NEXT step (line starting with 8+ spaces "- name:") or
@@ -768,7 +768,7 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
 # FIX 3 — structural: advisory step validates container name pattern AND/OR
 #          routes through _escape_gha_command before emitting ::warning::.
 # ---------------------------------------------------------------------------
-@test "FIX3: advisory step validates container name with ^[a-z0-9_-]+\$ pattern" {
+@test "advisory step validates container name with ^[a-z0-9_-]+\$ pattern" {
     [ -f "$AUTO_BUILD_YAML" ]
     local advisory_block
     advisory_block=$(awk '
@@ -784,7 +784,7 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
     [ "$guard_count" -ge 1 ]
 }
 
-@test "FIX3: check-version-drift.sh routes untrusted names through _escape_gha_command" {
+@test "check-version-drift.sh routes untrusted names through _escape_gha_command" {
     # Every ::warning:: / ::notice:: annotation line that includes a user-derived
     # value (name, declared, status from JSON data) must route through _escape_gha_command.
     # In _append_row, annotations use $safe_name, $safe_declared, $safe_status — never
@@ -817,7 +817,7 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
 # ---------------------------------------------------------------------------
 # FIX 4 — structural: summary job installs yq before the advisory step.
 # ---------------------------------------------------------------------------
-@test "FIX4: summary job installs yq before Check version drift step" {
+@test "summary job installs yq before Check version drift step" {
     [ -f "$AUTO_BUILD_YAML" ]
 
     # The yq install step must appear BEFORE the advisory drift step in the file.
@@ -863,7 +863,7 @@ SKOPEO_EOF
     printf '%s' "$bin_dir"
 }
 
-@test "FIX2-probe: skopeo exits 0 + OCI index manifest → real probe returns present → in_sync" {
+@test "skopeo exits 0 + OCI index manifest → real probe returns present → in_sync" {
     # Real skopeo inspect --raw always emits the manifest JSON on stdout when exit 0.
     # The stub must faithfully model that: emit a valid multi-arch index manifest.
     local root
@@ -888,7 +888,7 @@ SKOPEO_EOF
     [ "$sync_count" -eq 1 ]
 }
 
-@test "FIX2-probe: skopeo exits 1 + 'manifest unknown' stderr → real probe returns absent → drift" {
+@test "skopeo exits 1 + 'manifest unknown' stderr → real probe returns absent → drift" {
     local root
     root=$(_make_temp_project "foo" "9.9.9")
 
@@ -911,7 +911,7 @@ SKOPEO_EOF
     [ "$drift_count" -eq 1 ]
 }
 
-@test "FIX2-probe: skopeo exits 1 + network-error stderr → real probe returns error → exit 2" {
+@test "skopeo exits 1 + network-error stderr → real probe returns error → exit 2" {
     local root
     root=$(_make_temp_project "foo" "9.9.9")
 
@@ -933,7 +933,7 @@ SKOPEO_EOF
     [ "$error_count" -eq 1 ]
 }
 
-@test "FIX2-structural: real probe distinguishes absent from error (no collapsed all-null path)" {
+@test "real probe distinguishes absent from error (no collapsed all-null path)" {
     # Confirm the script no longer collapses all-null JSON to 'absent'.
     # The old code had: 'All-null JSON → absent (ghcr_get_multi_arch_digests returns all-null on 404/absent)'
     # That comment / code path must be gone.
@@ -977,9 +977,9 @@ SKOPEO_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MULTIARCH-PROBE-1: OCI image index → present → in_sync, exit 0
+# OCI image index → present → in_sync, exit 0
 # ---------------------------------------------------------------------------
-@test "MULTIARCH-PROBE-1: skopeo returns OCI index → present → in_sync + exit 0" {
+@test "skopeo returns OCI index → present → in_sync + exit 0" {
     local root
     root=$(_make_temp_project "myapp" "3.1.0")
 
@@ -1010,9 +1010,9 @@ SKOPEO_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MULTIARCH-PROBE-2: single-image manifest for Linux tag → absent → drift, exit 1
+# single-image manifest for Linux tag → absent → drift, exit 1
 # ---------------------------------------------------------------------------
-@test "MULTIARCH-PROBE-2: skopeo returns single-arch manifest for Linux tag → absent → drift + exit 1" {
+@test "skopeo returns single-arch manifest for Linux tag → absent → drift + exit 1" {
     local root
     root=$(_make_temp_project "myapp" "3.1.0")
 
@@ -1044,9 +1044,9 @@ SKOPEO_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MULTIARCH-PROBE-3: single-image manifest for Windows tag → present → in_sync, exit 0
+# single-image manifest for Windows tag → present → in_sync, exit 0
 # ---------------------------------------------------------------------------
-@test "MULTIARCH-PROBE-3: skopeo returns single-arch manifest for Windows tag → present → in_sync + exit 0" {
+@test "skopeo returns single-arch manifest for Windows tag → present → in_sync + exit 0" {
     # Windows images are legitimately single-arch; tag contains "windows"
     local root
     root=$(_make_temp_project "github-runner" "2.321.0-windows-ltsc2022")
@@ -1078,9 +1078,9 @@ SKOPEO_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MULTIARCH-PROBE-4: skopeo exits 0 but non-JSON output → error → exit 2
+# skopeo exits 0 but non-JSON output → error → exit 2
 # ---------------------------------------------------------------------------
-@test "MULTIARCH-PROBE-4: skopeo exits 0 with non-JSON output → error → exit 2" {
+@test "skopeo exits 0 with non-JSON output → error → exit 2" {
     local root
     root=$(_make_temp_project "myapp" "3.1.0")
 
@@ -1111,9 +1111,9 @@ SKOPEO_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MULTIARCH-PROBE-5: existing absent (manifest unknown stderr) stub still works
+# existing absent (manifest unknown stderr) stub still works
 # ---------------------------------------------------------------------------
-@test "MULTIARCH-PROBE-5: skopeo exits 1 + 'manifest unknown' stderr → absent → drift (unchanged)" {
+@test "skopeo exits 1 + 'manifest unknown' stderr → absent → drift (unchanged)" {
     local root
     root=$(_make_temp_project "myapp" "3.1.0")
 
@@ -1137,9 +1137,9 @@ SKOPEO_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MULTIARCH-PROBE-6: existing network error stub still works
+# existing network error stub still works
 # ---------------------------------------------------------------------------
-@test "MULTIARCH-PROBE-6: skopeo exits 1 + network error stderr → error → exit 2 (unchanged)" {
+@test "skopeo exits 1 + network error stderr → error → exit 2 (unchanged)" {
     local root
     root=$(_make_temp_project "myapp" "3.1.0")
 
@@ -1165,7 +1165,7 @@ SKOPEO_EOF
 # ---------------------------------------------------------------------------
 # FIX 1 — window_empty is fail-closed: resolver returns [] → exit 2
 # ---------------------------------------------------------------------------
-@test "FIX1: resolver returns [] → window_empty → fail-closed exit 2 (not silent exit 0)" {
+@test "resolver returns [] → window_empty → fail-closed exit 2 (not silent exit 0)" {
     local root="${TEST_TEMP_DIR}/tsdb-empty-array"
     mkdir -p "${root}/postgres/extensions"
 
@@ -1218,7 +1218,7 @@ MAKE_EOF
     [ "$window_empty_count" -eq 1 ]
 }
 
-@test "FIX1: window_empty accumulator sets _HAS_ERROR (not _HAS_DRIFT)" {
+@test "window_empty accumulator sets _HAS_ERROR (not _HAS_DRIFT)" {
     # Confirm that window_empty maps to exit 2, not exit 1.
     # This catches a regression where someone makes it set _HAS_DRIFT instead.
     # Use a failing resolver so no probe call is needed.
@@ -1268,7 +1268,7 @@ MAKE_EOF
 # FIX 2 — structural: skopeo is installed in both workflow files before the
 # drift-check step.
 # ---------------------------------------------------------------------------
-@test "FIX2-workflow: version-drift.yaml installs skopeo before Run version-drift sweep" {
+@test "version-drift.yaml installs skopeo before Run version-drift sweep" {
     [ -f "$DRIFT_YAML" ]
 
     local skopeo_line sweep_line
@@ -1283,7 +1283,7 @@ MAKE_EOF
     grep -q 'apt-get install.*skopeo\|apt-get.*install.*skopeo' "$DRIFT_YAML"
 }
 
-@test "FIX2-workflow: auto-build.yaml summary job installs skopeo before Check version drift" {
+@test "auto-build.yaml summary job installs skopeo before Check version drift" {
     [ -f "$AUTO_BUILD_YAML" ]
 
     local skopeo_line drift_line
@@ -1295,7 +1295,7 @@ MAKE_EOF
     [ "$skopeo_line" -lt "$drift_line" ]
 }
 
-@test "FIX2-workflow: auto-build.yaml summary job has GHCR login before skopeo install" {
+@test "auto-build.yaml summary job has GHCR login before skopeo install" {
     [ -f "$AUTO_BUILD_YAML" ]
 
     local login_line skopeo_line
@@ -1310,7 +1310,7 @@ MAKE_EOF
 # ---------------------------------------------------------------------------
 # FIX 3 — structural: version-drift.yaml sweep does NOT suppress stderr.
 # ---------------------------------------------------------------------------
-@test "FIX3-workflow: version-drift.yaml sweep does not pipe drift-check through 2>/dev/null" {
+@test "version-drift.yaml sweep does not pipe drift-check through 2>/dev/null" {
     [ -f "$DRIFT_YAML" ]
 
     # The line that runs check-version-drift.sh in sweep mode must not redirect
@@ -1325,7 +1325,7 @@ MAKE_EOF
 # ---------------------------------------------------------------------------
 # FIX 4 — open_version_drift_issue validates container name before labelling.
 # ---------------------------------------------------------------------------
-@test "FIX4: open_version_drift_issue with invalid container name does not reach dep: label" {
+@test "open_version_drift_issue with invalid container name does not reach dep: label" {
     # Source the script in a controlled env (stub all gh calls and env guards)
     # then call open_version_drift_issue with a bad container name.
     # Assert that gh is never called with a dep: label containing the bad name.
@@ -1387,7 +1387,7 @@ GH_EOF
     fi
 }
 
-@test "FIX4: open_version_drift_issue with valid container name uses dep: label" {
+@test "open_version_drift_issue with valid container name uses dep: label" {
     local gh_log="${TEST_TEMP_DIR}/gh-calls-valid.log"
     local fake_bin="${TEST_TEMP_DIR}/fake-gh-bin-valid-$$"
     mkdir -p "$fake_bin"
@@ -1445,7 +1445,7 @@ GH_EOF
 # value into a ::error:: / ::warning:: annotation.
 # ---------------------------------------------------------------------------
 
-@test "GHA-INJ-1a: version-drift.yaml invalid-GRACE_HOURS branch does not interpolate raw GRACE_HOURS value" {
+@test "version-drift.yaml invalid-GRACE_HOURS branch does not interpolate raw GRACE_HOURS value" {
     [ -f "$DRIFT_YAML" ]
 
     # Extract the GRACE_HOURS validation block — lines between the regex guard
@@ -1468,7 +1468,7 @@ GH_EOF
     [ "$raw_value_count" -eq 0 ]
 }
 
-@test "GHA-INJ-1b: auto-build.yaml invalid-container-name branch does not interpolate raw cname value" {
+@test "auto-build.yaml invalid-container-name branch does not interpolate raw cname value" {
     [ -f "$AUTO_BUILD_YAML" ]
 
     # Extract the invalid-name branch — lines between the name-validation guard
@@ -1491,7 +1491,7 @@ GH_EOF
     [ "$raw_value_count" -eq 0 ]
 }
 
-@test "GHA-INJ-1c: open_version_drift_issue validation-failure branch does not interpolate raw container value" {
+@test "open_version_drift_issue validation-failure branch does not interpolate raw container value" {
     local script="${REPO_ROOT}/scripts/open-dep-failure-issue.sh"
     [ -f "$script" ]
 
@@ -1524,7 +1524,7 @@ GH_EOF
 # "set -euo pipefail" does not leak into the step's outer shell.
 # ---------------------------------------------------------------------------
 
-@test "GHA-INJ-2a: version-drift.yaml sweeps open_version_drift_issue inside a subshell" {
+@test "version-drift.yaml sweeps open_version_drift_issue inside a subshell" {
     [ -f "$DRIFT_YAML" ]
 
     # The subshell pattern must appear: a line starting with "( source" or "(" that
@@ -1561,7 +1561,7 @@ GH_EOF
     [ "$source_in_subshell" -ge 1 ]
 }
 
-@test "GHA-INJ-2b: auto-build.yaml advisory step calls open_version_drift_issue inside a subshell" {
+@test "auto-build.yaml advisory step calls open_version_drift_issue inside a subshell" {
     [ -f "$AUTO_BUILD_YAML" ]
 
     # Same structural check: find the subshell block containing open_version_drift_issue
@@ -1596,7 +1596,7 @@ GH_EOF
 # NEW-FIX1 — structural: advisory install steps are continue-on-error: true
 # ---------------------------------------------------------------------------
 
-@test "NEW-FIX1: Install skopeo (summary job) step has continue-on-error: true" {
+@test "Install skopeo (summary job) step has continue-on-error: true" {
     [ -f "$AUTO_BUILD_YAML" ]
 
     # Extract the block for the "Install skopeo (summary job)" step.
@@ -1615,7 +1615,7 @@ GH_EOF
     [ "$coe_count" -ge 1 ]
 }
 
-@test "NEW-FIX1: Install yq (summary job) step has continue-on-error: true" {
+@test "Install yq (summary job) step has continue-on-error: true" {
     [ -f "$AUTO_BUILD_YAML" ]
 
     local yq_block
@@ -1635,7 +1635,7 @@ GH_EOF
 # NEW-FIX2 — structural: sweep vs per-container label spaces are disjoint
 # ---------------------------------------------------------------------------
 
-@test "NEW-FIX2: sweep dedup uses version-drift-sweep label (structural)" {
+@test "sweep dedup uses version-drift-sweep label (structural)" {
     local script="${REPO_ROOT}/scripts/open-dep-failure-issue.sh"
     [ -f "$script" ]
 
@@ -1645,7 +1645,7 @@ GH_EOF
     [ "$sweep_label_count" -ge 1 ]
 }
 
-@test "NEW-FIX2: per-container path uses dep: label and sweep path uses version-drift-sweep (mutually exclusive)" {
+@test "per-container path uses dep: label and sweep path uses version-drift-sweep (mutually exclusive)" {
     local script="${REPO_ROOT}/scripts/open-dep-failure-issue.sh"
     [ -f "$script" ]
 
@@ -1667,7 +1667,7 @@ GH_EOF
     [ "$bare_dedup_count" -eq 0 ]
 }
 
-@test "NEW-FIX2: sweep gh search uses version-drift-sweep label, not per-container dep: label" {
+@test "sweep gh search uses version-drift-sweep label, not per-container dep: label" {
     # Stub gh: return a fake per-container issue number ONLY when query includes dep:
     # (simulates "a per-container issue exists"); return empty when query includes
     # version-drift-sweep (simulates "no existing sweep issue").
@@ -1755,7 +1755,7 @@ GH_EOF
 # and does not print "created #".
 # ---------------------------------------------------------------------------
 
-@test "FAILOPEN-FIX1: open_version_drift_issue CREATE failure returns non-zero, no 'created #' output" {
+@test "open_version_drift_issue CREATE failure returns non-zero, no 'created #' output" {
     local fake_bin="${TEST_TEMP_DIR}/fake-gh-create-fail-$$"
     mkdir -p "$fake_bin"
 
@@ -1810,7 +1810,7 @@ GH_EOF
 # and does not print "commented #".
 # ---------------------------------------------------------------------------
 
-@test "FAILOPEN-FIX1: open_version_drift_issue COMMENT failure returns non-zero, no 'commented #' output" {
+@test "open_version_drift_issue COMMENT failure returns non-zero, no 'commented #' output" {
     local fake_bin="${TEST_TEMP_DIR}/fake-gh-comment-fail-$$"
     mkdir -p "$fake_bin"
 
@@ -1864,7 +1864,7 @@ GH_EOF
 # FAILOPEN-FIX2 — container enumeration failure exits 2, not 1.
 # ---------------------------------------------------------------------------
 
-@test "FAILOPEN-FIX2: ./make list failure → script exits 2, not 1" {
+@test "./make list failure → script exits 2, not 1" {
     local root="${TEST_TEMP_DIR}/fail-enum-project"
     mkdir -p "$root"
 
@@ -1895,7 +1895,7 @@ MAKE_EOF
 # ::warning:: on issue-open failure (structural grep tests).
 # ---------------------------------------------------------------------------
 
-@test "FAILOPEN-FIX3: version-drift.yaml captures issue_rc and exits non-zero on failure" {
+@test "version-drift.yaml captures issue_rc and exits non-zero on failure" {
     [ -f "$DRIFT_YAML" ]
 
     # Must capture subshell rc into a variable (not bare || true)
@@ -1915,7 +1915,7 @@ MAKE_EOF
     [ "$bare_or_true" -eq 0 ]
 }
 
-@test "FAILOPEN-FIX3: auto-build.yaml advisory emits ::warning:: on issue-open failure, not silent || true" {
+@test "auto-build.yaml advisory emits ::warning:: on issue-open failure, not silent || true" {
     [ -f "$AUTO_BUILD_YAML" ]
 
     # Extract the advisory step block
@@ -1985,10 +1985,10 @@ MAKE_EOF
 }
 
 # ---------------------------------------------------------------------------
-# GATE-FIX1-a: --mode post-build --container postgres checks declared extension
+# --mode post-build --container postgres checks declared extension
 #              version; absent extension → drift row, exit 1
 # ---------------------------------------------------------------------------
-@test "GATE-FIX1-a: post-build postgres checks extensions — absent ext version → drift + exit 1" {
+@test "post-build postgres checks extensions — absent ext version → drift + exit 1" {
     local root
     root=$(_make_postgres_project)
 
@@ -2022,9 +2022,9 @@ MAKE_EOF
 }
 
 # ---------------------------------------------------------------------------
-# GATE-FIX1-b: --mode post-build --container postgres, extension in_sync → exit 0
+# --mode post-build --container postgres, extension in_sync → exit 0
 # ---------------------------------------------------------------------------
-@test "GATE-FIX1-b: post-build postgres checks extensions — published ext → in_sync + exit 0" {
+@test "post-build postgres checks extensions — published ext → in_sync + exit 0" {
     local root
     root=$(_make_postgres_project)
 
@@ -2058,9 +2058,9 @@ MAKE_EOF
 }
 
 # ---------------------------------------------------------------------------
-# GATE-FIX1-c: --mode post-build --container <non-postgres> does NOT run extension checks
+# --mode post-build --container <non-postgres> does NOT run extension checks
 # ---------------------------------------------------------------------------
-@test "GATE-FIX1-c: post-build non-postgres container does NOT run extension checks" {
+@test "post-build non-postgres container does NOT run extension checks" {
     local root
     root=$(_make_temp_project "nginx" "1.25.0")
 
@@ -2092,7 +2092,7 @@ MAKE_EOF
 # ---------------------------------------------------------------------------
 # GATE-FIX2 — structural: summary job timeout-minutes >= 15
 # ---------------------------------------------------------------------------
-@test "GATE-FIX2: summary job timeout-minutes is >= 15" {
+@test "summary job timeout-minutes is >= 15" {
     [ -f "$AUTO_BUILD_YAML" ]
 
     # Extract the timeout-minutes value from the summary job block.
@@ -2116,7 +2116,7 @@ MAKE_EOF
 # NEW-FIX1 — fail-closed on missing tools
 # ---------------------------------------------------------------------------
 
-@test "NEW-FIX1-yq-missing: yq absent from PATH → script exits 2, not 0 (not silent false-clean)" {
+@test "yq absent from PATH → script exits 2, not 0 (not silent false-clean)" {
     local root
     root=$(_make_temp_project "foo" "9.9.9")
 
@@ -2152,7 +2152,7 @@ MAKE_EOF
     [[ "$stderr" == *"yq"* ]]
 }
 
-@test "NEW-FIX1-jq-missing-structural: script has command -v jq prerequisite check → would exit 2 if absent" {
+@test "script has command -v jq prerequisite check → would exit 2 if absent" {
     # Structural test: verify the script contains the fail-closed jq prerequisite check.
     # (A functional test that removes jq from PATH is not reliably portable across
     # environments where jq shares /bin with bash itself; structural is the right oracle here.)
@@ -2189,7 +2189,7 @@ MAKE_EOF
 # The fix adds a direct yq -e '.versions[].tag' guard BEFORE list_versions.
 # ---------------------------------------------------------------------------
 
-@test "FAILOPEN-FIX4: malformed variants.yaml (invalid YAML) → script exits 2, not 0" {
+@test "malformed variants.yaml (invalid YAML) → script exits 2, not 0" {
     # A container whose variants.yaml is not parseable YAML must not be
     # reported as clean.  The script must fail-closed: exit 2 (_HAS_ERROR).
     local root="${TEST_TEMP_DIR}/malformed-project"
@@ -2232,7 +2232,7 @@ MAKE_EOF
     [ "$sync_for_malformed" -eq 0 ]
 }
 
-@test "FAILOPEN-FIX4: schema-broken variants.yaml (valid YAML, no .versions) → script exits 2, not 0" {
+@test "schema-broken variants.yaml (valid YAML, no .versions) → script exits 2, not 0" {
     # A container whose variants.yaml is valid YAML but lacks .versions[].tag
     # entries must also fail-closed: exit 2 (_HAS_ERROR), not report clean.
     local root="${TEST_TEMP_DIR}/schema-broken-project"
@@ -2271,7 +2271,7 @@ MAKE_EOF
     [ "$sync_for_schema_broken" -eq 0 ]
 }
 
-@test "NEW-FIX1-pg-versions-parse-fail: yq failure reading pg_versions → exit 2, not silent exit 0" {
+@test "yq failure reading pg_versions → exit 2, not silent exit 0" {
     # The pg_versions read in _process_extensions uses a raw yq call (not wrapped
     # in || echo ""), so a yq parse failure there is directly detectable.
     # Verify: a fake yq that exits non-zero causes the extension sweep to exit 2.
@@ -2325,7 +2325,7 @@ YQ_EOF
 # NEW-FIX2 — extension sweep respects disabled/max_pg_version filters
 # ---------------------------------------------------------------------------
 
-@test "NEW-FIX2-disabled: disabled extension is NOT checked for drift" {
+@test "disabled extension is NOT checked for drift" {
     # Config with two extensions: pgvector (enabled) and citus (disabled: true).
     # citus would generate a drift row if enumerated; only pgvector must appear.
     local root="${TEST_TEMP_DIR}/disabled-ext-project-$$"
@@ -2380,7 +2380,7 @@ MAKE_EOF
     [ "$pgvector_status" = "in_sync" ]
 }
 
-@test "NEW-FIX2-max-pg-version: extension with max_pg_version < pg_major is NOT checked for drift" {
+@test "extension with max_pg_version < pg_major is NOT checked for drift" {
     # Config: pgvector (no max_pg_version) and pg_cron (max_pg_version: 16).
     # For pg17, pg_cron is incompatible → must not appear in results.
     local root="${TEST_TEMP_DIR}/maxpg-ext-project-$$"
@@ -2439,7 +2439,7 @@ MAKE_EOF
 # NEW-FIX3 — undeterminable bump epoch defaults to drift, not in_flight
 # ---------------------------------------------------------------------------
 
-@test "NEW-FIX3-no-commit: git log finds no commit for declaring file → absent version is drift (not in_flight)" {
+@test "git log finds no commit for declaring file → absent version is drift (not in_flight)" {
     # When _VDRIFT_BUMP_EPOCH_OVERRIDE is NOT set and git log returns empty
     # (no commit tracked for the file), the fallback must be epoch=0 → drift.
     # We use a fresh temp git repo with no commits touching variants.yaml so
@@ -2496,7 +2496,7 @@ MAKE_EOF
     [ "$in_flight_count" -eq 0 ]
 }
 
-@test "NEW-FIX3-workflow: summary job checkout uses fetch-depth: 0 (full git history)" {
+@test "summary job checkout uses fetch-depth: 0 (full git history)" {
     [ -f "$AUTO_BUILD_YAML" ]
 
     # The summary job checkout must use fetch-depth: 0 so git log
@@ -2525,7 +2525,7 @@ MAKE_EOF
 # skopeo exits non-zero.  The old broad matcher ('not found') mapped this to
 # absent → false drift alert.  The narrow matcher must return error → exit 2.
 # ---------------------------------------------------------------------------
-@test "NARROW-ABSENT-1: skopeo fails with 'credential helper not found' → error → exit 2 (not absent/drift)" {
+@test "skopeo fails with 'credential helper not found' → error → exit 2 (not absent/drift)" {
     local root
     root=$(_make_temp_project "foo" "9.9.9")
 
@@ -2561,7 +2561,7 @@ MAKE_EOF
 # Simulates a PATH/tooling failure on the registry side (the client binary
 # itself is not found, or a helper binary is missing).
 # ---------------------------------------------------------------------------
-@test "NARROW-ABSENT-2: skopeo fails with 'command not found' stderr → error → exit 2 (not absent/drift)" {
+@test "skopeo fails with 'command not found' stderr → error → exit 2 (not absent/drift)" {
     local root
     root=$(_make_temp_project "foo" "9.9.9")
 
@@ -2596,7 +2596,7 @@ MAKE_EOF
 # (e.g. /token) and gets a 404, NOT when the manifest itself is missing.
 # The old broad '404' alternative misclassified this as absent.
 # ---------------------------------------------------------------------------
-@test "NARROW-ABSENT-3: skopeo fails with auth-endpoint 'unexpected http status 404' → error → exit 2 (not absent/drift)" {
+@test "skopeo fails with auth-endpoint 'unexpected http status 404' → error → exit 2 (not absent/drift)" {
     local root
     root=$(_make_temp_project "foo" "9.9.9")
 
@@ -2627,7 +2627,7 @@ MAKE_EOF
 # ---------------------------------------------------------------------------
 # NARROW-ABSENT-4 (regression) — "manifest unknown" → absent → drift (no change)
 # ---------------------------------------------------------------------------
-@test "NARROW-ABSENT-4: skopeo fails with 'manifest unknown' stderr → absent → drift + exit 1 (unchanged)" {
+@test "skopeo fails with 'manifest unknown' stderr → absent → drift + exit 1 (unchanged)" {
     local root
     root=$(_make_temp_project "foo" "9.9.9")
 
@@ -2654,7 +2654,7 @@ MAKE_EOF
 # ---------------------------------------------------------------------------
 # NARROW-ABSENT-5 (regression) — "was deleted or has expired" → absent → drift
 # ---------------------------------------------------------------------------
-@test "NARROW-ABSENT-5: skopeo fails with 'was deleted or has expired' stderr → absent → drift + exit 1 (unchanged)" {
+@test "skopeo fails with 'was deleted or has expired' stderr → absent → drift + exit 1 (unchanged)" {
     local root
     root=$(_make_temp_project "foo" "9.9.9")
 
@@ -2684,7 +2684,7 @@ MAKE_EOF
 # A non-empty but unparseable drift_json must return non-zero (fail loudly),
 # not silently no-op as if there were no drift rows.
 # ---------------------------------------------------------------------------
-@test "DRIFT-JSON-VALID-1: open_version_drift_issue with malformed drift_json returns non-zero" {
+@test "open_version_drift_issue with malformed drift_json returns non-zero" {
     local fake_bin="${TEST_TEMP_DIR}/fake-gh-json-valid-$$"
     mkdir -p "$fake_bin"
 
@@ -2727,7 +2727,7 @@ GH_EOF
 #
 # An empty/whitespace drift_json is a legitimate no-op and must still return 0.
 # ---------------------------------------------------------------------------
-@test "DRIFT-JSON-VALID-2: open_version_drift_issue with empty drift_json returns 0 (no-op)" {
+@test "open_version_drift_issue with empty drift_json returns 0 (no-op)" {
     local fake_bin="${TEST_TEMP_DIR}/fake-gh-empty-json-$$"
     mkdir -p "$fake_bin"
 
@@ -2763,7 +2763,7 @@ GH_EOF
 # ---------------------------------------------------------------------------
 # DRIFT-JSON-VALID-3 — "[]" drift_json → open_version_drift_issue returns 0 (no-op)
 # ---------------------------------------------------------------------------
-@test "DRIFT-JSON-VALID-3: open_version_drift_issue with '[]' drift_json returns 0 (no-op)" {
+@test "open_version_drift_issue with '[]' drift_json returns 0 (no-op)" {
     local fake_bin="${TEST_TEMP_DIR}/fake-gh-empty-array-$$"
     mkdir -p "$fake_bin"
 
@@ -2806,7 +2806,7 @@ GH_EOF
 #   c) exit-2 error message no longer claims "GHCR connectivity" as sole cause
 # ---------------------------------------------------------------------------
 
-@test "SECFIX1a: version-drift.yaml checkout step pins ref to refs/heads/master" {
+@test "version-drift.yaml checkout step pins ref to refs/heads/master" {
     [ -f "$DRIFT_YAML" ]
 
     # Extract the checkout step block.
@@ -2824,7 +2824,7 @@ GH_EOF
     [ "$ref_count" -ge 1 ]
 }
 
-@test "SECFIX1b: version-drift.yaml create-github-app-token step sets permission-issues: write (token is scoped, not unscoped)" {
+@test "version-drift.yaml create-github-app-token step sets permission-issues: write (token is scoped, not unscoped)" {
     [ -f "$DRIFT_YAML" ]
 
     # Extract the Generate App token step block.
@@ -2848,7 +2848,7 @@ GH_EOF
     [ "$permission_key_count" -ge 1 ]
 }
 
-@test "SECFIX1c: version-drift.yaml exit-2 message does not hardcode 'GHCR connectivity' as sole cause" {
+@test "version-drift.yaml exit-2 message does not hardcode 'GHCR connectivity' as sole cause" {
     [ -f "$DRIFT_YAML" ]
 
     # The exit-2 handler message must NOT say "check GHCR connectivity" as the

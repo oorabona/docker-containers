@@ -13,13 +13,13 @@
 # This avoids the ./make list container validation entirely.
 #
 # Mutation each test catches:
-#   MU1: suffix strip reverted to live --upstream call → live drift possible
-#   MU2: v-prefix stripped from upstream → sslh-like containers build wrong source
-#   MU3: empty suffix short-circuit removed → upstream==version, still emits UPSTREAM_VERSION
-#   MU4: garbage-suffix guard removed → mis-strip on containers without --tag-suffix support
-#   MU4b: guard's end-match check removed → mis-strip when suffix present but non-matching
-#   MU5: determinism broken — UPSTREAM_VERSION comes from live query, differs per run
-#   MU6: declared-ARG gate removed → unused UPSTREAM_VERSION emitted for jekyll/wordpress/php
+#   suffix strip reverted to live --upstream call → live drift possible
+#   v-prefix stripped from upstream → sslh-like containers build wrong source
+#   empty suffix short-circuit removed → upstream==version, still emits UPSTREAM_VERSION
+#   garbage-suffix guard removed → mis-strip on containers without --tag-suffix support
+#   guard's end-match check removed → mis-strip when suffix present but non-matching
+#   determinism broken — UPSTREAM_VERSION comes from live query, differs per run
+#   declared-ARG gate removed → unused UPSTREAM_VERSION emitted for jekyll/wordpress/php
 
 bats_require_minimum_version 1.5.0
 
@@ -149,7 +149,7 @@ teardown() {
 # MU2 — v-prefix preserved: sslh-like v2.3.1-alpine → v2.3.1 (NOT 2.3.1)
 # Catches: any code that strips the leading 'v' before or after suffix removal.
 # ---------------------------------------------------------------------------
-@test "MU2: v-prefix preserved — v2.3.1-alpine with -alpine → UPSTREAM_VERSION=v2.3.1" {
+@test "v-prefix preserved — v2.3.1-alpine with -alpine → UPSTREAM_VERSION=v2.3.1" {
     _run_build_args_driver "-alpine" "v2.3.1-alpine"
     [ "$status" -eq 0 ]
 
@@ -164,7 +164,7 @@ teardown() {
 # Catches: removing the upstream==version short-circuit check.
 # web-shell style: version "1.7.7", --tag-suffix returns "".
 # ---------------------------------------------------------------------------
-@test "MU3: empty suffix — UPSTREAM_VERSION absent when version has no suffix" {
+@test "empty suffix — UPSTREAM_VERSION absent when version has no suffix" {
     _run_build_args_driver "" "1.7.7"
     [ "$status" -eq 0 ]
 
@@ -178,7 +178,7 @@ teardown() {
 # Catches: removing the robustness guard that rejects non-'-'-prefixed suffixes.
 # A version.sh without --tag-suffix falls through and returns its full tag.
 # ---------------------------------------------------------------------------
-@test "MU4: garbage suffix (no leading '-') → UPSTREAM_VERSION absent (no mis-strip)" {
+@test "garbage suffix (no leading '-') → UPSTREAM_VERSION absent (no mis-strip)" {
     _run_build_args_driver "8.5.7-fpm-alpine" "8.5.7-fpm-alpine"
     [ "$status" -eq 0 ]
 
@@ -192,7 +192,7 @@ teardown() {
 # Catches: removing the "version ends with suffix" check from the guard.
 # suffix="-fpm" but version="1.2.3-alpine" → no match → treat as no-suffix.
 # ---------------------------------------------------------------------------
-@test "MU4b: suffix '-fpm' but version '1.2.3-alpine' (no tail match) → UPSTREAM_VERSION absent" {
+@test "suffix '-fpm' but version '1.2.3-alpine' (no tail match) → UPSTREAM_VERSION absent" {
     _run_build_args_driver "-fpm" "1.2.3-alpine"
     [ "$status" -eq 0 ]
 
@@ -205,7 +205,7 @@ teardown() {
 # MU5 — determinism: two runs on same static tag produce identical result
 # Catches: live query path that could return different values on different runs.
 # ---------------------------------------------------------------------------
-@test "MU5: determinism — two runs on same static tag produce identical UPSTREAM_VERSION" {
+@test "determinism — two runs on same static tag produce identical UPSTREAM_VERSION" {
     _run_build_args_driver "-alpine" "3.5.0-alpine"
     [ "$status" -eq 0 ]
     local first
@@ -228,7 +228,7 @@ teardown() {
 # unused build-arg for jekyll/wordpress/php-style containers, triggering buildkit
 # "unused build-arg" warnings and diverging from the matrix path.
 # ---------------------------------------------------------------------------
-@test "MU6: undeclared ARG UPSTREAM_VERSION in Dockerfile — UPSTREAM_VERSION omitted even with valid suffix" {
+@test "undeclared ARG UPSTREAM_VERSION in Dockerfile — UPSTREAM_VERSION omitted even with valid suffix" {
     _run_build_args_driver "-alpine" "1.31.1.1-alpine" "fakecontainer" 0
     [ "$status" -eq 0 ]
 

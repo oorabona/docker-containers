@@ -329,7 +329,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# NL-1: trailing-newline stripping by command substitution must not concatenate
+# trailing-newline stripping by command substitution must not concatenate
 #        the collector final COPY with the next extension's COPY line.
 #
 # Mutation caught: removing the `$'\n'` appended to copies_block after the
@@ -349,7 +349,7 @@ EOF
 #   whole-line match for the clean COPY fails → test fails.
 # GREEN (after fix): each COPY/FROM is on its own whole line.
 # ---------------------------------------------------------------------------
-@test "NL-1: collector final COPY is on its own line, not concatenated with the next extension (trailing-newline bug)" {
+@test "collector final COPY is on its own line, not concatenated with the next extension (trailing-newline bug)" {
     # Mutation caught: removing `$'\n'` after copies_block+= in generate_dockerfile
     # causes command-substitution to strip the trailing newline, concatenating
     # COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/ with the
@@ -523,7 +523,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# FIX3: tag-based fallback (no-version_digests artifact) must use the caller's
+# tag-based fallback (no-version_digests artifact) must use the caller's
 #       explicit registry/owner, not the default get_registry()/get_repo_owner().
 #
 # Before fix: ext_image_name called without registry/owner → uses get_registry()
@@ -534,7 +534,7 @@ EOF
 #   owner="customowner" against a no-version_digests artifact (LOCAL_ONLY/old path).
 #   All per-version COPY --from= refs inside the collector must use custom.io/customowner.
 # ---------------------------------------------------------------------------
-@test "FIX3-tag-fallback-uses-explicit-registry-owner: no-digests artifact refs use caller registry/owner" {
+@test "no-digests artifact refs use caller registry/owner" {
     # No-version_digests artifact (LOCAL_ONLY / old build path).
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
@@ -575,7 +575,7 @@ EOF
 # GREEN after fix: uses ${ROOT_DIR:-${PROJECT_ROOT:-...}} → finds artifact via
 #   PROJECT_ROOT → multi-version path (3 FROM stages).
 # ---------------------------------------------------------------------------
-@test "Y-production-cwd: artifact found via PROJECT_ROOT when ROOT_DIR unset and cwd is container subdir" {
+@test "artifact found via PROJECT_ROOT when ROOT_DIR unset and cwd is container subdir" {
     # Simulate repo root in a DIFFERENT temp dir from the container subdir.
     local fake_repo_root
     fake_repo_root=$(mktemp -d)
@@ -642,7 +642,7 @@ EOF
 # RED before fix: emits older-only stages, exits 0.
 # GREEN after fix: exits non-zero with actionable error.
 # ---------------------------------------------------------------------------
-@test "Z-ceiling-absent: non-empty available[] without ceiling → generate_dockerfile exits non-zero" {
+@test "non-empty available[] without ceiling → generate_dockerfile exits non-zero" {
     # Artifact: available has 2 older versions but ceiling (2.27.1) is MISSING.
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.23.0","2.25.0","2.27.1"],"available":["2.23.0","2.25.0"],"excluded":[{"version":"2.27.1","reason":"not available"}]}
@@ -659,7 +659,7 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-@test "Z-ceiling-present: ceiling in available[] → collector stage + single final COPY" {
+@test "ceiling in available[] → collector stage + single final COPY" {
     # Sanity: ceiling IS present → normal multi-version success with collector stage.
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
@@ -682,13 +682,13 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# CC-1: available[] entry ABOVE the ceiling → generate_dockerfile exits non-zero.
+# available[] entry ABOVE the ceiling → generate_dockerfile exits non-zero.
 #
 # RED before fix: no validation → the bad entry is emitted as a FROM stage,
 #   exits 0 (injection-unsafe / wrong image).
 # GREEN after fix: validation rejects above-ceiling entry, exits non-zero.
 # ---------------------------------------------------------------------------
-@test "CC-1-above-ceiling: available[] version above ceiling → generate_dockerfile exits non-zero" {
+@test "available[] version above ceiling → generate_dockerfile exits non-zero" {
     # Artifact: available has an entry (2.99.0) above the configured ceiling (2.27.1).
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1","2.99.0"],"available":["2.25.0","2.27.1","2.99.0"],"excluded":[]}
@@ -706,14 +706,14 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# CC-2: available[] entry with non-semver content → generate_dockerfile exits
+# available[] entry with non-semver content → generate_dockerfile exits
 # non-zero.
 #
 # RED before fix: no validation → the malformed string is emitted verbatim
 #   as a Docker stage/tag (injection risk), exits 0.
 # GREEN after fix: validation rejects non-semver entry, exits non-zero.
 # ---------------------------------------------------------------------------
-@test "CC-2-non-semver-injection: available[] non-semver string → generate_dockerfile exits non-zero" {
+@test "available[] non-semver string → generate_dockerfile exits non-zero" {
     # Artifact: available has a non-semver entry.
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1; rm -rf"],"excluded":[]}
@@ -730,7 +730,7 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-@test "CC-3-non-semver-latest: available[] 'latest' tag → generate_dockerfile exits non-zero" {
+@test "available[] 'latest' tag → generate_dockerfile exits non-zero" {
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","latest"],"excluded":[]}
 EOF
@@ -754,15 +754,15 @@ EOF
 #   multi-version stages. Fail closed only if the resolver or registry probe fails.
 #
 # Tests assert the NEW self-heal contract:
-#   EE-a-1: resolver-backed, no artifact, all resolved images PRESENT → self-heal,
+#   resolver-backed, no artifact, all resolved images PRESENT → self-heal,
 #            multi-version stages, exit 0.
-#   EE-a-2: resolver-backed, no artifact, resolve_version_set FAILS → fail closed,
+#   resolver-backed, no artifact, resolve_version_set FAILS → fail closed,
 #            exit non-zero.
-#   EE-a-3: resolver-backed, no artifact, resolves OK but ceiling image ABSENT
+#   resolver-backed, no artifact, resolves OK but ceiling image ABSENT
 #            from registry → fail closed (ceiling enforcement).
 # ---------------------------------------------------------------------------
 
-@test "EE-a-1-self-heal: resolver-backed ext + no artifact + all images present → self-heals, exit 0" {
+@test "resolver-backed ext + no artifact + all images present → self-heals, exit 0" {
     # Operator-approved contract change: versionset artifact is an optimisation,
     # not a hard dependency. When absent, generate_dockerfile self-heals via
     # resolve_version_set + image_exists_in_registry.
@@ -804,7 +804,7 @@ EOF
     [ "$final_copy_count" -eq 1 ]
 }
 
-@test "EE-a-2-resolver-fails: resolver-backed ext + no artifact + resolver fails → fail closed" {
+@test "resolver-backed ext + no artifact + resolver fails → fail closed" {
     # Self-heal cannot proceed without a resolver result. Fail closed.
     resolve_version_set() {
         echo "::error::simulated resolver failure" >&2
@@ -824,7 +824,7 @@ EOF
     [[ "$output" == *"timescaledb"* ]]
 }
 
-@test "EE-a-3-ceiling-absent: resolver-backed ext + no artifact + ceiling not in registry → fail closed" {
+@test "resolver-backed ext + no artifact + ceiling not in registry → fail closed" {
     # Self-heal resolves OK but the ceiling image (2.27.1) is absent from registry.
     # Ceiling enforcement: refuse to emit below-pin stages.
     resolve_version_set() {
@@ -856,7 +856,7 @@ EOF
 # The pgvector extension in the config fixture has no version_set.resolver.
 # GREEN before and after fix: non-resolver ext must still produce single-version.
 # ---------------------------------------------------------------------------
-@test "EE-b-non-resolver-no-artifact: non-resolver ext + no versionset → single-version, exit 0" {
+@test "non-resolver ext + no versionset → single-version, exit 0" {
     # No versionset file for pgvector (non-resolver) — use multi_mixed flavor
     # which includes pgvector (non-resolver) alongside timescaledb (resolver-backed).
     # Provide resolve_version_set + image_exists_in_registry mocks for timescaledb
@@ -886,7 +886,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# JJ-1: malformed artifact (truncated JSON) + resolver mocks that succeed
+# malformed artifact (truncated JSON) + resolver mocks that succeed
 #       → generate_dockerfile SELF-HEALS to multi-version (exit 0, N stages).
 #
 # RED before fix: jq parse fails → available_count collapses to 0 → falls
@@ -894,7 +894,7 @@ EOF
 # GREEN after fix: parse failure treated as ABSENT artifact → self-heal kicks
 #   in → resolver+registry probed → multi-version emitted (exit 0, 3 stages).
 # ---------------------------------------------------------------------------
-@test "JJ-1-malformed-truncated: truncated JSON artifact + resolver succeeds → self-heals to multi-version" {
+@test "truncated JSON artifact + resolver succeeds → self-heals to multi-version" {
     # Write a truncated/unparseable JSON artifact.
     printf '{"ext":"timescaledb"' \
         > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
@@ -928,7 +928,7 @@ EOF
     [ "$final_copy_count" -eq 1 ]
 }
 
-@test "JJ-2-malformed-garbage: non-JSON garbage artifact + resolver succeeds → self-heals to multi-version" {
+@test "non-JSON garbage artifact + resolver succeeds → self-heals to multi-version" {
     # Write non-JSON garbage as the artifact.
     printf 'NOT JSON AT ALL\x00\ngarbage data' \
         > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
@@ -959,7 +959,7 @@ EOF
     [ "$final_copy_count" -eq 1 ]
 }
 
-@test "JJ-3-malformed-no-available: JSON missing .available key + resolver succeeds → self-heals" {
+@test "JSON missing .available key + resolver succeeds → self-heals" {
     # Valid JSON but no .available key — schema mismatch.
     printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1"}' \
         > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
@@ -990,7 +990,7 @@ EOF
     [ "$final_copy_count" -eq 1 ]
 }
 
-@test "JJ-4-malformed-resolver-fails: malformed artifact + resolver FAILS → fail closed (non-zero)" {
+@test "malformed artifact + resolver FAILS → fail closed (non-zero)" {
     # Malformed artifact; resolver also fails. Must fail closed.
     printf '{"ext":"timescaledb"' \
         > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
@@ -1012,9 +1012,9 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# CC-4: valid semver entries, all <= ceiling → succeeds (regression guard).
+# valid semver entries, all <= ceiling → succeeds (regression guard).
 # ---------------------------------------------------------------------------
-@test "CC-4-valid-entries: valid semver entries all at-or-below ceiling → succeeds" {
+@test "valid semver entries all at-or-below ceiling → succeeds" {
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -1036,7 +1036,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# LEAK-1: self-heal path must NOT leave orphaned temp files in TMPDIR.
+# self-heal path must NOT leave orphaned temp files in TMPDIR.
 #
 # Before fix: mktemp creates a synthetic artifact in /tmp; the function
 # returns through multiple paths without ever deleting it → temp file leaks
@@ -1050,7 +1050,7 @@ EOF
 # generate_dockerfile; assert it is empty after the call returns.  RED
 # before fix (a .json temp file lingers), GREEN after (directory empty).
 # ---------------------------------------------------------------------------
-@test "LEAK-1-no-tempfile: self-heal path leaves no orphaned temp file in TMPDIR" {
+@test "self-heal path leaves no orphaned temp file in TMPDIR" {
     # No versionset artifact → triggers self-heal path.
     # Mocks: resolver succeeds, all images present.
     resolve_version_set() {
@@ -1100,12 +1100,12 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# LEAK-2: self-heal via empty-available artifact also leaves no temp file.
+# self-heal via empty-available artifact also leaves no temp file.
 #
 # Same leak vector but triggered via the empty-available → self-heal path
 # (the second route into self-heal added in this fix).
 # ---------------------------------------------------------------------------
-@test "LEAK-2-empty-available-no-tempfile: empty-available self-heal leaves no temp file in TMPDIR" {
+@test "empty-available self-heal leaves no temp file in TMPDIR" {
     # Empty available artifact → triggers self-heal.
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":[],"available":[],"excluded":[]}
@@ -1153,7 +1153,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# NN-3: transient probe ERROR in self-heal path → fail closed.
+# transient probe ERROR in self-heal path → fail closed.
 #
 # Scenario: no versionset artifact on disk; resolver succeeds and returns
 # ["2.23.0","2.25.0","2.27.1"]. The self-heal probes registry presence:
@@ -1171,7 +1171,7 @@ EOF
 # the desired 3-state code per version, isolating the self-heal routing logic
 # from the low-level docker/skopeo probe.
 # ---------------------------------------------------------------------------
-@test "NN-3: transient probe error in self-heal path fails closed (generate_dockerfile exits non-zero)" {
+@test "transient probe error in self-heal path fails closed (generate_dockerfile exits non-zero)" {
     # No versionset artifact — forces the self-heal path.
 
     # Resolver returns 3 versions.
@@ -1218,7 +1218,7 @@ EOF
 # excluded. rc=1 from _image_registry_probe_3state is treated as ABSENT, not ERROR.
 # The over-correct guard — ensures we didn't break the musl-failed / never-built case.
 # ---------------------------------------------------------------------------
-@test "NN-3b: definitively absent version in self-heal path is excluded, not an error" {
+@test "definitively absent version in self-heal path is excluded, not an error" {
     # No versionset artifact — forces the self-heal path.
 
     resolve_version_set() {
@@ -1327,13 +1327,13 @@ _run_registry_probe_3state() {
     printf '%d' $?
 }
 
-@test "OO-gd-manifest-unknown: 'manifest unknown' stderr → ABSENT (rc 1)" {
+@test "_run_registry_probe: 'manifest unknown' stderr → ABSENT (rc 1)" {
     local rc
     rc=$(_run_registry_probe_3state "Error response from daemon: manifest unknown: manifest unknown")
     [ "$rc" -eq 1 ]
 }
 
-@test "OO-gd-404: '404 Not Found' → ERROR (rc 2, fail-closed after UU allow-list tightening)" {
+@test "_run_registry_probe: '404 Not Found' → ERROR (rc 2, fail-closed after UU allow-list tightening)" {
     # Before UU fix: bare "404" and "not found" matched → ABSENT (rc 1) — fail-open.
     # After UU fix: only registry-manifest-specific signals are ABSENT; a generic
     # "404 Not Found" (e.g. from a load-balancer or cred-helper) is ERROR (rc 2).
@@ -1342,19 +1342,19 @@ _run_registry_probe_3state() {
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-gd-name-unknown: 'name unknown' → ABSENT (rc 1)" {
+@test "_run_registry_probe: 'name unknown' → ABSENT (rc 1)" {
     local rc
     rc=$(_run_registry_probe_3state "name unknown: repository name not known to registry")
     [ "$rc" -eq 1 ]
 }
 
-@test "OO-gd-no-such-manifest: 'no such manifest' → ABSENT (rc 1)" {
+@test "_run_registry_probe: 'no such manifest' → ABSENT (rc 1)" {
     local rc
     rc=$(_run_registry_probe_3state "no such manifest: ghcr.io/testowner/ext-timescaledb:pg18-2.27.1")
     [ "$rc" -eq 1 ]
 }
 
-@test "OO-gd-toomanyrequests-ERROR: 'toomanyrequests' → ERROR (rc 2, fail-closed)" {
+@test "_run_registry_probe: 'toomanyrequests' → ERROR (rc 2, fail-closed)" {
     # RED before fix: fell through to ABSENT (rc 1) — silently dropped retained version.
     # GREEN after fix: → ERROR (rc 2).
     local rc
@@ -1362,49 +1362,49 @@ _run_registry_probe_3state() {
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-gd-429-ERROR: '429' in stderr → ERROR (rc 2, fail-closed)" {
+@test "_run_registry_probe: '429' in stderr → ERROR (rc 2, fail-closed)" {
     local rc
     rc=$(_run_registry_probe_3state "Error: 429 Too Many Requests")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-gd-denied-ERROR: 'denied' in stderr → ERROR (rc 2, fail-closed)" {
+@test "_run_registry_probe: 'denied' in stderr → ERROR (rc 2, fail-closed)" {
     local rc
     rc=$(_run_registry_probe_3state "denied: access forbidden")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-gd-unauthorized-ERROR: 'unauthorized' → ERROR (rc 2, fail-closed)" {
+@test "_run_registry_probe: 'unauthorized' → ERROR (rc 2, fail-closed)" {
     local rc
     rc=$(_run_registry_probe_3state "unauthorized: authentication required")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-gd-no-such-host-ERROR: 'no such host' → ERROR (rc 2, fail-closed)" {
+@test "_run_registry_probe: 'no such host' → ERROR (rc 2, fail-closed)" {
     local rc
     rc=$(_run_registry_probe_3state "dial tcp: lookup ghcr.io: no such host")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-gd-network-unreachable-ERROR: 'network is unreachable' → ERROR (rc 2, fail-closed)" {
+@test "_run_registry_probe: 'network is unreachable' → ERROR (rc 2, fail-closed)" {
     local rc
     rc=$(_run_registry_probe_3state "dial tcp: connect: network is unreachable")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-gd-EOF-ERROR: 'EOF' in stderr → ERROR (rc 2, fail-closed)" {
+@test "_run_registry_probe: 'EOF' in stderr → ERROR (rc 2, fail-closed)" {
     local rc
     rc=$(_run_registry_probe_3state "unexpected EOF")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-gd-context-deadline-ERROR: 'context deadline exceeded' → ERROR (rc 2, fail-closed)" {
+@test "_run_registry_probe: 'context deadline exceeded' → ERROR (rc 2, fail-closed)" {
     local rc
     rc=$(_run_registry_probe_3state "context deadline exceeded")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-gd-empty-stderr-ERROR: empty stderr + rc≠0 → ERROR (rc 2, fail-closed)" {
+@test "_run_registry_probe: empty stderr + rc≠0 → ERROR (rc 2, fail-closed)" {
     # RED before fix: empty stderr fell through to ABSENT (rc 1) — fail-open.
     # GREEN after fix: empty stderr + non-zero → ERROR (rc 2).
     local rc
@@ -1412,7 +1412,7 @@ _run_registry_probe_3state() {
     [ "$rc" -eq 2 ]
 }
 
-@test "UU-gd-cmd-not-found-ERROR: 'docker: command not found' stderr → ERROR (rc 2, not ABSENT)" {
+@test "_run_registry_probe: 'docker: command not found' stderr → ERROR (rc 2, not ABSENT)" {
     # Before UU fix: bare "not found" matched the allow-list → ABSENT (rc 1), mis-classifying
     # a missing docker binary as a definitively-absent image.
     # After UU fix: "command not found" no longer matches any registry-manifest-specific
@@ -1422,7 +1422,7 @@ _run_registry_probe_3state() {
     [ "$rc" -eq 2 ]
 }
 
-@test "UU-gd-cred-helper-not-found-ERROR: cred-helper 'executable file not found' → ERROR (rc 2)" {
+@test "_run_registry_probe: cred-helper 'executable file not found' → ERROR (rc 2)" {
     # A missing credential helper produces "executable file not found in PATH".
     # Before UU fix: "not found" in the message matched → ABSENT (rc 1) — mis-classifying
     # an infra misconfiguration as a definitively-absent image.
@@ -1432,7 +1432,7 @@ _run_registry_probe_3state() {
     [ "$rc" -eq 2 ]
 }
 
-@test "UU-gd-no-such-image-ERROR: 'no such image' stderr → ERROR (rc 2, fail-closed after UU)" {
+@test "_run_registry_probe: 'no such image' stderr → ERROR (rc 2, fail-closed after UU)" {
     # "no such image" is a Docker daemon local-store message, not a registry-manifest
     # API response. After UU tightening it is removed from the allow-list → ERROR.
     local rc
@@ -1452,7 +1452,7 @@ _run_registry_probe_3state() {
 # GREEN after fix: LOCAL_ONLY/PULL_ONLY routes to docker image inspect. Self-heals.
 # ---------------------------------------------------------------------------
 
-@test "PP-local-only-self-heal: LOCAL_ONLY=true + images present locally → generate_dockerfile self-heals" {
+@test "LOCAL_ONLY=true + images present locally → generate_dockerfile self-heals" {
     # No versionset artifact → forces the self-heal path.
     # Images are present in LOCAL daemon but NOT in registry.
     local tmpd="$TEST_TEMP_DIR"
@@ -1502,7 +1502,7 @@ _run_registry_probe_3state() {
     [ "$final_copy_count" -eq 1 ]
 }
 
-@test "PP-pull-only-self-heal: PULL_ONLY=true + images present locally → generate_dockerfile self-heals" {
+@test "PULL_ONLY=true + images present locally → generate_dockerfile self-heals" {
     local tmpd="$TEST_TEMP_DIR"
 
     run bash -c "
@@ -1548,7 +1548,7 @@ _run_registry_probe_3state() {
     [ "$final_copy_count" -eq 1 ]
 }
 
-@test "PP-local-only-image-absent-locally: LOCAL_ONLY=true + image NOT in local daemon → generate_dockerfile fails closed" {
+@test "LOCAL_ONLY=true + image NOT in local daemon → generate_dockerfile fails closed" {
     # In local mode, docker image inspect is 2-state (PRESENT/ABSENT).
     # All images absent locally → no available versions → ceiling absent → fail closed.
     local tmpd="$TEST_TEMP_DIR"
@@ -1629,7 +1629,7 @@ _run_registry_probe_3state() {
 #   GREEN after fix: still succeeds with multi-version COPY output (non-vacuous).
 # ---------------------------------------------------------------------------
 
-@test "ZZ-skopeo-absent-selfheal-failfast: no artifact + skopeo absent → fail-fast with 'skopeo' in message (resolver NOT reached)" {
+@test "no artifact + skopeo absent → fail-fast with 'skopeo' in message (resolver NOT reached)" {
     # No versionset artifact — forces the self-heal branch.
     # skopeo is shadowed off PATH; jq remains available.
     local tmpd="$TEST_TEMP_DIR"
@@ -1681,7 +1681,7 @@ _run_registry_probe_3state() {
     [[ "$output" != *resolve_version_set_was_reached* ]]
 }
 
-@test "ZZ-skopeo-absent-valid-artifact-ok: valid artifact present + skopeo absent → succeeds (skopeo never needed)" {
+@test "valid artifact present + skopeo absent → succeeds (skopeo never needed)" {
     # A valid, well-formed versionset artifact is on disk — self-heal must NOT fire.
     # skopeo is shadowed off PATH to prove the valid-artifact path does not touch it.
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
@@ -1730,7 +1730,7 @@ _run_registry_probe_3state() {
 }
 
 # ---------------------------------------------------------------------------
-# AG-3: generate_dockerfile artifact-consumption path — artifact whose
+# generate_dockerfile artifact-consumption path — artifact whose
 # available[] contains a poisoned element "2.25.0\n2.26.0" (one string,
 # embedded newline) must be rejected BEFORE any FROM/COPY stage emission.
 # Without the fix, jq -r '.available[]' splits the element into two lines and
@@ -1742,7 +1742,7 @@ _run_registry_probe_3state() {
 # Non-vacuous: the smuggled version must NOT appear as a FROM stage.
 # ---------------------------------------------------------------------------
 
-@test "AG-3-artifact-poisoned-available: artifact with embedded-newline element rejected before stage emission" {
+@test "artifact with embedded-newline element rejected before stage emission" {
     # Artifact with one poisoned element: "2.25.0\n2.26.0" contains an embedded newline.
     mkdir -p "$TEST_TEMP_DIR/.build-lineage"
     # Write JSON manually: the element contains a literal \n inside the string.
@@ -1765,7 +1765,7 @@ _run_registry_probe_3state() {
 }
 
 # ---------------------------------------------------------------------------
-# AG-4: generate_dockerfile self-heal path — resolver returns a set with an
+# generate_dockerfile self-heal path — resolver returns a set with an
 # embedded-newline element where BOTH parts are below-ceiling valid semver
 # ("2.25.0\n2.26.0") so the ceiling clamp cannot catch it. Without the
 # whole-string chokepoint, both 2.25.0 and 2.26.0 get probed separately and
@@ -1778,7 +1778,7 @@ _run_registry_probe_3state() {
 # GREEN after fix: whole-string anchor rejects the element -> fail-closed.
 # ---------------------------------------------------------------------------
 
-@test "AG-4-self-heal-embedded-newline-below-ceiling: resolver returns embedded-newline element (both parts below ceiling) in self-heal path -> fail-closed" {
+@test "resolver returns embedded-newline element (both parts below ceiling) in self-heal path -> fail-closed" {
     # No versionset artifact — triggers self-heal path.
     rm -f "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
 
@@ -1814,11 +1814,11 @@ _run_registry_probe_3state() {
 }
 
 # ---------------------------------------------------------------------------
-# AG-5: regression guard — valid versionset artifact with 3 clean elements
+# regression guard — valid versionset artifact with 3 clean elements
 # still produces collector stage + single final COPY (chokepoint must not break happy path).
 # ---------------------------------------------------------------------------
 
-@test "AG-5-valid-artifact-still-works: clean available[] with 3 valid elements -> collector stage + 1 final COPY" {
+@test "clean available[] with 3 valid elements -> collector stage + 1 final COPY" {
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -1845,7 +1845,7 @@ _run_registry_probe_3state() {
     [ "$per_ver_count" -eq 3 ]
 }
 
-@test "SS-jq-absent: jq not on PATH + resolver-backed ext + valid artifact → fail-fast with 'jq' in error message" {
+@test "jq not on PATH + resolver-backed ext + valid artifact → fail-fast with 'jq' in error message" {
     # Write a valid versionset artifact so the test verifies the prereq path,
     # not the artifact-absent self-heal path.
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
@@ -1890,7 +1890,7 @@ _run_registry_probe_3state() {
 }
 
 # ---------------------------------------------------------------------------
-# BUNDLE-CON-1: resolver-backed ext with 3 available versions →
+# resolver-backed ext with 3 available versions →
 # generated Dockerfile has a collector stage (FROM scratch AS ext_collect_<ext>)
 # with 3 per-version COPYs inside, and EXACTLY ONE final-stage COPY from the collector.
 #
@@ -1898,7 +1898,7 @@ _run_registry_probe_3state() {
 # The final stage sees exactly 1 COPY from the collector (1 exported layer).
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-CON-1: 3 available versions → collector stage + exactly 1 final COPY" {
+@test "3 available versions → collector stage + exactly 1 final COPY" {
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -1926,12 +1926,12 @@ _run_registry_probe_3state() {
 }
 
 # ---------------------------------------------------------------------------
-# BUNDLE-CON-2: the final-stage COPY places the collector's content at
+# the final-stage COPY places the collector's content at
 # /tmp/ext/<ext>/ so that /<ver>/ dirs inside the collector land at
 # /tmp/ext/<ext>/<ver>/ which is the layout install_ext iterates.
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-CON-2: collector COPY destination is /tmp/ext/timescaledb/ (installs at correct path)" {
+@test "collector COPY destination is /tmp/ext/timescaledb/ (installs at correct path)" {
     _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -1947,11 +1947,11 @@ _run_registry_probe_3state() {
 }
 
 # ---------------------------------------------------------------------------
-# BUNDLE-CON-3: the collector stage name is derived from the extension name.
+# the collector stage name is derived from the extension name.
 # Consumer emits "FROM scratch AS ext_collect_<ext>".
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-CON-3: collector stage name is ext_collect_timescaledb" {
+@test "collector stage name is ext_collect_timescaledb" {
     _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -1967,11 +1967,11 @@ _run_registry_probe_3state() {
 }
 
 # ---------------------------------------------------------------------------
-# BUNDLE-CON-4: single-version (non-resolver) extension path UNCHANGED.
+# single-version (non-resolver) extension path UNCHANGED.
 # pgvector (no version_set.resolver) must still emit a FROM stage + flat COPY.
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-CON-4: single-version pgvector path unchanged — still 1 FROM + flat COPY" {
+@test "single-version pgvector path unchanged — still 1 FROM + flat COPY" {
     # No versionset artifact for pgvector (non-resolver extension).
 
     run generate_dockerfile \
@@ -1995,12 +1995,12 @@ _run_registry_probe_3state() {
 }
 
 # ---------------------------------------------------------------------------
-# BUNDLE-CON-5: mixed flavor — timescaledb uses bundle COPY,
+# mixed flavor — timescaledb uses bundle COPY,
 # pgvector uses original single-version path. One bundle COPY, zero per-version
 # timescaledb COPYs, one pgvector FROM.
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-CON-5: mixed flavor — timescaledb collector + pgvector single-version unchanged" {
+@test "mixed flavor — timescaledb collector + pgvector single-version unchanged" {
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -2030,11 +2030,11 @@ _run_registry_probe_3state() {
 }
 
 # ---------------------------------------------------------------------------
-# BUNDLE-CON-6: self-heal path (no artifact) for resolver-backed ext
+# self-heal path (no artifact) for resolver-backed ext
 # also emits a collector stage + 1 final COPY (not a mutable bundle tag).
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-CON-6: self-heal (no artifact) emits collector stage + 1 final COPY" {
+@test "self-heal (no artifact) emits collector stage + 1 final COPY" {
     # Self-heal uses the same collector emitter as the artifact-present path.
     # No versionset file — self-heal must kick in.
 
@@ -2078,7 +2078,7 @@ _run_registry_probe_3state() {
 # AP: self-heal emits one COPY pair per proved-present per-version ref.
 # No bundle ref appears in the output.
 # ---------------------------------------------------------------------------
-@test "AK-selfheal-per-version-refs: artifact absent, self-heal, all versions present → per-version COPYs, no bundle ref" {
+@test "artifact absent, self-heal, all versions present → per-version COPYs, no bundle ref" {
     # No versionset artifact → forces self-heal path.
 
     resolve_version_set() {
@@ -2129,7 +2129,7 @@ _run_registry_probe_3state() {
 # AP: the bundle ref is never probed on the self-heal path.
 # These tests verify the per-version-probe routing that feeds _sh_available.
 # ---------------------------------------------------------------------------
-@test "AK-selfheal-only-proved-versions: absent version excluded, present versions emitted as per-version COPYs" {
+@test "absent version excluded, present versions emitted as per-version COPYs" {
     # No versionset artifact → forces self-heal path.
     # 2.23.0: ABSENT; 2.25.0 and 2.27.1: PRESENT.
     # _sh_available == [2.25.0, 2.27.1]; ceiling 2.27.1 present → multi-version.
@@ -2179,7 +2179,7 @@ _run_registry_probe_3state() {
     [ "$final_count" -eq 1 ]
 }
 
-@test "AK-selfheal-error-version-failclosed: transient ERROR probe in self-heal → fail closed, no output" {
+@test "transient ERROR probe in self-heal → fail closed, no output" {
     # No versionset artifact → forces self-heal path.
     # One version returns ERROR (transient) → fail closed.
 
@@ -2223,7 +2223,7 @@ _run_registry_probe_3state() {
 #   COPY --from=ext-<name> /output/lib/ ...
 #   No bundle reference.  No bundle probe.
 # ---------------------------------------------------------------------------
-@test "AL-consumer-single-version: artifact with available=[ceiling] → single-version FROM path, no bundle ref" {
+@test "artifact with available=[ceiling] → single-version FROM path, no bundle ref" {
     # Artifact: resolver-backed extension with exactly 1 available version (the ceiling).
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.27.1"],"available":["2.27.1"],"excluded":[]}
@@ -2258,7 +2258,7 @@ EOF
 # version_digests: {"2.25.0":"sha256:<64hex>", "2.27.1":"sha256:<64hex>"}
 # Each per-version COPY inside the collector uses the digest-pinned ref.
 # ---------------------------------------------------------------------------
-@test "AM-consumer-digest-pin: artifact with version_digests → collector COPYs use repo@digest refs" {
+@test "artifact with version_digests → collector COPYs use repo@digest refs" {
     # Artifact: multi-version with version_digests.
     _write_versionset_with_digests "timescaledb" "18" "2.25.0" "2.27.1"
 
@@ -2290,7 +2290,7 @@ EOF
 # AM-consumer-no-digest-tag-fallback: artifact present WITHOUT version_digests
 # (LOCAL_ONLY-produced artifact) → collector COPYs use tag-based references.
 # ---------------------------------------------------------------------------
-@test "AM-consumer-no-digest-tag-fallback: artifact without version_digests → tag-based refs in collector" {
+@test "artifact without version_digests → tag-based refs in collector" {
     # Artifact: multi-version, no version_digests (LOCAL_ONLY-produced case).
     _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
 
@@ -2382,7 +2382,7 @@ _write_versionset_with_malformed_ver_digest() {
         > "$TEST_TEMP_DIR/.build-lineage/ext-${ext}-pg${pg_major}-versionset.json"
 }
 
-@test "AN-consumer-rejects-embedded-newline-injection: version_digests with newline+RUN evil → fail closed" {
+@test "version_digests with newline+RUN evil → fail closed" {
     # Poisoned digest for one version: valid-looking sha256 prefix + embedded newline + injected directive.
     local evil_digest
     evil_digest=$(printf 'sha256:0000000000000000000000000000000000000000000000000000000000000000\nRUN evil')
@@ -2403,7 +2403,7 @@ _write_versionset_with_malformed_ver_digest() {
     [ "$evil_count" -eq 0 ]
 }
 
-@test "AN-consumer-rejects-uppercase-hex: uppercase digest in version_digests → fail closed" {
+@test "uppercase digest in version_digests → fail closed" {
     local bad_digest="sha256:DEADBEEF00000000000000000000000000000000000000000000000000000000"
     _write_versionset_with_malformed_ver_digest "timescaledb" "18" "$bad_digest" "2.25.0" "2.27.1"
 
@@ -2420,7 +2420,7 @@ _write_versionset_with_malformed_ver_digest() {
     [ "$upper_count" -eq 0 ]
 }
 
-@test "AN-consumer-rejects-short-hash: sha256:<63hex> in version_digests → fail closed" {
+@test "sha256:<63hex> in version_digests → fail closed" {
     local bad_digest="sha256:000000000000000000000000000000000000000000000000000000000000000"
     _write_versionset_with_malformed_ver_digest "timescaledb" "18" "$bad_digest" "2.25.0" "2.27.1"
 
@@ -2433,7 +2433,7 @@ _write_versionset_with_malformed_ver_digest() {
     [ "$status" -ne 0 ]
 }
 
-@test "AN-consumer-accepts-valid-digest: valid version_digests → per-version repo@digest COPYs inside collector" {
+@test "valid version_digests → per-version repo@digest COPYs inside collector" {
     # Proper OCI digest — must produce collector stage with digest-pinned per-version COPYs.
     _write_versionset_with_digests "timescaledb" "18" "2.25.0" "2.27.1"
 
@@ -2454,7 +2454,7 @@ _write_versionset_with_malformed_ver_digest() {
     [ "$pinned_count" -eq 2 ]
 }
 
-@test "AN-consumer-absent-digest-tag: no version_digests in artifact → tag-based refs in collector" {
+@test "no version_digests in artifact → tag-based refs in collector" {
     # LOCAL_ONLY-produced artifact: no version_digests field.
     _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
 
@@ -2476,7 +2476,7 @@ _write_versionset_with_malformed_ver_digest() {
 }
 
 # ---------------------------------------------------------------------------
-# AO-4: self-heal path, synthesized available contains ONLY an older version
+# self-heal path, synthesized available contains ONLY an older version
 # (ceiling absent) → generate_dockerfile must FAIL CLOSED.
 #
 # Context: When the versionset artifact is absent/malformed, generate_dockerfile
@@ -2506,7 +2506,7 @@ _write_versionset_with_malformed_ver_digest() {
 #   Must remain GREEN (ceiling present → allowed).
 # ---------------------------------------------------------------------------
 
-@test "AO4-selfheal-ceiling-absent-failclosed: self-heal available=[older-only] (no ceiling) → fail closed" {
+@test "self-heal available=[older-only] (no ceiling) → fail closed" {
     # No versionset artifact — forces the self-heal path.
 
     # Resolver returns 3 versions; the ceiling is 2.27.1.
@@ -2545,7 +2545,7 @@ _write_versionset_with_malformed_ver_digest() {
     fi
 }
 
-@test "AO4-selfheal-ceiling-only-singleversion: self-heal available=[ceiling] → single-version path OK" {
+@test "self-heal available=[ceiling] → single-version path OK" {
     # No versionset artifact — forces the self-heal path.
 
     # Resolver returns 3 versions.
@@ -2603,10 +2603,10 @@ _write_versionset_with_malformed_ver_digest() {
 #   (AM regression — unchanged.)
 #
 # AP-selfheal-ceiling-present-enforced:
-#   self-heal, ceiling absent from _sh_available → fail closed (AO-4 still enforced).
+#   self-heal, ceiling absent from _sh_available → fail closed (still fail-closed).
 # ---------------------------------------------------------------------------
 
-@test "AP-selfheal-per-version-not-bundle: self-heal >1 proved-present versions → collector stage, no bundle tag" {
+@test "self-heal >1 proved-present versions → collector stage, no bundle tag" {
     # No versionset artifact → forces self-heal path.
     # _sh_available = [2.23.0, 2.25.0, 2.27.1] (all present, ceiling present, count > 1).
 
@@ -2642,7 +2642,7 @@ _write_versionset_with_malformed_ver_digest() {
     [ "$final_count" -eq 1 ]
 }
 
-@test "AP-selfheal-only-proved-versions: absent version not emitted; transient ERROR fails closed" {
+@test "absent version not emitted; transient ERROR fails closed" {
     # Sub-case A: one version definitively absent → only proved-present versions emitted.
 
     resolve_version_set() {
@@ -2683,7 +2683,7 @@ _write_versionset_with_malformed_ver_digest() {
     [ "$absent_count" -eq 0 ]
 }
 
-@test "AP-artifact-path-still-version-digests: artifact with version_digests → digest-pinned collector COPYs" {
+@test "artifact with version_digests → digest-pinned collector COPYs" {
     # AM regression: artifact-present path must still emit digest-pinned refs inside the collector.
     # Self-heal is NOT triggered (valid artifact on disk with version_digests).
     _write_versionset_with_digests "timescaledb" "18" "2.25.0" "2.27.1"
@@ -2710,8 +2710,8 @@ _write_versionset_with_malformed_ver_digest() {
     [ "$final_count" -eq 1 ]
 }
 
-@test "AP-selfheal-ceiling-present-enforced: self-heal ceiling absent from proved set → fail closed" {
-    # AO-4 regression: ceiling-present enforcement still applies on self-heal path
+@test "self-heal ceiling absent from proved set → fail closed" {
+    # Regression: ceiling-present enforcement still applies on self-heal path
     # after the AP fix (per-version path).
     # _sh_available = [2.25.0] only — ceiling 2.27.1 absent.
 
@@ -2735,7 +2735,7 @@ _write_versionset_with_malformed_ver_digest() {
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
-    # Ceiling absent → fail closed (AO-4 still enforced on AP path).
+    # Ceiling absent → fail closed (still enforced on the self-heal path).
     [ "$status" -ne 0 ]
 
     # No per-version or bundle COPY must appear.
@@ -2745,7 +2745,7 @@ _write_versionset_with_malformed_ver_digest() {
 }
 
 # ---------------------------------------------------------------------------
-# AQ-2: artifact-present path — single available entry that is NOT the ceiling.
+# artifact-present path — single available entry that is NOT the ceiling.
 #
 # Defect: the single-entry ceiling check ("available[0] must equal ceiling") runs
 # ONLY when the data came from the self-heal path (_versionset_from_selfheal=true).
@@ -2759,7 +2759,7 @@ _write_versionset_with_malformed_ver_digest() {
 # If not → FAIL CLOSED (log_error, return 1).
 # Remove the _versionset_from_selfheal gating on this specific check.
 # ---------------------------------------------------------------------------
-@test "AQ2-artifact-single-not-ceiling-failclosed: on-disk artifact with single available != ceiling → fail closed" {
+@test "on-disk artifact with single available != ceiling → fail closed" {
     # On-disk artifact: single entry 2.25.0 in available but ceiling is 2.27.1.
     # This is a stale/corrupt artifact — build-extensions never writes this shape.
     # Before fix: falls through to single-version path emitting FROM ...:pg18-2.27.1
@@ -2785,7 +2785,7 @@ EOF
     [ "$ceiling_from_count" -eq 0 ]
 }
 
-@test "AQ2-artifact-single-is-ceiling-ok: on-disk artifact with single available == ceiling → single-version path succeeds" {
+@test "on-disk artifact with single available == ceiling → single-version path succeeds" {
     # On-disk artifact: single entry 2.27.1 in available, ceiling is also 2.27.1.
     # This is the legitimate case: ceiling built but no older versions available.
     # Must succeed and emit the single-version FROM stage.
@@ -2812,7 +2812,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# AR-2: a malformed version_digests entry containing GHA workflow-command injection
+# a malformed version_digests entry containing GHA workflow-command injection
 # bytes must be defanged in the log diagnostic and the function must fail closed.
 #
 # A poisoned artifact has version_digests["2.23.0"] = "sha256:abc\n::add-mask::secret".
@@ -2820,7 +2820,7 @@ EOF
 # non-zero). The log_error message must NOT contain a raw newline immediately followed
 # by ::add-mask:: (the injection form GHA interprets).
 # ---------------------------------------------------------------------------
-@test "AR2-digest-diagnostic-sanitized: malformed version_digests entry with injection bytes — fail closed, diagnostic defanged" {
+@test "malformed version_digests entry with injection bytes — fail closed, diagnostic defanged" {
     # Artifact with 3 available versions and a poisoned digest for one version.
     python3 -c "
 import json, os
@@ -2879,18 +2879,18 @@ with open(path, 'w') as f:
 }
 
 # ---------------------------------------------------------------------------
-# AS-2: _single_avail (extension-utils.sh ~648) log path sanitization.
+# _single_avail (extension-utils.sh ~648) log path sanitization.
 #
 # Scenario: artifact has available:["1.2.3\n::warning::pwn"] — a single entry
 # that contains an embedded GHA workflow-command injection.
 # The value is != ceiling (2.27.1), so generate_dockerfile must fail closed
-# (AO-4 guard). The log_error diagnostic at that site must NOT emit the raw
+# (the ceiling-present guard). The log_error diagnostic at that site must NOT emit the raw
 # newline+:: sequence — it must be sanitized first.
 #
 # RED before fix: _single_avail is logged raw (no _sanitize_for_log).
 # GREEN after fix: _single_avail is wrapped in _sanitize_for_log before logging.
 # ---------------------------------------------------------------------------
-@test "AS2-single-avail-log-sanitized: artifact single-available with injection bytes — fail closed, log defanged" {
+@test "artifact single-available with injection bytes — fail closed, log defanged" {
     # Write artifact with a poisoned single-entry available array.
     # We embed a literal newline in the JSON string using python3 for correctness.
     python3 -c "
@@ -2946,7 +2946,7 @@ with open(path, 'w') as f:
 }
 
 # ---------------------------------------------------------------------------
-# AS-2: _val_ver (extension-utils.sh ~694/~702) log path sanitization.
+# _val_ver (extension-utils.sh ~694/~702) log path sanitization.
 #
 # The per-element validation loop logs _val_ver when is_strict_semver fails
 # or when the above-ceiling check fails. Since validate_semver_set_json runs
@@ -2965,7 +2965,7 @@ with open(path, 'w') as f:
 #   2. Fails is_strict_semver (non-semver chars after version) → log_error at ~694
 #   3. Contains GHA injection chars that must be sanitized
 # ---------------------------------------------------------------------------
-@test "AS2-valver-log-sanitized: per-element resolved version with injection bytes — log defanged" {
+@test "per-element resolved version with injection bytes — log defanged" {
     # The injection vector at the _val_ver log site uses echo -e expansion:
     # a value like "2.25.0\n::stop-commands::x" (with a literal backslash-n, not a
     # real newline) is logged via echo -e which expands \n to a real newline, causing
@@ -3027,7 +3027,7 @@ ARTIFACT_EOF
 }
 
 # ---------------------------------------------------------------------------
-# AT-2: self-heal with reduced retention must emit a log_warning naming
+# self-heal with reduced retention must emit a log_warning naming
 # the dropped versions.
 #
 # When the probed available set (_sh_available) is SMALLER than the resolved
@@ -3042,20 +3042,20 @@ ARTIFACT_EOF
 #       * is sanitised through _sanitize_for_log (no raw injection path)
 #
 # Tests:
-#   AT2-selfheal-reduced-warns: resolved=3, probed-present=2 (ceiling present),
+#   resolved=3, probed-present=2 (ceiling present),
 #     1 version absent → SUCCEEDS, log_warning names the dropped version.
 #     RED before fix: no warning at all (silent reduction).
 #     GREEN after fix: warning surfaces dropped version.
 #
-#   AT2-selfheal-full-no-warn: resolved=3, probed-present=3 (all present) →
+#   resolved=3, probed-present=3 (all present) →
 #     SUCCEEDS, NO reduction warning emitted.
 #     (Regression: the warning must not fire when no version was dropped.)
 #
-# Existing ceiling-present fail-closed (AO-4 / EE-a-3) and per-version
+# Existing ceiling-present fail-closed and per-version
 # emission (AP) remain unchanged — these tests do NOT touch or weaken them.
 # ---------------------------------------------------------------------------
 
-@test "AT2-selfheal-reduced-warns: self-heal with 1 absent version emits log_warning naming dropped version" {
+@test "self-heal with 1 absent version emits log_warning naming dropped version" {
     # No versionset artifact — forces self-heal path.
     # Resolver returns 3 versions; only 2 are present in registry.
     # 2.16.0 is definitively absent (rc=1 from _image_registry_probe_3state).
@@ -3099,7 +3099,7 @@ ARTIFACT_EOF
     [[ "$output" == *"reduc"* ]] || [[ "$output" == *"absent"* ]] || [[ "$output" == *"not retain"* ]]
 }
 
-@test "AT2-selfheal-full-no-warn: all resolved versions present — no reduction warning emitted" {
+@test "all resolved versions present — no reduction warning emitted" {
     # No versionset artifact — forces self-heal path.
     # All 3 resolved versions are present → no reduction, no warning.
 
@@ -3127,12 +3127,12 @@ ARTIFACT_EOF
 }
 
 # ---------------------------------------------------------------------------
-# BB1-consumer-repo-digest: artifact with version_digests → each per-version
+# artifact with version_digests → each per-version
 # COPY inside the collector uses <registry>/<owner>/ext-<ext>@<digest>
 # (repo + digest, NO tag segment). Pure-digest references are valid across
 # any tag scope (PR-scoped or canonical).
 # ---------------------------------------------------------------------------
-@test "BB1-consumer-repo-digest: version_digests in artifact → per-version COPYs are repo@digest (no tag segment)" {
+@test "version_digests in artifact → per-version COPYs are repo@digest (no tag segment)" {
     _write_versionset_with_digests "timescaledb" "18" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -3160,7 +3160,7 @@ ARTIFACT_EOF
 }
 
 # ---------------------------------------------------------------------------
-# BC-1: consumer PR_TAG_SUFFIX scoping for non-resolver/single-version path
+# consumer PR_TAG_SUFFIX scoping for non-resolver/single-version path
 #
 # generate_dockerfile must append ${PR_TAG_SUFFIX} to the FROM image ref for
 # single-version (non-resolver) extensions when PR_TAG_SUFFIX is set.
@@ -3172,7 +3172,7 @@ ARTIFACT_EOF
 #   PR_TAG_SUFFIX empty → canonical ref (no suffix).
 #   RED before fix: FROM always uses canonical tag.  GREEN after: -pr42 appended.
 # ---------------------------------------------------------------------------
-@test "BC1-consumer-pr-scopes-nonresolver: PR_TAG_SUFFIX=-pr42 → FROM ref for non-resolver ext carries -pr42" {
+@test "PR_TAG_SUFFIX=-pr42 → FROM ref for non-resolver ext carries -pr42" {
     # No versionset artifact — pgvector is non-resolver, uses single-version path.
     export PR_TAG_SUFFIX="-pr42"
 
@@ -3210,7 +3210,7 @@ ARTIFACT_EOF
     echo "$output" | grep -Fxq "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
 }
 
-@test "BC1-consumer-canonical-no-suffix: PR_TAG_SUFFIX empty → FROM ref is canonical (no suffix)" {
+@test "PR_TAG_SUFFIX empty → FROM ref is canonical (no suffix)" {
     # Regression: empty PR_TAG_SUFFIX must leave the FROM ref unchanged.
     export PR_TAG_SUFFIX=""
 
@@ -3234,7 +3234,7 @@ ARTIFACT_EOF
 }
 
 # ---------------------------------------------------------------------------
-# BC-1: consumer PR_TAG_SUFFIX scoping for self-heal per-version COPY refs
+# consumer PR_TAG_SUFFIX scoping for self-heal per-version COPY refs
 #
 # On the self-heal path (AP), generate_dockerfile emits per-version COPY lines
 # using ext_image_name().  Those refs must also carry the PR_TAG_SUFFIX.
@@ -3244,7 +3244,7 @@ ARTIFACT_EOF
 #   all carry -pr42.  Confirmed for each version in the proved-present set.
 #   RED before fix: per-version refs use canonical tags.  GREEN after: -pr42 appended.
 # ---------------------------------------------------------------------------
-@test "BC1-consumer-pr-scopes-selfheal: PR_TAG_SUFFIX=-pr42, all canonical refs absent → self-heal COPY refs carry -pr42" {
+@test "PR_TAG_SUFFIX=-pr42, all canonical refs absent → self-heal COPY refs carry -pr42" {
     # No versionset artifact → self-heal path for timescaledb.
     # PR context (PR_TAG_SUFFIX=-pr42): both versions were built THIS PR.
     # Faithful mock: canonical refs are ABSENT (rc=1); PR-scoped refs are PRESENT (rc=0).
@@ -3288,7 +3288,7 @@ ARTIFACT_EOF
 }
 
 # ---------------------------------------------------------------------------
-# BC-3: present-empty bundle_digest fails closed; absent key → tag fallback
+# present-empty bundle_digest fails closed; absent key → tag fallback
 #
 # generate_dockerfile uses `jq '.bundle_digest // empty'` which maps both
 # ABSENT and PRESENT-EMPTY to the empty string — falling back to the mutable
@@ -3305,7 +3305,7 @@ ARTIFACT_EOF
 #   artifact has NO version_digests key → tag-based refs, exit 0 (LOCAL_ONLY case).
 #   Must remain GREEN (regression guard).
 # ---------------------------------------------------------------------------
-@test "BC3-empty-digest-failclosed: version_digests entry present-but-empty → fail closed" {
+@test "version_digests entry present-but-empty → fail closed" {
     # Artifact with version_digests having one empty-string value.
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"version_digests":{"2.25.0":"","2.27.1":"sha256:abcdef0000000000000000000000000000000000000000000000000000000000"}}
@@ -3321,7 +3321,7 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-@test "BC3-absent-digest-tag-fallback: NO version_digests key in artifact → tag-based refs, exit 0 (LOCAL_ONLY regression)" {
+@test "NO version_digests key in artifact → tag-based refs, exit 0 (LOCAL_ONLY regression)" {
     # LOCAL_ONLY-produced artifact: version_digests key is completely absent.
     _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
 
@@ -3344,7 +3344,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BD-1: legacy artifact with bundle_digest but no version_digests must fail
+# legacy artifact with bundle_digest but no version_digests must fail
 # closed — the consumer must not silently downgrade to mutable tag refs.
 #
 # A pre-collector pushed artifact carries bundle_digest (the old single-image
@@ -3361,7 +3361,7 @@ EOF
 #   artifact has neither bundle_digest nor version_digests → tag-based refs,
 #   exit 0 (LOCAL_ONLY regression guard — must stay green).
 # ---------------------------------------------------------------------------
-@test "BD1-legacy-bundle-digest-failclosed: bundle_digest present, no version_digests → fail closed, no Dockerfile" {
+@test "bundle_digest present, no version_digests → fail closed, no Dockerfile" {
     # Legacy artifact: has bundle_digest (old schema) but no version_digests.
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
@@ -3382,7 +3382,7 @@ EOF
     [ "$digest_pin_count" -eq 0 ]
 }
 
-@test "BD1-neither-key-tag-fallback: no bundle_digest, no version_digests → tag-based refs, exit 0 (LOCAL_ONLY regression)" {
+@test "no bundle_digest, no version_digests → tag-based refs, exit 0 (LOCAL_ONLY regression)" {
     # LOCAL_ONLY artifact: neither key present → tag-based fallback, exit 0.
     _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
 
@@ -3403,7 +3403,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BE-2: self-heal availability probe must use the PR-scoped ref it emits.
+# self-heal availability probe must use the PR-scoped ref it emits.
 #
 # Defect: in the self-heal loop, _sh_image is built with ext_image_name (no
 # PR_TAG_SUFFIX) but the emitted COPY line uses _scoped_ext_ref (which appends
@@ -3426,7 +3426,7 @@ EOF
 #   Regression guard — must stay green before and after the fix.
 # ---------------------------------------------------------------------------
 
-@test "BE2-selfheal-probes-scoped-ref: PR_TAG_SUFFIX=-pr42, canonical ABSENT → probe falls back to -pr42 ref" {
+@test "PR_TAG_SUFFIX=-pr42, canonical ABSENT → probe falls back to -pr42 ref" {
     # No versionset artifact — forces self-heal path.
     # PR_TAG_SUFFIX is set to -pr42 (same-repo PR scenario).
     # Canonical-first behavior (BI-1 fix): probe canonical first; if ABSENT (rc=1),
@@ -3485,7 +3485,7 @@ EOF
     [ "$canonical_copy_count" -eq 0 ]
 }
 
-@test "BE2-push-probes-canonical: PR_TAG_SUFFIX empty → self-heal probe uses canonical ref (regression)" {
+@test "PR_TAG_SUFFIX empty → self-heal probe uses canonical ref (regression)" {
     # Push/dispatch path: PR_TAG_SUFFIX is empty.
     # Probe must use canonical refs; scoped-ref logic must be a no-op.
     local tmpd="$TEST_TEMP_DIR"
@@ -3552,7 +3552,7 @@ EOF
 #   unconditionally), even when canonical exists.
 # GREEN after fix: canonical-or-PR-scoped resolution.
 # ---------------------------------------------------------------------------
-@test "BF-consumer-canonical-or-prscoped-A: PR with canonical ext present → FROM uses canonical ref" {
+@test "PR with canonical ext present → FROM uses canonical ref" {
     local tmpd="$TEST_TEMP_DIR"
 
     run bash -c "
@@ -3599,7 +3599,7 @@ EOF
     [ "$pr_from_count" -eq 0 ]
 }
 
-@test "BF-consumer-canonical-or-prscoped-B: PR with canonical absent but PR-scoped present → FROM uses PR-scoped ref" {
+@test "PR with canonical absent but PR-scoped present → FROM uses PR-scoped ref" {
     local tmpd="$TEST_TEMP_DIR"
 
     run bash -c "
@@ -3645,13 +3645,13 @@ EOF
 # CANONICAL (not as -pr42, which would be absent and cause the version to be
 # silently dropped).
 #
-# BI1-selfheal-unchanged-canonical: unchanged version (canonical present, no -pr42)
+# unchanged version (canonical present, no -pr42)
 #   INCLUDED in output as canonical COPY ref.
 #
 # RED before fix: probed as -pr42 → absent → omitted.
 # GREEN after fix: canonical-first probe → canonical present → emitted as canonical.
 # ---------------------------------------------------------------------------
-@test "BI1-selfheal-unchanged-canonical: self-heal on PR, unchanged version has canonical only — included as canonical" {
+@test "self-heal on PR, unchanged version has canonical only — included as canonical" {
     # No versionset artifact — triggers self-heal.
     # PR_TAG_SUFFIX=-pr42: this is a same-repo PR context.
     # Version set: 2.23.0 (unchanged, canonical only) + 2.27.1 (bumped, pr42 only).
@@ -3738,7 +3738,7 @@ EOF
     }
 }
 
-@test "BI1-selfheal-bump-prscoped: self-heal on PR, bumped version has pr42 only — emitted pr-scoped" {
+@test "self-heal on PR, bumped version has pr42 only — emitted pr-scoped" {
     # Complements BI1-selfheal-unchanged-canonical: the bumped version (2.27.1)
     # exists ONLY under the PR-scoped tag. It must be emitted as -pr42.
     local tmpd="$TEST_TEMP_DIR"
@@ -3823,7 +3823,7 @@ EOF
 #   GREEN before and after (regression guard).
 # ---------------------------------------------------------------------------
 
-@test "BJ-1-FORCE-consumer-nonresolver-fresh: REBUILD=force + PR-pr42 + canonical+pr42 both present → emits pr42 ref" {
+@test "REBUILD=force + PR-pr42 + canonical+pr42 both present → emits pr42 ref" {
     # Non-resolver single-version extension (pgvector). Both canonical and -pr42
     # exist in the registry. With REBUILD=force the consumer must prefer the
     # freshly-rebuilt PR-scoped ref, not the (stale) canonical.
@@ -3883,7 +3883,7 @@ EOF
     }
 }
 
-@test "BJ-2-FORCE-consumer-noforce-canonical: REBUILD unset + PR-pr42 + canonical present → emits canonical ref" {
+@test "REBUILD unset + PR-pr42 + canonical present → emits canonical ref" {
     # Non-resolver single-version extension (pgvector). REBUILD is unset.
     # FORCE stays false → canonical-first (reuse unchanged version).
     local tmpd="$TEST_TEMP_DIR"

@@ -23,10 +23,10 @@
 #   and trigger premature auto-merge.
 #
 # Mutation guards:
-#   MG1: Removing the "remaining > 0" branch → auto-merge fires even with open parents
-#   MG2: Removing the --remove-label step → label never removed, infinite retry
-#   MG3: Skip "continue" on remove failure → broken child silently auto-merges
-#   MG4: || echo "0" on gh pr view → API error silently enables auto-merge (Defect C)
+#   Removing the "remaining > 0" branch → auto-merge fires even with open parents
+#   Removing the --remove-label step → label never removed, infinite retry
+#   Skip "continue" on remove failure → broken child silently auto-merges
+#   || echo "0" on gh pr view → API error silently enables auto-merge (Defect C)
 
 load "../test_helper"
 
@@ -238,7 +238,7 @@ teardown() {
 # ---------------------------------------------------------------------------
 # Scenario 1 — single-parent: debian merges, child has only cascade:waiting-for-debian
 # Expected: label removed, remaining=0, auto-merge enabled
-# MG1: if remaining check removed, auto-merge fires even when other parents open
+# if remaining check removed, auto-merge fires even when other parents open
 # ---------------------------------------------------------------------------
 @test "resolver: single-parent — auto-merge enabled after last wait label removed" {
     _setup_mock_gh "single-parent"
@@ -255,7 +255,7 @@ teardown() {
 # ---------------------------------------------------------------------------
 # Scenario 2 — multi-parent: debian merges, child still has cascade:waiting-for-php
 # Expected: label removed, remaining=1, "still waiting" comment, NO auto-merge
-# MG1: if remaining check removed, auto-merge fires here — wrong cascade order
+# if remaining check removed, auto-merge fires here — wrong cascade order
 # ---------------------------------------------------------------------------
 @test "resolver: multi-parent — NO auto-merge when second wait label remains" {
     _setup_mock_gh "multi-parent"
@@ -272,7 +272,7 @@ teardown() {
 # ---------------------------------------------------------------------------
 # Scenario 3 — remove-label failure: gh pr edit --remove-label exits 1
 # Expected: child is skipped (continue), no auto-merge, ::warning:: emitted
-# MG3: if "continue" removed, broken child could still get auto-merged
+# if "continue" removed, broken child could still get auto-merged
 # ---------------------------------------------------------------------------
 @test "resolver: remove-label failure — child skipped, no auto-merge" {
     _setup_mock_gh "remove-fails"
@@ -307,7 +307,7 @@ teardown() {
 # ---------------------------------------------------------------------------
 # Scenario 5 — gh pr view failure: API returns non-zero (Defect C)
 # Expected: child skipped (continue), no auto-merge, ::error:: emitted
-# MG4: if || echo "0" present, API error silently enables auto-merge
+# if || echo "0" present, API error silently enables auto-merge
 # ---------------------------------------------------------------------------
 @test "resolver: gh pr view failure — child skipped, no auto-merge (Defect C)" {
     _setup_mock_gh "view-fails"
@@ -801,9 +801,9 @@ _run_eval_parent_state() {
 # false-ready.  See ADR-011 §Known Limitations.
 #
 # Mutation guards:
-#   MG-B1: changing the if [[ $_parent_drifting -eq 1 ]] branch to echo "ready"
+#   changing the if [[ $_parent_drifting -eq 1 ]] branch to echo "ready"
 #           → this test gets ready (FAIL)
-#   MG-B2: removing the CURRENT_DRIFT_SET guard entirely → State C fires instead,
+#   removing the CURRENT_DRIFT_SET guard entirely → State C fires instead,
 #           output still in_flux but ::notice:: text differs (secondary assertion catches it)
 # ---------------------------------------------------------------------------
 @test "eval_parent_state: parent in drift set, no open PR → in_flux (conservative State B)" {
@@ -853,12 +853,12 @@ _run_eval_parent_state() {
 # stdout — head would have returned 0, making the old guard pass silently.
 #
 # Mutation guards:
-#   MG-R1: reverting to the piped form `$(gh ... | head -1)` in the if-guard
+#   reverting to the piped form `$(gh ... | head -1)` in the if-guard
 #           makes the test pass (gh rc masked) — failing test catches regression.
-#   MG-R2: removing the rc check entirely → status=0, test catches it.
+#   removing the rc check entirely → status=0, test catches it.
 # ---------------------------------------------------------------------------
 
-@test "DefectR: gh pr list exits non-zero (no stdout) → fail-closed, NOT silent empty open_pr" {
+@test "gh pr list exits non-zero (no stdout) → fail-closed, NOT silent empty open_pr" {
     # This mode exits 1 with no stdout — head would return 0 (empty input is OK
     # for head), masking the failure in the old piped form.
     _setup_three_state_mock "pr-list-error"
@@ -872,7 +872,7 @@ _run_eval_parent_state() {
     [ -z "$state_token" ]
 }
 
-@test "DefectR: gh pr list failure must NOT fall through to State B (capture-then-head structure)" {
+@test "gh pr list failure must NOT fall through to State B (capture-then-head structure)" {
     # Structural invariant: the body must capture gh output into a variable
     # (explicit rc check) BEFORE applying head -1.  The pipe-inside-if-guard
     # anti-pattern is structurally absent.
@@ -1168,11 +1168,11 @@ MOCK_BODY
 # auto-merge (the stranding scenario from the old remove-first order).
 #
 # Key invariants:
-#   IV1: snapshot failure → skip before removal (no stranding)
-#   IV2: snapshot succeeds, removal fails → child skipped; snapshot count irrelevant
+#   snapshot failure → skip before removal (no stranding)
+#   snapshot succeeds, removal fails → child skipped; snapshot count irrelevant
 #         (retry on next event; child still has the wait label so it is not stranded)
-#   IV3: snapshot succeeds, removal succeeds, remaining > 0 → comment only, no auto-merge
-#   IV4: snapshot succeeds, removal succeeds, remaining == 0 → auto-merge enabled
+#   snapshot succeeds, removal succeeds, remaining > 0 → comment only, no auto-merge
+#   snapshot succeeds, removal succeeds, remaining == 0 → auto-merge enabled
 # ---------------------------------------------------------------------------
 
 @test "resolver: Defect B — snapshot failure skips child BEFORE removal (no stranding)" {
@@ -1228,15 +1228,15 @@ MOCK_BODY
 # in_flux regardless of the drift set.
 #
 # Mutation guards:
-#   MG-B0a: removing State B0 → errored parent gets ready (the original defect)
+#   removing State B0 → errored parent gets ready (the original defect)
 #            (test "errored parent in CURRENT_ERROR_SET → in_flux, not ready")
-#   MG-B0b: inverting _parent_errored check → errored parent gets ready
+#   inverting _parent_errored check → errored parent gets ready
 #            (test "errored parent → in_flux even when absent from CURRENT_DRIFT_SET")
-#   MG-B0c: State A must still short-circuit before B0
+#   State A must still short-circuit before B0
 #            (test "errored parent with open PR → in_flux via State A, not B0")
 # ---------------------------------------------------------------------------
 
-@test "StateB0: parent in CURRENT_ERROR_SET → in_flux (probe error treated as unknown)" {
+@test "parent in CURRENT_ERROR_SET → in_flux (probe error treated as unknown)" {
     # Parent probe failed this run; no open PR (State A cleared).
     # State B0 must return in_flux — we do not know if the parent is stable.
     _setup_three_state_mock "ghcr-stale"
@@ -1246,7 +1246,7 @@ MOCK_BODY
     [ "$state_token" = "in_flux" ]
 }
 
-@test "StateB0: errored parent → emits ::notice:: with probe-error message" {
+@test "errored parent → emits ::notice:: with probe-error message" {
     _setup_three_state_mock "ghcr-stale"
     CURRENT_ERROR_SET="debian" CURRENT_DRIFT_SET="" _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
@@ -1254,7 +1254,7 @@ MOCK_BODY
     [[ "$output" == *"probe errored"* ]]
 }
 
-@test "StateB0: errored parent not in CURRENT_DRIFT_SET → in_flux (not short-circuited to ready by State B)" {
+@test "errored parent not in CURRENT_DRIFT_SET → in_flux (not short-circuited to ready by State B)" {
     # This is the exact defect: error excluded from drift set → State B saw absent → ready.
     # With State B0, error set is checked BEFORE the drift set, so ready is never reached.
     _setup_three_state_mock "ghcr-stale"
@@ -1266,7 +1266,7 @@ MOCK_BODY
     ! [[ "$output" == *"GHCR image is stable, ready"* ]]
 }
 
-@test "StateB0: parent with open PR → in_flux via State A (not B0)" {
+@test "parent with open PR → in_flux via State A (not B0)" {
     # State A runs before B0: an open PR is caught by State A, B0 is never reached.
     _setup_three_state_mock "open-pr"
     CURRENT_ERROR_SET="debian" CURRENT_DRIFT_SET="" _run_eval_parent_state "debian"
@@ -1278,7 +1278,7 @@ MOCK_BODY
     ! [[ "$output" == *"probe errored"* ]]
 }
 
-@test "StateB0: empty CURRENT_ERROR_SET → State B0 skipped, falls through to State B" {
+@test "empty CURRENT_ERROR_SET → State B0 skipped, falls through to State B" {
     # When CURRENT_ERROR_SET is empty/unset, B0 is a no-op.
     # Parent absent from drift set → State B returns ready.
     _setup_three_state_mock "ghcr-stale"
@@ -1288,7 +1288,7 @@ MOCK_BODY
     [ "$state_token" = "ready" ]
 }
 
-@test "StateB0: unset CURRENT_ERROR_SET → State B0 skipped, falls through to State B" {
+@test "unset CURRENT_ERROR_SET → State B0 skipped, falls through to State B" {
     # Same as above but CURRENT_ERROR_SET is unset (not just empty).
     _setup_three_state_mock "ghcr-stale"
     CURRENT_DRIFT_SET="wordpress" _run_eval_parent_state "php"
@@ -1297,14 +1297,14 @@ MOCK_BODY
     [ "$state_token" = "ready" ]
 }
 
-@test "StateB0: body contains CURRENT_ERROR_SET loop (State B0 is present)" {
+@test "body contains CURRENT_ERROR_SET loop (State B0 is present)" {
     # Structural invariant: State B0 must be present in the function body.
     local body="$EVAL_PARENT_STATE_BODY"
     [[ "$body" == *"CURRENT_ERROR_SET"* ]]
     [[ "$body" == *"_parent_errored"* ]]
 }
 
-@test "StateB0: B0 appears before State B loop in function body (ordering invariant)" {
+@test "B0 appears before State B loop in function body (ordering invariant)" {
     # Structural invariant: CURRENT_ERROR_SET check must precede CURRENT_DRIFT_SET check.
     local body="$EVAL_PARENT_STATE_BODY"
     local b0_pos b_pos
@@ -1406,7 +1406,7 @@ MOCK_BODY
 # the child from auto-merging against the stale php parent image.
 # ---------------------------------------------------------------------------
 
-@test "DefectD: scoped dispatch — parent absent from drift set but has open PR → in_flux" {
+@test "scoped dispatch — parent absent from drift set but has open PR → in_flux" {
     # Simulate scoped workflow_dispatch: CURRENT_DRIFT_SET=wordpress (php excluded).
     # php has an open drift PR (#10) — State A must catch it before State B short-circuits.
     _setup_three_state_mock "open-pr"
@@ -1419,7 +1419,7 @@ MOCK_BODY
     grep -q "pr list" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
-@test "DefectD: scoped dispatch — parent absent from drift set with no open PR → ready" {
+@test "scoped dispatch — parent absent from drift set with no open PR → ready" {
     # No open PR for php → State A returns empty → State B sees php absent from drift set
     # → ready (correct: php was rebuilt in a prior run, no pending work).
     _setup_three_state_mock "no-open-pr"
@@ -1429,7 +1429,7 @@ MOCK_BODY
     [ "$state_token" = "ready" ]
 }
 
-@test "DefectD: State A runs before State B (open-PR check precedes drift-set loop in body)" {
+@test "State A runs before State B (open-PR check precedes drift-set loop in body)" {
     # Structural invariant: the gh pr list call must appear before the CURRENT_DRIFT_SET
     # iteration loop (_parent_drifting loop).
     local body="$EVAL_PARENT_STATE_BODY"
@@ -1453,7 +1453,7 @@ MOCK_BODY
 # when it IS in the repo-wide drift set but has no open PR yet.
 # ---------------------------------------------------------------------------
 
-@test "DefectE: scoped dispatch — parent drifting repo-wide, no open PR → in_flux (conservative State B)" {
+@test "scoped dispatch — parent drifting repo-wide, no open PR → in_flux (conservative State B)" {
     # Scenario: workflow_dispatch for wordpress only.  php is also drifting repo-wide.
     # With the Defect E fix, CURRENT_DRIFT_SET contains BOTH wordpress and php.
     # php has no open PR → State B: drifting + no open PR → conservative in_flux.
@@ -1468,7 +1468,7 @@ MOCK_BODY
     ! grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
-@test "DefectE: scoped dispatch — parent NOT drifting repo-wide, no open PR → ready (State B)" {
+@test "scoped dispatch — parent NOT drifting repo-wide, no open PR → ready (State B)" {
     # php is NOT in the repo-wide drift set; no open PR → State B short-circuits to ready.
     _setup_three_state_mock "no-open-pr"
     CURRENT_DRIFT_SET="wordpress" _run_eval_parent_state "php"
@@ -1486,7 +1486,7 @@ MOCK_BODY
 # Invariant: GHCR API is NEVER called by _eval_parent_state for any state.
 # ---------------------------------------------------------------------------
 
-@test "DefectF: CURRENT_DRIFT_SET unset → State C fires, GHCR API NOT called" {
+@test "CURRENT_DRIFT_SET unset → State C fires, GHCR API NOT called" {
     # When CURRENT_DRIFT_SET is empty/unset the State B block is skipped entirely.
     # State C fires (conservative in_flux) — no GHCR API call.
     _setup_three_state_mock "no-open-pr"
@@ -1495,7 +1495,7 @@ MOCK_BODY
     ! grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
-@test "DefectF: packages/container lookup absent from function body (r27 regression-lock)" {
+@test "packages/container lookup absent from function body (r27 regression-lock)" {
     # Architectural regression lock: the GHCR /versions API must NOT be present in
     # the function body.  If someone re-introduces it without per-tag label support,
     # this test catches the regression immediately.
@@ -1555,7 +1555,7 @@ _run_cascade_label_loop() {
     run bash "$script"
 }
 
-@test "DefectP: _eval_parent_state returns malformed output → cascade loop exits 1 (fail-closed)" {
+@test "_eval_parent_state returns malformed output → cascade loop exits 1 (fail-closed)" {
     # Simulate _eval_parent_state emitting a ::warning:: annotation but no state token.
     # The grep -E '^(in_flux|ready)$' filter produces empty output.
     # The fail-closed guard must catch this and exit 1.
@@ -1584,7 +1584,7 @@ EOF
     [[ "$output" == *"Raw output:"* ]]
 }
 
-@test "DefectP: _eval_parent_state returns empty string → cascade loop exits 1 (fail-closed)" {
+@test "_eval_parent_state returns empty string → cascade loop exits 1 (fail-closed)" {
     # Edge case: function returns completely empty output.
     mkdir -p "$TEST_TEMP_DIR/bin"
     cat > "$TEST_TEMP_DIR/bin/gh" << 'EOF'
@@ -1609,7 +1609,7 @@ EOF
     [[ "$output" == *"refusing to proceed (fail-closed)"* ]]
 }
 
-@test "DefectP: _eval_parent_state returns 'ready' → cascade loop continues, no label applied (regression-lock)" {
+@test "_eval_parent_state returns 'ready' → cascade loop continues, no label applied (regression-lock)" {
     # Healthy path: ready state must not exit 1 (guard must not fire on valid tokens).
     mkdir -p "$TEST_TEMP_DIR/bin"
     cat > "$TEST_TEMP_DIR/bin/gh" << 'EOF'
@@ -1650,13 +1650,13 @@ EOF
 # cannot regress to GITHUB_TOKEN without the test catching it.
 #
 # Mutation guards:
-#   MG-F1a: reverting one GH_TOKEN line to secrets.GITHUB_TOKEN →
+#   reverting one GH_TOKEN line to secrets.GITHUB_TOKEN →
 #            grep for secrets.GITHUB_TOKEN finds a match → test fails.
-#   MG-F1b: removing the app-token step entirely →
+#   removing the app-token step entirely →
 #            grep for create-github-app-token finds nothing → test fails.
 # ---------------------------------------------------------------------------
 
-@test "FIX1: cascade-resolver unblock-children uses App token, not secrets.GITHUB_TOKEN (regression-lock)" {
+@test "cascade-resolver unblock-children uses App token, not secrets.GITHUB_TOKEN (regression-lock)" {
     local workflow=".github/workflows/cascade-resolver.yaml"
     local wf_path="${PROJECT_ROOT}/${workflow}"
 
@@ -1687,14 +1687,14 @@ EOF
 # context to infer the repo), and children are never unblocked.
 #
 # Mutation guards:
-#   MG-GHR1: removing GH_REPO from "Identify parent..." step env →
+#   removing GH_REPO from "Identify parent..." step env →
 #             grep finds only 1 occurrence → test fails.
-#   MG-GHR2: removing GH_REPO from "Unblock children" step env →
+#   removing GH_REPO from "Unblock children" step env →
 #             grep finds only 1 occurrence → test fails.
-#   MG-GHR3: removing both → grep finds 0 occurrences → test fails.
+#   removing both → grep finds 0 occurrences → test fails.
 # ---------------------------------------------------------------------------
 
-@test "FIX1: cascade-resolver unblock-children — GH_REPO set in both step envs (no-checkout repo context)" {
+@test "cascade-resolver unblock-children — GH_REPO set in both step envs (no-checkout repo context)" {
     local workflow=".github/workflows/cascade-resolver.yaml"
     local wf_path="${PROJECT_ROOT}/${workflow}"
 
@@ -1756,7 +1756,7 @@ EOF
 # Mutation guard: removing set -o pipefail from the step → this structural
 # test FAILS, catching the regression before it reaches production.
 # ---------------------------------------------------------------------------
-@test "F4: 'Identify parent' step in cascade-resolver.yaml has set -o pipefail" {
+@test "'Identify parent' step in cascade-resolver.yaml has set -o pipefail" {
     local wf_path="${BATS_TEST_DIRNAME}/../../.github/workflows/cascade-resolver.yaml"
     [[ -f "$wf_path" ]] || skip "cascade-resolver.yaml not found at $wf_path"
 

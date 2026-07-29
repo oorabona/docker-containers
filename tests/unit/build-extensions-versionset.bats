@@ -247,7 +247,7 @@ _count_log_lines() {
     push_count=$(_count_log_lines "$TEST_TEMP_DIR/push_calls.log")
     [ "$push_count" -eq 3 ]
 
-    # L1: each version must be tagged and pushed under its OWN version string
+    # each version must be tagged and pushed under its OWN version string
     local tag_log push_log
     tag_log=$(cat "$TEST_TEMP_DIR/tag_calls.log")
     push_log=$(cat "$TEST_TEMP_DIR/push_calls.log")
@@ -413,7 +413,7 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# FIX1: pushed artifact (do_push=true, no ARCH_SUFFIX) must include version_digests
+# pushed artifact (do_push=true, no ARCH_SUFFIX) must include version_digests
 # for every available version.
 #
 # Invariant: version_digests absent ⟺ artifact was NOT pushed.
@@ -425,7 +425,7 @@ _count_log_lines() {
 # After fix: version_digests is captured and included for every available version.
 # ---------------------------------------------------------------------------
 
-@test "FIX1-push-has-digests: do_push=true artifact includes version_digests for every available version" {
+@test "do_push=true artifact includes version_digests for every available version" {
     resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
     export -f resolve_version_set
 
@@ -468,7 +468,7 @@ _count_log_lines() {
     [ "$all_valid" = "true" ]
 }
 
-@test "FIX1-no-push-no-digests: do_push=false artifact omits version_digests (local/no-push invariant)" {
+@test "do_push=false artifact omits version_digests (local/no-push invariant)" {
     export LOCAL_ONLY=true
 
     resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
@@ -499,7 +499,7 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# M1: resolver call-count — resolve_version_set called AT MOST ONCE per
+# resolver call-count — resolve_version_set called AT MOST ONCE per
 # (ext, pg_major) even though both _should_build_extension and
 # build_tag_push_extensions consume the result.
 # ---------------------------------------------------------------------------
@@ -546,13 +546,13 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# M1: resolver call-count — resolve_version_set called AT MOST ONCE per
+# resolver call-count — resolve_version_set called AT MOST ONCE per
 # (ext, pg_major) even though both _should_build_extension and
 # build_tag_push_extensions consume the result.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# A1: main() pre-filter fail-closed — resolver failure must propagate to exit 1
+# main() pre-filter fail-closed — resolver failure must propagate to exit 1
 # (not silently become "All extensions are up to date" / exit 0).
 # ---------------------------------------------------------------------------
 
@@ -728,7 +728,7 @@ _count_log_lines() {
 # After fix:  tag failure always fatal → exit non-zero; version NOT in excluded.
 # ---------------------------------------------------------------------------
 
-@test "D-tag-fatal: non-ceiling tag failure is fatal (exit non-zero), not musl-excluded" {
+@test "non-ceiling tag failure is fatal (exit non-zero), not musl-excluded" {
     resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
     export -f resolve_version_set
 
@@ -789,7 +789,7 @@ _count_log_lines() {
 # so even with scheduler jitter no single-version delta should reach 3s.)
 # ---------------------------------------------------------------------------
 
-@test "E-duration-independent: per-version lineage durations are bounded, not cumulative" {
+@test "per-version lineage durations are bounded, not cumulative" {
     resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
     export -f resolve_version_set
 
@@ -839,7 +839,7 @@ _count_log_lines() {
 # (local recovery path). Without LOCAL_ONLY (publish/CI path), must stay fatal.
 # ---------------------------------------------------------------------------
 
-@test "G-local-degrade: resolver fails + LOCAL_ONLY=true → ceiling built, exit 0" {
+@test "resolver fails + LOCAL_ONLY=true → ceiling built, exit 0" {
     export LOCAL_ONLY=true
 
     resolve_version_set() {
@@ -877,7 +877,7 @@ _count_log_lines() {
     [[ "$(cat "$build_log")" == *"ver=2.27.1"* ]]
 }
 
-@test "G-publish-fatal: resolver fails + LOCAL_ONLY=false → exit non-zero (publish path stays fail-closed)" {
+@test "resolver fails + LOCAL_ONLY=false → exit non-zero (publish path stays fail-closed)" {
     export LOCAL_ONLY=false
 
     resolve_version_set() {
@@ -915,13 +915,13 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# TT-1: empty-HA resolver failure + LOCAL_ONLY=true → degrade to ceiling, exit 0.
+# empty-HA resolver failure + LOCAL_ONLY=true → degrade to ceiling, exit 0.
 # The mode-gated ceiling degrade lives in the CALLER (build_tag_push_extensions),
 # not in the resolver. The resolver now exits non-zero on empty HA; the caller
 # catches that and degrades to ceiling only when LOCAL_ONLY=true.
 # ---------------------------------------------------------------------------
 
-@test "TT-local-degrade: empty-HA resolver failure + LOCAL_ONLY=true → ceiling built, exit 0" {
+@test "empty-HA resolver failure + LOCAL_ONLY=true → ceiling built, exit 0" {
     export LOCAL_ONLY=true
 
     # Simulate what the resolver now does on empty HA: exits non-zero, no stdout.
@@ -961,12 +961,12 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# TT-2: empty-HA resolver failure + LOCAL_ONLY=false (publish path) → FATAL.
+# empty-HA resolver failure + LOCAL_ONLY=false (publish path) → FATAL.
 # A transient HA-metadata outage on the publish path must exit non-zero so CI
 # does not silently publish a ceiling-only image that drops retained versions.
 # ---------------------------------------------------------------------------
 
-@test "TT-publish-fatal: empty-HA resolver failure + LOCAL_ONLY=false → exit non-zero (fail-closed)" {
+@test "empty-HA resolver failure + LOCAL_ONLY=false → exit non-zero (fail-closed)" {
     export LOCAL_ONLY=false
 
     resolve_version_set() {
@@ -1013,7 +1013,7 @@ _count_log_lines() {
 # the current run's versions are on disk.
 # ---------------------------------------------------------------------------
 
-@test "K-stale-cleanup: stale lineage file from old version is removed before current run" {
+@test "stale lineage file from old version is removed before current run" {
     # Arrange: pre-create a stale per-version lineage file (2.24.0, not in the
     # current resolved set which is [2.25.0,2.26.0,2.27.1]).
     resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
@@ -1049,7 +1049,7 @@ _count_log_lines() {
     [ -f "$lineage_dir/ext-timescaledb-pg18-2.27.1.json" ]
 }
 
-@test "K-stale-cleanup: stale versionset artifact from previous run is overwritten by final pass" {
+@test "stale versionset artifact from previous run is overwritten by final pass" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -1124,7 +1124,7 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# P1: --pull-only resolves full version set and attempts pull for each version
+# --pull-only resolves full version set and attempts pull for each version
 # ---------------------------------------------------------------------------
 
 @test "pull-only-multiversion: resolver-backed ext attempts pull for each resolved version" {
@@ -1173,7 +1173,7 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# P2: --pull-only: versions already local are skipped (not pulled again)
+# --pull-only: versions already local are skipped (not pulled again)
 # ---------------------------------------------------------------------------
 
 @test "pull-only-skip-local: version already present locally is not pulled" {
@@ -1219,7 +1219,7 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# DRY1: dry run must not delete existing lineage files
+# dry run must not delete existing lineage files
 # ---------------------------------------------------------------------------
 
 @test "dry-run-no-delete: pre-existing lineage file is not removed under DRY_RUN=true" {
@@ -1254,7 +1254,7 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# DRY2: dry run must not write any new lineage or versionset artifact
+# dry run must not write any new lineage or versionset artifact
 # ---------------------------------------------------------------------------
 
 @test "dry-run-no-write: no new lineage files created under DRY_RUN=true" {
@@ -1290,7 +1290,7 @@ _count_log_lines() {
 # (fail-closed on publish path), NOT cache the bad value and silently skip builds.
 # ---------------------------------------------------------------------------
 
-@test "P-malformed-json: resolver returns non-JSON → publish path exits non-zero (fail-closed)" {
+@test "resolver returns non-JSON → publish path exits non-zero (fail-closed)" {
     export LOCAL_ONLY=false
 
     resolve_version_set() {
@@ -1327,7 +1327,7 @@ _count_log_lines() {
     [ "$build_count" -eq 0 ]
 }
 
-@test "P-empty-array: resolver returns [] → publish path exits non-zero (fail-closed)" {
+@test "resolver returns [] → publish path exits non-zero (fail-closed)" {
     export LOCAL_ONLY=false
 
     resolve_version_set() {
@@ -1368,7 +1368,7 @@ _count_log_lines() {
 # not abort. The pull-only recovery path is equivalent to LOCAL_ONLY for degradation.
 # ---------------------------------------------------------------------------
 
-@test "Q-pull-only-degrade: resolver fails + PULL_ONLY=true → degrades to ceiling, exits 0" {
+@test "resolver fails + PULL_ONLY=true → degrades to ceiling, exits 0" {
     export LOCAL_ONLY=false
     export PULL_ONLY=true
 
@@ -1413,7 +1413,7 @@ _count_log_lines() {
 # The DRY_RUN-honoring pull_extension wrapper must be used instead.
 # ---------------------------------------------------------------------------
 
-@test "R-dry-run-pull: pull-only + DRY_RUN=true does not call pull_ext_image" {
+@test "pull-only + DRY_RUN=true does not call pull_ext_image" {
     export LOCAL_ONLY=false
     export DRY_RUN=true
 
@@ -1452,7 +1452,7 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# CACHED-1: all versions already in registry → no build, but versionset artifact
+# all versions already in registry → no build, but versionset artifact
 # IS written with available == full resolved set, excluded == [].
 # Before fix: main() hits the "All extensions are up to date" early-exit before
 #   build_tag_push_extensions is ever called → no artifact written (RED).
@@ -1460,7 +1460,7 @@ _count_log_lines() {
 #   is built (GREEN).
 # ---------------------------------------------------------------------------
 
-@test "CACHED-1: all-cached run emits versionset artifact with full available set" {
+@test "all-cached run emits versionset artifact with full available set" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -1549,11 +1549,11 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# CACHED-2: partial-cached run — some versions in registry, one absent (built),
+# partial-cached run — some versions in registry, one absent (built),
 # one absent (build fails / musl) → available = present+built, excluded = failed.
 # ---------------------------------------------------------------------------
 
-@test "CACHED-2: partial-cached run — artifact has correct available/excluded split" {
+@test "partial-cached run — artifact has correct available/excluded split" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -1689,7 +1689,7 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# MIXED-1: two extensions in scope — timescaledb (resolver-backed, ALL versions
+# two extensions in scope — timescaledb (resolver-backed, ALL versions
 # already in registry → skipped by build_tag_push) and pgvector (single-version,
 # needs build). main() must NOT take the all-up-to-date early-exit; after
 # build_tag_push completes for pgvector, the timescaledb versionset artifact
@@ -1700,7 +1700,7 @@ _count_log_lines() {
 # After fix:  final pass runs on all success paths → artifact present (GREEN).
 # ---------------------------------------------------------------------------
 
-@test "MIXED-1: mixed run (skipped resolver-backed ext + built single-ver ext) emits versionset artifact" {
+@test "mixed run (skipped resolver-backed ext + built single-ver ext) emits versionset artifact" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -1817,12 +1817,12 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# MIXED-2: resolver-backed ext IS built (not skipped), single-ver ext already
+# resolver-backed ext IS built (not skipped), single-ver ext already
 # cached. After build completes, the versionset artifact reflects what is
 # actually in the registry (presence-based — no regression from the build path).
 # ---------------------------------------------------------------------------
 
-@test "MIXED-2: built resolver-backed ext produces correct versionset artifact" {
+@test "built resolver-backed ext produces correct versionset artifact" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -2029,7 +2029,7 @@ EOF
 # DRY_RUN=true must NOT write the timescaledb versionset artifact.
 # ---------------------------------------------------------------------------
 
-@test "MIXED-DRY-RUN: mixed path under DRY_RUN=true writes no versionset artifact" {
+@test "mixed path under DRY_RUN=true writes no versionset artifact" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -2248,7 +2248,7 @@ EOF
 #   presence check) → available = built+pushed versions (GREEN).
 # ---------------------------------------------------------------------------
 
-@test "FORCE-AVAILABLE: FORCE=true + successful build+push → available is non-empty" {
+@test "FORCE=true + successful build+push → available is non-empty" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -2357,7 +2357,7 @@ EOF
 #   - Run must exit 0; no timescaledb resolver is even called.
 # ---------------------------------------------------------------------------
 
-@test "SCOPED-RETENTION: scoped --extension pgvector run does NOT emit timescaledb artifact (MM fix)" {
+@test "scoped --extension pgvector run does NOT emit timescaledb artifact (MM fix)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -2488,7 +2488,7 @@ EOF
 #   → locally-built version is in local store → available (GREEN, available=3).
 # ---------------------------------------------------------------------------
 
-@test "PULL-ONLY-LOCAL-PRESENCE: pull-only + local build → locally-built version in available" {
+@test "pull-only + local build → locally-built version in available" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -2620,7 +2620,7 @@ EOF
 # GREEN after fix: built-this-run ∪ probe → version included in available[].
 # ---------------------------------------------------------------------------
 
-@test "AA-probe-lag: built-and-pushed version survives probe-absent (registry lag)" {
+@test "built-and-pushed version survives probe-absent (registry lag)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -2732,7 +2732,7 @@ EOF
     [[ "$excluded_versions" == *"2.25.0"* ]]
 }
 
-@test "AA-musl-excluded: musl-failed version is not smuggled into available via built-this-run" {
+@test "musl-failed version is not smuggled into available via built-this-run" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -2841,7 +2841,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BB-1: final-pass resolver failure on PUBLISH path with a FULL (unscoped) run
+# final-pass resolver failure on PUBLISH path with a FULL (unscoped) run
 # (no --extension, LOCAL_ONLY=false, PULL_ONLY=false) → run must exit NON-ZERO
 # (fail-closed).
 #
@@ -2860,7 +2860,7 @@ EOF
 # unscoped final pass iterates ALL extensions → timescaledb resolver fails →
 # fail-closed.
 # ---------------------------------------------------------------------------
-@test "BB-1-publish-fail-closed: full unscoped run with failing timescaledb resolver → exit non-zero (fail-closed)" {
+@test "full unscoped run with failing timescaledb resolver → exit non-zero (fail-closed)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -2965,14 +2965,14 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BB-2: final-pass resolver failure + LOCAL_ONLY=true → degrade, exit 0.
+# final-pass resolver failure + LOCAL_ONLY=true → degrade, exit 0.
 # The recovery path must not be blocked by a transient resolver outage.
 #
 # RED before fix: N/A — current code already degrades (same warn+continue).
-#   This test locks the degrade behavior so it is not broken by the BB-1 fix.
+#   This test locks the degrade behavior so it is not broken by the PR-scoped-tag fix.
 # GREEN: exit 0, warn logged, no artifact (no resolved set → can't write).
 # ---------------------------------------------------------------------------
-@test "BB-2-local-degrade: final-pass resolver failure + LOCAL_ONLY=true → exit 0 (degrade)" {
+@test "final-pass resolver failure + LOCAL_ONLY=true → exit 0 (degrade)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -3061,7 +3061,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# FF-1: stale per-version DURATION lineage files are removed on an all-cached
+# stale per-version DURATION lineage files are removed on an all-cached
 # run (no build occurs). The versionset artifact must survive.
 #
 # Scenario: a previous run built timescaledb 2.20.0 and wrote:
@@ -3073,7 +3073,7 @@ EOF
 # GREEN after fix: stale per-version duration file is cleaned on the all-cached
 #   path while the versionset artifact is preserved.
 # ---------------------------------------------------------------------------
-@test "FF-1-allcached-stale-duration-cleaned: stale per-version duration file removed on all-cached run" {
+@test "stale per-version duration file removed on all-cached run" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -3164,11 +3164,11 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# FF-2: stale per-version DURATION lineage files are removed on all success paths.
+# stale per-version DURATION lineage files are removed on all success paths.
 # Verify the same cleanup runs on the build path (build_tag_push_extensions IS called).
 # After cleanup, fresh per-version files are written for actually-built versions.
 # ---------------------------------------------------------------------------
-@test "FF-2-build-path-stale-cleaned: stale per-version duration removed even when build runs" {
+@test "stale per-version duration removed even when build runs" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -3204,10 +3204,10 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# FF-3: the FF cleanup must NEVER delete the versionset artifact even if it
+# the FF cleanup must NEVER delete the versionset artifact even if it
 # exists before an all-cached run.
 # ---------------------------------------------------------------------------
-@test "FF-3-versionset-survives: versionset artifact is never deleted by FF cleanup" {
+@test "versionset artifact is never deleted by FF cleanup" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -3287,9 +3287,9 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BB-3: final-pass resolver failure + PULL_ONLY=true → degrade, exit 0.
+# final-pass resolver failure + PULL_ONLY=true → degrade, exit 0.
 # ---------------------------------------------------------------------------
-@test "BB-3-pullonly-degrade: final-pass resolver failure + PULL_ONLY=true → exit 0 (degrade)" {
+@test "final-pass resolver failure + PULL_ONLY=true → exit 0 (degrade)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -3379,7 +3379,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# HH-1: per-version duration files SURVIVE the _emit_final_versionset_pass.
+# per-version duration files SURVIVE the _emit_final_versionset_pass.
 #
 # Before HH fix: _emit_final_versionset_pass deleted per-version duration files
 #   AFTER build_tag_push_extensions had already written them → sum = 0 even after
@@ -3391,7 +3391,7 @@ EOF
 # Assertion: after a full main() run where builds occurred, at least one
 # per-version duration file exists AND sum_flavor_extension_durations > 0.
 # ---------------------------------------------------------------------------
-@test "HH-1-duration-survives-final-pass: build-path per-version duration files exist after final pass" {
+@test "build-path per-version duration files exist after final pass" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -3491,13 +3491,13 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# HH-2: all-cached run cleans stale duration file → sum = 0.
+# all-cached run cleans stale duration file → sum = 0.
 #
 # Confirms the all-cached pre-clean runs before sum_flavor_extension_durations
 # would be called: stale from previous run is gone, nothing built this run,
 # sum = 0.  The versionset artifact is also (re)written.
 # ---------------------------------------------------------------------------
-@test "HH-2-allcached-stale-sum-zero: stale duration cleaned on all-cached run, sum = 0" {
+@test "stale duration cleaned on all-cached run, sum = 0" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -3585,7 +3585,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# LL-1: empty-available artifact must NOT be written.
+# empty-available artifact must NOT be written.
 #
 # Tests _emit_versionset_artifact directly: when all versions are absent from
 # the registry (available would be []), the writer must skip writing the
@@ -3596,7 +3596,7 @@ EOF
 # RED before fix: artifact written with available=[].
 # GREEN after fix: writer skips write when available is empty.
 # ---------------------------------------------------------------------------
-@test "LL-1: all-absent ext writes NO versionset artifact (available would be empty)" {
+@test "all-absent ext writes NO versionset artifact (available would be empty)" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     rm -rf "$lineage_dir"
 
@@ -3638,7 +3638,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# LL-2: ceiling-absent from available → artifact NOT written.
+# ceiling-absent from available → artifact NOT written.
 #
 # Some older versions are present in the registry but the ceiling (2.27.1) is
 # NOT in available (registry absent, not in built-this-run). Writing such an
@@ -3648,7 +3648,7 @@ EOF
 # RED before fix: artifact written with ceiling absent from available.
 # GREEN after fix: artifact skipped when ceiling not in available.
 # ---------------------------------------------------------------------------
-@test "LL-2: ceiling-absent from available → NO versionset artifact written" {
+@test "ceiling-absent from available → NO versionset artifact written" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     rm -rf "$lineage_dir"
 
@@ -3693,11 +3693,11 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# LL-3: useful artifact (available non-empty AND contains ceiling) IS written.
+# useful artifact (available non-empty AND contains ceiling) IS written.
 # Regression guard: the LL fix must not prevent writing when the ceiling IS
 # present in available.
 # ---------------------------------------------------------------------------
-@test "LL-3: useful artifact (available non-empty, ceiling present) IS written (regression guard)" {
+@test "useful artifact (available non-empty, ceiling present) IS written (regression guard)" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     rm -rf "$lineage_dir"
 
@@ -3731,7 +3731,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# KK-1: scoped cleanup isolation — a scoped (--extension pgvector) all-cached
+# scoped cleanup isolation — a scoped (--extension pgvector) all-cached
 # run must NOT delete duration files from OTHER extensions (timescaledb).
 #
 # Scenario: a previous scoped run built timescaledb and wrote
@@ -3745,7 +3745,7 @@ EOF
 # GREEN after fix: pre-clean scoped to EXTENSION=pgvector → timescaledb file
 #   survives.
 # ---------------------------------------------------------------------------
-@test "KK-1: scoped all-cached run only cleans own extension's duration files, not others'" {
+@test "scoped all-cached run only cleans own extension's duration files, not others'" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -3863,13 +3863,13 @@ EOF
 # log_success+return-0 swallowed real docker build failures.
 # ---------------------------------------------------------------------------
 
-# DEFECT-A-1: REAL build_ext_image with docker build returning non-zero must
+# REAL build_ext_image with docker build returning non-zero must
 # return non-zero (was: returned 0 + logged success).
 #
 # Before fix: RED — build_ext_image ran "$DOCKER build ..." then unconditionally
 #   called log_success and fell off the function → return 0.
 # After fix: GREEN — "if ! $DOCKER build ...; then return 1; fi" propagates failure.
-@test "DEFECT-A-1: real build_ext_image returns non-zero when docker build fails" {
+@test "real build_ext_image returns non-zero when docker build fails" {
     # Restore the real build_ext_image from build-extensions.sh (setup() installs
     # a mock via _setup_default_mocks; we need the production function here).
     _source_build_extensions
@@ -3907,7 +3907,7 @@ EOF
     [[ "$output" != *"Built:"* ]]
 }
 
-# DEFECT-A-2: integration — REAL build_ext_image + docker build failing for a
+# integration — REAL build_ext_image + docker build failing for a
 # NON-CEILING version → build_tag_push_extensions TOLERATES it (exit 0, version
 # recorded in the failed-set but run continues).
 #
@@ -3916,7 +3916,7 @@ EOF
 #   excluded. The run exited 0 but for the wrong reason (swallowed failure).
 # After fix: GREEN — build_ext_image returns 1, compile_ok=false is set,
 #   non-ceiling tolerance records it as excluded/skipped, run exits 0.
-@test "DEFECT-A-2: real build_ext_image docker-fail on non-ceiling version is tolerated (exit 0)" {
+@test "real build_ext_image docker-fail on non-ceiling version is tolerated (exit 0)" {
     # Restore the real build_ext_image (setup installs a mock; we need production here).
     _source_build_extensions
     export REMOTE_CR="docker.io"
@@ -4027,13 +4027,13 @@ EOF
     fi
 }
 
-# DEFECT-A-3: integration — REAL build_ext_image + docker build failing for the
+# integration — REAL build_ext_image + docker build failing for the
 # CEILING version → build_tag_push_extensions is FATAL (exit non-zero).
 #
 # Before fix: RED — docker build failure swallowed → compile_ok stayed true →
 #   ceiling tag+push proceeded → run exited 0 (silently shipping a broken image).
 # After fix: GREEN — failure propagated → ceiling marked failed → exit 1.
-@test "DEFECT-A-3: real build_ext_image docker-fail on ceiling version is fatal (exit non-zero)" {
+@test "real build_ext_image docker-fail on ceiling version is fatal (exit non-zero)" {
     # Restore the real build_ext_image (setup installs a mock; we need production here).
     _source_build_extensions
     export REMOTE_CR="docker.io"
@@ -4107,7 +4107,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# DEFECT-A-4: pull_ext_image must propagate docker pull exit code.
+# pull_ext_image must propagate docker pull exit code.
 # Exercises the REAL pull_ext_image (NOT mocked) — only $DOCKER/docker is mocked
 # so docker pull returns non-zero.
 #
@@ -4116,7 +4116,7 @@ EOF
 # After fix: GREEN — "if ! $DOCKER pull ...; then return 1; fi" propagates failure.
 # ---------------------------------------------------------------------------
 
-@test "DEFECT-A-4: real pull_ext_image returns non-zero when docker pull fails" {
+@test "real pull_ext_image returns non-zero when docker pull fails" {
     # Restore real pull_ext_image from helpers/extension-utils.sh.
     # setup() only sources build-extensions.sh (which sources extension-utils.sh),
     # so pull_ext_image is already the real one — but _setup_default_mocks defines
@@ -4150,7 +4150,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# MM-1: scoped --extension pgvector run with TimescaleDB resolver FAILING →
+# scoped --extension pgvector run with TimescaleDB resolver FAILING →
 # the run SUCCEEDS (exit 0).
 #
 # Before fix (DEFECT MM): _emit_final_versionset_pass iterates ALL extensions
@@ -4163,7 +4163,7 @@ EOF
 #   is never resolved, never emitted, never aborts the run.
 # ---------------------------------------------------------------------------
 
-@test "MM-1: scoped pgvector run with failing timescaledb resolver exits 0 (timescaledb never resolved)" {
+@test "scoped pgvector run with failing timescaledb resolver exits 0 (timescaledb never resolved)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -4279,7 +4279,7 @@ EOF
 # Confirms BB fail-closed is preserved for full runs.
 # ---------------------------------------------------------------------------
 
-@test "MM-2: full run with failing timescaledb resolver on publish path exits non-zero (fail-closed preserved)" {
+@test "full run with failing timescaledb resolver on publish path exits non-zero (fail-closed preserved)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -4359,7 +4359,7 @@ EOF
 # fails closed (exit non-zero). Scoping to the resolver-backed ext keeps it fatal.
 # ---------------------------------------------------------------------------
 
-@test "MM-3: scoped --extension timescaledb with its resolver failing exits non-zero (scoped fatal preserved)" {
+@test "scoped --extension timescaledb with its resolver failing exits non-zero (scoped fatal preserved)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -4434,7 +4434,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# NN-1: transient probe ERROR on a non-ceiling resolved version → fail closed.
+# transient probe ERROR on a non-ceiling resolved version → fail closed.
 #
 # Scenario: resolver returns ["2.25.0","2.26.0","2.27.1"] (all 3 retained).
 # Ceiling 2.27.1 probes as PRESENT.
@@ -4452,7 +4452,7 @@ EOF
 # The test drives _emit_versionset_artifact via the final pass (main()).
 # _image_present_3state is mocked to return rc=2 for 2.25.0 (transient error signal).
 # ---------------------------------------------------------------------------
-@test "NN-1: transient probe error on non-ceiling version fails closed (no partial artifact)" {
+@test "transient probe error on non-ceiling version fails closed (no partial artifact)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
@@ -4551,7 +4551,7 @@ EOF
 # Expected: artifact IS written with available=["2.26.0","2.27.1"], exit 0.
 # Ensures we didn't over-correct (definitively absent is still excluded, not an error).
 # ---------------------------------------------------------------------------
-@test "NN-2: definitively absent non-ceiling version is excluded, run continues (exit 0)" {
+@test "definitively absent non-ceiling version is excluded, run continues (exit 0)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
@@ -4702,13 +4702,13 @@ _run_3state_probe() {
     printf '%d' $?
 }
 
-@test "OO-explicit-not-found-manifest-unknown: 'manifest unknown' stderr → ABSENT (rc 1)" {
+@test "state_probe: 'manifest unknown' stderr → ABSENT (rc 1)" {
     local rc
     rc=$(_run_3state_probe "Error response from daemon: manifest unknown: manifest unknown")
     [ "$rc" -eq 1 ]
 }
 
-@test "OO-explicit-not-found-404: '404 Not Found' → ERROR (rc 2, fail-closed after UU allow-list tightening)" {
+@test "state_probe: '404 Not Found' → ERROR (rc 2, fail-closed after UU allow-list tightening)" {
     # Before UU fix: bare "404" and "not found" matched → ABSENT (rc 1) — fail-open.
     # After UU fix: "Error: 404 Not Found" is a generic HTTP error from a load-balancer
     # or cred-helper, not a registry-manifest-specific signal → ERROR (rc 2).
@@ -4717,19 +4717,19 @@ _run_3state_probe() {
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-explicit-not-found-name-unknown: 'name unknown' in stderr → ABSENT (rc 1)" {
+@test "state_probe: 'name unknown' in stderr → ABSENT (rc 1)" {
     local rc
     rc=$(_run_3state_probe "Error: name unknown: repository name not known to registry")
     [ "$rc" -eq 1 ]
 }
 
-@test "OO-explicit-not-found-no-such-manifest: 'no such manifest' in stderr → ABSENT (rc 1)" {
+@test "state_probe: 'no such manifest' in stderr → ABSENT (rc 1)" {
     local rc
     rc=$(_run_3state_probe "no such manifest: ghcr.io/test/ext-timescaledb:pg18-2.27.1")
     [ "$rc" -eq 1 ]
 }
 
-@test "OO-toomanyrequests-is-ERROR-not-ABSENT: 'toomanyrequests' stderr → ERROR (rc 2, fail-closed)" {
+@test "state_probe: 'toomanyrequests' stderr → ERROR (rc 2, fail-closed)" {
     # RED before fix: fell through to ABSENT (rc 1) → silently dropped published version.
     # GREEN after fix: classified as ERROR (rc 2) → fail-closed.
     local rc
@@ -4737,49 +4737,49 @@ _run_3state_probe() {
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-429-is-ERROR-not-ABSENT: '429' in stderr → ERROR (rc 2, fail-closed)" {
+@test "state_probe: '429' in stderr → ERROR (rc 2, fail-closed)" {
     local rc
     rc=$(_run_3state_probe "Error: 429 Too Many Requests")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-denied-is-ERROR-not-ABSENT: 'denied' in stderr → ERROR (rc 2, fail-closed)" {
+@test "state_probe: 'denied' in stderr → ERROR (rc 2, fail-closed)" {
     local rc
     rc=$(_run_3state_probe "denied: access forbidden")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-unauthorized-is-ERROR-not-ABSENT: 'unauthorized' in stderr → ERROR (rc 2, fail-closed)" {
+@test "state_probe: 'unauthorized' in stderr → ERROR (rc 2, fail-closed)" {
     local rc
     rc=$(_run_3state_probe "unauthorized: authentication required")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-no-such-host-is-ERROR-not-ABSENT: 'no such host' in stderr → ERROR (rc 2, fail-closed)" {
+@test "state_probe: 'no such host' in stderr → ERROR (rc 2, fail-closed)" {
     local rc
     rc=$(_run_3state_probe "dial tcp: lookup ghcr.io: no such host")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-network-unreachable-is-ERROR-not-ABSENT: 'network is unreachable' stderr → ERROR (rc 2)" {
+@test "state_probe: 'network is unreachable' stderr → ERROR (rc 2)" {
     local rc
     rc=$(_run_3state_probe "dial tcp: connect: network is unreachable")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-EOF-is-ERROR-not-ABSENT: 'EOF' in stderr → ERROR (rc 2, fail-closed)" {
+@test "state_probe: 'EOF' in stderr → ERROR (rc 2, fail-closed)" {
     local rc
     rc=$(_run_3state_probe "unexpected EOF")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-context-deadline-is-ERROR-not-ABSENT: 'context deadline exceeded' → ERROR (rc 2)" {
+@test "state_probe: 'context deadline exceeded' → ERROR (rc 2)" {
     local rc
     rc=$(_run_3state_probe "context deadline exceeded")
     [ "$rc" -eq 2 ]
 }
 
-@test "OO-empty-stderr-non-zero-is-ERROR-not-ABSENT: empty stderr + rc≠0 → ERROR (rc 2, fail-closed)" {
+@test "state_probe: empty stderr + rc≠0 → ERROR (rc 2, fail-closed)" {
     # RED before fix: empty stderr → fell through to ABSENT (rc 1).
     # GREEN after fix: empty stderr + non-zero → ERROR (rc 2, fail-closed).
     # Rationale: test mocks with `docker() { return 1; }` (no stderr) represent
@@ -4816,7 +4816,7 @@ _run_3state_probe() {
 # GREEN after fix: stale file removed; in-window files and versionset preserved.
 # ---------------------------------------------------------------------------
 
-@test "QQ-mixed-run-stale-cleanup: timescaledb all-cached + pgvector built → stale timescaledb duration file removed" {
+@test "timescaledb all-cached + pgvector built → stale timescaledb duration file removed" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -4942,12 +4942,12 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# UU-1: _image_present_3state — "docker: command not found" must be ERROR (rc=2),
+# _image_present_3state — "docker: command not found" must be ERROR (rc=2),
 # not ABSENT. Before the allow-list tightening, bare "not found" matched, causing
 # infra errors to be mis-classified as definitive absence.
 # ---------------------------------------------------------------------------
 
-@test "UU-image-present-3state-cmd-not-found: 'docker: command not found' stderr → ERROR (rc=2)" {
+@test "'docker: command not found' stderr → ERROR (rc=2)" {
     # Use the same _run_3state_probe helper — it already handles the subshell/set-e
     # correctly and is already updated to use the tightened skopeo pattern.
     # "docker: command not found" contains "not found" which was in the OLD allow-list
@@ -4958,7 +4958,7 @@ EOF
     [ "$rc" -eq 2 ]
 }
 
-@test "UU-image-present-3state-cred-helper-not-found: cred-helper error → ERROR (rc=2)" {
+@test "cred-helper error → ERROR (rc=2)" {
     # "docker-credential-desktop: executable file not found in PATH" contains "not found"
     # which was in the OLD allow-list (ABSENT before UU fix) → now ERROR (rc=2).
     local rc
@@ -4966,7 +4966,7 @@ EOF
     [ "$rc" -eq 2 ]
 }
 
-@test "UU-image-present-3state-manifest-unknown: 'manifest unknown' stderr → ABSENT (rc=1)" {
+@test "'manifest unknown' stderr → ABSENT (rc=1)" {
     # After the UU tightening, "manifest unknown" is still in the allow-list
     # (it is a genuine registry-manifest-specific not-found signal) → ABSENT (rc=1).
     local rc
@@ -5027,7 +5027,7 @@ _run_emit_versionset() {
     " 2>/dev/null
 }
 
-@test "WW-empty-available-deletes-stale: empty available[] on skip path removes stale versionset artifact" {
+@test "empty available[] on skip path removes stale versionset artifact" {
     # Arrange: stale artifact with available=[2.25.0,2.26.0,2.27.1] from prior run.
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
@@ -5066,7 +5066,7 @@ _run_emit_versionset() {
     [ ! -f "$stale" ]
 }
 
-@test "WW-ceiling-missing-deletes-stale: ceiling absent from available[] removes stale versionset artifact" {
+@test "ceiling absent from available[] removes stale versionset artifact" {
     # Arrange: stale artifact pre-exists.
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
@@ -5103,7 +5103,7 @@ _run_emit_versionset() {
     [ ! -f "$stale" ]
 }
 
-@test "WW-probe-error-deletes-stale: ambiguous probe ERROR (fail-closed) removes stale versionset artifact" {
+@test "ambiguous probe ERROR (fail-closed) removes stale versionset artifact" {
     # Arrange: stale artifact pre-exists.
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
@@ -5140,7 +5140,7 @@ _run_emit_versionset() {
     [ ! -f "$stale" ]
 }
 
-@test "WW-dry-run-preserves: DRY_RUN=true skip path must NOT delete the stale versionset artifact" {
+@test "DRY_RUN=true skip path must NOT delete the stale versionset artifact" {
     # Arrange: stale artifact pre-exists.
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
@@ -5168,7 +5168,7 @@ _run_emit_versionset() {
     [ -f "$stale" ]
 }
 
-@test "WW-happy-overwrites: confirmed set writes artifact with current available[]" {
+@test "confirmed set writes artifact with current available[]" {
     # Regression: happy path (all probes PRESENT, ceiling in available) must write
     # the artifact with the CURRENT available list, overwriting any stale content.
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
@@ -5209,7 +5209,7 @@ _run_emit_versionset() {
 }
 
 # ---------------------------------------------------------------------------
-# YY-1: malformed resolver output (injection-y entries) → fail-closed BEFORE
+# malformed resolver output (injection-y entries) → fail-closed BEFORE
 #        any build/tag/push. The malformed version must NEVER reach docker.
 #
 # Before fix: _resolve_cached only checks "non-empty JSON array of strings" —
@@ -5218,7 +5218,7 @@ _run_emit_versionset() {
 #   before the build loop; any non-semver entry → fail-closed (no build).
 # ---------------------------------------------------------------------------
 
-@test "YY-1-malformed-injection: resolver returns injection-y version → fail-closed, never reaches build" {
+@test "resolver returns injection-y version → fail-closed, never reaches build" {
     export LOCAL_ONLY=false
 
     # Resolver returns a set with an injection-y entry (valid-looking + shell metachar).
@@ -5267,7 +5267,7 @@ _run_emit_versionset() {
     fi
 }
 
-@test "YY-2-path-traversal: resolver returns ../evil version → fail-closed, never reaches tag" {
+@test "resolver returns ../evil version → fail-closed, never reaches tag" {
     export LOCAL_ONLY=false
 
     resolve_version_set() {
@@ -5313,7 +5313,7 @@ _run_emit_versionset() {
     fi
 }
 
-@test "YY-3-valid-set-still-builds: fully valid version set still triggers all builds (regression)" {
+@test "fully valid version set still triggers all builds (regression)" {
     export LOCAL_ONLY=false
 
     # All valid semver entries — must build all 3.
@@ -5352,11 +5352,11 @@ _run_emit_versionset() {
 }
 
 # ---------------------------------------------------------------------------
-# YY-4: shared is_strict_semver validator — unit tests for the shared function
+# shared is_strict_semver validator — unit tests for the shared function
 #        extracted to helpers/extension-utils.sh.
 # ---------------------------------------------------------------------------
 
-@test "YY-4-is-strict-semver-valid: is_strict_semver accepts standard X.Y.Z versions" {
+@test "is_strict_semver accepts standard X.Y.Z versions" {
     # is_strict_semver must return 0 (true) for canonical semver strings.
     _source_build_extensions
 
@@ -5370,7 +5370,7 @@ _run_emit_versionset() {
     done
 }
 
-@test "YY-4-is-strict-semver-invalid: is_strict_semver rejects non-semver and injection strings" {
+@test "is_strict_semver rejects non-semver and injection strings" {
     for ver in "latest" "2.27" "2.27.1-beta" "2.27.1+build" "2.27.0; rm -rf /" "../evil" "" "v2.27.1" "2.27.1.0"; do
         run bash -c "
             source \"$HELPERS_DIR/extension-utils.sh\"
@@ -5393,7 +5393,7 @@ _run_emit_versionset() {
 #   through to build/tag/push normally (GREEN).
 # ---------------------------------------------------------------------------
 
-@test "AB-single-version-nonsemver-builds: non-resolver ext pinned to 1.14 builds successfully" {
+@test "non-resolver ext pinned to 1.14 builds successfully" {
     export LOCAL_ONLY=false
 
     # Config with NO version_set.resolver — single-version, trusted input.
@@ -5474,7 +5474,7 @@ EOCFG
 # so the gate MUST still apply and reject the malformed entry.
 # ---------------------------------------------------------------------------
 
-@test "AB-resolver-backed-still-gated: resolver-backed ext with malformed output still fails closed" {
+@test "resolver-backed ext with malformed output still fails closed" {
     export LOCAL_ONLY=false
 
     # Config has version_set.resolver — this ext IS resolver-backed.
@@ -5527,7 +5527,7 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AD-1: LOCAL_ONLY=true, resolver unavailable in final pass, ceiling built →
+# LOCAL_ONLY=true, resolver unavailable in final pass, ceiling built →
 # NO reduced version-set artifact is written. Any pre-existing stale artifact
 # for that (ext, major) is DELETED so it cannot be silently consumed.
 #
@@ -5537,7 +5537,7 @@ EOCFG
 # GREEN after fix (AD): artifact is NOT written; stale artifact is removed;
 #   downstream build must use skopeo or a CI-produced artifact.
 # ---------------------------------------------------------------------------
-@test "AD-1: LOCAL_ONLY=true + resolver unavailable in final pass → no artifact, stale deleted" {
+@test "LOCAL_ONLY=true + resolver unavailable in final pass → no artifact, stale deleted" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -5622,11 +5622,11 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AD-2: PULL_ONLY=true, resolver unavailable in final pass → no artifact written.
+# PULL_ONLY=true, resolver unavailable in final pass → no artifact written.
 # Consistent with AD-1: both LOCAL_ONLY and PULL_ONLY recovery paths must be
 # fail-closed on artifact emission.
 # ---------------------------------------------------------------------------
-@test "AD-2: PULL_ONLY=true + resolver unavailable in final pass → no artifact written" {
+@test "PULL_ONLY=true + resolver unavailable in final pass → no artifact written" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -5698,12 +5698,12 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AC-2: publish path (LOCAL_ONLY=false, PULL_ONLY=false) + resolver unavailable
+# publish path (LOCAL_ONLY=false, PULL_ONLY=false) + resolver unavailable
 # in final pass → run exits non-zero, and no new ceiling-only artifact is written.
 # Regression guard: our fix must NOT create an artifact on the publish path.
 # Must stay GREEN before AND after the fix (fail-closed behavior intact).
 # ---------------------------------------------------------------------------
-@test "AC-2: publish path + resolver unavailable in final pass → exit non-zero (fail-closed), no new artifact" {
+@test "publish path + resolver unavailable in final pass → exit non-zero (fail-closed), no new artifact" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -5774,10 +5774,10 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AC-3: LOCAL_ONLY=true + DRY_RUN=true + resolver unavailable in final pass →
+# LOCAL_ONLY=true + DRY_RUN=true + resolver unavailable in final pass →
 # no filesystem mutation (no artifact written).
 # ---------------------------------------------------------------------------
-@test "AC-3: LOCAL_ONLY=true + DRY_RUN=true + resolver unavailable → no artifact written" {
+@test "LOCAL_ONLY=true + DRY_RUN=true + resolver unavailable → no artifact written" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -5847,7 +5847,7 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AE-1: embedded-newline bypass — resolver returns a single JSON element that
+# embedded-newline bypass — resolver returns a single JSON element that
 # contains an embedded newline ("2.27.1\n9.9.9"). The old line-based semver
 # gate splits this into two lines and passes both; the fix validates at the
 # JSON-array-element level so the element fails the anchored regex and the
@@ -5861,7 +5861,7 @@ EOCFG
 # Non-vacuous: assert NEITHER 2.27.1 NOR 9.9.9 appears in build/tag logs.
 # ---------------------------------------------------------------------------
 
-@test "AE-1-embedded-newline-bypass: resolver returns element with embedded newline → fail-closed, neither version built" {
+@test "resolver returns element with embedded newline → fail-closed, neither version built" {
     export LOCAL_ONLY=false
 
     # One JSON element containing an embedded newline — a single string that
@@ -5914,7 +5914,7 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AE-2: above-ceiling rejection — resolver returns a set containing 9.9.9
+# above-ceiling rejection — resolver returns a set containing 9.9.9
 # which exceeds the configured ceiling 2.27.1. The ceiling clamp at the
 # array-validation boundary must reject the whole set → fail-closed.
 #
@@ -5924,7 +5924,7 @@ EOCFG
 # Non-vacuous: assert 9.9.9 never appears in build/tag logs.
 # ---------------------------------------------------------------------------
 
-@test "AE-2-above-ceiling-rejected: resolver returns version above ceiling → set rejected, nothing built" {
+@test "resolver returns version above ceiling → set rejected, nothing built" {
     export LOCAL_ONLY=false
 
     # 2.27.1 is the ceiling; 9.9.9 exceeds it.
@@ -5974,12 +5974,12 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AE-3: clean set still builds — a fully valid set ["2.25.0","2.26.0","2.27.1"]
+# clean set still builds — a fully valid set ["2.25.0","2.26.0","2.27.1"]
 # where all versions are <= ceiling (2.27.1) must pass array-level validation
 # and trigger all three builds (regression guard for AE-1/AE-2 fix).
 # ---------------------------------------------------------------------------
 
-@test "AE-3-clean-set-still-builds: valid set all-at-or-below ceiling → all 3 versions built normally" {
+@test "valid set all-at-or-below ceiling → all 3 versions built normally" {
     export LOCAL_ONLY=false
 
     resolve_version_set() {
@@ -6019,7 +6019,7 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AG-1: _should_build_extension — resolver returns element with embedded newline
+# _should_build_extension — resolver returns element with embedded newline
 # ("2.27.1\n9.9.9") -> the all-cached path must reject it fail-closed.
 # Without the chokepoint fix, jq -r '.[]' splits the element into two lines
 # (2.27.1 and 9.9.9); each passes the per-line semver check, and 9.9.9 is
@@ -6030,7 +6030,7 @@ EOCFG
 # GREEN after fix: exits non-zero (fail-closed at _resolve_cached chokepoint).
 # ---------------------------------------------------------------------------
 
-@test "AG-1-should-build-embedded-newline: resolver returns element with embedded newline -> fail-closed in pre-filter" {
+@test "resolver returns element with embedded newline -> fail-closed in pre-filter" {
     export LOCAL_ONLY=false
 
     resolve_version_set() {
@@ -6064,7 +6064,7 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AG-2: embedded-newline resolver output must never reach the versionset artifact.
+# embedded-newline resolver output must never reach the versionset artifact.
 # Full main() subprocess: poisoned resolver -> exit non-zero, artifact absent or
 # does not contain 9.9.9.
 #
@@ -6072,7 +6072,7 @@ EOCFG
 # GREEN after fix: rejected at chokepoint -> exit non-zero, no 9.9.9 in artifact.
 # ---------------------------------------------------------------------------
 
-@test "AG-2-poisoned-all-cached-never-in-artifact: embedded-newline resolver output never written to versionset artifact" {
+@test "embedded-newline resolver output never written to versionset artifact" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -6143,7 +6143,7 @@ EOCFG
 # Ensures the chokepoint does not break the normal happy path.
 # ---------------------------------------------------------------------------
 
-@test "AH-clean-all-cached-still-skips: valid set all-present -> _should_build_extension returns 1 (skip)" {
+@test "valid set all-present -> _should_build_extension returns 1 (skip)" {
     export LOCAL_ONLY=false
 
     resolve_version_set() { echo '["2.27.1"]'; }
@@ -6172,12 +6172,12 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# BUNDLE-5: empty available set → NO bundle is built.
+# empty available set → NO bundle is built.
 # If all per-version builds fail (e.g. ceiling fatal), available is empty
 # and build_tag_push_extensions should exit non-zero without building a bundle.
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-5: no available versions → bundle NOT built" {
+@test "no available versions → bundle NOT built" {
     local docker_log="$TEST_TEMP_DIR/bundle5_docker.log"
 
     resolve_version_set() { echo '["2.27.1"]'; }
@@ -6229,7 +6229,7 @@ EOCFG
 #   and the probe disagree.
 # GREEN after fix: both derive from the same confirmed_available set.
 # ---------------------------------------------------------------------------
-@test "AK-force-partial-consistency: --force, non-ceiling build fails → failed version in neither bundle nor artifact" {
+@test "--force, non-ceiling build fails → failed version in neither bundle nor artifact" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -6388,7 +6388,7 @@ EOCFG
 # GREEN after fix: the loop calls _image_present_3state; ERROR → skip bundle
 #   assembly and exit non-zero.
 # ---------------------------------------------------------------------------
-@test "AK-transient-allcached-failclosed: all-cached path with ERROR probe → bundle NOT assembled, exits non-zero" {
+@test "all-cached path with ERROR probe → bundle NOT assembled, exits non-zero" {
     # This test verifies the AK-2 fix: the all-cached bundle refresh must use
     # _image_present_3state (3-state) instead of _image_present (2-state) so that
     # a transient ERROR on one version prevents bundle assembly (fail-closed).
@@ -6509,7 +6509,7 @@ EOCFG
 # GREEN after fix: a fatal failure (ceiling in failed[], or any tag/push error)
 #   prevents bundle assembly and artifact emission; run exits non-zero.
 # ---------------------------------------------------------------------------
-@test "AK-fatal-no-bundle: ceiling build fails → exit non-zero, bundle NOT assembled, NO artifact written" {
+@test "ceiling build fails → exit non-zero, bundle NOT assembled, NO artifact written" {
     # Direct function-call test (not subprocess). Mocks assemble_and_push_bundle
     # to record whether it was called — this is the critical observable: the
     # bundle assembler must NOT be invoked when the ceiling failed.
@@ -6571,7 +6571,7 @@ EOCFG
 # computation: if ANY resolved version returns ERROR from the 3-state probe,
 # the confirmed set is unsafe to use — fail closed on the publish path.
 # ---------------------------------------------------------------------------
-@test "INV-transient-failclosed: 3-state ERROR on one resolved version → no bundle, no artifact, fatal" {
+@test "3-state ERROR on one resolved version → no bundle, no artifact, fatal" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -6669,7 +6669,7 @@ EOCFG
 # This is the existing _bundle_and_write_artifact behaviour (set_size<=1 early
 # return) confirmed as a test so any future code change that breaks it is caught.
 # ---------------------------------------------------------------------------
-@test "AL-single-version-no-bundle: resolver-backed ext set_size==1 → no bundle docker build, no artifact" {
+@test "resolver-backed ext set_size==1 → no bundle docker build, no artifact" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
@@ -6759,7 +6759,7 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AO-1: resolved set > 1 but only the ceiling is confirmed available (other
+# resolved set > 1 but only the ceiling is confirmed available (other
 # versions absent) → producer must NOT assemble/push a bundle and must NOT
 # write a versionset artifact.  The consumer would ignore a 1-version bundle
 # (available_count <= 1 falls through to single-version path), so pushing one
@@ -6779,7 +6779,7 @@ EOCFG
 # GREEN after fix: confirmed_available size == 1 → skip bundle, skip artifact,
 #   delete stale, return 0.
 # ---------------------------------------------------------------------------
-@test "AO1-confirmed-one-no-bundle: resolved>1 but only ceiling confirmed → no bundle, no artifact, exit 0" {
+@test "resolved>1 but only ceiling confirmed → no bundle, no artifact, exit 0" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
@@ -6879,7 +6879,7 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AQ-1: CI PR smoke — all-cached, do_push=false (not LOCAL_ONLY/PULL_ONLY).
+# CI PR smoke — all-cached, do_push=false (not LOCAL_ONLY/PULL_ONLY).
 #
 # Defect: _emit_final_versionset_pass computes _do_push_fp solely from
 # LOCAL_ONLY/PULL_ONLY, defaulting to "true" when neither is set. On a CI PR
@@ -6895,7 +6895,7 @@ EOCFG
 #   LOCAL_ONLY=true (do_push=false): assemble locally, NO push (recovery).
 #   NO_PUSH=true (do_push=false):    skip bundle + skip artifact (CI PR smoke).
 # ---------------------------------------------------------------------------
-@test "AQ1-pr-nopush-allcached-clean: all-cached + NO_PUSH=true (CI PR) → NO bundle push, NO artifact, exit 0" {
+@test "all-cached + NO_PUSH=true (CI PR) → NO bundle push, NO artifact, exit 0" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -6979,7 +6979,7 @@ EOCFG
 # AX4 defensive: NO_PUSH=true still suppresses push (script honors it even
 # though the workflow no longer sets it on same-repo PRs; guards local/manual use).
 # ---------------------------------------------------------------------------
-@test "AX4-nopush-true-still-suppresses: NO_PUSH=true explicit → do_push=false → no push (defensive)" {
+@test "NO_PUSH=true explicit → do_push=false → no push (defensive)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -7054,7 +7054,7 @@ EOCFG
     [ ! -f "$artifact" ]
 }
 
-@test "AQ1-localonly-allcached-nopush: all-cached + LOCAL_ONLY=true → NO push (regression guard)" {
+@test "all-cached + LOCAL_ONLY=true → NO push (regression guard)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -7120,7 +7120,7 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AR-1: no-push CI build path must NOT write an artifact for an unpushed bundle.
+# no-push CI build path must NOT write an artifact for an unpushed bundle.
 #
 # Scenario: versions were BUILT in this run (not all-cached), do_push=false via
 # NO_PUSH=true (fork PR), NOT LOCAL_ONLY, NOT PULL_ONLY.
@@ -7130,7 +7130,7 @@ EOCFG
 # After fix: guard inside _bundle_and_write_artifact fires → no bundle push,
 #   no artifact written, any stale artifact deleted, exit 0.
 # ---------------------------------------------------------------------------
-@test "AR1-nopush-build-no-artifact: BUILD path, NO_PUSH=true, not LOCAL_ONLY — no artifact written" {
+@test "BUILD path, NO_PUSH=true, not LOCAL_ONLY — no artifact written" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -7207,7 +7207,7 @@ EOCFG
     # Must succeed (no-push is not a fatal condition).
     [ "$status" -eq 0 ]
 
-    # AR-1: artifact must NOT be written (and stale must be deleted).
+    # artifact must NOT be written (and stale must be deleted).
     [ ! -f "${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json" ]
 }
 
@@ -7215,7 +7215,7 @@ EOCFG
 # AR-1 regression: LOCAL_ONLY=true (do_push=false) still writes an artifact
 # without a digest — existing behavior must be preserved.
 # ---------------------------------------------------------------------------
-@test "AR1-localonly-still-writes: LOCAL_ONLY=true, do_push=false — artifact written without digest" {
+@test "LOCAL_ONLY=true, do_push=false — artifact written without digest" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -7287,7 +7287,7 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AR-2: resolver output containing GHA workflow-command injection bytes must
+# resolver output containing GHA workflow-command injection bytes must
 # be neutralized in the logged diagnostic when validation fails.
 #
 # The resolver returns output with an embedded newline followed by
@@ -7295,7 +7295,7 @@ EOCFG
 # at the validation failure site must NOT emit a raw newline-prefixed
 # ::stop-commands:: sequence in its output (stdout/stderr).
 # ---------------------------------------------------------------------------
-@test "AR2-resolver-output-sanitized: malicious resolver output is defanged in log diagnostic" {
+@test "malicious resolver output is defanged in log diagnostic" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local ar2_stderr="/tmp/ar2_resolver_stderr_$$.txt"
@@ -7348,17 +7348,17 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AS-2: the failure-log site in assemble_and_push_bundle that logs the
+# the failure-log site in assemble_and_push_bundle that logs the
 # captured digest must sanitize the value before logging.
 #
-# AS2-digest-failure-log-sanitized: when the captured digest is a malformed
+# when the captured digest is a malformed
 # multi-line string "sha256:abc\n::add-mask::x", the logged failure message
 # must NOT contain a raw newline followed by ::add-mask:: (the GHA injection
 # form). The function must still fail closed (non-zero exit, no artifact).
 # RED before fix: log_error logs the raw _captured_digest without sanitization.
 # GREEN after fix: log_error wraps _captured_digest in _sanitize_for_log.
 # ---------------------------------------------------------------------------
-@test "AS2-digest-failure-log-sanitized: malformed digest with injection bytes — fail closed, log defanged" {
+@test "malformed digest with injection bytes — fail closed, log defanged" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local as2_stderr="/tmp/as2_digest_stderr_$$.txt"
@@ -7447,7 +7447,7 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AT-1: _sanitize_for_log must neutralize backslash sequences so that
+# _sanitize_for_log must neutralize backslash sequences so that
 # echo -e cannot expand them after sanitisation.
 #
 # The existing sanitiser neutralises actual CR/LF bytes and literal "::" but
@@ -7462,7 +7462,7 @@ EOCFG
 # sequence "\n" (not a newline) and "\x3a" as the literal four-char
 # sequence "\x3a" (not ":").
 #
-# AT1-sanitizer-backslash-escape: end-to-end proof that echo -e cannot
+# end-to-end proof that echo -e cannot
 #   expand an injected backslash escape after sanitisation.
 #   Input: a value with literal \n and \x3a\x3a sequences.
 #   Test drives the sanitised value through the real log_error logger
@@ -7472,11 +7472,11 @@ EOCFG
 #   RED before fix: echo -e expands \n and \x3a, reconstructing "::add-mask::".
 #   GREEN after fix: backslashes escaped first; echo -e sees \\n -> "\n".
 #
-# AT1-sanitizer-actual-controls: the existing CR/LF/:: neutralisation
+# the existing CR/LF/:: neutralisation
 #   still works after the backslash-first fix (regression guard).
 # ---------------------------------------------------------------------------
 
-@test "AT1-sanitizer-backslash-escape: echo -e cannot expand injected backslash sequences after sanitisation" {
+@test "echo -e cannot expand injected backslash sequences after sanitisation" {
     # Poison value: literal backslash-n and backslash-x3a (two-char sequences,
     # NOT actual control bytes).  When passed to echo -e without sanitisation,
     # \n expands to newline and \x3a to ':', producing:
@@ -7524,7 +7524,7 @@ EOCFG
     fi
 }
 
-@test "AT1-sanitizer-actual-controls: existing CR/LF/percent/double-colon neutralisation still works" {
+@test "existing CR/LF/percent/double-colon neutralisation still works" {
     # Regression guard: the backslash-first fix must not break the existing
     # neutralisation of actual control bytes and literal '::'.
     local actual_cr_lf
@@ -7590,7 +7590,7 @@ EOCFG
 # DRY_RUN path is a separate test (AU-dry-run-single-preserves).
 # ---------------------------------------------------------------------------
 
-@test "AU-multi-to-single-deletes-stale: set_size==1 early return deletes pre-existing stale versionset artifact" {
+@test "set_size==1 early return deletes pre-existing stale versionset artifact" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -7677,7 +7677,7 @@ EOCFG
 # GREEN: stale artifact survives intact under DRY_RUN=true.
 # ---------------------------------------------------------------------------
 
-@test "AU-dry-run-single-preserves: DRY_RUN=true + set_size==1 + stale artifact is NOT deleted" {
+@test "DRY_RUN=true + set_size==1 + stale artifact is NOT deleted" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -7757,7 +7757,7 @@ EOCFG
 # per-arch bundle build in stage A), and NO versionset artifact is written.
 # ---------------------------------------------------------------------------
 
-@test "A-arch-suffixed-build: ARCH_SUFFIX=amd64 uses buildx --platform and defers bundle to stage B, no artifact" {
+@test "ARCH_SUFFIX=amd64 uses buildx --platform and defers bundle to stage B, no artifact" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -7849,11 +7849,11 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# A-arm64-suffix: ARCH_SUFFIX=arm64, BUILD_PLATFORM=linux/arm64 => per-version
+# ARCH_SUFFIX=arm64, BUILD_PLATFORM=linux/arm64 => per-version
 # builds use --platform linux/arm64, bundle is DEFERRED to stage B.
 # ---------------------------------------------------------------------------
 
-@test "A-arm64-suffix: ARCH_SUFFIX=arm64 defers bundle to stage B and uses buildx --platform for per-version builds" {
+@test "ARCH_SUFFIX=arm64 defers bundle to stage B and uses buildx --platform for per-version builds" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -7947,7 +7947,7 @@ EOCFG
 # written (existing behavior regression guard).
 # ---------------------------------------------------------------------------
 
-@test "A-local-unchanged: ARCH_SUFFIX empty (local build) keeps un-suffixed bundle tag and writes artifact" {
+@test "ARCH_SUFFIX empty (local build) keeps un-suffixed bundle tag and writes artifact" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -8048,7 +8048,7 @@ EOCFG
 # After fix: final pass skips (ext, major) already bundled on the build path.
 # ---------------------------------------------------------------------------
 
-@test "A-no-double-bundle: build+push of an ext assembles bundle EXACTLY ONCE (AV-2 fix)" {
+@test "build+push of an ext assembles bundle EXACTLY ONCE (AV-2 fix)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -8171,7 +8171,7 @@ EOCFG
 # and writes the versionset artifact with version_digests. NO bundle build.
 # ---------------------------------------------------------------------------
 
-@test "B-merge-creates-multiarch: finalize-multiarch calls imagetools create for each version, captures index digests, no bundle build" {
+@test "finalize-multiarch calls imagetools create for each version, captures index digests, no bundle build" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/docker_calls.log"
@@ -8291,7 +8291,7 @@ EOCFG
 # version_digests = {"<ver>":"sha256:<64hex>", ...}. Assert artifact content.
 # ---------------------------------------------------------------------------
 
-@test "B-merge-captures-index-digest-and-writes-artifact: artifact written with version_digests map" {
+@test "artifact written with version_digests map" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -8390,7 +8390,7 @@ EOCFG
 # exits non-zero, NO artifact written.
 # ---------------------------------------------------------------------------
 
-@test "B-merge-fail-closed: imagetools create failure exits non-zero and no artifact written" {
+@test "imagetools create failure exits non-zero and no artifact written" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -8473,7 +8473,7 @@ EOCFG
     [ ! -f "$artifact" ]
 }
 
-@test "B-merge-fail-closed: digest capture failure exits non-zero and no artifact written" {
+@test "digest capture failure exits non-zero and no artifact written" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -8540,7 +8540,7 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AW-1: finalize-multiarch must merge ALL in-scope extensions, not only
+# finalize-multiarch must merge ALL in-scope extensions, not only
 # resolver-backed ones. A non-resolver extension (pgvector, single version)
 # must get an un-suffixed multi-arch manifest created from its -amd64 + -arm64
 # suffixed source refs.
@@ -8553,7 +8553,7 @@ EOCFG
 #   (no bundle, no versionset artifact). (GREEN)
 # ---------------------------------------------------------------------------
 
-@test "AW1-nonresolver-merged: finalize-multiarch creates un-suffixed manifest for non-resolver extension" {
+@test "finalize-multiarch creates un-suffixed manifest for non-resolver extension" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -8651,7 +8651,7 @@ EOF
     [[ "$create_content" == *"pg18-0.8.0-arm64"* ]]
 }
 
-@test "AW1-all-exts-processed: finalize-multiarch creates manifests for both resolver-backed and non-resolver extensions" {
+@test "finalize-multiarch creates manifests for both resolver-backed and non-resolver extensions" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -8773,7 +8773,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# AW-2: per-arch buildx build must honor do_push / NO_PUSH.
+# per-arch buildx build must honor do_push / NO_PUSH.
 # When NO_PUSH=true (do_push=false), build_ext_image must use --load, NOT --push.
 # When do_push=true, --push must still be used (regression guard).
 #
@@ -8782,7 +8782,7 @@ EOF
 # After fix:  --push only when do_push=true; --load when do_push=false. (GREEN)
 # ---------------------------------------------------------------------------
 
-@test "AW2-nopush-uses-load: BUILD_PLATFORM + NO_PUSH=true → buildx uses --load, not --push" {
+@test "BUILD_PLATFORM + NO_PUSH=true → buildx uses --load, not --push" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local aw2_log="$tmpd/aw2_nopush_buildx.log"
@@ -8824,7 +8824,7 @@ EOF
     [[ "$call_content" == *"--load"* ]]
 }
 
-@test "AW2-push-true-regression: BUILD_PLATFORM + NO_PUSH unset → buildx uses --load then docker push" {
+@test "BUILD_PLATFORM + NO_PUSH unset → buildx uses --load then docker push" {
     # BA-2 contract: build (--load) and push (docker push) are separate steps.
     # When do_push=true: buildx build --load compiles, then docker push sends to registry.
     # The buildx build command must use --load (not --push); a separate docker push follows.
@@ -8871,7 +8871,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# AW-3: prefilter (_should_build_extension multi-version path) must check
+# prefilter (_should_build_extension multi-version path) must check
 # arch-suffixed refs when ARCH_SUFFIX is set.
 #
 # Scenario: ARCH_SUFFIX=arm64, the un-suffixed ref exists in registry but the
@@ -8885,7 +8885,7 @@ EOF
 #   arch-suffixed ref → skips only when -arm64 is present → builds when absent. (GREEN)
 # ---------------------------------------------------------------------------
 
-@test "AW3-prefilter-arch-suffixed: ARCH_SUFFIX set + un-suffixed present but suffixed absent → extension NOT skipped (builds -arm64)" {
+@test "ARCH_SUFFIX set + un-suffixed present but suffixed absent → extension NOT skipped (builds -arm64)" {
     export ARCH_SUFFIX="arm64"
     export BUILD_PLATFORM="linux/arm64"
 
@@ -8921,7 +8921,7 @@ EOF
     unset ARCH_SUFFIX BUILD_PLATFORM
 }
 
-@test "AW3-prefilter-arch-suffixed-present: ARCH_SUFFIX set + suffixed ref IS present → extension skipped" {
+@test "ARCH_SUFFIX set + suffixed ref IS present → extension skipped" {
     export ARCH_SUFFIX="amd64"
     export BUILD_PLATFORM="linux/amd64"
 
@@ -8949,7 +8949,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# AW-4: stage B must merge only AVAILABLE versions and tolerate excluded
+# stage B must merge only AVAILABLE versions and tolerate excluded
 # (non-ceiling versions whose -amd64 or -arm64 source is absent).
 #
 # Before fix: finalize_multiarch_manifests treats every imagetools create
@@ -8960,7 +8960,7 @@ EOF
 #   set produces artifact; exit 0. (GREEN)
 # ---------------------------------------------------------------------------
 
-@test "AW4-excluded-version-not-fatal: non-ceiling source tag definitively absent → excluded, ceiling merged, exit 0" {
+@test "non-ceiling source tag definitively absent → excluded, ceiling merged, exit 0" {
     # BA-3 contract: a definitive ABSENT (not ERROR) on a non-ceiling suffixed
     # source tag → excluded (legitimate per-arch build miss), not fatal.
     # The 3-state probe returns ABSENT (rc=1) for the 2.25.0 -amd64 tag, PRESENT
@@ -9080,7 +9080,7 @@ EOF
     [ "$excl_2250" -eq 1 ]
 }
 
-@test "AW4-ceiling-absent-fatal: ceiling version missing from arch sources → exit non-zero (fail-closed)" {
+@test "ceiling version missing from arch sources → exit non-zero (fail-closed)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -9179,7 +9179,7 @@ EOF
 # AX1 digest-map approach. Stable suffixed tags persist in the registry across
 # runs, so a cached version (not rebuilt this run) is included correctly.
 # ---------------------------------------------------------------------------
-@test "SIMP-merge-from-stable-tags: finalize-multiarch uses stable suffixed tag refs, not digest refs" {
+@test "finalize-multiarch uses stable suffixed tag refs, not digest refs" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_calls_log="${tmpd}/simp_imagetools_calls.log"
@@ -9282,7 +9282,7 @@ EOF
 # used digest maps (dropped approach). The new mechanism uses registry probes
 # of the stable suffixed tags to compute the INTERSECTION.
 # ---------------------------------------------------------------------------
-@test "SIMP-intersection-availability: version missing on arm64 suffixed tag is excluded, not merged" {
+@test "version missing on arm64 suffixed tag is excluded, not merged" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_calls_log="${tmpd}/simp_intersection_imagetools.log"
@@ -9398,7 +9398,7 @@ EOF
     fi
 }
 
-@test "SIMP-intersection-availability-ceiling-fatal: ceiling missing on arm64 suffixed tag → fatal exit" {
+@test "ceiling missing on arm64 suffixed tag → fatal exit" {
     # Replaces the reverted AX1-ceiling-missing-one-arch-fatal test.
     # New mechanism: registry probe of stable suffixed tags.
     # Ceiling's -arm64 tag absent → fatal (fail-closed).
@@ -9492,7 +9492,7 @@ EOF
 # manifest → falls through to CREATE (re-creates from per-arch legs), exit 0.
 # The reused manifest covers only linux/amd64; per-arch legs exist for both arches.
 # ---------------------------------------------------------------------------
-@test "SIMP-reuse-single-arch-falls-through: single-arch reused manifest triggers re-create from per-arch legs" {
+@test "single-arch reused manifest triggers re-create from per-arch legs" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/docker_calls.log"
@@ -9617,7 +9617,7 @@ EOF
 # imagetools create produces a single-arch manifest → EXCLUDED (exit 0).
 # Ceiling (both arches) → merged; artifact omits excluded version.
 # ---------------------------------------------------------------------------
-@test "SIMP-nonceil-single-arch-create-excluded: non-ceiling single-arch create is excluded, ceiling merged, exit 0" {
+@test "non-ceiling single-arch create is excluded, ceiling merged, exit 0" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/docker_calls.log"
@@ -9742,7 +9742,7 @@ EOF
 # SIMP-ceiling-single-arch-create-fatal: ceiling version whose imagetools create
 # produces a single-arch manifest → fatal (exit non-zero). No artifact written.
 # ---------------------------------------------------------------------------
-@test "SIMP-ceiling-single-arch-create-fatal: ceiling single-arch create is fatal" {
+@test "ceiling single-arch create is fatal" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -9833,11 +9833,11 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# AX3-duration-consolidated: per-arch duration files for a version
+# per-arch duration files for a version
 # (amd64=100s, arm64=140s) → canonical artifact gets one duration file with
 # MAX policy (140s); the consolidated duration_seconds is 140.
 # ---------------------------------------------------------------------------
-@test "AX3-duration-consolidated: per-arch duration files consolidated with MAX policy; canonical duration=140" {
+@test "per-arch duration files consolidated with MAX policy; canonical duration=140" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -9929,7 +9929,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# AY-2 replacement test: non-resolver finalize uses STABLE SUFFIXED TAG refs.
+# Replacement test: non-resolver finalize uses STABLE SUFFIXED TAG refs.
 # This replaces the reverted AY1 digest-map tests.
 # Non-resolver extensions (single configured version) use imagetools create
 # with stable -amd64/-arm64 suffixed tag refs directly (no registry probe,
@@ -9937,7 +9937,7 @@ EOF
 # un-suffixed multi-arch manifest from the stable per-arch tags.
 # ---------------------------------------------------------------------------
 
-@test "SIMP-nonresolver-merge-stable-tags: non-resolver finalize uses stable suffixed tag refs" {
+@test "non-resolver finalize uses stable suffixed tag refs" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -10035,7 +10035,7 @@ EOF
     }
 }
 
-@test "SIMP-nonresolver-merge-succeeds-no-digest-map: non-resolver finalize succeeds without any digest map files" {
+@test "non-resolver finalize succeeds without any digest map files" {
     # Regression guard: non-resolver branch must work WITHOUT digest-map files present.
     # The reverted AY-1 approach required digest maps; the stable-tag approach does not.
     local tmpd="$TEST_TEMP_DIR"
@@ -10095,7 +10095,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# AY-2: per-arch leg must write ARCH-SUFFIXED duration files.
+# per-arch leg must write ARCH-SUFFIXED duration files.
 #
 # Before fix: build_tag_push_extensions always writes:
 #   ext-<ext>-pg<major>-<ver>.json  (un-suffixed)
@@ -10109,7 +10109,7 @@ EOF
 # When ARCH_SUFFIX is empty (local/single-arch), keep the un-suffixed name.
 # ---------------------------------------------------------------------------
 
-@test "AY2-arch-suffixed-duration-no-collision: ARCH_SUFFIX=amd64 writes arch-suffixed duration file" {
+@test "ARCH_SUFFIX=amd64 writes arch-suffixed duration file" {
     export ARCH_SUFFIX="amd64"
     export BUILD_PLATFORM="linux/amd64"
 
@@ -10180,7 +10180,7 @@ EOF
     unset ARCH_SUFFIX BUILD_PLATFORM
 }
 
-@test "AY2-local-unsuffixed: ARCH_SUFFIX empty keeps un-suffixed duration file (local/single-arch path)" {
+@test "ARCH_SUFFIX empty keeps un-suffixed duration file (local/single-arch path)" {
     unset ARCH_SUFFIX
     unset BUILD_PLATFORM
 
@@ -10218,7 +10218,7 @@ EOF
     [ ! -f "$arm64_file" ]
 }
 
-@test "AY2-consolidation-runs: -amd64.json + -arm64.json → consolidation writes canonical file with MAX, removes suffixed" {
+@test "-amd64.json + -arm64.json → consolidation writes canonical file with MAX, removes suffixed" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -10343,7 +10343,7 @@ EOF
 # All -amd64 and -arm64 suffixed tags exist (2.25.0 is "cached", not rebuilt).
 # Expectation: all 3 in available[], bundle built, artifact written.
 # ---------------------------------------------------------------------------
-@test "SIMP-cached-version-merged: cached non-ceiling version (not rebuilt) appears in available via stable-tag probe" {
+@test "cached non-ceiling version (not rebuilt) appears in available via stable-tag probe" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -10450,7 +10450,7 @@ EOF
 # amd64,arm64) from AVAILABLE per-version multi-arch manifests. An excluded
 # version is NOT in the bundle COPY list. (AZ-1 regression guard)
 # ---------------------------------------------------------------------------
-@test "SIMP-bundle-from-available: stage-B uses only available versions in version_digests; excluded version absent" {
+@test "stage-B uses only available versions in version_digests; excluded version absent" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/simp_available_imagetools.log"
@@ -10594,7 +10594,7 @@ EOF
 # imagetools create for the ceiling version must be called even when set_size==1.
 # (AZ-4 regression guard)
 # ---------------------------------------------------------------------------
-@test "SIMP-single-version-manifest: resolver-backed set_size==1 creates un-suffixed per-version manifest" {
+@test "resolver-backed set_size==1 creates un-suffixed per-version manifest" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/simp_single_imagetools.log"
@@ -10706,12 +10706,12 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BA-2: per-arch build (BUILD_PLATFORM set) separates compile (--load) from push.
+# per-arch build (BUILD_PLATFORM set) separates compile (--load) from push.
 # A push/auth/network failure must be FATAL for ALL versions (ceiling AND
 # non-ceiling). It must NOT be tolerated as a musl compile incompatibility.
 # ---------------------------------------------------------------------------
 
-@test "BA2-push-fail-fatal: non-ceiling --load succeeds but push fails → FATAL (not excluded)" {
+@test "non-ceiling --load succeeds but push fails → FATAL (not excluded)" {
     # Tests the REAL build_ext_image with BUILD_PLATFORM set.
     # Before fix: buildx build --push is one op; non-zero = compile failure = tolerated
     #             for non-ceiling → exit 0, version silently excluded.
@@ -10796,7 +10796,7 @@ EOF
     grep -q "DOCKER_PUSH_FAIL" "$push_log"
 }
 
-@test "BA2-compile-fail-nonceiling-tolerated: non-ceiling --load (compile) fails → tolerated (exit 0)" {
+@test "non-ceiling --load (compile) fails → tolerated (exit 0)" {
     # Regression guard: musl compile incompatibility on non-ceiling is still tolerated.
     # Before and after fix: a compile failure (--load fails) for a non-ceiling version
     # must remain tolerated → exit 0.
@@ -10878,7 +10878,7 @@ EOF
     grep -q "PUSH_OK.*pg18-2.27.1-amd64" "$build_log"
 }
 
-@test "BA2-ceiling-compile-fail-fatal: ceiling --load (compile) fails → FATAL (exit non-zero)" {
+@test "ceiling --load (compile) fails → FATAL (exit non-zero)" {
     # Ceiling compile failure must remain fatal regardless of the build/push split.
 
     local tmpd="$TEST_TEMP_DIR"
@@ -10952,13 +10952,13 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BA-3: finalize_multiarch_manifests uses 3-state probe (fail-closed on ERROR).
+# finalize_multiarch_manifests uses 3-state probe (fail-closed on ERROR).
 # Before fix: boolean image_exists_in_registry — a transient probe failure
 #             reads as "missing" → non-ceiling version silently excluded.
 # After fix:  _image_present_3state — ERROR (rc=2) → fail closed (fatal), NOT excluded.
 # ---------------------------------------------------------------------------
 
-@test "BA3-transient-probe-failclosed: finalize, transient 3-state ERROR probe → fail closed (not excluded)" {
+@test "finalize, transient 3-state ERROR probe → fail closed (not excluded)" {
     # The test drives finalize_multiarch_manifests via main --finalize-multiarch.
     # The suffixed-tag probe returns rc=2 (transient ERROR) for a NON-ceiling version.
     # Before fix (boolean): rc≠0 → "missing" → non-ceiling excluded → exit 0 with reduced artifact.
@@ -11073,7 +11073,7 @@ EOF
     fi
 }
 
-@test "BA3-definitive-absent-excluded: definitive ABSENT non-ceiling → excluded; ceiling absent → fatal" {
+@test "definitive ABSENT non-ceiling → excluded; ceiling absent → fatal" {
     # A definitive ABSENT (explicit not-found signal) on a NON-ceiling version is a
     # legitimate per-arch build miss → excluded (unchanged behavior).
     # A definitive ABSENT on the CEILING version → fatal (unchanged behavior).
@@ -11183,7 +11183,7 @@ EOF
     [[ "$avail" == *"2.27.1"* ]]
 }
 
-@test "BA3-imagetools-create-with-both-present-fatal: imagetools create fails when both sources confirmed present → FATAL" {
+@test "imagetools create fails when both sources confirmed present → FATAL" {
     # When both -amd64 and -arm64 suffixed tags are confirmed PRESENT by the probe
     # but imagetools create fails, that is a registry infra error → FATAL.
     # Before fix: non-ceiling imagetools-create failure is tolerated → excluded.
@@ -11293,7 +11293,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BB1-pr-scoped-tags: PR_TAG_SUFFIX=-pr42 → per-arch + per-version + bundle
+# PR_TAG_SUFFIX=-pr42 → per-arch + per-version + bundle
 # published refs all carry -pr42; canonical (un-suffixed) refs NEVER created.
 #
 # RED before fix: finalize_multiarch_manifests creates refs with no suffix
@@ -11301,7 +11301,7 @@ EOF
 # GREEN after fix: every published ref carries -pr42 suffix; canonical refs
 #   never appear in the docker calls log.
 # ---------------------------------------------------------------------------
-@test "BB1-pr-scoped-tags: PR_TAG_SUFFIX=-pr42 → all published refs carry -pr42, canonical refs absent" {
+@test "PR_TAG_SUFFIX=-pr42 → all published refs carry -pr42, canonical refs absent" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/docker_calls.log"
@@ -11413,10 +11413,10 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BB1-push-canonical: PR_TAG_SUFFIX empty (push/dispatch) → canonical refs
+# PR_TAG_SUFFIX empty (push/dispatch) → canonical refs
 # (no suffix) created (regression guard).
 # ---------------------------------------------------------------------------
-@test "BB1-push-canonical: PR_TAG_SUFFIX empty → canonical refs published (regression)" {
+@test "PR_TAG_SUFFIX empty → canonical refs published (regression)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/docker_calls.log"
@@ -11523,7 +11523,7 @@ EOF
 # RED before fix: buildx build call has no --cache-from / --cache-to flags.
 # GREEN after fix: both flags present with the deterministic buildcache ref.
 # ---------------------------------------------------------------------------
-@test "CACHE-flags: per-arch buildx build carries --cache-from and --cache-to registry flags" {
+@test "per-arch buildx build carries --cache-from and --cache-to registry flags" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/docker_calls.log"
@@ -11616,7 +11616,7 @@ EOF
 
 # A non-ceiling compile that fails once then succeeds must be INCLUDED (not excluded).
 # Without retry: single failure → excluded. With retry: second attempt succeeds → included.
-@test "BB2-transient-build-retry-succeeds: compile fails once then succeeds → version included" {
+@test "compile fails once then succeeds → version included" {
     export EXT_BUILD_RETRIES=3
 
     resolve_version_set() { echo '["2.25.0","2.27.1"]'; }
@@ -11668,7 +11668,7 @@ EOF
 
 # Non-ceiling build that fails ALL retry attempts → tolerated (genuine incompatibility).
 # Ceiling that fails ALL retry attempts → fatal.
-@test "BB2-persistent-build-fail-tolerated: non-ceiling all-retry-fail → tolerated (exit 0)" {
+@test "non-ceiling all-retry-fail → tolerated (exit 0)" {
     export EXT_BUILD_RETRIES=2
 
     resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
@@ -11714,7 +11714,7 @@ EOF
     unset EXT_BUILD_RETRIES
 }
 
-@test "BB2-ceiling-persistent-fail-fatal: ceiling all-retry-fail → exit non-zero" {
+@test "ceiling all-retry-fail → exit non-zero" {
     export EXT_BUILD_RETRIES=2
 
     resolve_version_set() { echo '["2.25.0","2.27.1"]'; }
@@ -11754,7 +11754,7 @@ EOF
 }
 
 # Push failure (rc=2) fails all retries → fatal.
-@test "BB2-push-retry-then-fatal: push fails all retries → fatal" {
+@test "push fails all retries → fatal" {
     export EXT_BUILD_RETRIES=2
 
     resolve_version_set() { echo '["2.25.0","2.27.1"]'; }
@@ -11799,7 +11799,7 @@ EOF
 # the real non-zero exit code, not 0.
 # Without the fix: `if ! $DOCKER ...; then rc=$?` captures rc=0 (exit of `!`).
 # With the fix: rc is captured from the command directly → real non-zero value.
-@test "BBlow-rc-capture: imagetools create failure logs real rc, not 0" {
+@test "imagetools create failure logs real rc, not 0" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local log_file="$tmpd/bblow_output.log"
@@ -11854,7 +11854,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BC-2: build cache ref must always be a writable GHCR ref, independent of
+# build cache ref must always be a writable GHCR ref, independent of
 # REMOTE_CR (which is the base-image source, not the cache store).
 #
 # The per-arch buildx build derives --cache-to/--cache-from from REMOTE_CR,
@@ -11875,7 +11875,7 @@ EOF
 #   LOCAL_ONLY=true (no push) → --cache-to must NOT appear in the buildx invocation.
 #   --cache-from may still be present (reading cache is always safe).
 # ---------------------------------------------------------------------------
-@test "BC2-cache-ref-ghcr: REMOTE_CR=docker.io → cache ref still uses ghcr.io/<owner>/, NOT docker.io" {
+@test "REMOTE_CR=docker.io → cache ref still uses ghcr.io/<owner>/, NOT docker.io" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/bc2_docker_calls.log"
@@ -11964,7 +11964,7 @@ EOF
     [[ "$buildx_line" == *"type=registry"* ]]
 }
 
-@test "BC2-cache-to-only-with-write: --local-only flag → --cache-to absent from buildx invocation" {
+@test "--local-only flag → --cache-to absent from buildx invocation" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/bc2_local_docker_calls.log"
@@ -12041,7 +12041,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BD1-cache-pr-scoped: build cache ref must carry PR_TAG_SUFFIX on PR builds,
+# build cache ref must carry PR_TAG_SUFFIX on PR builds,
 # and no suffix on push/dispatch (canonical) builds.
 #
 # Supply-chain policy (operator-confirmed): the build cache is PR-scoped so an
@@ -12056,7 +12056,7 @@ EOF
 #   PR_TAG_SUFFIX=-pr42  → --cache-from/--cache-to ref ends in pg18-amd64-pr42
 #   PR_TAG_SUFFIX empty  → --cache-from/--cache-to ref ends in pg18-amd64 (no suffix)
 # ---------------------------------------------------------------------------
-@test "BD1-cache-pr-scoped: PR_TAG_SUFFIX=-pr42 → cache ref is ...buildcache:pg18-amd64-pr42" {
+@test "PR_TAG_SUFFIX=-pr42 → cache ref is ...buildcache:pg18-amd64-pr42" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/bd1_pr_docker_calls.log"
@@ -12142,7 +12142,7 @@ EOF
     [ "$unscoped_count" -eq 0 ]
 }
 
-@test "BD1-cache-pr-scoped: PR_TAG_SUFFIX empty (push) → canonical cache ref (no suffix)" {
+@test "PR_TAG_SUFFIX empty (push) → canonical cache ref (no suffix)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/bd1_push_docker_calls.log"
@@ -12242,7 +12242,7 @@ EOF
 #   the canonical arch tag exists (unchanged version).
 # GREEN after fix: canonical present → _should_build_extension returns 1 (skip).
 # ---------------------------------------------------------------------------
-@test "BF-pr-reuses-canonical-skips-unchanged: PR_TAG_SUFFIX=-pr42, canonical arch tag present, PR-scoped absent → SKIPPED" {
+@test "PR_TAG_SUFFIX=-pr42, canonical arch tag present, PR-scoped absent → SKIPPED" {
     export PR_TAG_SUFFIX="-pr42"
     export ARCH_SUFFIX="amd64"
     export BUILD_PLATFORM="linux/amd64"
@@ -12286,7 +12286,7 @@ EOF
 # RED before fix: all N+1 versions are built (canonical check absent).
 # GREEN after fix: exactly 1 build (the new/changed version).
 # ---------------------------------------------------------------------------
-@test "BF-pr-builds-only-changed: PR_TAG_SUFFIX=-pr42, 1 new + 2 unchanged → only 1 build issued" {
+@test "PR_TAG_SUFFIX=-pr42, 1 new + 2 unchanged → only 1 build issued" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local build_calls="${tmpd}/build_calls.log"
@@ -12406,7 +12406,7 @@ EOF
 # GREEN after fix: canonical manifests for unchanged versions reused (no extra
 #   imagetools create); new version gets PR-scoped manifest; PR bundle written.
 # ---------------------------------------------------------------------------
-@test "BF-bundle-mixes-canonical-and-prscoped: unchanged versions reused from canonical, new version is PR-scoped, PR bundle written" {
+@test "unchanged versions reused from canonical, new version is PR-scoped, PR bundle written" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="${tmpd}/docker_calls.log"
@@ -12551,7 +12551,7 @@ EOF
 #
 # GREEN before and after fix: on push, canonical-only probing is unchanged.
 # ---------------------------------------------------------------------------
-@test "BF-push-canonical-only: PR_TAG_SUFFIX empty → canonical arch tags probed, unchanged version skipped" {
+@test "PR_TAG_SUFFIX empty → canonical arch tags probed, unchanged version skipped" {
     export PR_TAG_SUFFIX=""
     export ARCH_SUFFIX="amd64"
     export BUILD_PLATFORM="linux/amd64"
@@ -12584,7 +12584,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BG1-nonresolver-reuse-canonical: PR_TAG_SUFFIX=-pr42, non-resolver ext whose
+# PR_TAG_SUFFIX=-pr42, non-resolver ext whose
 # canonical multi-arch manifest EXISTS (pr-scoped arch tags do NOT exist).
 # finalize_multiarch_manifests must REUSE the canonical manifest (no
 # imagetools create) and exit 0.
@@ -12594,7 +12594,7 @@ EOF
 # GREEN after fix: canonical manifest present → reuse (no imagetools create
 #   called for this ext), exit 0.
 # ---------------------------------------------------------------------------
-@test "BG1-nonresolver-reuse-canonical: PR context, canonical multi-arch manifest present, pr-scoped tags absent → reused, no imagetools create" {
+@test "PR context, canonical multi-arch manifest present, pr-scoped tags absent → reused, no imagetools create" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/bg1_imagetools.log"
@@ -12691,14 +12691,14 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BG1-nonresolver-create-when-changed: PR context, non-resolver ext NOT in
+# PR context, non-resolver ext NOT in
 # canonical (built this PR, pr-scoped arch tags exist) → creates the
 # PR-scoped multi-arch manifest from the -pr42 arch tags.
 #
 # GREEN before AND after fix: when canonical is absent and pr-scoped arch tags
 # are present, imagetools create is called with the pr-scoped arch source tags.
 # ---------------------------------------------------------------------------
-@test "BG1-nonresolver-create-when-changed: PR context, canonical absent, pr-scoped arch tags present → creates PR-scoped manifest" {
+@test "PR context, canonical absent, pr-scoped arch tags present → creates PR-scoped manifest" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/bg1_changed_imagetools.log"
@@ -12789,11 +12789,11 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BG1-push-nonresolver-canonical: PR_TAG_SUFFIX empty (push/dispatch) →
+# PR_TAG_SUFFIX empty (push/dispatch) →
 # creates canonical manifest from -amd64/-arm64 stable tags (regression guard).
 # GREEN before AND after fix: push path is unchanged.
 # ---------------------------------------------------------------------------
-@test "BG1-push-nonresolver-canonical: PR_TAG_SUFFIX empty → creates canonical manifest from stable arch tags" {
+@test "PR_TAG_SUFFIX empty → creates canonical manifest from stable arch tags" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/bg1_push_imagetools.log"
@@ -12901,7 +12901,7 @@ EOF
 # GREEN after fix: `_reuse_ref_is_multiarch` returns 1 → fall-through to
 # imagetools create.
 # ---------------------------------------------------------------------------
-@test "MG-nonresolver-singlearch-recreate: non-resolver ext with single-arch existing manifest → re-creates from per-arch legs" {
+@test "non-resolver ext with single-arch existing manifest → re-creates from per-arch legs" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/mg_imagetools.log"
@@ -13013,7 +13013,7 @@ EOF
 # MG helper unit tests: _reuse_ref_is_multiarch return codes.
 # ---------------------------------------------------------------------------
 
-@test "MG-helper-multiarch: _reuse_ref_is_multiarch returns 0 when both arches reported" {
+@test "_reuse_ref_is_multiarch returns 0 when both arches reported" {
     docker() {
         if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'inspect' ]]; then
             printf 'linux/amd64\nlinux/arm64\n'
@@ -13027,7 +13027,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "MG-helper-singlearch: _reuse_ref_is_multiarch returns 1 when only amd64 reported" {
+@test "_reuse_ref_is_multiarch returns 1 when only amd64 reported" {
     docker() {
         if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'inspect' ]]; then
             printf 'linux/amd64\n'
@@ -13041,7 +13041,7 @@ EOF
     [ "$status" -eq 1 ]
 }
 
-@test "MG-helper-inspect-error: _reuse_ref_is_multiarch returns 2 when inspect fails" {
+@test "_reuse_ref_is_multiarch returns 2 when inspect fails" {
     docker() {
         if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'inspect' ]]; then
             printf 'error: transient failure\n' >&2
@@ -13056,7 +13056,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BH-2a: FORCE=true + resolver-backed extension, all tags exist in registry
+# FORCE=true + resolver-backed extension, all tags exist in registry
 # → _should_build_extension must return 0 (needs build), NOT skip.
 # Before fix: the multi-version branch goes straight to presence checks and
 #   returns 1 (skip) when all arch tags exist, ignoring FORCE.
@@ -13064,7 +13064,7 @@ EOF
 #   (same as the single-version branch).
 # ---------------------------------------------------------------------------
 
-@test "BH2a-force-resolver-rebuilds: FORCE=true + resolver-backed ext, all tags exist → returns 0 (needs rebuild)" {
+@test "FORCE=true + resolver-backed ext, all tags exist → returns 0 (needs rebuild)" {
     # All versions present in registry.
     image_exists_in_registry() { return 0; }
     export -f image_exists_in_registry
@@ -13095,7 +13095,7 @@ EOF
     unset FORCE PR_TAG_SUFFIX ARCH_SUFFIX
 }
 
-@test "BH2a-noforce-resolver-skips: FORCE unset + resolver-backed ext, all tags exist → returns 1 (skip, regression)" {
+@test "FORCE unset + resolver-backed ext, all tags exist → returns 1 (skip, regression)" {
     # All versions present in registry — should skip when not forcing.
     image_exists_in_registry() { return 0; }
     export -f image_exists_in_registry
@@ -13126,7 +13126,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BH-2b: FORCE=true on a PR + canonical manifest exists for a resolver-backed
+# FORCE=true on a PR + canonical manifest exists for a resolver-backed
 # version → finalize_multiarch_manifests must NOT reuse canonical for it; it
 # must call imagetools create from the freshly-built PR-scoped arch tags.
 #
@@ -13137,7 +13137,7 @@ EOF
 #   always use the freshly-built scoped sources (PR-scoped arch tags). GREEN.
 # ---------------------------------------------------------------------------
 
-@test "BH2b-force-finalize-uses-fresh: FORCE=true on PR, canonical manifest exists → imagetools create from pr-scoped tags" {
+@test "FORCE=true on PR, canonical manifest exists → imagetools create from pr-scoped tags" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/bh2b_imagetools.log"
@@ -13255,7 +13255,7 @@ EOF
     unset FORCE PR_TAG_SUFFIX ARCH_SUFFIX
 }
 
-@test "BH2b-noforce-finalize-reuses-canonical: FORCE unset on PR, canonical manifest present → canonical reused, no imagetools create (BF regression)" {
+@test "FORCE unset on PR, canonical manifest present → canonical reused, no imagetools create (BF regression)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/bh2b_noforce_imagetools.log"
@@ -13371,7 +13371,7 @@ EOF
 # GREEN after fix: canonical-first probe → canonical absent → PR-scoped fallback →
 #   pr42 found → 2.25.0 included → confirmed=[2.25.0,2.27.1] → artifact written.
 # ---------------------------------------------------------------------------
-@test "BI2-pr-rerun-idempotent: PR rerun — version built in earlier run (pr42 only) stays available" {
+@test "PR rerun — version built in earlier run (pr42 only) stays available" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -13518,7 +13518,7 @@ EOF
 # Post-fix: digest capture uses _confirmed_refs[ver] (PR-scoped ref) →
 #   digest captured from pr42 ref → artifact written with valid version_digests.
 # ---------------------------------------------------------------------------
-@test "PR-scoped-digest-capture: canonical absent, pr42 only → digest from pr42 ref, artifact has version_digests" {
+@test "canonical absent, pr42 only → digest from pr42 ref, artifact has version_digests" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 

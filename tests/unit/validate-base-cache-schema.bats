@@ -7,33 +7,33 @@
 # A slash in source is valid for both styles (Docker Hub namespace).
 #
 # Rules tested:
-#   VBC-02: new-style source without slash → REJECT
-#   VBC-03: new-style source with registry prefix (dot/colon before first slash) → REJECT
-#   VBC-04: new-style source with tag (:) → REJECT
-#   VBC-05: new-style source with digest (@) → REJECT
-#   VBC-06: new-style source with uppercase letters → REJECT
-#   VBC-07: new-style source with empty path component (//) → REJECT
-#   VBC-08: REMOTE_CR in build_args → REJECT
-#   VBC-09: old-style entry with empty/absent arg → REJECT
-#   VBC-10: valid new-style (source: library/postgres, no ghcr_repo) → PASS
-#   VBC-11: valid old-style (ghcr_repo + arg present) → PASS
-#   VBC-11d: valid old-style with namespaced source (hashicorp/terraform) → PASS [regression lock]
-#   VBC-11e: valid new-style with non-library namespace (hashicorp/terraform) → PASS
-#   VBC-12: container dir name with slash → REJECT (defensive invariant)
-#   VBC-13: new-style source with leading slash (single segment /php) → PASS (chained-on-own marker)
-#   VBC-13b: new-style source with leading slash (multi-segment /library/postgres) → PASS
-#   VBC-13c: wordpress-real: source: /php → PASS (regression lock for #531)
-#   VBC-13d: source: /php/ (trailing slash after leading slash) → REJECT
-#   VBC-13e: source: //php (double slash) → REJECT
-#   VBC-14: new-style source with trailing slash → REJECT (empty path component)
-#   VBC-R7C-GLOB-01: build_args value with glob * → REJECT (R7c allowlist)
-#   VBC-R7C-GLOB-02: build_args value with glob ? → REJECT (R7c allowlist)
-#   VBC-R7C-BRACE-01: build_args value with brace expansion → REJECT (R7c allowlist)
-#   VBC-R7C-CMD-01: build_args value with $() command substitution → REJECT (R7c allowlist)
-#   VBC-R7C-CMD-02: build_args value with backtick substitution → REJECT (R7c allowlist)
-#   VBC-R7C-EMPTY-01: build_args value that is an empty string → REJECT (R7c allowlist)
-#   VBC-SRC-GLOB-01: new-style source with glob * → REJECT (R6d allowlist)
-#   VBC-SRC-GLOB-02: new-style source with glob ? → REJECT (R6d allowlist)
+#   new-style source without slash → REJECT
+#   new-style source with registry prefix (dot/colon before first slash) → REJECT
+#   new-style source with tag (:) → REJECT
+#   new-style source with digest (@) → REJECT
+#   new-style source with uppercase letters → REJECT
+#   new-style source with empty path component (//) → REJECT
+#   REMOTE_CR in build_args → REJECT
+#   old-style entry with empty/absent arg → REJECT
+#   valid new-style (source: library/postgres, no ghcr_repo) → PASS
+#   valid old-style (ghcr_repo + arg present) → PASS
+#   valid old-style with namespaced source (hashicorp/terraform) → PASS [regression lock]
+#   valid new-style with non-library namespace (hashicorp/terraform) → PASS
+#   container dir name with slash → REJECT (defensive invariant)
+#   new-style source with leading slash (single segment /php) → PASS (chained-on-own marker)
+#   new-style source with leading slash (multi-segment /library/postgres) → PASS
+#   wordpress-real: source: /php → PASS (regression lock for #531)
+#   source: /php/ (trailing slash after leading slash) → REJECT
+#   source: //php (double slash) → REJECT
+#   new-style source with trailing slash → REJECT (empty path component)
+#   build_args value with glob * → REJECT (R7c allowlist)
+#   build_args value with glob ? → REJECT (R7c allowlist)
+#   build_args value with brace expansion → REJECT (R7c allowlist)
+#   build_args value with $() command substitution → REJECT (R7c allowlist)
+#   build_args value with backtick substitution → REJECT (R7c allowlist)
+#   build_args value that is an empty string → REJECT (R7c allowlist)
+#   new-style source with glob * → REJECT (R6d allowlist)
+#   new-style source with glob ? → REJECT (R6d allowlist)
 
 setup() {
     TEST_DIR=$(mktemp -d)
@@ -60,7 +60,7 @@ make_container() {
 
 # ─── REJECT cases ─────────────────────────────────────────────────────────────
 
-@test "VBC-02: new-style source without slash → REJECT" {
+@test "new-style source without slash → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: postgres
@@ -72,7 +72,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-03: new-style source with registry prefix (docker.io/) → REJECT" {
+@test "new-style source with registry prefix (docker.io/) → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: docker.io/library/postgres
@@ -84,7 +84,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-03b: new-style source with ghcr.io registry prefix → REJECT" {
+@test "new-style source with ghcr.io registry prefix → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: ghcr.io/owner/image
@@ -96,7 +96,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-03c: new-style source with colon-port registry (localhost:5000/img) → REJECT" {
+@test "new-style source with colon-port registry (localhost:5000/img) → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: localhost:5000/myimage
@@ -108,7 +108,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-04: new-style source with tag colon → REJECT" {
+@test "new-style source with tag colon → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: library/postgres:16
@@ -120,7 +120,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-05: new-style source with digest @ → REJECT" {
+@test "new-style source with digest @ → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: library/postgres@sha256:abc123
@@ -132,7 +132,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-06: new-style source with uppercase letters → REJECT" {
+@test "new-style source with uppercase letters → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: Library/Postgres
@@ -144,7 +144,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-07: new-style source with empty path component (//) → REJECT" {
+@test "new-style source with empty path component (//) → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: library//postgres
@@ -156,7 +156,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-08: REMOTE_CR present in build_args → REJECT" {
+@test "REMOTE_CR present in build_args → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: library/postgres
@@ -175,7 +175,7 @@ EOF
 # The old code used `// "null"` value-check: `REMOTE_CR:` (YAML-null) returns the
 # string "null" via `// "null"` fallback and PASSED the check. Fixed by checking
 # key presence via `yq has("REMOTE_CR")` instead of checking the value.
-@test "VBC-08b: REMOTE_CR key with null value (REMOTE_CR:) → REJECT (FIX-3 regression lock)" {
+@test "REMOTE_CR key with null value (REMOTE_CR:) → REJECT (FIX-3 regression lock)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: library/postgres
@@ -190,8 +190,8 @@ EOF
     # Mutation guard: the old code would have returned 0 (passed) — must NOT be 0
 }
 
-# VBC-08c: REMOTE_CR key with explicit null literal → REJECT
-@test "VBC-08c: REMOTE_CR key with explicit YAML null → REJECT" {
+# REMOTE_CR key with explicit null literal → REJECT
+@test "REMOTE_CR key with explicit YAML null → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: library/postgres
@@ -205,7 +205,7 @@ EOF
     [[ "$output" =~ "REMOTE_CR" ]]
 }
 
-@test "VBC-09: old-style with empty arg → REJECT" {
+@test "old-style with empty arg → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: ""
@@ -219,7 +219,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-09b: old-style with absent arg → REJECT" {
+@test "old-style with absent arg → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: ubuntu
@@ -236,7 +236,7 @@ EOF
 # A value like "BASE_IMAGE --network host" passes the non-empty check but would
 # inject extra docker CLI tokens when expanded into CUSTOM_BUILD_ARGS. The fix
 # restricts arg to a valid Docker ARG identifier: ^[A-Za-z_][A-Za-z0-9_]*$.
-@test "VBC-09c: old-style arg with spaces (injection risk) → REJECT" {
+@test "old-style arg with spaces (injection risk) → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: "BASE_IMAGE --network host"
@@ -250,7 +250,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-09d: old-style arg with two words (FOO BAR) → REJECT" {
+@test "old-style arg with two words (FOO BAR) → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: "FOO BAR"
@@ -264,7 +264,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-09e: old-style arg with hyphen (not a valid identifier) → REJECT" {
+@test "old-style arg with hyphen (not a valid identifier) → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE-IMAGE
@@ -278,7 +278,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-09f: old-style arg BASE_IMAGE (valid identifier) → PASS (regression lock)" {
+@test "old-style arg BASE_IMAGE (valid identifier) → PASS (regression lock)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -291,7 +291,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-13: new-style source with leading slash (single segment /php) → PASS (chained-on-own marker)" {
+@test "new-style source with leading slash (single segment /php) → PASS (chained-on-own marker)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: /php
@@ -302,7 +302,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-13b: new-style source with leading slash (multi-segment /library/postgres) → PASS" {
+@test "new-style source with leading slash (multi-segment /library/postgres) → PASS" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: /library/postgres
@@ -313,7 +313,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-13c: wordpress real config — source: /php → PASS (regression lock #531)" {
+@test "wordpress real config — source: /php → PASS (regression lock #531)" {
     make_container "wordpress" "$(cat <<'EOF'
 base_image: "${REMOTE_CR}/php:${PHP_TAG}"
 base_image_cache:
@@ -327,7 +327,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-13d: new-style source with trailing slash after leading slash (/php/) → REJECT" {
+@test "new-style source with trailing slash after leading slash (/php/) → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: /php/
@@ -339,7 +339,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-13e: new-style source with double slash (//php) → REJECT" {
+@test "new-style source with double slash (//php) → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: //php
@@ -351,7 +351,7 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-@test "VBC-14: new-style source with trailing slash → REJECT" {
+@test "new-style source with trailing slash → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: library/postgres/
@@ -365,7 +365,7 @@ EOF
 
 # ─── PASS cases ───────────────────────────────────────────────────────────────
 
-@test "VBC-10: valid new-style (source: library/postgres, no ghcr_repo) → PASS" {
+@test "valid new-style (source: library/postgres, no ghcr_repo) → PASS" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: library/postgres
@@ -376,7 +376,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-11: valid old-style (ghcr_repo + arg present) → PASS" {
+@test "valid old-style (ghcr_repo + arg present) → PASS" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -389,7 +389,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-11b: valid old-style multiple entries → PASS" {
+@test "valid old-style multiple entries → PASS" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -406,7 +406,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-11c: no base_image_cache section → PASS (no entries to validate)" {
+@test "no base_image_cache section → PASS (no entries to validate)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   FOO: bar
@@ -416,7 +416,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-11d: valid old-style with namespaced source (regression lock — hashicorp/terraform pattern) → PASS" {
+@test "valid old-style with namespaced source (regression lock — hashicorp/terraform pattern) → PASS" {
     # Regression lock: old-style entries (ghcr_repo set) may have a slash in source
     # because Docker Hub uses namespace/image paths (e.g. hashicorp/terraform).
     # The discriminator is BINARY — ghcr_repo present => old-style, full stop.
@@ -434,7 +434,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-11e: valid new-style with non-library namespace (hashicorp/terraform, no ghcr_repo) → PASS" {
+@test "valid new-style with non-library namespace (hashicorp/terraform, no ghcr_repo) → PASS" {
     # Guards against future R3 tightening that might mistakenly reject 2-segment
     # paths that are not under the 'library/' namespace.
     make_container "myapp" "$(cat <<'EOF'
@@ -447,7 +447,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-12: defensive — container dir name with slash would be invalid (path check)" {
+@test "defensive — container dir name with slash would be invalid (path check)" {
     # Container names are directory names on disk — they cannot contain /
     # This is a repo invariant. We verify the guard is consistent:
     # a container with a path traversal dir name cannot be created normally.
@@ -459,7 +459,7 @@ EOF
 
 # ─── Multi-container scan ─────────────────────────────────────────────────────
 
-@test "VBC-SCAN-01: validate_all_containers_base_cache_schema — all valid → exit 0" {
+@test "validate_all_containers_base_cache_schema — all valid → exit 0" {
     make_container "c1" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -478,7 +478,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-SCAN-02: validate_all_containers_base_cache_schema — one invalid → exit non-zero" {
+@test "validate_all_containers_base_cache_schema — one invalid → exit non-zero" {
     make_container "good" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -505,7 +505,7 @@ EOF
 # return non-zero. Previously a yq command substitution error returned "" + exit-0
 # from the subshell, causing the outer variable to be "" which the guard treated as
 # "no REMOTE_CR" → silent pass. Fixed by checking yq exit status explicitly.
-@test "VBC-FC-01: malformed config.yaml (yq parse error) → REJECT (fail-closed lock)" {
+@test "malformed config.yaml (yq parse error) → REJECT (fail-closed lock)" {
     mkdir -p badyaml
     # Deliberately malformed YAML — yq will error on this
     printf 'build_args: { REMOTE_CR: [unclosed\n' > badyaml/config.yaml
@@ -513,14 +513,14 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-# VBC-FC-02: yq missing from PATH → validation failure (not pass)
+# yq missing from PATH → validation failure (not pass)
 # Tests the command-v guard at the top of validate_container_base_cache_schema.
 # ─── FIX 1: build_args key/value injection (R7b, R7c) ────────────────────────
 
-# VBC-R7B-01: crafted key with spaces + injected --build-arg → REJECT
+# crafted key with spaces + injected --build-arg → REJECT
 # The gate finding: `"X --build-arg REMOTE_CR": value` would be expanded unquoted
 # into docker flags, bypassing the REMOTE_CR key check.
-@test "VBC-R7B-01: build_args key with spaces (injection vector) → REJECT" {
+@test "build_args key with spaces (injection vector) → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   "X --build-arg REMOTE_CR": "ghcr.io/attacker"
@@ -531,8 +531,8 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-# VBC-R7B-02: key with hyphen (not a valid ARG identifier) → REJECT
-@test "VBC-R7B-02: build_args key with hyphen → REJECT" {
+# key with hyphen (not a valid ARG identifier) → REJECT
+@test "build_args key with hyphen → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   INVALID-KEY: "somevalue"
@@ -543,8 +543,8 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-# VBC-R7C-01: value containing a space (flag injection) → REJECT
-@test "VBC-R7C-01: build_args value with embedded space (flag injection) → REJECT" {
+# value containing a space (flag injection) → REJECT
+@test "build_args value with embedded space (flag injection) → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "foo --network host"
@@ -555,14 +555,14 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-# VBC-R7C-02: value containing embedded newlines → REJECT (newline injection class)
+# value containing embedded newlines → REJECT (newline injection class)
 # ROOT CAUSE: a line-by-line yq read splits "ubuntu\n--build-arg\nREMOTE_CR=x" into
 # three separate lines (each clean) — the old loop passed this. The JSON-based check
 # reads the whole value atomically; \s in jq regex catches newlines before any split.
 # YAML double-quoted strings interpret \n as a literal newline character, so the
 # fixture below produces a value with actual embedded newlines that a shell would
 # word-split into separate docker CLI tokens when expanded unquoted.
-@test "VBC-R7C-02: build_args value with embedded newlines (newline injection) → REJECT" {
+@test "build_args value with embedded newlines (newline injection) → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "ubuntu\n--build-arg\nREMOTE_CR=ghcr.io/attacker"
@@ -578,7 +578,7 @@ EOF
 # VBC-R7C-GLOB-01 (RED→GREEN): value with glob * → REJECT
 # "ubuntu*" passes the whitespace check but glob-expands when unquoted in a shell.
 # The positive allowlist ^[A-Za-z0-9._/:@+=-]+$ has no *, so it rejects this.
-@test "VBC-R7C-GLOB-01: build_args value with glob asterisk → REJECT (R7c allowlist)" {
+@test "build_args value with glob asterisk → REJECT (R7c allowlist)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "*"
@@ -590,7 +590,7 @@ EOF
 }
 
 # VBC-R7C-GLOB-02 (RED→GREEN): value with glob ? → REJECT
-@test "VBC-R7C-GLOB-02: build_args value with glob question mark → REJECT (R7c allowlist)" {
+@test "build_args value with glob question mark → REJECT (R7c allowlist)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "a?b"
@@ -603,7 +603,7 @@ EOF
 
 # VBC-R7C-BRACE-01 (RED→GREEN): value with brace expansion → REJECT
 # "a{b,c}" passes whitespace check; in an unquoted shell context it expands to "ab ac".
-@test "VBC-R7C-BRACE-01: build_args value with brace expansion → REJECT (R7c allowlist)" {
+@test "build_args value with brace expansion → REJECT (R7c allowlist)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "a{b,c}"
@@ -616,7 +616,7 @@ EOF
 
 # VBC-R7C-CMD-01 (RED→GREEN): value with $() command substitution → REJECT
 # $(id) passes whitespace check; shell would execute id when expanded unquoted.
-@test "VBC-R7C-CMD-01: build_args value with dollar-paren command substitution → REJECT (R7c allowlist)" {
+@test "build_args value with dollar-paren command substitution → REJECT (R7c allowlist)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "$(id)"
@@ -628,7 +628,7 @@ EOF
 }
 
 # VBC-R7C-CMD-02 (RED→GREEN): value with backtick substitution → REJECT
-@test "VBC-R7C-CMD-02: build_args value with backtick command substitution → REJECT (R7c allowlist)" {
+@test "build_args value with backtick command substitution → REJECT (R7c allowlist)" {
     # shellcheck disable=SC2016
     make_container "myapp" 'build_args:
   BASE_IMAGE: "`id`"
@@ -641,7 +641,7 @@ EOF
 # VBC-R7C-EMPTY-01 (RED→GREEN): value that is an empty string → REJECT
 # An empty build_arg value is unusual and semantically void; reject to avoid
 # silent misconfigurations that produce --build-arg KEY= (empty injection).
-@test "VBC-R7C-EMPTY-01: build_args value that is an empty string → REJECT (R7c allowlist)" {
+@test "build_args value that is an empty string → REJECT (R7c allowlist)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: ""
@@ -652,8 +652,8 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-# VBC-R7B-PASS: valid identifier keys (php real config pattern) → PASS
-@test "VBC-R7B-PASS: multiple valid ARG identifier keys (php pattern) → PASS" {
+# valid identifier keys (php real config pattern) → PASS
+@test "multiple valid ARG identifier keys (php pattern) → PASS" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "php"
@@ -666,8 +666,8 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-# VBC-R7C-PASS: value with colon+slash (docker image ref, no whitespace) → PASS
-@test "VBC-R7C-PASS: build_args value with colon and slash (image ref) → PASS" {
+# value with colon+slash (docker image ref, no whitespace) → PASS
+@test "build_args value with colon and slash (image ref) → PASS" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   WORDPRESS_IMAGE: "ghcr.io/oorabona/php:latest"
@@ -677,7 +677,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-FC-02: yq not in PATH → REJECT (fail-closed lock)" {
+@test "yq not in PATH → REJECT (fail-closed lock)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: library/postgres
@@ -708,11 +708,11 @@ EOF
     [[ "$output" =~ "yq" ]]
 }
 
-# VBC-FC-03: jq required — guard emits clear error and rejects when jq unavailable
+# jq required — guard emits clear error and rejects when jq unavailable
 # PATH isolation for jq is not feasible when jq lives in /bin (always in PATH).
 # Instead we verify the guard via function override: replace jq with a stub that
 # returns 127 (command-not-found exit code) to exercise the command -v branch.
-@test "VBC-FC-03: jq unavailable (stub) → REJECT (fail-closed lock)" {
+@test "jq unavailable (stub) → REJECT (fail-closed lock)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "ubuntu"
@@ -730,10 +730,10 @@ EOF
 
 # ─── FIX 2: source whitespace / non-scalar checks ─────────────────────────────
 
-# VBC-SRC-WS-01: source containing a space → REJECT
+# source containing a space → REJECT
 # "library/postgres bad" passes all prior format rules (has slash, no colon, lowercase,
 # no empty component) but the embedded space would break cache probing / imagetools refs.
-@test "VBC-SRC-WS-01: new-style source with embedded space → REJECT" {
+@test "new-style source with embedded space → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: "library/postgres bad"
@@ -745,17 +745,17 @@ EOF
     [[ "$output" =~ "whitespace" ]] || [[ "$output" =~ "source" ]]
 }
 
-# VBC-SRC-WS-02: source containing a tab → REJECT
-@test "VBC-SRC-WS-02: new-style source with embedded tab → REJECT" {
+# source containing a tab → REJECT
+@test "new-style source with embedded tab → REJECT" {
     make_container "myapp" "$(printf 'base_image_cache:\n  - source: "library/postgres\teval"\n    tags: ["latest"]\n')"
     run validate_container_base_cache_schema "myapp"
     [ "$status" -ne 0 ]
 }
 
-# VBC-SRC-NS-01: non-scalar source (object/mapping) → REJECT
+# non-scalar source (object/mapping) → REJECT
 # yq emits the object as a non-string representation; the guard must detect
 # and reject it rather than treating the stringified object as a source path.
-@test "VBC-SRC-NS-01: new-style source that is an object (non-scalar) → REJECT" {
+@test "new-style source that is an object (non-scalar) → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source:
@@ -767,8 +767,8 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-# VBC-SRC-NS-02: null source → REJECT (null is non-scalar string, unusable as image ref)
-@test "VBC-SRC-NS-02: new-style source is null → REJECT" {
+# null source → REJECT (null is non-scalar string, unusable as image ref)
+@test "new-style source is null → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - tags: ["latest"]
@@ -783,7 +783,7 @@ EOF
 # VBC-SRC-GLOB-01 (RED→GREEN): source with glob * → REJECT (R6d allowlist)
 # "lib*/postgres" passes the whitespace and uppercase checks but glob-expands
 # when used unquoted in a shell imagetools/skopeo reference.
-@test "VBC-SRC-GLOB-01: new-style source with glob asterisk → REJECT (R6d allowlist)" {
+@test "new-style source with glob asterisk → REJECT (R6d allowlist)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: "lib*/postgres"
@@ -796,7 +796,7 @@ EOF
 }
 
 # VBC-SRC-GLOB-02 (RED→GREEN): source with glob ? → REJECT (R6d allowlist)
-@test "VBC-SRC-GLOB-02: new-style source with glob question mark → REJECT (R6d allowlist)" {
+@test "new-style source with glob question mark → REJECT (R6d allowlist)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: "library/postgr?s"
@@ -809,7 +809,7 @@ EOF
 }
 
 # VBC-SRC-PASS: valid whitespace-free scalar source → PASS (regression lock)
-@test "VBC-SRC-PASS: clean source library/postgres (whitespace-free scalar) → PASS" {
+@test "clean source library/postgres (whitespace-free scalar) → PASS" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: library/postgres
@@ -820,10 +820,10 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-# VBC-BA-NS-01: build_args value that is an object → REJECT (FIX 2: non-scalar value)
+# build_args value that is an object → REJECT (FIX 2: non-scalar value)
 # tostring on an object emits '{"foo":"bar"}' which may or may not contain \s,
 # but `type == "object"` is always a non-scalar that should be rejected explicitly.
-@test "VBC-BA-NS-01: build_args value that is an object → REJECT (non-scalar)" {
+@test "build_args value that is an object → REJECT (non-scalar)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE:
@@ -835,8 +835,8 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
-# VBC-BA-NS-02: build_args value that is an array → REJECT (non-scalar)
-@test "VBC-BA-NS-02: build_args value that is an array → REJECT (non-scalar)" {
+# build_args value that is an array → REJECT (non-scalar)
+@test "build_args value that is an array → REJECT (non-scalar)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE:
@@ -850,7 +850,7 @@ EOF
 }
 
 # VBC-BA-NS-PASS: numeric value (valid scalar, type==number) → PASS
-@test "VBC-BA-NS-PASS: build_args value that is a number (scalar) → PASS" {
+@test "build_args value that is a number (scalar) → PASS" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   NPROC: 4
@@ -866,7 +866,7 @@ EOF
 # The injection: "ubuntu-base --network host" would expand to:
 #   --build-arg BASE_IMAGE=ghcr.io/owner/ubuntu-base --network host
 # injecting extra docker CLI flags.
-@test "VBC-R9-01: old-style ghcr_repo with space+flag (injection) → REJECT (R9)" {
+@test "old-style ghcr_repo with space+flag (injection) → REJECT (R9)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -881,8 +881,8 @@ EOF
     [[ "$output" =~ "ghcr_repo" ]]
 }
 
-# VBC-R9-02: ghcr_repo with embedded semicolon → REJECT
-@test "VBC-R9-02: old-style ghcr_repo with semicolon → REJECT (R9)" {
+# ghcr_repo with embedded semicolon → REJECT
+@test "old-style ghcr_repo with semicolon → REJECT (R9)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -896,8 +896,8 @@ EOF
     [[ "$output" =~ "ghcr_repo" ]]
 }
 
-# VBC-R9-03: ghcr_repo with $ (parameter expansion attempt) → REJECT
-@test "VBC-R9-03: old-style ghcr_repo with dollar sign → REJECT (R9)" {
+# ghcr_repo with $ (parameter expansion attempt) → REJECT
+@test "old-style ghcr_repo with dollar sign → REJECT (R9)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -911,8 +911,8 @@ EOF
     [[ "$output" =~ "ghcr_repo" ]]
 }
 
-# VBC-R9-PASS-01: valid ghcr_repo names (all current containers) → PASS
-@test "VBC-R9-PASS-01: valid old-style ghcr_repo names (ubuntu-base, ruby-base, etc.) → PASS" {
+# valid ghcr_repo names (all current containers) → PASS
+@test "valid old-style ghcr_repo names (ubuntu-base, ruby-base, etc.) → PASS" {
     # Regression lock: all current container ghcr_repo values must pass
     for repo in ubuntu-base ruby-base php-base composer-base alpine-base rocky-base debian-base terraform-base postgres-base python-base; do
         make_container "app-${repo}" "$(cat <<EOF
@@ -931,8 +931,8 @@ EOF
     done
 }
 
-# VBC-R9-PASS-02: valid ghcr_repo with slash (org/repo) → PASS
-@test "VBC-R9-PASS-02: old-style ghcr_repo with slash (org/repo) → PASS (R9 allows slash)" {
+# valid ghcr_repo with slash (org/repo) → PASS
+@test "old-style ghcr_repo with slash (org/repo) → PASS (R9 allows slash)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -951,7 +951,7 @@ EOF
 # "18 --network host" has no injection path in the current CI (values are
 # double-quoted), but the value is still syntactically invalid as an OCI tag
 # and is rejected to close the class entirely.
-@test "VBC-R10-01: tags value with embedded space → REJECT (R10)" {
+@test "tags value with embedded space → REJECT (R10)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -965,8 +965,8 @@ EOF
     [[ "$output" =~ "tags" ]]
 }
 
-# VBC-R10-02: tag with semicolon → REJECT
-@test "VBC-R10-02: tags value with semicolon → REJECT (R10)" {
+# tag with semicolon → REJECT
+@test "tags value with semicolon → REJECT (R10)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -980,8 +980,8 @@ EOF
     [[ "$output" =~ "tags" ]]
 }
 
-# VBC-R10-03: tag with bare $ (not a valid ${IDENT} placeholder) → REJECT
-@test "VBC-R10-03: tags value with bare dollar sign (not a valid placeholder) → REJECT (R10)" {
+# tag with bare $ (not a valid ${IDENT} placeholder) → REJECT
+@test "tags value with bare dollar sign (not a valid placeholder) → REJECT (R10)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -995,8 +995,8 @@ EOF
     [[ "$output" =~ "tags" ]]
 }
 
-# VBC-R10-04: tag with new-style entry → REJECT propagates via new-style path too
-@test "VBC-R10-04: new-style entry tags value with injection chars → REJECT (R10)" {
+# tag with new-style entry → REJECT propagates via new-style path too
+@test "new-style entry tags value with injection chars → REJECT (R10)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: library/postgres
@@ -1008,8 +1008,8 @@ EOF
     [[ "$output" =~ "tags" ]]
 }
 
-# VBC-R10-PASS-01: literal tags → PASS (regression lock)
-@test "VBC-R10-PASS-01: literal tags (latest, 18-alpine, 3.21, noble, 9) → PASS" {
+# literal tags → PASS (regression lock)
+@test "literal tags (latest, 18-alpine, 3.21, noble, 9) → PASS" {
     for tag in latest 18-alpine 3.21 noble 9 24.04 3.12-alpine; do
         make_container "app-tag-$(echo "$tag" | tr '.' '-')" "$(cat <<EOF
 base_image_cache:
@@ -1027,8 +1027,8 @@ EOF
     done
 }
 
-# VBC-R10-PASS-02: ${VERSION} placeholder → PASS
-@test "VBC-R10-PASS-02: tags with \${VERSION} placeholder → PASS (R10 template allowlist)" {
+# ${VERSION} placeholder → PASS
+@test "tags with \${VERSION} placeholder → PASS (R10 template allowlist)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -1045,7 +1045,7 @@ EOF
 # "ruby-base" with tags: ["${RUBY_VERSION}-alpine${ALPINE_VERSION}"] is the
 # real jekyll config. This MUST pass — the composite template mixes literal
 # text ("-alpine") with two ${IDENT} placeholders.
-@test "VBC-R10-PASS-03: jekyll composite template tag \${RUBY_VERSION}-alpine\${ALPINE_VERSION} → PASS (regression lock)" {
+@test "jekyll composite template tag \${RUBY_VERSION}-alpine\${ALPINE_VERSION} → PASS (regression lock)" {
     make_container "jekyll" "$(cat <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -1058,8 +1058,8 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-# VBC-R10-PASS-04: ${UPSTREAM_VERSION} placeholder (terraform pattern) → PASS
-@test "VBC-R10-PASS-04: tags with \${UPSTREAM_VERSION} placeholder → PASS (terraform pattern)" {
+# ${UPSTREAM_VERSION} placeholder (terraform pattern) → PASS
+@test "tags with \${UPSTREAM_VERSION} placeholder → PASS (terraform pattern)" {
     make_container "terraform" "$(cat <<'EOF'
 base_image_cache:
   - arg: TERRAFORM_BASE
@@ -1080,8 +1080,8 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-# VBC-R10-PASS-05: tags_from_versions=true (no tags[] to validate) → PASS
-@test "VBC-R10-PASS-05: tags_from_versions=true entries skip tag validation → PASS" {
+# tags_from_versions=true (no tags[] to validate) → PASS
+@test "tags_from_versions=true entries skip tag validation → PASS" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: library/postgres

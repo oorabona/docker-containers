@@ -2,23 +2,23 @@
 # Unit tests for scripts/generate-bake-hcl.sh — ADR-013 R2+R3 slice
 #
 # Mutation guards (named per test, see "catches mutation" comments):
-#   MG1: Remove contexts wiring → consumer targets lose "contexts" key
-#   MG2: Emit docker.io / :latest rolling tag → generator produces non-intermediate refs
-#   MG3: Remove _vbc_validate_build_args_config call → REMOTE_CR build_arg accepted
-#   MG4: Skip template expansion → template cells emit dockerfile path, not dockerfile-inline
-#   MG5: Remove NPROC injection → sslh/openvpn targets lose NPROC arg
-#   MG6: Emit NPROC for non-NPROC container → debian target gains spurious NPROC arg
-#   MG7: Omit NPROC bake variable from document header → bake fails to resolve ${NPROC}
-#   MG8: --cells emits bake document instead of array → type check fails
-#   MG9: intermediate_ref includes ${ARCH_SUFFIX} → merge consumer would double-suffix sources
-#   MG10: Cell set for --cells differs from bake mode → plan drift between generator and merge job
-#   MG11: Allow unflagged extension containers into bake graph -> extension sub-pipeline conflict (F1)
-#   MG12: Omit is_latest_version from --cells output → merge job cannot gate rolling tags (F2)
-#   MG13: Remove absolute-path guard in _resolve_cell_base_ref → doubled path → empty contexts (F3)
-#   MG14: Hardcode include_all_retained=true → default mode emits retained versions (F4)
-#   MG15: --cells iterates full closure → dep container appears in merge publish-set (FIX D)
-#   MG16: --cells uses flavor instead of variant → github-runner cells share rolling alias (FIX F)
-#   MG17: bake_latest_only flag ignored → retained github-runner versions enter bake (security bug)
+#   Remove contexts wiring → consumer targets lose "contexts" key
+#   Emit docker.io / :latest rolling tag → generator produces non-intermediate refs
+#   Remove _vbc_validate_build_args_config call → REMOTE_CR build_arg accepted
+#   Skip template expansion → template cells emit dockerfile path, not dockerfile-inline
+#   Remove NPROC injection → sslh/openvpn targets lose NPROC arg
+#   Emit NPROC for non-NPROC container → debian target gains spurious NPROC arg
+#   Omit NPROC bake variable from document header → bake fails to resolve ${NPROC}
+#   --cells emits bake document instead of array → type check fails
+#   intermediate_ref includes ${ARCH_SUFFIX} → merge consumer would double-suffix sources
+#   Cell set for --cells differs from bake mode → plan drift between generator and merge job
+#   Allow unflagged extension containers into bake graph -> extension sub-pipeline conflict (F1)
+#   Omit is_latest_version from --cells output → merge job cannot gate rolling tags (F2)
+#   Remove absolute-path guard in _resolve_cell_base_ref → doubled path → empty contexts (F3)
+#   Hardcode include_all_retained=true → default mode emits retained versions (F4)
+#   --cells iterates full closure → dep container appears in merge publish-set (FIX D)
+#   --cells uses flavor instead of variant → github-runner cells share rolling alias (FIX F)
+#   bake_latest_only flag ignored → retained github-runner versions enter bake (security bug)
 
 load "../test_helper"
 
@@ -67,10 +67,10 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-01: Valid bake JSON structure
+# Valid bake JSON structure
 # Catches: any top-level key missing (MG7 partial — NPROC variable absent)
 # ---------------------------------------------------------------------------
-@test "GBH-01: generator produces valid JSON with variable/target/group keys for debian" {
+@test "generator produces valid JSON with variable/target/group keys for debian" {
     _run_generator debian
     [ "$status" -eq 0 ]
     # Must be valid JSON
@@ -82,10 +82,10 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-02: group.default.targets lists requested containers
+# group.default.targets lists requested containers
 # Catches: default group wiring bug
 # ---------------------------------------------------------------------------
-@test "GBH-02: group.default.targets includes at least one target for requested container" {
+@test "group.default.targets includes at least one target for requested container" {
     _run_generator debian
     [ "$status" -eq 0 ]
     local cnt
@@ -94,10 +94,10 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-03: NPROC bake variable declared in document header (DEFECT 3 / MG7)
+# NPROC bake variable declared in document header (DEFECT 3 / MG7)
 # Catches: NPROC variable missing → bake cannot resolve ${NPROC} in targets
 # ---------------------------------------------------------------------------
-@test "GBH-03: document header declares NPROC bake variable with default 1" {
+@test "document header declares NPROC bake variable with default 1" {
     _run_generator sslh
     [ "$status" -eq 0 ]
     local nproc_default
@@ -106,10 +106,10 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-04: NPROC injected into sslh target args (DEFECT 3 / MG5)
+# NPROC injected into sslh target args (DEFECT 3 / MG5)
 # Catches: NPROC omitted → sslh build fails with "required variable not set"
 # ---------------------------------------------------------------------------
-@test "GBH-04: sslh target args contains NPROC bake-variable reference" {
+@test "sslh target args contains NPROC bake-variable reference" {
     _run_generator sslh
     [ "$status" -eq 0 ]
     # At least one sslh target must have NPROC in args
@@ -125,9 +125,9 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-05: NPROC injected into openvpn target args (DEFECT 3 / MG5)
+# NPROC injected into openvpn target args (DEFECT 3 / MG5)
 # ---------------------------------------------------------------------------
-@test "GBH-05: openvpn target args contains NPROC bake-variable reference" {
+@test "openvpn target args contains NPROC bake-variable reference" {
     _run_generator openvpn
     [ "$status" -eq 0 ]
     local nproc_vals
@@ -141,10 +141,10 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-06: NPROC NOT injected into debian target args (DEFECT 3 / MG6)
+# NPROC NOT injected into debian target args (DEFECT 3 / MG6)
 # Catches: spurious NPROC injection → Docker "unused build-arg" warning
 # ---------------------------------------------------------------------------
-@test "GBH-06: debian target args does NOT contain NPROC (no ARG NPROC in Dockerfile)" {
+@test "debian target args does NOT contain NPROC (no ARG NPROC in Dockerfile)" {
     _run_generator debian
     [ "$status" -eq 0 ]
     local nproc_vals
@@ -159,11 +159,11 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-07: Intermediate-only tags — no docker.io or :latest rolling tags (MG2)
+# Intermediate-only tags — no docker.io or :latest rolling tags (MG2)
 # Catches: generator emitting non-intermediate refs; the R3 merge job handles
 # rolling/latest tags, not the generator.
 # ---------------------------------------------------------------------------
-@test "GBH-07: all target tags are GHCR intermediate-only (no docker.io, no :latest without ARCH_SUFFIX)" {
+@test "all target tags are GHCR intermediate-only (no docker.io, no :latest without ARCH_SUFFIX)" {
     _run_generator debian
     [ "$status" -eq 0 ]
     # No docker.io refs
@@ -187,10 +187,10 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-08: Tag shape — intermediate ref format (DEFECT 4 guard, per spec)
+# Tag shape — intermediate ref format (DEFECT 4 guard, per spec)
 # Each target has exactly one tag of the form ${REMOTE_CR}/<c>:<tag>${ARCH_SUFFIX}
 # ---------------------------------------------------------------------------
-@test "GBH-08: each target has exactly one tag in intermediate-ref format for sslh" {
+@test "each target has exactly one tag in intermediate-ref format for sslh" {
     _run_generator sslh
     [ "$status" -eq 0 ]
     # Every target has exactly 1 tag
@@ -209,10 +209,10 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-09: DAG / contexts wiring — github-runner debian-trixie cell references
+# DAG / contexts wiring — github-runner debian-trixie cell references
 # the debian target via contexts, and debian target is present in closure (MG1)
 # ---------------------------------------------------------------------------
-@test "GBH-09: github-runner + debian closure includes debian target and consumer has contexts" {
+@test "github-runner + debian closure includes debian target and consumer has contexts" {
     _run_generator github-runner debian
     [ "$status" -eq 0 ]
 
@@ -234,10 +234,10 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-10: web-shell closure — web-shell debian cell contexts points at
+# web-shell closure — web-shell debian cell contexts points at
 # the debian dep target (MG1)
 # ---------------------------------------------------------------------------
-@test "GBH-10: web-shell debian variant contexts points at debian target" {
+@test "web-shell debian variant contexts points at debian target" {
     _run_generator web-shell
     [ "$status" -eq 0 ]
 
@@ -254,10 +254,10 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-11: Template expansion — github-runner targets emit dockerfile-inline,
+# Template expansion — github-runner targets emit dockerfile-inline,
 # NOT a dockerfile path, and content has no @@ markers (DEFECT 2 / MG4)
 # ---------------------------------------------------------------------------
-@test "GBH-11: github-runner linux targets use dockerfile-inline with no @@ markers" {
+@test "github-runner linux targets use dockerfile-inline with no @@ markers" {
     _run_generator github-runner debian
     [ "$status" -eq 0 ]
 
@@ -293,10 +293,10 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-12: Template expansion — github-runner inline content has a real FROM
+# Template expansion — github-runner inline content has a real FROM
 # (DEFECT 2 — without expansion, the template FROM line wouldn't exist) (MG4)
 # ---------------------------------------------------------------------------
-@test "GBH-12: github-runner dockerfile-inline contains a real FROM instruction" {
+@test "github-runner dockerfile-inline contains a real FROM instruction" {
     _run_generator github-runner debian
     [ "$status" -eq 0 ]
 
@@ -312,9 +312,9 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-13: Template expansion — web-shell targets emit dockerfile-inline (MG4)
+# Template expansion — web-shell targets emit dockerfile-inline (MG4)
 # ---------------------------------------------------------------------------
-@test "GBH-13: web-shell targets use dockerfile-inline with no @@ markers" {
+@test "web-shell targets use dockerfile-inline with no @@ markers" {
     _run_generator web-shell
     [ "$status" -eq 0 ]
 
@@ -340,14 +340,14 @@ _make_timescaledb_lineage_root() {
 }
 
 # ---------------------------------------------------------------------------
-# GBH-14: Validation fail-closed — REMOTE_CR in config.yaml build_args causes
+# Validation fail-closed — REMOTE_CR in config.yaml build_args causes
 # non-zero exit when _vbc_validate_build_args_config is called (DEFECT 1 / MG3)
 #
 # Tests the validator directly (same function called by _config_build_args).
 # Catches: removing the _vbc_validate_build_args_config call from _config_build_args
 # would allow REMOTE_CR build_args to pass through unchecked.
 # ---------------------------------------------------------------------------
-@test "GBH-14: _vbc_validate_build_args_config rejects REMOTE_CR key in build_args" {
+@test "_vbc_validate_build_args_config rejects REMOTE_CR key in build_args" {
     local tmpdir
     tmpdir=$(mktemp -d)
 
@@ -373,9 +373,9 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-15: Validation fail-closed — shell-unsafe value rejected (DEFECT 1)
+# Validation fail-closed — shell-unsafe value rejected (DEFECT 1)
 # ---------------------------------------------------------------------------
-@test "GBH-15: _vbc_validate_build_args_config rejects shell-unsafe value in build_args" {
+@test "_vbc_validate_build_args_config rejects shell-unsafe value in build_args" {
     local tmpdir
     tmpdir=$(mktemp -d)
 
@@ -397,9 +397,9 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-16: Windows cells filtered — no windows/amd64 platform in output
+# Windows cells filtered — no windows/amd64 platform in output
 # ---------------------------------------------------------------------------
-@test "GBH-16: no windows platform targets emitted for github-runner" {
+@test "no windows platform targets emitted for github-runner" {
     _run_generator github-runner debian
     [ "$status" -eq 0 ]
 
@@ -412,11 +412,11 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-17: FIX O — REMOTE_CR must NOT be a bake variable; ARCH_SUFFIX and NPROC must be.
+# FIX O — REMOTE_CR must NOT be a bake variable; ARCH_SUFFIX and NPROC must be.
 # REMOTE_CR is now resolved concretely at generation time from the env so that
 # args.REMOTE_CR and contexts keys always match (no bake-time divergence risk).
 # ---------------------------------------------------------------------------
-@test "GBH-17: document header has NO variable.REMOTE_CR; ARCH_SUFFIX and NPROC are declared" {
+@test "document header has NO variable.REMOTE_CR; ARCH_SUFFIX and NPROC are declared" {
     _run_generator debian
     [ "$status" -eq 0 ]
     # REMOTE_CR must NOT be a bake variable (concrete, not overridable at bake time)
@@ -429,9 +429,9 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-18: Non-template container (debian) uses dockerfile path, not inline
+# Non-template container (debian) uses dockerfile path, not inline
 # ---------------------------------------------------------------------------
-@test "GBH-18: debian target uses dockerfile key (not dockerfile-inline)" {
+@test "debian target uses dockerfile key (not dockerfile-inline)" {
     _run_generator debian
     [ "$status" -eq 0 ]
 
@@ -454,9 +454,9 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-19: Multiple containers requested — all appear in group.default.targets
+# Multiple containers requested — all appear in group.default.targets
 # ---------------------------------------------------------------------------
-@test "GBH-19: requesting web-shell github-runner debian puts all three in default group" {
+@test "requesting web-shell github-runner debian puts all three in default group" {
     _run_generator web-shell github-runner debian
     [ "$status" -eq 0 ]
 
@@ -474,9 +474,9 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-20: --cells mode emits a JSON array (MG8)
+# --cells mode emits a JSON array (MG8)
 # ---------------------------------------------------------------------------
-@test "GBH-20: --cells mode emits a JSON array" {
+@test "--cells mode emits a JSON array" {
     _run_generator --cells debian
     [ "$status" -eq 0 ]
     local type
@@ -485,9 +485,9 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-21: --cells objects have the 5 required fields (MG8)
+# --cells objects have the 5 required fields (MG8)
 # ---------------------------------------------------------------------------
-@test "GBH-21: --cells objects have container/tag/flavor/is_default/intermediate_ref" {
+@test "--cells objects have container/tag/flavor/is_default/intermediate_ref" {
     _run_generator --cells debian
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq 'length')" -gt 0 ]
@@ -504,10 +504,10 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-22: FIX O — intermediate_ref is CONCRETE (ghcr.io/oorabona/…), no ${REMOTE_CR} token,
+# FIX O — intermediate_ref is CONCRETE (ghcr.io/oorabona/…), no ${REMOTE_CR} token,
 # and has NO ${ARCH_SUFFIX} either. (MG9 updated)
 # ---------------------------------------------------------------------------
-@test "GBH-22: --cells intermediate_ref is concrete ghcr.io ref with no bake-variable tokens" {
+@test "--cells intermediate_ref is concrete ghcr.io ref with no bake-variable tokens" {
     _run_generator --cells debian
     [ "$status" -eq 0 ]
 
@@ -537,13 +537,13 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-23: --cells cell set for web-shell matches bake-mode target set (MG10)
+# --cells cell set for web-shell matches bake-mode target set (MG10)
 # Cell parity: every --cells entry must correspond to a bake target for the
 # same container+tag, and vice versa (same cardinality).
 # Both modes use the same default (latest-only); use --all-retained to compare
 # the retained-version path.
 # ---------------------------------------------------------------------------
-@test "GBH-23: --cells and bake mode produce same container/tag set for web-shell github-runner debian" {
+@test "--cells and bake mode produce same container/tag set for web-shell github-runner debian" {
     # Bake mode target count (default: latest-only)
     _run_generator web-shell github-runner debian
     [ "$status" -eq 0 ]
@@ -564,10 +564,10 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-24: default mode (no --cells) output is unchanged — bake document
+# default mode (no --cells) output is unchanged — bake document
 # structure still present after the refactor (regression guard).
 # ---------------------------------------------------------------------------
-@test "GBH-24: default mode (no --cells) still produces bake JSON with variable/target/group" {
+@test "default mode (no --cells) still produces bake JSON with variable/target/group" {
     _run_generator debian
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.variable' >/dev/null
@@ -580,10 +580,10 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-25: F1 — postgres final image is explicitly bake-emittable when activated
+# F1 — postgres final image is explicitly bake-emittable when activated
 # Catches: dropping build.bake_final_build support would re-exclude postgres.
 # ---------------------------------------------------------------------------
-@test "GBH-25: postgres --include-final-build --cells emits 21 final-image cells across all supported majors/flavors" {
+@test "postgres --include-final-build --cells emits 21 final-image cells across all supported majors/flavors" {
     _run_generator --include-final-build --cells postgres
     [ "$status" -eq 0 ]
 
@@ -597,7 +597,7 @@ YAML
     [ "$flavor_count" -eq 7 ]
 }
 
-@test "GBH-25b: postgres bake graph materializes inline base/vector/timeseries Dockerfiles offline" {
+@test "postgres bake graph materializes inline base/vector/timeseries Dockerfiles offline" {
     local lineage_root
     lineage_root=$(mktemp -d)
     _make_timescaledb_lineage_root "$lineage_root"
@@ -643,7 +643,7 @@ YAML
     grep -Fxq "FROM ghcr.io/oorabona/ext-timescaledb:pg18-${timescaledb_ver} AS ext-timescaledb" <<< "$timeseries_inline"
 }
 
-@test "GBH-25e: postgres bake VERSION build arg carries base_suffix (matches the non-bake base image)" {
+@test "postgres bake VERSION build arg carries base_suffix (matches the non-bake base image)" {
     local lineage_root
     lineage_root=$(mktemp -d)
     _make_timescaledb_lineage_root "$lineage_root"
@@ -661,7 +661,7 @@ YAML
     [ "$(echo "$output" | jq -r '.target.postgres_18_base.args.MAJOR_VERSION')" = "18" ]
 }
 
-@test "GBH-25c: postgres inline Dockerfiles escape bake interpolation triggers" {
+@test "postgres inline Dockerfiles escape bake interpolation triggers" {
     local lineage_root
     lineage_root=$(mktemp -d)
     _make_timescaledb_lineage_root "$lineage_root"
@@ -680,7 +680,7 @@ YAML
     [ "$bare_count" -eq 0 ]
 }
 
-@test "GBH-25d: no-arg whole-fleet generate excludes postgres without final-build activation" {
+@test "no-arg whole-fleet generate excludes postgres without final-build activation" {
     local lineage_root out err
     lineage_root=$(mktemp -d)
     out=$(mktemp)
@@ -704,7 +704,7 @@ YAML
     rm -f "$out" "$err"
 }
 
-@test "GBH-26: F1 — whole-fleet generate has no postgres target" {
+@test "F1 — whole-fleet generate has no postgres target" {
     # Generate for a small fleet that includes postgres (it is in ./make list).
     # We only request a known non-extension container but verify postgres never appears.
     _run_generator debian
@@ -714,7 +714,7 @@ YAML
     [ "$postgres_targets" -eq 0 ]
 }
 
-@test "GBH-26b: F1 — extension container without bake_final_build remains excluded" {
+@test "F1 — extension container without bake_final_build remains excluded" {
     local variants backup out err
     variants="${PROJECT_ROOT}/postgres/variants.yaml"
     backup=$(mktemp)
@@ -741,7 +741,7 @@ YAML
     rm -f "$backup" "$out" "$err"
 }
 
-@test "GBH-26c: non-postgres extensionless graph stays on the committed-Dockerfile path" {
+@test "non-postgres extensionless graph stays on the committed-Dockerfile path" {
     [ ! -f "${PROJECT_ROOT}/debian/extensions/config.yaml" ]
     [ "$(yq -r '.build.bake_final_build // false' "${PROJECT_ROOT}/debian/variants.yaml")" = "false" ]
 
@@ -759,9 +759,9 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-27: F2 — --cells objects include is_latest_version field (MG12)
+# F2 — --cells objects include is_latest_version field (MG12)
 # ---------------------------------------------------------------------------
-@test "GBH-27: --cells objects include is_latest_version field" {
+@test "--cells objects include is_latest_version field" {
     _run_generator --cells debian
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq 'length')" -gt 0 ]
@@ -771,7 +771,7 @@ YAML
     [ "$missing_field" -eq 0 ]
 }
 
-@test "GBH-28: F2 — debian latest cell has is_latest_version=true" {
+@test "F2 — debian latest cell has is_latest_version=true" {
     _run_generator --cells debian
     [ "$status" -eq 0 ]
     local latest_count
@@ -780,13 +780,13 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-29: F3+concrete-key — wordpress→php consumer contexts key is CONCRETE
+# F3+concrete-key — wordpress→php consumer contexts key is CONCRETE
 # (ghcr.io/oorabona/php:…), not a ${REMOTE_CR} token. (MG13)
 # Without the absolute-path fix, _resolve_cell_base_ref doubled the path →
 # empty base ref → no contexts. Without the concrete-key fix the key would
 # carry the unresolved "${REMOTE_CR}" token instead of the registry hostname.
 # ---------------------------------------------------------------------------
-@test "GBH-29: F3+concrete — wordpress contexts key is concrete ghcr.io ref, no \${ token, maps to php target" {
+@test "F3+concrete — wordpress contexts key is concrete ghcr.io ref, no \${ token, maps to php target" {
     _run_generator wordpress php
     [ "$status" -eq 0 ]
 
@@ -814,11 +814,11 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-30: F4 — default mode emits ONE version per retained container (MG14)
+# F4 — default mode emits ONE version per retained container (MG14)
 # github-runner has 3 retained versions; default mode should emit only
 # the latest one (is_latest_version=true cells).
 # ---------------------------------------------------------------------------
-@test "GBH-30: F4 — default mode emits only latest version for github-runner (not all retained)" {
+@test "F4 — default mode emits only latest version for github-runner (not all retained)" {
     _run_generator github-runner debian
     [ "$status" -eq 0 ]
 
@@ -856,7 +856,7 @@ YAML
     [ "$tf_retained_count" -gt "$tf_default_count" ]
 }
 
-@test "GBH-31: F4 — --all-retained emits multiple versions for terraform (retained, no bake_latest_only)" {
+@test "F4 — --all-retained emits multiple versions for terraform (retained, no bake_latest_only)" {
     # github-runner now has bake_latest_only=true so it is always latest-only.
     # Use terraform (version_retention=3, no bake_latest_only) to verify --all-retained.
     _run_generator --all-retained terraform
@@ -879,7 +879,7 @@ YAML
 # FIX D: --cells publish-set must be requested-only (not dep closure)
 # ---------------------------------------------------------------------------
 
-@test "GBH-32: FIX D — --cells wordpress emits only wordpress cells, not php" {
+@test "FIX D — --cells wordpress emits only wordpress cells, not php" {
     _run_generator --cells wordpress
     [ "$status" -eq 0 ]
 
@@ -892,7 +892,7 @@ YAML
     [[ "$containers" != *"php"* ]]
 }
 
-@test "GBH-33: FIX D — --cells with multiple explicit requests includes all requested containers" {
+@test "FIX D — --cells with multiple explicit requests includes all requested containers" {
     # When both php AND wordpress are explicitly requested, both appear in cells output.
     # This pins the no-filter-when-both-requested behavior (requested set = [php, wordpress]).
     _run_generator --cells php wordpress
@@ -905,7 +905,7 @@ YAML
     [[ "$containers" == *"php"* ]]
 }
 
-@test "GBH-34: FIX D — bake wordpress still includes php target AND contexts; --cells diverges (requested-only)" {
+@test "FIX D — bake wordpress still includes php target AND contexts; --cells diverges (requested-only)" {
     # Bake mode: closure intact — php target must exist
     _run_generator wordpress
     [ "$status" -eq 0 ]
@@ -934,7 +934,7 @@ YAML
 # FIX F: --cells objects include variant; github-runner cells have distinct variants
 # ---------------------------------------------------------------------------
 
-@test "GBH-35: FIX F — --cells objects include variant field" {
+@test "FIX F — --cells objects include variant field" {
     _run_generator --cells github-runner
     [ "$status" -eq 0 ]
 
@@ -944,7 +944,7 @@ YAML
     [ "$missing_variant" -eq 0 ]
 }
 
-@test "GBH-36: FIX F — github-runner debian-trixie-base and debian-trixie-dev have DISTINCT variants" {
+@test "FIX F — github-runner debian-trixie-base and debian-trixie-dev have DISTINCT variants" {
     _run_generator --cells github-runner
     [ "$status" -eq 0 ]
 
@@ -967,7 +967,7 @@ YAML
 # FIX O: REMOTE_CR is concrete at generation time — no bake variable, no token.
 # ---------------------------------------------------------------------------
 
-@test "GBH-37: FIX O — args.REMOTE_CR and contexts key are concrete and equal-prefixed (wordpress)" {
+@test "FIX O — args.REMOTE_CR and contexts key are concrete and equal-prefixed (wordpress)" {
     _run_generator wordpress php
     [ "$status" -eq 0 ]
 
@@ -1001,7 +1001,7 @@ YAML
     [ "$args_prefix" = "$ctx_prefix" ]
 }
 
-@test "GBH-38: FIX O — REMOTE_CR=example.test/x override makes tags/args/contexts all use example.test/x" {
+@test "FIX O — REMOTE_CR=example.test/x override makes tags/args/contexts all use example.test/x" {
     # Override REMOTE_CR at generation time — all three surfaces must be consistent.
     run env REMOTE_CR=example.test/x bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" wordpress php
     [ "$status" -eq 0 ]
@@ -1045,7 +1045,7 @@ YAML
 # so bake --print does not abort on undefined Docker ARG variables.
 # ---------------------------------------------------------------------------
 
-@test "GBH-39: FIX Q — inline target has no un-escaped \${…} in dockerfile-inline" {
+@test "FIX Q — inline target has no un-escaped \${…} in dockerfile-inline" {
     # github-runner uses inline Dockerfiles (template expansion).
     _run_generator github-runner debian
     [ "$status" -eq 0 ]
@@ -1065,7 +1065,7 @@ YAML
     [ "$bare_count" -eq 0 ]
 }
 
-@test "GBH-40: FIX Q — inline FROM line is escaped (FROM \$\${\${…}}) and contexts key remains concrete" {
+@test "FIX Q — inline FROM line is escaped (FROM \$\${\${…}}) and contexts key remains concrete" {
     _run_generator github-runner debian
     [ "$status" -eq 0 ]
 
@@ -1090,7 +1090,7 @@ YAML
     [ "$bad_ctx_keys" -eq 0 ]
 }
 
-@test "GBH-41: FIX Q — committed-Dockerfile target (debian) uses dockerfile key, no inline, no escaping needed" {
+@test "FIX Q — committed-Dockerfile target (debian) uses dockerfile key, no inline, no escaping needed" {
     _run_generator debian
     [ "$status" -eq 0 ]
 
@@ -1110,7 +1110,7 @@ YAML
 # returns non-zero, rather than silently producing a bake graph with missing contexts.
 # ---------------------------------------------------------------------------
 
-@test "GBH-42: FIX S — generator exits non-zero with ::error:: on depgraph failure" {
+@test "FIX S — generator exits non-zero with ::error:: on depgraph failure" {
     # Verify the fail-closed depgraph guard via a wrapper script that overrides
     # _depgraph_get_deps_transitive to return non-zero.
     # Strategy: write a caller script to $TEST_TEMP_DIR (allocated by setup()) that:
@@ -1167,11 +1167,11 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-43: #595 — --cells objects include target_id field
+# #595 — --cells objects include target_id field
 # Catches: omitting target_id from cells output → bake-buildresult cannot
 # correlate --metadata-file keys to cells.
 # ---------------------------------------------------------------------------
-@test "GBH-43: --cells objects include target_id field (non-empty string)" {
+@test "--cells objects include target_id field (non-empty string)" {
     _run_generator --cells web-shell
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq 'length')" -gt 0 ]
@@ -1183,14 +1183,14 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-44: #595 — --cells[].target_id values equal bake-mode .target keys (MG10 extension)
+# #595 — --cells[].target_id values equal bake-mode .target keys (MG10 extension)
 # The join key is correct: the set of target_ids from --cells must be exactly
 # the set of target keys emitted by bake mode for the same requested containers
 # (dep-closure exclusion in --cells is correct: dep targets like debian_trixie
 #  appear in bake mode but not in --cells for a requested set that doesn't
 #  include debian directly).
 # ---------------------------------------------------------------------------
-@test "GBH-44: --cells target_id set equals bake-mode target key set for web-shell" {
+@test "--cells target_id set equals bake-mode target key set for web-shell" {
     # --cells target_ids (sorted)
     _run_generator --cells web-shell
     [ "$status" -eq 0 ]
@@ -1208,11 +1208,11 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-45: #595 — target_id format is a valid bake identifier (no dots/hyphens/slashes)
+# #595 — target_id format is a valid bake identifier (no dots/hyphens/slashes)
 # _target_id sanitises: [.\-\/] → _; leading digit → v prefix.
 # Catching: a target_id with literal dots would not match the bake metadata key.
 # ---------------------------------------------------------------------------
-@test "GBH-45: --cells target_id values contain only [A-Za-z0-9_] characters" {
+@test "--cells target_id values contain only [A-Za-z0-9_] characters" {
     _run_generator --cells web-shell github-runner
     [ "$status" -eq 0 ]
 
@@ -1224,10 +1224,10 @@ YAML
 
 # ---------------------------------------------------------------------------
 # bake_latest_only: github-runner must be latest-only even with --all-retained
-# MG17: bake_latest_only flag ignored → retained github-runner versions included
+# bake_latest_only flag ignored → retained github-runner versions included
 # ---------------------------------------------------------------------------
 
-@test "GBH-46: bake_latest_only — github-runner --all-retained emits SAME count as without flag" {
+@test "bake_latest_only — github-runner --all-retained emits SAME count as without flag" {
     # Arrange: capture latest-only cell count (stderr silenced — ::notice:: annotations ignored)
     local latest_only_count
     latest_only_count=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells github-runner 2>/dev/null \
@@ -1245,7 +1245,7 @@ YAML
     [ "$all_retained_count" -eq "$latest_only_count" ]
 }
 
-@test "GBH-47: bake_latest_only — github-runner bake mode --all-retained emits only latest version targets" {
+@test "bake_latest_only — github-runner bake mode --all-retained emits only latest version targets" {
     # Capture the latest version tag
     local latest_tag
     latest_tag=$(bash -c "
@@ -1272,7 +1272,7 @@ YAML
     [ "$non_latest_targets" -eq 0 ]
 }
 
-@test "GBH-48: bake_latest_only — --all-retained terraform still expands (non-flagged container unaffected)" {
+@test "bake_latest_only — --all-retained terraform still expands (non-flagged container unaffected)" {
     # terraform has version_retention=3 and no bake_latest_only flag
     _run_generator terraform
     [ "$status" -eq 0 ]
@@ -1288,7 +1288,7 @@ YAML
     [ "$retained_count" -gt "$default_count" ]
 }
 
-@test "GBH-49: bake_latest_only — ::notice:: emitted to stderr when flag overrides --all-retained" {
+@test "bake_latest_only — ::notice:: emitted to stderr when flag overrides --all-retained" {
     # The generator must emit a ::notice:: annotation when it overrides --all-retained
     run bash -c "
         export _DEPGRAPH_LINEAGE_DIR=/nonexistent
@@ -1301,14 +1301,14 @@ YAML
 
 # ---------------------------------------------------------------------------
 # Registry cache: per-target cache-from/cache-to (MG18)
-#   MG18: Omit cache-from → bake builds cold; emit cache-to unconditionally → PR poisons canonical buildcache
+#   Omit cache-from → bake builds cold; emit cache-to unconditionally → PR poisons canonical buildcache
 #
 # cache-from is UNCONDITIONAL (always emitted; reading is always safe).
 # cache-to is GATED on BAKE_CACHE_EXPORT=true (only the real publish path writes
 # to canonical buildcache refs — PR/dry-run builds must never poison it).
 # ---------------------------------------------------------------------------
 
-@test "GBH-50: MG18 — every bake target has cache-from unconditionally (BAKE_CACHE_EXPORT unset)" {
+@test "MG18 — every bake target has cache-from unconditionally (BAKE_CACHE_EXPORT unset)" {
     # cache-from must be present regardless of BAKE_CACHE_EXPORT
     _run_generator debian
     [ "$status" -eq 0 ]
@@ -1351,7 +1351,7 @@ YAML
     [ "$no_arch_suffix" -eq 0 ]
 }
 
-@test "GBH-50b: MG18 — cache-from also present when BAKE_CACHE_EXPORT=true (publish path)" {
+@test "MG18 — cache-from also present when BAKE_CACHE_EXPORT=true (publish path)" {
     # cache-from must also be present on the publish path (reads from prior master cache)
     run env BAKE_CACHE_EXPORT=true bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" debian
     [ "$status" -eq 0 ]
@@ -1364,7 +1364,7 @@ YAML
     [ "$missing_cf" -eq 0 ]
 }
 
-@test "GBH-51: MG18 — BAKE_CACHE_EXPORT=true: every target has cache-to with mode=max and ignore-error=true" {
+@test "MG18 — BAKE_CACHE_EXPORT=true: every target has cache-to with mode=max and ignore-error=true" {
     # Cache-to must be present ONLY when BAKE_CACHE_EXPORT=true (the publish path).
     run env BAKE_CACHE_EXPORT=true bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" debian
     [ "$status" -eq 0 ]
@@ -1396,7 +1396,7 @@ YAML
     [ "$missing_ie" -eq 0 ]
 }
 
-@test "GBH-51b: MG18 — BAKE_CACHE_EXPORT unset/false: NO cache-to emitted (PR/dry-run safety gate)" {
+@test "MG18 — BAKE_CACHE_EXPORT unset/false: NO cache-to emitted (PR/dry-run safety gate)" {
     # When BAKE_CACHE_EXPORT is unset (default), cache-to must be absent from all targets.
     # This is the PR/dry-run path — we must never poison canonical buildcache from unmerged code.
     _run_generator debian
@@ -1410,7 +1410,7 @@ YAML
     [ "$has_cache_to" -eq 0 ]
 }
 
-@test "GBH-51c: MG18 — BAKE_CACHE_EXPORT=false: NO cache-to emitted" {
+@test "MG18 — BAKE_CACHE_EXPORT=false: NO cache-to emitted" {
     # Explicit false must also suppress cache-to.
     run env BAKE_CACHE_EXPORT=false bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" debian
     [ "$status" -eq 0 ]
@@ -1423,7 +1423,7 @@ YAML
     [ "$has_cache_to" -eq 0 ]
 }
 
-@test "GBH-52: MG18 — two different bake targets (different containers or tags) get DISTINCT cache refs" {
+@test "MG18 — two different bake targets (different containers or tags) get DISTINCT cache refs" {
     # Request two containers with distinct tags so both produce cache refs.
     # Verify no two targets share the same cache-from ref.
     run env BAKE_CACHE_EXPORT=true bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" debian sslh
@@ -1450,7 +1450,7 @@ YAML
 # B4 scope filters: generator-only filtering for bake/cells emission
 # ---------------------------------------------------------------------------
 
-@test "GBH-53: B4 — --scope-versions keeps only matching terraform retained-version cells" {
+@test "B4 — --scope-versions keeps only matching terraform retained-version cells" {
     local unscoped_output unscoped_count pick
     unscoped_output=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform 2>/dev/null)
     unscoped_count=$(echo "$unscoped_output" | jq 'length')
@@ -1472,7 +1472,7 @@ YAML
     [ "$bad_tags" -eq 0 ]
 }
 
-@test "GBH-54: B4 — --scope-flavors keeps only matching terraform flavor cells" {
+@test "B4 — --scope-flavors keeps only matching terraform flavor cells" {
     _run_generator --cells --scope-flavors aws terraform
     [ "$status" -eq 0 ]
 
@@ -1484,7 +1484,7 @@ YAML
     [ "$bad_flavors" -eq 0 ]
 }
 
-@test "GBH-55: B4 — --scope filters terraform cells by variant substring" {
+@test "B4 — --scope filters terraform cells by variant substring" {
     _run_generator --cells --scope azure terraform
     [ "$status" -eq 0 ]
 
@@ -1496,7 +1496,7 @@ YAML
     [ "$bad_variants" -eq 0 ]
 }
 
-@test "GBH-56: B4 — no scope flags preserve the latest-only terraform cell count" {
+@test "B4 — no scope flags preserve the latest-only terraform cell count" {
     local expected_count
     expected_count=$(bash -c "
         source '${HELPERS_DIR}/variant-utils.sh'
@@ -1513,7 +1513,7 @@ YAML
     [ "$actual_count" -eq "$expected_count" ]
 }
 
-@test "GBH-57: B4 — over-narrow --scope-versions emits an empty bake target set" {
+@test "B4 — over-narrow --scope-versions emits an empty bake target set" {
     _run_generator --scope-versions 999 terraform
     [ "$status" -eq 0 ]
 
@@ -1525,7 +1525,7 @@ YAML
     [ "$default_count" -eq 0 ]
 }
 
-@test "GBH-58: B4 gate — scoped github-runner graph keeps debian internal base target and contexts" {
+@test "B4 gate — scoped github-runner graph keeps debian internal base target and contexts" {
     _run_generator --scope-flavors debian-trixie github-runner
     [ "$status" -eq 0 ]
 
@@ -1562,7 +1562,7 @@ YAML
     [ "$dangling_count" -eq 0 ]
 }
 
-@test "GBH-59: B4 gate — scoped github-runner --cells emits only requested scoped cells, not debian deps" {
+@test "B4 gate — scoped github-runner --cells emits only requested scoped cells, not debian deps" {
     _run_generator --cells --scope-flavors debian-trixie github-runner
     [ "$status" -eq 0 ]
 
@@ -1578,7 +1578,7 @@ YAML
     [ "$debian_cells" -eq 0 ]
 }
 
-@test "GBH-60: B4 gate — unscoped github-runner graph target keys stay on the pre-fix default set" {
+@test "B4 gate — unscoped github-runner graph target keys stay on the pre-fix default set" {
     _run_generator github-runner
     [ "$status" -eq 0 ]
 
@@ -1609,7 +1609,7 @@ YAML
     [ "$actual_keys" = "$expected_keys" ]
 }
 
-@test "GBH-61: container scopes — terraform flavor scope keeps only aws cells" {
+@test "container scopes — terraform flavor scope keeps only aws cells" {
     _run_generator --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
     [ "$status" -eq 0 ]
 
@@ -1626,7 +1626,7 @@ YAML
     [ "$per_container_json" = "$(echo "$output" | jq -cS '.')" ]
 }
 
-@test "GBH-62: container scopes — terraform retained version scope keeps only matching-version cells" {
+@test "container scopes — terraform retained version scope keeps only matching-version cells" {
     local unscoped_output unscoped_count pick
     unscoped_output=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform 2>/dev/null)
     unscoped_count=$(echo "$unscoped_output" | jq 'length')
@@ -1647,7 +1647,7 @@ YAML
     [ "$bad_tags" -eq 0 ]
 }
 
-@test "GBH-63: container scopes — different containers keep isolated scope filters" {
+@test "container scopes — different containers keep isolated scope filters" {
     _run_generator --cells debian
     [ "$status" -eq 0 ]
     local unscoped_debian_count
@@ -1667,7 +1667,7 @@ YAML
     [ "$debian_count" -eq "$unscoped_debian_count" ]
 }
 
-@test "GBH-64: container scopes — containers absent from the map fall back to global flavor scope" {
+@test "container scopes — containers absent from the map fall back to global flavor scope" {
     _run_generator --cells --include-final-build \
         --container-scopes '{"terraform":{"flavors":"aws"}}' \
         --scope-flavors full postgres terraform
@@ -1685,7 +1685,7 @@ YAML
     [ "$postgres_bad_flavors" -eq 0 ]
 }
 
-@test "GBH-65: container scopes — scoped github-runner graph keeps debian dependency target and contexts" {
+@test "container scopes — scoped github-runner graph keeps debian dependency target and contexts" {
     _run_generator --container-scopes '{"github-runner":{"flavors":"debian-trixie"}}' github-runner
     [ "$status" -eq 0 ]
 
@@ -1726,7 +1726,7 @@ YAML
     [ "$dangling_count" -eq 0 ]
 }
 
-@test "GBH-66: container scopes — empty map is byte-identical to no container scope flag" {
+@test "container scopes — empty map is byte-identical to no container scope flag" {
     _run_generator terraform debian
     [ "$status" -eq 0 ]
     local no_flag_json

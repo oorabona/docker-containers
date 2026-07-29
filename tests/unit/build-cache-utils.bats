@@ -30,7 +30,7 @@ teardown() {
 
 # --- Postgres Flavors ---
 
-@test "SC-01: pgvector bump changes vector digest, not timeseries" {
+@test "pgvector bump changes vector digest, not timeseries" {
     mkdir -p flavors extensions
 
     cat > flavors/vector.yaml <<'EOF'
@@ -83,7 +83,7 @@ EOF
     [ "$digest_timeseries_1" == "$digest_timeseries_2" ]
 }
 
-@test "SC-02: full flavor includes all extension versions" {
+@test "full flavor includes all extension versions" {
     mkdir -p flavors extensions
     cat > flavors/full.yaml <<'EOF'
 name: full
@@ -119,7 +119,7 @@ EOF
     [ "$d1" != "$d2" ]
 }
 
-@test "SC-03: base flavor has no extensions — unaffected by extension bumps" {
+@test "base flavor has no extensions — unaffected by extension bumps" {
     mkdir -p flavors extensions
     cat > flavors/base.yaml <<'EOF'
 name: base
@@ -152,7 +152,7 @@ EOF
 
 # --- Terraform Variants ---
 
-@test "SC-04: AWS CLI bump changes aws digest, not base" {
+@test "AWS CLI bump changes aws digest, not base" {
     cat > variants.yaml <<'EOF'
 versions:
   - variants:
@@ -199,7 +199,7 @@ EOF
     [ "$d_base_1" == "$d_base_2" ]
 }
 
-@test "SC-05: TFLINT bump changes all terraform flavors" {
+@test "TFLINT bump changes all terraform flavors" {
     cat > variants.yaml <<'EOF'
 versions:
   - variants:
@@ -246,7 +246,7 @@ EOF
 
 # --- Simple Containers ---
 
-@test "SC-06: container with config.yaml build_args" {
+@test "container with config.yaml build_args" {
     cat > config.yaml <<'EOF'
 build_args:
   FOO: "1.0"
@@ -268,7 +268,7 @@ EOF
     [ "$d1" != "$d2" ]
 }
 
-@test "SC-07: container with no config.yaml returns valid 12-char hex digest" {
+@test "container with no config.yaml returns valid 12-char hex digest" {
     echo "FROM alpine" > Dockerfile
 
     run compute_build_digest "Dockerfile" ""
@@ -289,7 +289,7 @@ EOF
 
 # --- Edge Cases ---
 
-@test "SC-08: CUSTOM_BUILD_ARGS included in digest" {
+@test "CUSTOM_BUILD_ARGS included in digest" {
     echo "FROM alpine" > Dockerfile
 
     run compute_build_digest "Dockerfile" ""
@@ -304,7 +304,7 @@ EOF
     [ "$d1" != "$d2" ]
 }
 
-@test "SC-09: deterministic output — identical inputs produce identical digest" {
+@test "deterministic output — identical inputs produce identical digest" {
     cat > config.yaml <<'EOF'
 build_args:
   A: "1"
@@ -495,7 +495,7 @@ EOF
 
 # --- Observability ---
 
-@test "SC-10: digest inputs are logged when DIGEST_DEBUG=1" {
+@test "digest inputs are logged when DIGEST_DEBUG=1" {
     echo "FROM alpine" > Dockerfile
     mkdir -p flavors
     cat > flavors/test.yaml <<'EOF'
@@ -527,7 +527,7 @@ EOF
 # Dockerfile ARG default (ARG REMOTE_CR=docker.io) when resolving the base
 # image reference for lineage labels and manifest-inspect.
 
-@test "RBI-01: CUSTOM_BUILD_ARGS REMOTE_CR override wins over Dockerfile ARG default" {
+@test "CUSTOM_BUILD_ARGS REMOTE_CR override wins over Dockerfile ARG default" {
     _setup_resolve_base_image
 
     # Dockerfile that mirrors the postgres pattern: ARG REMOTE_CR with docker.io default
@@ -548,7 +548,7 @@ EOF
     [[ "$_BASE_IMAGE_REF" == "ghcr.io/owner/library/postgres:17-alpine" ]]
 }
 
-@test "RBI-02: without CUSTOM_BUILD_ARGS override, ARG default (docker.io) applies" {
+@test "without CUSTOM_BUILD_ARGS override, ARG default (docker.io) applies" {
     _setup_resolve_base_image
 
     cat > Dockerfile <<'EOF'
@@ -564,7 +564,7 @@ EOF
     [[ "$_BASE_IMAGE_REF" == "docker.io/library/postgres:17-alpine" ]]
 }
 
-@test "RBI-03: last --build-arg REMOTE_CR occurrence wins (docker semantics)" {
+@test "last --build-arg REMOTE_CR occurrence wins (docker semantics)" {
     _setup_resolve_base_image
 
     cat > Dockerfile <<'EOF'
@@ -592,7 +592,7 @@ EOF
 # rebuild, leaving base digest unchanged → infinite drift-PR loop.
 # ---------------------------------------------------------------------------
 
-@test "r10-fix1a: LAST_REBUILD.md absent — digest is stable (baseline)" {
+@test "LAST_REBUILD.md absent — digest is stable (baseline)" {
     echo "FROM alpine:3.21" > Dockerfile
 
     run compute_build_digest "Dockerfile" ""
@@ -606,7 +606,7 @@ EOF
     [ "$output" = "$digest_without" ]
 }
 
-@test "r10-fix1b: LAST_REBUILD.md present changes digest vs absent" {
+@test "LAST_REBUILD.md present changes digest vs absent" {
     echo "FROM alpine:3.21" > Dockerfile
 
     run compute_build_digest "Dockerfile" ""
@@ -628,7 +628,7 @@ EOF
     [ "$digest_with" != "$digest_without" ]
 }
 
-@test "r10-fix1c: modifying LAST_REBUILD.md changes digest (invalidates cache)" {
+@test "modifying LAST_REBUILD.md changes digest (invalidates cache)" {
     echo "FROM alpine:3.21" > Dockerfile
 
     echo "## base-digest-drift v1" > LAST_REBUILD.md
@@ -646,7 +646,7 @@ EOF
     [ "$digest_v2" != "$digest_v1" ]
 }
 
-@test "r10-fix1d: LAST_REBUILD.md included in digest with postgres-style flavor" {
+@test "LAST_REBUILD.md included in digest with postgres-style flavor" {
     mkdir -p flavors extensions
     cat > flavors/vector.yaml <<'EOF'
 name: vector

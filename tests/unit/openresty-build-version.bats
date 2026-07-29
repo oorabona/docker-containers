@@ -11,12 +11,12 @@
 # We extract UPSTREAM_VERSION from that line for assertions.
 #
 # Mutation each test catches:
-#   TC1: removing the VERSION branch → version.sh called, returns 9.8.7 ≠ "1.29.2.4"
-#   TC2: removing suffix strip → UPSTREAM_VERSION would equal "1.29.2.5-alpine" ≠ "1.29.2.5"
-#   TC3: removing the else branch → version.sh never called, UPSTREAM_VERSION empty or wrong
-#   TC4: removing the -z guard → script exits 0 and emits "(source: )" instead of error exit 1
-#   TC5: suffix strip using sed/grep instead of %-alpine → "1.29.2.4" (no suffix) would break
-#   TC6-TC8: removing dotted-numeric validation → invalid upstream versions pass
+#   removing the VERSION branch → version.sh called, returns 9.8.7 ≠ "1.29.2.4"
+#   removing suffix strip → UPSTREAM_VERSION would equal "1.29.2.5-alpine" ≠ "1.29.2.5"
+#   removing the else branch → version.sh never called, UPSTREAM_VERSION empty or wrong
+#   removing the -z guard → script exits 0 and emits "(source: )" instead of error exit 1
+#   suffix strip using sed/grep instead of %-alpine → "1.29.2.4" (no suffix) would break
+#   removing dotted-numeric validation → invalid upstream versions pass
 
 bats_require_minimum_version 1.5.0
 
@@ -95,10 +95,10 @@ _extract_resty_version() {
 }
 
 # =============================================================================
-# TC1: VERSION="1.29.2.4-alpine" → RESTY_VERSION="1.29.2.4"
+# VERSION="1.29.2.4-alpine" → RESTY_VERSION="1.29.2.4"
 # =============================================================================
 
-@test "TC1: VERSION=1.29.2.4-alpine sets RESTY_VERSION to 1.29.2.4" {
+@test "VERSION=1.29.2.4-alpine sets RESTY_VERSION to 1.29.2.4" {
     export VERSION="1.29.2.4-alpine"
     _run_build
 
@@ -109,10 +109,10 @@ _extract_resty_version() {
 }
 
 # =============================================================================
-# TC2: VERSION="1.29.2.5-alpine" → RESTY_VERSION="1.29.2.5" (latest retained)
+# VERSION="1.29.2.5-alpine" → RESTY_VERSION="1.29.2.5" (latest retained)
 # =============================================================================
 
-@test "TC2: VERSION=1.29.2.5-alpine sets RESTY_VERSION to 1.29.2.5" {
+@test "VERSION=1.29.2.5-alpine sets RESTY_VERSION to 1.29.2.5" {
     export VERSION="1.29.2.5-alpine"
     _run_build
 
@@ -123,10 +123,10 @@ _extract_resty_version() {
 }
 
 # =============================================================================
-# TC3: VERSION unset → RESTY_VERSION comes from version.sh --upstream stub
+# VERSION unset → RESTY_VERSION comes from version.sh --upstream stub
 # =============================================================================
 
-@test "TC3: VERSION unset falls back to version.sh --upstream" {
+@test "VERSION unset falls back to version.sh --upstream" {
     unset VERSION
     _run_build
 
@@ -137,10 +137,10 @@ _extract_resty_version() {
 }
 
 # =============================================================================
-# TC4: VERSION="-alpine" (empty after strip) → exit 1 + "resolves to empty" in stderr
+# VERSION="-alpine" (empty after strip) → exit 1 + "resolves to empty" in stderr
 # =============================================================================
 
-@test "TC4: VERSION=-alpine (empty after strip) exits 1 with error in stderr" {
+@test "VERSION=-alpine (empty after strip) exits 1 with error in stderr" {
     export VERSION="-alpine"
     _run_build
 
@@ -149,10 +149,10 @@ _extract_resty_version() {
 }
 
 # =============================================================================
-# TC5: VERSION="1.29.2.4" (no -alpine suffix) → RESTY_VERSION="1.29.2.4" (no-op strip)
+# VERSION="1.29.2.4" (no -alpine suffix) → RESTY_VERSION="1.29.2.4" (no-op strip)
 # =============================================================================
 
-@test "TC5: VERSION=1.29.2.4 (no -alpine suffix) sets RESTY_VERSION to 1.29.2.4" {
+@test "VERSION=1.29.2.4 (no -alpine suffix) sets RESTY_VERSION to 1.29.2.4" {
     export VERSION="1.29.2.4"
     _run_build
 
@@ -163,10 +163,10 @@ _extract_resty_version() {
 }
 
 # =============================================================================
-# TC6: VERSION="alpine-alpine" -> RESTY_VERSION="alpine" -> invalid
+# VERSION="alpine-alpine" -> RESTY_VERSION="alpine" -> invalid
 # =============================================================================
 
-@test "TC6: VERSION=alpine-alpine rejects non-numeric stripped version" {
+@test "VERSION=alpine-alpine rejects non-numeric stripped version" {
     export VERSION="alpine-alpine"
     _run_build
 
@@ -175,10 +175,10 @@ _extract_resty_version() {
 }
 
 # =============================================================================
-# TC7: VERSION="1.29.2.5-alpine-beta" -> invalid
+# VERSION="1.29.2.5-alpine-beta" -> invalid
 # =============================================================================
 
-@test "TC7: VERSION=1.29.2.5-alpine-beta rejects prerelease suffix" {
+@test "VERSION=1.29.2.5-alpine-beta rejects prerelease suffix" {
     export VERSION="1.29.2.5-alpine-beta"
     _run_build
 
@@ -187,10 +187,10 @@ _extract_resty_version() {
 }
 
 # =============================================================================
-# TC8: VERSION unset and version.sh --upstream returns garbage -> invalid
+# VERSION unset and version.sh --upstream returns garbage -> invalid
 # =============================================================================
 
-@test "TC8: VERSION unset rejects invalid version.sh --upstream output" {
+@test "VERSION unset rejects invalid version.sh --upstream output" {
     unset VERSION
     _write_version_stub "alpine"
     _run_build

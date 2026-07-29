@@ -35,7 +35,7 @@ output_value() {
     sed -n "s/^${name}=//p" "$GITHUB_OUTPUT" | tail -1
 }
 
-@test "S4: deleting e2e filtering would stop an enabled changed container from running its latest Linux suite" {
+@test "deleting e2e filtering would stop an enabled changed container from running its latest Linux suite" {
     builds=$(jq -cn '
       [
         {"container":"sslh","version":"v2.3.1","tag":"v2.3.1-alpine","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"},
@@ -52,7 +52,7 @@ output_value() {
     [ "$(echo "$e2e_builds" | jq -r '.[0].tag')" = "v2.3.1-alpine" ]
 }
 
-@test "S5: deleting the e2e opt-in check would run a non-enabled container's suite" {
+@test "deleting the e2e opt-in check would run a non-enabled container's suite" {
     builds=$(jq -cn '
       [
         {"container":"github-runner","version":"2.330.0","tag":"latest-2.330.0","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"}
@@ -65,7 +65,7 @@ output_value() {
     [ "$e2e_builds" = "[]" ]
 }
 
-@test "S6: deleting the cell dedupe would run the same e2e variant twice for mixed source and test changes" {
+@test "deleting the cell dedupe would run the same e2e variant twice for mixed source and test changes" {
     build=$(jq -cn '
       {"container":"sslh","version":"v2.3.1","tag":"v2.3.1-alpine","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"}')
 
@@ -79,7 +79,7 @@ output_value() {
     [ "$(echo "$e2e_builds" | jq -r '.[0].container + ":" + .[0].tag')" = "sslh:v2.3.1-alpine" ]
 }
 
-@test "S7: deleting production isolation would schedule bake or matrix builds for a verification-only change" {
+@test "deleting production isolation would schedule bake or matrix builds for a verification-only change" {
     verification_builds=$(jq -cn '
       [
         {"container":"sslh","version":"v2.3.1","tag":"v2.3.1-alpine","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"}
@@ -93,7 +93,7 @@ output_value() {
     [ "$(echo "$(output_value e2e_builds)" | jq 'length')" -eq 1 ]
 }
 
-@test "S8: deleting the e2e opt-in check would run a verification-only non-enabled container" {
+@test "deleting the e2e opt-in check would run a verification-only non-enabled container" {
     verification_builds=$(jq -cn '
       [
         {"container":"github-runner","version":"2.330.0","tag":"latest-2.330.0","is_default":true,"is_latest_version":true,"os":"linux","runner":"ubuntu-latest"}

@@ -272,7 +272,7 @@ get_variant_build_args_json() {
         while IFS= read -r ext; do
             [[ -z "$ext" ]] && continue
             local ver
-            # P1-SECURITY: ext name comes from yq output — use strenv() to prevent injection.
+            # ext name comes from yq output — use strenv() to prevent injection.
             ver=$(YQ_EXT="$ext" yq -r '.extensions[strenv(YQ_EXT)].version // ""' "$ext_config" 2>/dev/null)
             [[ -z "$ver" ]] && continue
             $first || result+=","
@@ -1002,7 +1002,7 @@ build_dependency_monitoring_json() {
         [[ -z "$dep_name" ]] && continue
         total=$((total + 1))
 
-        # P1-SECURITY: dep_name comes from yq .dependency_sources keys — a PR author
+        # dep_name comes from yq .dependency_sources keys — a PR author
         # controls config.yaml key names. Never interpolate ${dep_name} into the yq
         # query expression. Pass via env-var + strenv() so yq treats it as a literal.
         # Read lifecycle field (required; backward-compat: empty defaults to "tracked")

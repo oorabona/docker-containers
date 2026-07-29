@@ -98,7 +98,7 @@ last_output_line() {
     printf '%s' "${lines[$((${#lines[@]} - 1))]}"
 }
 
-@test "tag names with spaces are preserved for raw and both output" {
+@test "github tag: tag names with spaces are preserved for raw and both output" {
     write_fake_curl space_tag
 
     run run_helper "owner/repo" \

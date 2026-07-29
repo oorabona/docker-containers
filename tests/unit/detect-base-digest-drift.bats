@@ -7,10 +7,10 @@
 # JSON responses from tests/fixtures/digest-drift/*/responses/.
 #
 # Mutation guards documented per spec §6:
-#   MG1: Remove digest comparison → debian reports drift (false positive)
-#   MG2: Remove sidecar filter → foo's variants array has 3 entries
-#   MG3: Remove per-container grouping → result has 2 records instead of 1
-#   MG4: Remove digest shape validation → invalid digest accepted
+#   Remove digest comparison → debian reports drift (false positive)
+#   Remove sidecar filter → foo's variants array has 3 entries
+#   Remove per-container grouping → result has 2 records instead of 1
+#   Remove digest shape validation → invalid digest accepted
 #
 # BDD scenario covered explicitly: "Per-container grouping (2×2 mutation guard)"
 # per spec §4 Scenario 6 — this test directly implements the 2×2 grouping assertion.
@@ -139,7 +139,7 @@ STUB_EOF
 # Alpine recorded=aaa...→current=ccc... (drift), Debian recorded==current (unchanged)
 # Sidecar foo-1.0-alpine.sbom.json must be excluded
 # ---------------------------------------------------------------------------
-@test "scenario-1: alpine reports drift, debian reports unchanged, sidecar excluded" {
+@test "alpine reports drift, debian reports unchanged, sidecar excluded" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-1"
     local probe_stub
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
@@ -187,9 +187,9 @@ STUB_EOF
     [[ "$result" != *"sbom"* ]]
 }
 
-# MG3: Per-container grouping — removing it would produce 2 records instead of 1
+# Per-container grouping — removing it would produce 2 records instead of 1
 # This test directly guards against that regression.
-@test "scenario-1: output length is 1 (per-container grouping guard MG3)" {
+@test "output length is 1 (per-container grouping guard MG3)" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-1"
     local probe_stub
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
@@ -201,8 +201,8 @@ STUB_EOF
     [ "$length" -eq 1 ]
 }
 
-# MG1: Digest comparison — if comparison were removed, debian would also report drift
-@test "scenario-1: debian status is unchanged (digest comparison guard MG1)" {
+# Digest comparison — if comparison were removed, debian would also report drift
+@test "debian status is unchanged (digest comparison guard MG1)" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-1"
     local probe_stub
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
@@ -215,8 +215,8 @@ STUB_EOF
     [ "$debian_status" = "unchanged" ]
 }
 
-# MG2: Sidecar filter — removing it would produce 3 variants instead of 2
-@test "scenario-1: foo has exactly 2 variants (sidecar exclusion guard MG2)" {
+# Sidecar filter — removing it would produce 3 variants instead of 2
+@test "foo has exactly 2 variants (sidecar exclusion guard MG2)" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-1"
     local probe_stub
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
@@ -228,8 +228,8 @@ STUB_EOF
     [ "$foo_variants" -eq 2 ]
 }
 
-# MG4: Digest shape validation — valid digests must match ^sha256:[a-f0-9]{64}$
-@test "scenario-1: all digests in output match sha256:[a-f0-9]{64} (shape guard MG4)" {
+# Digest shape validation — valid digests must match ^sha256:[a-f0-9]{64}$
+@test "all digests in output match sha256:[a-f0-9]{64} (shape guard MG4)" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-1"
     local probe_stub
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
@@ -251,7 +251,7 @@ STUB_EOF
 # foo: 2 variants (alpine + debian), bar: 2 variants (ubuntu + rocky) — all drifted
 # Output must have length 2 (grouped by container, NOT by variant)
 # ---------------------------------------------------------------------------
-@test "scenario-2: 2x2 grouping — output length is 2 (one per container)" {
+@test "2x2 grouping — output length is 2 (one per container)" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-2"
     local probe_stub
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
@@ -265,7 +265,7 @@ STUB_EOF
     [ "$length" -eq 2 ]
 }
 
-@test "scenario-2: foo record contains 2 variants" {
+@test "foo record contains 2 variants" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-2"
     local probe_stub
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
@@ -278,7 +278,7 @@ STUB_EOF
     [ "$foo_count" -eq 2 ]
 }
 
-@test "scenario-2: bar record contains 2 variants" {
+@test "bar record contains 2 variants" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-2"
     local probe_stub
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
@@ -937,7 +937,7 @@ STUB
 # returns).  The fixture is the imagetools Manifest descriptor — a flat object
 # with .digest, .mediaType, .size (no .manifests[] wrapper at the outer level).
 # ---------------------------------------------------------------------------
-@test "r5-fix1: probe extracts digest from imagetools Manifest descriptor format" {
+@test "probe extracts digest from imagetools Manifest descriptor format" {
     # Fixture: imagetools --format '{{json .Manifest}}' returns a flat OCI descriptor
     # with .digest at the top level.  This is different from the `docker manifest
     # inspect` format which has .manifests[] and a top-level .digest only in the
@@ -990,7 +990,7 @@ EOF
 # must NOT inject a second GHA workflow command.  The escaped form (%0A) must
 # appear in the ::error:: line instead of a raw newline.
 # ---------------------------------------------------------------------------
-@test "r5-fix2: newline in base_image_ref is escaped in ::error:: output" {
+@test "newline in base_image_ref is escaped in ::error:: output" {
     # Lineage file with a base_image_ref containing an embedded newline (simulates
     # a crafted/corrupted lineage entry).  When the registry probe fails, the error
     # line must escape the newline as %0A to prevent GHA command injection.
@@ -1025,7 +1025,7 @@ EOF
 # baseline migration picks it up), while the same entry must be SKIPPED (result=[])
 # in normal mode (to prevent bogus drift PRs).
 # ---------------------------------------------------------------------------
-@test "r5-fix4: baseline-only mode emits legacy for placeholder-ref + missing-digest entry" {
+@test "baseline-only mode emits legacy for placeholder-ref + missing-digest entry" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
     # Pre-#530 entry: placeholder ref, no digest field at all
@@ -1050,7 +1050,7 @@ EOF
     [ "$status_val" = "legacy" ]
 }
 
-@test "r5-fix4: normal mode still skips placeholder-ref + missing-digest entry (no regression)" {
+@test "normal mode still skips placeholder-ref + missing-digest entry (no regression)" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
     # Same pre-#530 entry
@@ -1078,7 +1078,7 @@ EOF
 # verifies that multi-container drift produces one record per container so
 # each matrix entry (and its own concurrency lane) is distinct.
 # ---------------------------------------------------------------------------
-@test "r6-fix1: two drifted containers produce two separate container records" {
+@test "two drifted containers produce two separate container records" {
     export _VALID_CONTAINERS_OVERRIDE="foo
 bar"
 
@@ -1162,7 +1162,7 @@ STUB_EOF
 # This test verifies the CSV is derivable from the detector output and contains
 # all drifted containers separated by commas (no spaces, no brackets).
 # ---------------------------------------------------------------------------
-@test "r10: drift_containers_csv derivable from detector output — CSV form matches JSON list" {
+@test "drift_containers_csv derivable from detector output — CSV form matches JSON list" {
     export _VALID_CONTAINERS_OVERRIDE="foo
 bar"
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
@@ -1248,7 +1248,7 @@ STUB_EOF
 # is gone — this test guards that the script-level emission (the surviving
 # path) is correctly escaped.
 # ---------------------------------------------------------------------------
-@test "r6-fix2: percent-encoded newline in base_image_ref is escaped in script stderr output" {
+@test "percent-encoded newline in base_image_ref is escaped in script stderr output" {
     # A crafted base_image_ref containing %0A (percent-encoded newline).
     # _sanitize_for_json strips literal \n/\r but NOT %0A, so %0A survives
     # into error_reason.  The script must escape the ::error:: line via
@@ -1279,7 +1279,7 @@ STUB_EOF
 # indirectly: run the script in a restricted TMPDIR with a known prefix and
 # check that no files with that prefix remain after the script exits.
 # ---------------------------------------------------------------------------
-@test "r6-fix3: no temp files left behind after empty-raw probe failure" {
+@test "no temp files left behind after empty-raw probe failure" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     local isolated_tmp="$TEST_TEMP_DIR/probe-tmp"
     mkdir -p "$lineage_dir" "$isolated_tmp"
@@ -1312,7 +1312,7 @@ STUB_EOF
     [ "$leaked" -eq 0 ]
 }
 
-@test "r6-fix3: no temp files left behind after digest-extraction failure" {
+@test "no temp files left behind after digest-extraction failure" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     local isolated_tmp="$TEST_TEMP_DIR/probe-tmp2"
     mkdir -p "$lineage_dir" "$isolated_tmp"
@@ -1350,7 +1350,7 @@ STUB_EOF
 # non-hex chars) must be refused and NOT embedded in label_args.  Only
 # ^sha256:[a-f0-9]{64}$ passes.
 # ---------------------------------------------------------------------------
-@test "r7-fix1a: malformed digest (spaces/injection) is NOT added to label_args" {
+@test "malformed digest (spaces/injection) is NOT added to label_args" {
     # Exercise _resolve_base_image from build-container.sh with a docker stub that
     # returns a malformed digest — verify label_args stays clean.
     local test_container_dir="$TEST_TEMP_DIR/r7fix1a"
@@ -1403,7 +1403,7 @@ MOCK
     }
 }
 
-@test "r7-fix1b: well-formed sha256 digest is embedded in label_args" {
+@test "well-formed sha256 digest is embedded in label_args" {
     # Positive case: ^sha256:[a-f0-9]{64}$ must still be accepted.
     local test_container_dir="$TEST_TEMP_DIR/r7fix1b"
     mkdir -p "$test_container_dir/bin"
@@ -1458,7 +1458,7 @@ MOCK
 # This test verifies the script emits status:error that a downstream
 # error_count check can detect, not that the script itself exits non-zero.
 # ---------------------------------------------------------------------------
-@test "r7-fix2: probe failure emits status:error in JSON (re-detect error_count detectable)" {
+@test "probe failure emits status:error in JSON (re-detect error_count detectable)" {
     local lineage_dir="$TEST_TEMP_DIR/r7fix2/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -1494,7 +1494,7 @@ EOF
 # entries correctly populates only the errored containers in the CSV output,
 # and that the drifting containers are NOT included in error_containers_csv.
 # ---------------------------------------------------------------------------
-@test "DefectL: error_containers_csv jq — error containers appear, drift containers do not" {
+@test "error_containers_csv jq — error containers appear, drift containers do not" {
     # Simulate the drift_json that the workflow step has in memory.
     # foo = all variants errored; bar = drifting; baz = stable.
     local drift_json
@@ -1520,7 +1520,7 @@ EOF
     [[ "$error_csv" != *"baz"* ]]
 }
 
-@test "DefectL: error_containers_csv jq — mixed error+drift container appears in error CSV" {
+@test "error_containers_csv jq — mixed error+drift container appears in error CSV" {
     # A container with both error and drift variants must appear in error_containers_csv.
     local drift_json
     drift_json=$(cat <<'EOF'
@@ -1537,7 +1537,7 @@ EOF
     [[ "$error_csv" == *"php"* ]]
 }
 
-@test "DefectL: error_containers_csv jq — empty when no errors" {
+@test "error_containers_csv jq — empty when no errors" {
     # When all containers are stable or drifting (no errors), error_containers_csv is empty.
     local drift_json
     drift_json=$(cat <<'EOF'
@@ -1562,7 +1562,7 @@ EOF
 # the script must exit 2 — NOT silently treat all containers as invalid and
 # return "[]" (false no-drift).
 # ---------------------------------------------------------------------------
-@test "r7-fix4a: detect script exits 2 when _VALID_CONTAINERS_OVERRIDE unset and make list fails" {
+@test "detect script exits 2 when _VALID_CONTAINERS_OVERRIDE unset and make list fails" {
     local fake_root="$TEST_TEMP_DIR/r7fix4a"
     mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
@@ -1602,7 +1602,7 @@ STUB
     [ "$rc" -eq 2 ]
 }
 
-@test "r7-fix4b: detect script exits 2 when make list returns empty string" {
+@test "detect script exits 2 when make list returns empty string" {
     # A make list that succeeds but prints nothing (empty output) is equally invalid.
     local fake_root="$TEST_TEMP_DIR/r7fix4b"
     mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
@@ -1639,7 +1639,7 @@ STUB
     [ "$rc" -eq 2 ]
 }
 
-@test "r7-fix4c: _VALID_CONTAINERS_OVERRIDE non-empty bypasses make list check" {
+@test "_VALID_CONTAINERS_OVERRIDE non-empty bypasses make list check" {
     # Test hook: _VALID_CONTAINERS_OVERRIDE set to a non-empty value must bypass
     # the ./make list call entirely (existing pre-r7 behavior preserved for tests).
     local lineage_dir="$TEST_TEMP_DIR/r7fix4c/.build-lineage"
@@ -1672,7 +1672,7 @@ EOF
 # Regression guard: ./make list returning empty must cause exit 2, not
 # silently skip with exit 0 (which would hide the tooling failure).
 # ---------------------------------------------------------------------------
-@test "r7-fix4d: update-last-rebuild exits 2 when make list returns empty" {
+@test "update-last-rebuild exits 2 when make list returns empty" {
     local fake_root="$TEST_TEMP_DIR/r7fix4d"
     local update_script="${SCRIPTS_DIR}/update-last-rebuild.sh"
     mkdir -p "$fake_root/scripts"
@@ -1700,7 +1700,7 @@ STUB
 # first line because -R without -n consumes one line before [inputs] runs.
 # Adding -n makes jq use null as its initial input, so [inputs] sees all lines.
 # ---------------------------------------------------------------------------
-@test "r8-fix1: jq -Rnc collects all containers including alphabetically-first" {
+@test "jq -Rnc collects all containers including alphabetically-first" {
     # Simulate ./make list output: 3 containers in alphabetical order.
     # The first one (ansible) was previously dropped by jq -Rc (no -n).
     local make_output
@@ -1730,7 +1730,7 @@ STUB
 # prevent container "foo"'s matrix job from creating its drift PR.
 # The jq filter must restrict error counting to the matrix container only.
 # ---------------------------------------------------------------------------
-@test "r8-fix2: error_count scoped to matrix container — bar error does not block foo" {
+@test "error_count scoped to matrix container — bar error does not block foo" {
     # Synthetic drift JSON: foo has drift (clean), bar has an error variant
     local drift_json
     drift_json=$(cat <<'EOF'
@@ -1782,7 +1782,7 @@ EOF
 # (returned by ./make list-builds) must be silently skipped.  Only active-tag
 # entries should be reported.
 # ---------------------------------------------------------------------------
-@test "r9-fix1a: stale tag in lineage is skipped; active tag is reported" {
+@test "stale tag in lineage is skipped; active tag is reported" {
     local lineage_dir="$TEST_TEMP_DIR/r9fix1a/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -1830,7 +1830,7 @@ EOF
     [ "$reported_tag" = "2.0" ]
 }
 
-@test "r9-fix1b: stale tag skip emits ::notice:: to stderr" {
+@test "stale tag skip emits ::notice:: to stderr" {
     local lineage_dir="$TEST_TEMP_DIR/r9fix1b/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -1862,7 +1862,7 @@ EOF
 # Fix r9-2: tag sanitization — backticks and pipes in variant_tag are escaped
 # in GHA ::notice:: output (via _escape_gha_command applied at extraction).
 # ---------------------------------------------------------------------------
-@test "r9-fix2: update-last-rebuild escapes backticks and pipes in variant_tag" {
+@test "update-last-rebuild escapes backticks and pipes in variant_tag" {
     # Regression guard: a poisoned variant_tag containing backticks or pipes in the
     # drift JSON must be escaped before embedding in LAST_REBUILD.md markdown.
     local fake_root="$TEST_TEMP_DIR/r9fix2"
@@ -1906,7 +1906,7 @@ STUB
 # ---------------------------------------------------------------------------
 # Fix r9-3: container name with embedded newline is rejected before grep check
 # ---------------------------------------------------------------------------
-@test "r9-fix3: container name with embedded newline is rejected before grep validation" {
+@test "container name with embedded newline is rejected before grep validation" {
     local lineage_dir="$TEST_TEMP_DIR/r9fix3/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -1941,7 +1941,7 @@ bar" \
 # produce an empty array, and the shell-level check must detect length == 0.
 # This mirrors the fix applied in upstream-monitor.yaml.
 # ---------------------------------------------------------------------------
-@test "r9-fix4: empty make_list_out is detected before jq pipeline" {
+@test "empty make_list_out is detected before jq pipeline" {
     # Simulate the fixed pattern: the guard checks the raw string BEFORE piping
     # into jq -Rnc, because a here-string of "" sends a newline to jq which
     # produces [""] (length 1) — false non-empty.
@@ -1952,7 +1952,7 @@ bar" \
     [ -z "$trimmed" ]
 }
 
-@test "r9-fix4b: jq -Rnc on non-empty make list output is non-zero length" {
+@test "jq -Rnc on non-empty make list output is non-zero length" {
     local make_list_out
     make_list_out=$(printf 'ansible\ndebian\nphp\n')
 
@@ -1974,7 +1974,7 @@ bar" \
 # infinite drift-PR loops.
 # ---------------------------------------------------------------------------
 
-@test "r10-fix2a: list-builds failure → container emits error record (r29 Finding 2)" {
+@test "list-builds failure → container emits error record (r29 Finding 2)" {
     local lineage_dir="$TEST_TEMP_DIR/r10fix2a/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2015,7 +2015,7 @@ EOF
     [ "$err_reason" = "active_tags_unavailable" ]
 }
 
-@test "r10-fix2b: script contains fail-closed warning text (code audit)" {
+@test "script contains fail-closed warning text (code audit)" {
     # The production list-builds failure path (without _VALID_CONTAINERS_OVERRIDE)
     # cannot be exercised in tests without a full project context (the detector derives
     # PROJECT_ROOT from BASH_SOURCE[0] at startup, so env-var override is impossible).
@@ -2025,7 +2025,7 @@ EOF
     grep -q 'fail-closed' "${DETECTOR_SCRIPT}"
 }
 
-@test "r10-fix2c: stale tag still skipped when active-tags succeeds (no regression)" {
+@test "stale tag still skipped when active-tags succeeds (no regression)" {
     local lineage_dir="$TEST_TEMP_DIR/r10fix2c/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2076,7 +2076,7 @@ EOF
 # entry without calling the registry.
 # ---------------------------------------------------------------------------
 
-@test "r10-fix3a: poisoned base_image_ref (evil.com) is rejected without probe" {
+@test "poisoned base_image_ref (evil.com) is rejected without probe" {
     local lineage_dir="$TEST_TEMP_DIR/r10fix3a/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2129,7 +2129,7 @@ STUB
     [ "$err_reason" = "untrusted_ref" ]
 }
 
-@test "r10-fix3b: valid ghcr.io ref passes validation and is probed normally" {
+@test "valid ghcr.io ref passes validation and is probed normally" {
     local lineage_dir="$TEST_TEMP_DIR/r10fix3b/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2159,7 +2159,7 @@ EOF
     [ "$status" = "drift" ]
 }
 
-@test "r10-fix3c: Docker Hub bare name passes validation and is probed normally" {
+@test "Docker Hub bare name passes validation and is probed normally" {
     local lineage_dir="$TEST_TEMP_DIR/r10fix3c/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2187,7 +2187,7 @@ EOF
     [ "$status" = "drift" ]
 }
 
-@test "r10-fix3d: mcr.microsoft.com ref passes validation" {
+@test "mcr.microsoft.com ref passes validation" {
     local lineage_dir="$TEST_TEMP_DIR/r10fix3d/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2225,7 +2225,7 @@ EOF
 # containers.
 # ---------------------------------------------------------------------------
 
-@test "r17-fix-a: docker.io/library/* ref passes validation and is probed normally" {
+@test "docker.io/library/* ref passes validation and is probed normally" {
     local lineage_dir="$TEST_TEMP_DIR/r17fixa/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2254,7 +2254,7 @@ EOF
     [ "$status" = "drift" ]
 }
 
-@test "r17-fix-b: docker.io/oorabona/* ref passes validation and is probed normally" {
+@test "docker.io/oorabona/* ref passes validation and is probed normally" {
     local lineage_dir="$TEST_TEMP_DIR/r17fixb/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2556,7 +2556,7 @@ EOF
 # called 3 times in sequence; it verifies (a) the script completes without
 # "unbound variable" error and (b) all 3 entries produce drift output.
 # ---------------------------------------------------------------------------
-@test "r18-fix: multi-entry probe sequence completes without unbound-variable crash" {
+@test "multi-entry probe sequence completes without unbound-variable crash" {
     local lineage_dir="$TEST_TEMP_DIR/r18fix/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2611,7 +2611,7 @@ gamma" \
 # The fix adds an explicit leading-slash guard at function entry.
 # ---------------------------------------------------------------------------
 
-@test "s1-fix: leading-slash ref /alpine:3.21 is rejected by _validate_image_ref" {
+@test "leading-slash ref /alpine:3.21 is rejected by _validate_image_ref" {
     local lineage_dir="$TEST_TEMP_DIR/s1fix/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2663,7 +2663,7 @@ STUB
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# r21-A: grep option injection — variant tag '--help'
+# grep option injection — variant tag '--help'
 # A lineage tag value of '--help' must NOT be treated as a grep option.
 # The stale-tag filter must reject/skip the entry (not match as active),
 # not print grep help text and exit 0 (which would accept the tag).
@@ -2671,7 +2671,7 @@ STUB
 # grep treats '--help' as an option → prints help and exits 0 → probe is
 # called → this test fails.
 # ---------------------------------------------------------------------------
-@test "r21-A: variant tag '--help' is treated as literal string, not grep option" {
+@test "variant tag '--help' is treated as literal string, not grep option" {
     local lineage_dir="$TEST_TEMP_DIR/r21a/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2710,13 +2710,13 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
-# r21-A2: grep option injection — container name '--help' in lineage JSON
+# grep option injection — container name '--help' in lineage JSON
 # A container field of '--help' in the lineage must be rejected as not in
 # ./make list, not accepted because grep printed help text and exited 0.
 # Mutation guard: removing `--` from `grep -qxF -- "$container"` causes
 # grep to treat '--help' as an option → exits 0 → probe would be called.
 # ---------------------------------------------------------------------------
-@test "r21-A2: container name '--help' in lineage is rejected as invalid (not a grep option)" {
+@test "container name '--help' in lineage is rejected as invalid (not a grep option)" {
     local lineage_dir="$TEST_TEMP_DIR/r21a2/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2754,7 +2754,7 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
-# r21-C: localhost allowlist bypass
+# localhost allowlist bypass
 # 'localhost/foo:1.0' must be rejected by _validate_image_ref: Docker/OCI
 # treats bare 'localhost' as an explicit registry host (not a Docker Hub org),
 # so it must hit the allowlist check and be denied.
@@ -2762,7 +2762,7 @@ STUB
 # to fall through to the "no dot, no colon → Docker Hub org" path → return 0
 # → probe would be called.
 # ---------------------------------------------------------------------------
-@test "r21-C: localhost/foo:1.0 is rejected by _validate_image_ref (not a Docker Hub org)" {
+@test "localhost/foo:1.0 is rejected by _validate_image_ref (not a Docker Hub org)" {
     local lineage_dir="$TEST_TEMP_DIR/r21c/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2801,7 +2801,7 @@ STUB
     [ "$err_reason" = "untrusted_ref" ]
 }
 
-@test "r21-C: localhost:5000/foo:1.0 is rejected by _validate_image_ref (host:port localhost)" {
+@test "localhost:5000/foo:1.0 is rejected by _validate_image_ref (host:port localhost)" {
     local lineage_dir="$TEST_TEMP_DIR/r21c2/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2847,7 +2847,7 @@ STUB
 # so the operator sees the corruption explicitly rather than a bogus drift PR.
 # ---------------------------------------------------------------------------
 
-@test "r23-fix-a: short hex recorded_digest surfaces as error, not drift" {
+@test "short hex recorded_digest surfaces as error, not drift" {
     local lineage_dir="$TEST_TEMP_DIR/r23a/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2902,7 +2902,7 @@ STUB
     [ "$error_reason" = "malformed_recorded_digest" ]
 }
 
-@test "r23-fix-b: non-sha256 recorded_digest string surfaces as error, not drift" {
+@test "non-sha256 recorded_digest string surfaces as error, not drift" {
     local lineage_dir="$TEST_TEMP_DIR/r23b/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2945,7 +2945,7 @@ STUB
     [ "$error_reason" = "malformed_recorded_digest" ]
 }
 
-@test "r23-fix-c: well-formed recorded_digest still reaches probe and compares normally" {
+@test "well-formed recorded_digest still reaches probe and compares normally" {
     local lineage_dir="$TEST_TEMP_DIR/r23c/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -3001,7 +3001,7 @@ STUB
 # (simulating what `./make list-builds <container> current` returns post-fix).
 # ---------------------------------------------------------------------------
 
-@test "r24-fix1a: upstream-pending scenario — lineage tag matches current published; drift detected" {
+@test "upstream-pending scenario — lineage tag matches current published; drift detected" {
     # Simulate: upstream just released 2.0 (future), but currently published is 1.0.
     # Lineage file records tag 1.0 (currently published).
     # _ACTIVE_TAGS_OVERRIDE_ is set to "1.0" (what `list-builds current` returns).
@@ -3051,7 +3051,7 @@ EOF
     [ "$status" = "drift" ]
 }
 
-@test "r24-fix1b: upstream-pending scenario — pre-fix simulation: tag 2.0 active rejects 1.0 as stale (no false-positive)" {
+@test "upstream-pending scenario — pre-fix simulation: tag 2.0 active rejects 1.0 as stale (no false-positive)" {
     # Validate the opposite: if active tags were set to "2.0" (the future/upstream state,
     # which is what the pre-fix `latest` resolution would have returned), then the 1.0
     # lineage entry is treated as stale and skipped — this is the false-negative the fix
@@ -3086,7 +3086,7 @@ EOF
     echo "$stderr_output" | grep -q "Skipping stale lineage entry"
 }
 
-@test "r24-fix2: empty-override (backward compat) bypasses stale filter — entry reaches probe stage" {
+@test "empty-override (backward compat) bypasses stale filter — entry reaches probe stage" {
     # When _ACTIVE_TAGS_OVERRIDE_myimage is set to an empty string, the filter logic
     # short-circuits (empty _active_tags → -n check fails → condition is false) and the
     # entry is NOT skipped.  This is the backward-compat path documented in the filter code.
@@ -3131,14 +3131,14 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# r25-A: GHA workflow-command escape — rejected container / tag values
+# GHA workflow-command escape — rejected container / tag values
 # Regression guard for Defect A (gate r25): the rejection-path ::warning::
 # must route poisoned values through _escape_gha_command, NOT printf '%q'.
 # A value containing a literal %0A must appear as %250A in the warning
 # (% → %25 then 0A suffix), not as a raw newline or %0A command separator.
 # A value embedding ::add-mask:: must not reintroduce that command.
 # ---------------------------------------------------------------------------
-@test "r25-A1: container name with literal %0A is not passed raw in ::warning::" {
+@test "container name with literal %0A is not passed raw in ::warning::" {
     # Build a lineage file where container field contains the literal string %0A
     # (percent-zero-A — a GHA encoded newline that would inject a new command).
     local lineage_dir="$TEST_TEMP_DIR/r25a1/.build-lineage"
@@ -3181,7 +3181,7 @@ EOF
     fi
 }
 
-@test "r25-A2: tag with newline cntrl char — ::warning:: must not contain raw newline after rejection" {
+@test "tag with newline cntrl char — ::warning:: must not contain raw newline after rejection" {
     # Build a lineage file with a tag containing an embedded newline (cntrl char).
     # The rejection path at the cntrl-char check must emit the value through
     # _escape_gha_command so the newline becomes %0A (literal percent-zero-A),
@@ -3216,7 +3216,7 @@ pathlib.Path('${lineage_dir}/foo-1.0.json').write_text(json.dumps(d))
 }
 
 # ---------------------------------------------------------------------------
-# r27-B: dash-prefix option injection in _validate_image_ref
+# dash-prefix option injection in _validate_image_ref
 #
 # A base_image_ref starting with '-' must be rejected by _validate_image_ref.
 # Without the guard, refs like '-h', '--config /tmp/x', or '-foo:1.0' flow to
@@ -3244,7 +3244,7 @@ _r27b_lineage_with_ref() {
         '}' > "$lineage_dir/foo-1.0.json"
 }
 
-@test "r27-B1: _validate_image_ref rejects '-h' (short option injection)" {
+@test "_validate_image_ref rejects '-h' (short option injection)" {
     local lineage_dir="$TEST_TEMP_DIR/r27b1/.build-lineage"
     _r27b_lineage_with_ref "$lineage_dir" "-h"
 
@@ -3271,7 +3271,7 @@ _r27b_lineage_with_ref() {
     [ "$err_reason" = "untrusted_ref" ]
 }
 
-@test "r27-B2: _validate_image_ref rejects '--config' (long option injection)" {
+@test "_validate_image_ref rejects '--config' (long option injection)" {
     local lineage_dir="$TEST_TEMP_DIR/r27b2/.build-lineage"
     _r27b_lineage_with_ref "$lineage_dir" "--config"
 
@@ -3297,7 +3297,7 @@ _r27b_lineage_with_ref() {
     [ "$err_reason" = "untrusted_ref" ]
 }
 
-@test "r27-B3: _validate_image_ref rejects '-foo:1.0' (dash-prefix with tag)" {
+@test "_validate_image_ref rejects '-foo:1.0' (dash-prefix with tag)" {
     local lineage_dir="$TEST_TEMP_DIR/r27b3/.build-lineage"
     _r27b_lineage_with_ref "$lineage_dir" "-foo:1.0"
 
@@ -3324,7 +3324,7 @@ _r27b_lineage_with_ref() {
 }
 
 # ---------------------------------------------------------------------------
-# r29-2: error records on list-builds failure (gate r29, Finding 2)
+# error records on list-builds failure (gate r29, Finding 2)
 #
 # When ./make list-builds fails or returns empty for a container, the
 # detector must emit one status:"error" record per known lineage entry
@@ -3332,7 +3332,7 @@ _r27b_lineage_with_ref() {
 # workflow surfaces the gap.
 # ---------------------------------------------------------------------------
 
-@test "r29-2: stub list-builds failure emits error record per lineage entry" {
+@test "stub list-builds failure emits error record per lineage entry" {
     local lineage_dir="$TEST_TEMP_DIR/r29-2/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -3388,7 +3388,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# r29-3: error record on rejected base_image_ref (gate r29, Finding 3)
+# error record on rejected base_image_ref (gate r29, Finding 3)
 #
 # When _validate_image_ref rejects a base_image_ref (untrusted registry,
 # dash-prefix, etc.), the detector must emit a status:"error" record with
@@ -3397,7 +3397,7 @@ EOF
 # → poisoned lineage left the workflow green.
 # ---------------------------------------------------------------------------
 
-@test "r29-3: untrusted registry base_image_ref emits error record with untrusted_ref reason" {
+@test "untrusted registry base_image_ref emits error record with untrusted_ref reason" {
     local lineage_dir="$TEST_TEMP_DIR/r29-3/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -3687,11 +3687,11 @@ EOF
 # the other containers must still appear with their normal records.
 #
 # Invariants:
-#   IV-F2a: overall exit code is 0 (not aborted)
-#   IV-F2b: failing container is surfaced as status:error, error_reason:dep_graph_unavailable
-#   IV-F2c: failing container does NOT have internal_deps field (no unsafe leaf)
-#   IV-F2d: succeeding container still appears with its normal drift/unchanged record
-#   IV-F2e: succeeding container IS NOT emitted as normal record with internal_deps:[]
+#   overall exit code is 0 (not aborted)
+#   failing container is surfaced as status:error, error_reason:dep_graph_unavailable
+#   failing container does NOT have internal_deps field (no unsafe leaf)
+#   succeeding container still appears with its normal drift/unchanged record
+#   succeeding container IS NOT emitted as normal record with internal_deps:[]
 #            (it has internal_deps because dep-graph succeeded for it)
 #
 # Strategy: patch helpers/dependency-graph.sh in a fake root so _depgraph_get_deps
@@ -3701,7 +3701,7 @@ EOF
 # NOT call ./make list-builds.  To force a per-container failure in the output-assembly
 # loop (line 696), we patch _depgraph_get_deps in the copied helper.
 # ---------------------------------------------------------------------------
-@test "F2: multi-container run — one dep-graph failure is isolated, other container proceeds" {
+@test "multi-container run — one dep-graph failure is isolated, other container proceeds" {
     local fake_root="$TEST_TEMP_DIR/depgraph-fail-multi"
     mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
@@ -3774,7 +3774,7 @@ STUB
         PROBE_CMD="$probe_stub" \
         bash scripts/detect-base-digest-drift.sh ".build-lineage" 2>/dev/null) || rc=$?
 
-    # IV-F2a: overall exit 0 — one container failure must not abort the run
+    # overall exit 0 — one container failure must not abort the run
     [ "$rc" -eq 0 ]
 
     # Output must be valid JSON
@@ -3784,7 +3784,7 @@ STUB
     total=$(printf '%s' "$result" | jq 'length')
     [ "$total" -eq 2 ]
 
-    # IV-F2b: failcontainer surfaced as status:error with dep_graph_unavailable reason
+    # failcontainer surfaced as status:error with dep_graph_unavailable reason
     fail_status=$(printf '%s' "$result" | \
         jq -r '.[] | select(.container == "failcontainer") | .variants[0].status')
     [ "$fail_status" = "error" ]
@@ -3793,17 +3793,17 @@ STUB
         jq -r '.[] | select(.container == "failcontainer") | .variants[0].error_reason')
     [ "$fail_reason" = "dep_graph_unavailable" ]
 
-    # IV-F2c: failcontainer does NOT have internal_deps (no unsafe empty-deps leaf)
+    # failcontainer does NOT have internal_deps (no unsafe empty-deps leaf)
     fail_has_deps=$(printf '%s' "$result" | \
         jq '.[] | select(.container == "failcontainer") | has("internal_deps")')
     [ "$fail_has_deps" = "false" ]
 
-    # IV-F2d: okcontainer appears with a normal drift record
+    # okcontainer appears with a normal drift record
     ok_status=$(printf '%s' "$result" | \
         jq -r '.[] | select(.container == "okcontainer") | .variants[0].status')
     [ "$ok_status" = "drift" ]
 
-    # IV-F2e: okcontainer has internal_deps field (dep-graph succeeded) with empty array (no internal refs)
+    # okcontainer has internal_deps field (dep-graph succeeded) with empty array (no internal refs)
     ok_has_deps=$(printf '%s' "$result" | \
         jq '.[] | select(.container == "okcontainer") | has("internal_deps")')
     [ "$ok_has_deps" = "true" ]
@@ -3900,7 +3900,7 @@ EOF
 # Mutation guard: removing the charset gate causes the metachar container to
 # appear in the output (the test catches the regression).
 # ---------------------------------------------------------------------------
-@test "F1a: container name with semicolon (web;rm) is rejected, excluded from output" {
+@test "container name with semicolon (web;rm) is rejected, excluded from output" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage-f1a"
     mkdir -p "$lineage_dir"
 
@@ -3931,7 +3931,7 @@ EOF
     grep -q '::warning::' "$stderr_log"
 }
 
-@test "F1a: container name with only valid chars (web-shell) passes the charset gate" {
+@test "container name with only valid chars (web-shell) passes the charset gate" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage-f1a-valid"
     mkdir -p "$lineage_dir"
 
@@ -3977,7 +3977,7 @@ EOF
 # Before Fix 3, _DEPGRAPH_LINEAGE_DIR was never set by the detector, so the
 # helper fell back to PROJECT_ROOT/.build-lineage regardless of the CLI arg.
 # ---------------------------------------------------------------------------
-@test "F3: alternate LINEAGE_DIR is propagated to dep-graph — deps reflect alt-dir lineage" {
+@test "alternate LINEAGE_DIR is propagated to dep-graph — deps reflect alt-dir lineage" {
     # Alt lineage dir: contains a wordpress entry whose base is php (internal dep).
     # Uses ghcr.io/oorabona/php:8.3 with GITHUB_REPOSITORY_OWNER=oorabona so
     # _depgraph_is_internal_ref can classify it without a git remote lookup.
@@ -4031,7 +4031,7 @@ php" \
     [ "$php_present" = "true" ]
 }
 
-@test "F3: default LINEAGE_DIR (no alt arg) still works — dep-graph reads default dir" {
+@test "default LINEAGE_DIR (no alt arg) still works — dep-graph reads default dir" {
     # No positional arg → LINEAGE_DIR defaults to PROJECT_ROOT/.build-lineage.
     # Uses ghcr.io/oorabona/php:8.3 with GITHUB_REPOSITORY_OWNER=oorabona.
     local default_lineage="$TEST_TEMP_DIR/.build-lineage"
@@ -4119,7 +4119,7 @@ STUB_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MG5: Probe dedup — same base_image_ref probed at most once per run
+# Probe dedup — same base_image_ref probed at most once per run
 #
 # Scenario-3 has two foo variants (1.0-alpine and 1.0-alpine2) that both use
 # base_image_ref = "alpine:3.21".  With memoization, the real probe runs
@@ -4128,7 +4128,7 @@ STUB_EOF
 # Mutation guard: deleting the _DIGEST_CACHE lookup would make the counter
 # reach 2 (one per variant), failing the [ "$count" -eq 1 ] assertion.
 # ---------------------------------------------------------------------------
-@test "scenario-3: probe dedup — shared base_image_ref probed exactly once (guard MG5)" {
+@test "probe dedup — shared base_image_ref probed exactly once (guard MG5)" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-3"
     local counter_dir="$TEST_TEMP_DIR/probe-counters"
     local probe_stub
@@ -4146,7 +4146,7 @@ STUB_EOF
     [ "$count" -eq 1 ]
 }
 
-@test "scenario-3: probe dedup — both variants still receive correct drift status (guard MG5)" {
+@test "probe dedup — both variants still receive correct drift status (guard MG5)" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-3"
     local counter_dir="$TEST_TEMP_DIR/probe-counters-b"
     local probe_stub
@@ -4168,7 +4168,7 @@ STUB_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MG6: --container scope filter
+# --container scope filter
 #
 # Scenario-2 has two containers: foo (alpine + debian) and bar (ubuntu + rocky).
 # Running with --container foo must:
@@ -4179,7 +4179,7 @@ STUB_EOF
 # Mutation guard: deleting the `continue` skip would cause bar to appear in
 # output and the ubuntu/rocky counters to be non-zero.
 # ---------------------------------------------------------------------------
-@test "scenario-2: --container foo — output contains only foo (guard MG6)" {
+@test "--container foo — output contains only foo (guard MG6)" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-2"
     local counter_dir="$TEST_TEMP_DIR/mg6-counters"
     local probe_stub
@@ -4199,7 +4199,7 @@ STUB_EOF
     [ "$container_name" = "foo" ]
 }
 
-@test "scenario-2: --container foo — bar is absent from output (guard MG6)" {
+@test "--container foo — bar is absent from output (guard MG6)" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-2"
     local probe_stub
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
@@ -4212,7 +4212,7 @@ STUB_EOF
     [ "$bar_count" -eq 0 ]
 }
 
-@test "scenario-2: --container foo — bar's refs are NOT probed (skip before probe, guard MG6)" {
+@test "--container foo — bar's refs are NOT probed (skip before probe, guard MG6)" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-2"
     local counter_dir="$TEST_TEMP_DIR/mg6-skip-counters"
     local probe_stub
@@ -4227,7 +4227,7 @@ STUB_EOF
     [ ! -f "${counter_dir}/rockylinux-9" ]
 }
 
-@test "scenario-2: --container nonexistent — empty output (fail-safe)" {
+@test "--container nonexistent — empty output (fail-safe)" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-2"
     local probe_stub
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
@@ -4243,7 +4243,7 @@ STUB_EOF
 # filename stem.  Scenario-4 has a file named "wrongname-1.0-alpine.json"
 # whose .container field is "foo".  A filename-based filter would miss it;
 # a field-based filter finds it.
-@test "scenario-4: --container foo finds entry whose filename stem is 'wrongname' (field-not-filename, guard MG6)" {
+@test "--container foo finds entry whose filename stem is 'wrongname' (field-not-filename, guard MG6)" {
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-4"
     local probe_stub
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")

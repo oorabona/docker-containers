@@ -2,20 +2,20 @@
 # Unit tests for helpers/bake-managed.sh — ADR-013 bake/matrix partition slice
 #
 # Mutation guards (named per test):
-#   MM1: Remove github-runner from default set → github-runner lands in matrix instead of bake
-#   MM2: Remove web-shell from default set → web-shell lands in matrix instead of bake
-#   MM3: Remove wordpress from default set → wordpress lands in matrix instead of bake
-#   MM3b: Remove debian/vector/jekyll/ansible from default set → they land in matrix instead of bake
-#   MM3c: Remove sslh/openvpn/php/openresty/terraform/postgres from default set → they land in matrix instead of bake
-#   MM4: Ignore BAKE_MANAGED_CONTAINERS override → env override has no effect
-#   MM5: Skip bake partition entirely → all cells end up in matrix (wrong)
-#   MM6: Duplicate cells across partitions → total count exceeds input length
-#   MM7: Drop cells during partition → total count below input length
-#   MM8: Reverse partition logic → bake-managed containers land in matrix
-#   MM9: Change is_bake_managed return codes → 0/1 inverted
-#   MM10: Corrupt cell objects during partition → cell fields lost
-#   MM11: Drop OS guard — windows cell of bake-managed container lands in bake instead of matrix
-#   MM12: Treat absent .os as non-linux — linux cell without .os field excluded from bake
+#   Remove github-runner from default set → github-runner lands in matrix instead of bake
+#   Remove web-shell from default set → web-shell lands in matrix instead of bake
+#   Remove wordpress from default set → wordpress lands in matrix instead of bake
+#   Remove debian/vector/jekyll/ansible from default set → they land in matrix instead of bake
+#   Remove sslh/openvpn/php/openresty/terraform/postgres from default set → they land in matrix instead of bake
+#   Ignore BAKE_MANAGED_CONTAINERS override → env override has no effect
+#   Skip bake partition entirely → all cells end up in matrix (wrong)
+#   Duplicate cells across partitions → total count exceeds input length
+#   Drop cells during partition → total count below input length
+#   Reverse partition logic → bake-managed containers land in matrix
+#   Change is_bake_managed return codes → 0/1 inverted
+#   Corrupt cell objects during partition → cell fields lost
+#   Drop OS guard — windows cell of bake-managed container lands in bake instead of matrix
+#   Treat absent .os as non-linux — linux cell without .os field excluded from bake
 
 load "../test_helper"
 
@@ -130,14 +130,14 @@ _fixture_postgres_all_versions_builds() {
 }
 
 # ---------------------------------------------------------------------------
-# BM-01: Default partition — bake-managed containers (github-runner/web-shell/wordpress)
+# Default partition — bake-managed containers (github-runner/web-shell/wordpress)
 #        land in .bake; debian (no is_latest_version:true in fixture) and terraform
 #        (no is_latest_version:true in fixture) land in .matrix.
 # Both debian and terraform are bake-managed; they stay in .matrix only because their
 # fixture cells lack is_latest_version:true (the is_latest_version gate fires first).
 # Catches: MM1, MM2, MM3, MM5, MM8
 # ---------------------------------------------------------------------------
-@test "BM-01: default partition routes github-runner/web-shell/wordpress to bake, others to matrix" {
+@test "default partition routes github-runner/web-shell/wordpress to bake, others to matrix" {
     # Source the helper
     # shellcheck disable=SC1090
     source "$BM"
@@ -166,10 +166,10 @@ _fixture_postgres_all_versions_builds() {
 }
 
 # ---------------------------------------------------------------------------
-# BM-02: Counts add up — no cell is lost or duplicated.
+# Counts add up — no cell is lost or duplicated.
 # Catches: MM6, MM7
 # ---------------------------------------------------------------------------
-@test "BM-02: partition is lossless — bake+matrix count equals input count" {
+@test "partition is lossless — bake+matrix count equals input count" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -185,11 +185,11 @@ _fixture_postgres_all_versions_builds() {
 }
 
 # ---------------------------------------------------------------------------
-# BM-03: Order preserved — cells appear in the same relative order within each
+# Order preserved — cells appear in the same relative order within each
 #        partition as in the input array.
 # Catches: MM10 (partial — verifies object integrity and ordering)
 # ---------------------------------------------------------------------------
-@test "BM-03: partition preserves cell order within each partition" {
+@test "partition preserves cell order within each partition" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -212,12 +212,12 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-04: BAKE_MANAGED_CONTAINERS env override — only the overridden container
+# BAKE_MANAGED_CONTAINERS env override — only the overridden container
 #        lands in .bake; the default set (github-runner/web-shell/wordpress)
 #        falls through to .matrix.
 # Catches: MM4
 # ---------------------------------------------------------------------------
-@test "BM-04: BAKE_MANAGED_CONTAINERS env override changes partition" {
+@test "BAKE_MANAGED_CONTAINERS env override changes partition" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -247,9 +247,9 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-05: Empty input [] → {"bake":[],"matrix":[]}
+# Empty input [] → {"bake":[],"matrix":[]}
 # ---------------------------------------------------------------------------
-@test "BM-05: empty input array returns empty bake and matrix partitions" {
+@test "empty input array returns empty bake and matrix partitions" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -259,10 +259,10 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-06: is_bake_managed — github-runner returns 0 (in set).
+# is_bake_managed — github-runner returns 0 (in set).
 # Catches: MM9
 # ---------------------------------------------------------------------------
-@test "BM-06: is_bake_managed returns 0 for github-runner (default set)" {
+@test "is_bake_managed returns 0 for github-runner (default set)" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -271,10 +271,10 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-07: is_bake_managed — debian returns 0 (now in default set, PR-B slice 1).
+# is_bake_managed — debian returns 0 (now in default set, PR-B slice 1).
 # Catches: MM9
 # ---------------------------------------------------------------------------
-@test "BM-07: is_bake_managed returns 0 for debian (now in default set)" {
+@test "is_bake_managed returns 0 for debian (now in default set)" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -283,11 +283,11 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-08: is_bake_managed — web-shell and postgres return 0; a synthetic
+# is_bake_managed — web-shell and postgres return 0; a synthetic
 #         legacy-matrix container returns 1.
 # Catches: MM1, MM2, MM3, MM9 (broader coverage)
 # ---------------------------------------------------------------------------
-@test "BM-08: is_bake_managed covers web-shell/postgres (0) and legacy-matrix (1)" {
+@test "is_bake_managed covers web-shell/postgres (0) and legacy-matrix (1)" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -302,11 +302,11 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-08b: is_bake_managed — PR-B slice 1 containers (debian/vector/jekyll/ansible)
+# is_bake_managed — PR-B slice 1 containers (debian/vector/jekyll/ansible)
 #          return 0 (in default set).  terraform joined the bake-managed set in
 #          PR-B slices 2-4 (see BM-08c).
 # ---------------------------------------------------------------------------
-@test "BM-08b: is_bake_managed returns 0 for debian/vector/jekyll/ansible/postgres" {
+@test "is_bake_managed returns 0 for debian/vector/jekyll/ansible/postgres" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -327,12 +327,12 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-08c: is_bake_managed — PR-B slices 2-4 new containers (sslh/openvpn/php/
+# is_bake_managed — PR-B slices 2-4 new containers (sslh/openvpn/php/
 #          openresty/terraform) return 0 (now in default set); synthetic
 #          legacy-matrix returns 1.
 # Catches: MM3c
 # ---------------------------------------------------------------------------
-@test "BM-08c: is_bake_managed returns 0 for sslh/openvpn/php/openresty/terraform; 1 for legacy-matrix" {
+@test "is_bake_managed returns 0 for sslh/openvpn/php/openresty/terraform; 1 for legacy-matrix" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -356,11 +356,11 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-08d: Full 13-container bake-managed set — every Linux container that routes
+# Full 13-container bake-managed set — every Linux container that routes
 #          through bake is listed.
 #          Mutation guard for the complete set (MM3c comprehensive coverage).
 # ---------------------------------------------------------------------------
-@test "BM-08d: all 13 bake-managed containers return 0; legacy-matrix returns 1" {
+@test "all 13 bake-managed containers return 0; legacy-matrix returns 1" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -380,10 +380,10 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-09: Cell objects are preserved intact — all fields survive partition.
+# Cell objects are preserved intact — all fields survive partition.
 # Catches: MM10
 # ---------------------------------------------------------------------------
-@test "BM-09: partition preserves all cell fields (no field loss)" {
+@test "partition preserves all cell fields (no field loss)" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -402,9 +402,9 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-10: Malformed input (not a JSON array) → exit code 1, ::error:: on stderr.
+# Malformed input (not a JSON array) → exit code 1, ::error:: on stderr.
 # ---------------------------------------------------------------------------
-@test "BM-10: malformed input (not an array) returns non-zero exit and error message" {
+@test "malformed input (not an array) returns non-zero exit and error message" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -417,12 +417,12 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-11: OS guard — github-runner windows cell stays in .matrix even though
+# OS guard — github-runner windows cell stays in .matrix even though
 #         github-runner is bake-managed. The bake generator is linux-only; a
 #         windows cell in .bake would be orphaned (built by neither path).
 # Catches: MM11
 # ---------------------------------------------------------------------------
-@test "BM-11: github-runner windows cell routes to matrix, not bake" {
+@test "github-runner windows cell routes to matrix, not bake" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -442,12 +442,12 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-12: OS guard — github-runner linux cell (explicit .os="linux") goes to .bake;
+# OS guard — github-runner linux cell (explicit .os="linux") goes to .bake;
 #         github-runner cell with absent .os (omitted field) also goes to .bake
 #         (absent .os is treated as linux because linux cells may omit the field).
 # Catches: MM12
 # ---------------------------------------------------------------------------
-@test "BM-12: github-runner linux cell and absent-os cell both route to bake" {
+@test "github-runner linux cell and absent-os cell both route to bake" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -474,12 +474,12 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-13: bake_latest_only — github-runner retained cell (is_latest_version:false)
+# bake_latest_only — github-runner retained cell (is_latest_version:false)
 #         routes to .matrix; github-runner latest cell (is_latest_version:true)
 #         routes to .bake.  Verifies the per-cell fidelity fix (FIX 1).
 # Catches: new finding — retained github-runner built by neither path without this fix
 # ---------------------------------------------------------------------------
-@test "BM-13: github-runner retained linux cell routes to matrix; latest linux cell routes to bake" {
+@test "github-runner retained linux cell routes to matrix; latest linux cell routes to bake" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -510,14 +510,14 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-14: Retained (non-latest) cells for ANY bake-managed container route to
+# Retained (non-latest) cells for ANY bake-managed container route to
 #         .matrix — bake is latest-only by design.  Tests web-shell (no
 #         variants.yaml bake_latest_only flag) and wordpress to verify the
 #         universal is_latest_version==true gate applies to all bake-managed
 #         containers, not just those that declare bake_latest_only.
 # Catches: retained bake-managed cell falsely recovered/unscanned by a latest-only bake run
 # ---------------------------------------------------------------------------
-@test "BM-14: retained web-shell and wordpress cells (is_latest_version:false) route to matrix" {
+@test "retained web-shell and wordpress cells (is_latest_version:false) route to matrix" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -562,12 +562,12 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-15: scoped runs are filtered before partitioning and no longer force the
+# scoped runs are filtered before partitioning and no longer force the
 #         matrix.  With force_matrix=false, scoped bake-managed latest Linux
 #         cells route to .bake, while retained/windows/non-bake cells stay in
 #         .matrix through the normal partition gates.
 # ---------------------------------------------------------------------------
-@test "BM-15: scoped subset allows bake-managed Linux cells to bake" {
+@test "scoped subset allows bake-managed Linux cells to bake" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -610,13 +610,13 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-17: PR routing no longer forces matrix.  With force_matrix=false, bake-managed
+# PR routing no longer forces matrix.  With force_matrix=false, bake-managed
 #         latest Linux cells route to .bake, while legacy-matrix/windows stay in .matrix
 #         through the normal partition gates.  PR Trivy coverage now runs inline in
 #         bake-build for those bake-managed cells.
 # Catches: PR routing accidentally preserving pull_request in force_matrix
 # ---------------------------------------------------------------------------
-@test "BM-17: PR routing allows bake-managed Linux cells to bake" {
+@test "PR routing allows bake-managed Linux cells to bake" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -655,10 +655,10 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-16: force_matrix default (absent) applies per-cell logic.
+# force_matrix default (absent) applies per-cell logic.
 #         Confirms that omitting the second arg is equivalent to force_matrix=false.
 # ---------------------------------------------------------------------------
-@test "BM-16: force_matrix absent is equivalent to false (per-cell routing)" {
+@test "force_matrix absent is equivalent to false (per-cell routing)" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -681,9 +681,9 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-18: _bake_retained_eligible — direct eligibility checks for B1-core.
+# _bake_retained_eligible — direct eligibility checks for B1-core.
 # ---------------------------------------------------------------------------
-@test "BM-18: _bake_retained_eligible accepts standalone eligible containers only" {
+@test "_bake_retained_eligible accepts standalone eligible containers only" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -707,10 +707,10 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-19: _bake_retained_eligible — missing config.yaml fails closed even when a
+# _bake_retained_eligible — missing config.yaml fails closed even when a
 #         test override places the container in both managed and rollout sets.
 # ---------------------------------------------------------------------------
-@test "BM-19: _bake_retained_eligible fails closed for missing config.yaml" {
+@test "_bake_retained_eligible fails closed for missing config.yaml" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -722,10 +722,10 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-20: include_retained=true — eligible retained cells route to bake; retained
+# include_retained=true — eligible retained cells route to bake; retained
 #         cells for latest-only, chained, and non-bake containers stay matrix.
 # ---------------------------------------------------------------------------
-@test "BM-20: include_retained=true routes only eligible retained cells to bake" {
+@test "include_retained=true routes only eligible retained cells to bake" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -772,9 +772,9 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-21: include_retained=false/absent preserves current retained routing.
+# include_retained=false/absent preserves current retained routing.
 # ---------------------------------------------------------------------------
-@test "BM-21: include_retained false or absent leaves all retained cells on matrix" {
+@test "include_retained false or absent leaves all retained cells on matrix" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -794,10 +794,10 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-22: postgres build.always_all_versions routes every final-image cell to
+# postgres build.always_all_versions routes every final-image cell to
 #         bake, including non-latest PG majors 17/16.
 # ---------------------------------------------------------------------------
-@test "BM-22: postgres always_all_versions routes all 21 cells to bake" {
+@test "postgres always_all_versions routes all 21 cells to bake" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -821,10 +821,10 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-23: Non-always-all managed containers still keep non-latest cells on the
+# Non-always-all managed containers still keep non-latest cells on the
 #         matrix when include_retained=false.
 # ---------------------------------------------------------------------------
-@test "BM-23: non-always-all managed retained cell stays matrix when include_retained=false" {
+@test "non-always-all managed retained cell stays matrix when include_retained=false" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -847,10 +847,10 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-24: Vanish-proof invariant — every input cell appears in exactly one
+# Vanish-proof invariant — every input cell appears in exactly one
 #         output partition.
 # ---------------------------------------------------------------------------
-@test "BM-24: partition is lossless and non-overlapping with postgres always-all cells" {
+@test "partition is lossless and non-overlapping with postgres always-all cells" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -876,9 +876,9 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-25: _has_extension_pipeline detects containers with extensions/config.yaml.
+# _has_extension_pipeline detects containers with extensions/config.yaml.
 # ---------------------------------------------------------------------------
-@test "BM-25: _has_extension_pipeline returns true for postgres and false for debian" {
+@test "_has_extension_pipeline returns true for postgres and false for debian" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -890,10 +890,10 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-26: extension_containers_in returns sorted-unique extension/final-build
+# extension_containers_in returns sorted-unique extension/final-build
 #         container lists from build-cell JSON.
 # ---------------------------------------------------------------------------
-@test "BM-26: extension_containers_in returns postgres for mixed builds and empty for postgres-free builds" {
+@test "extension_containers_in returns postgres for mixed builds and empty for postgres-free builds" {
     # shellcheck disable=SC1090
     source "$BM"
 

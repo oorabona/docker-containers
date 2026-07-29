@@ -35,7 +35,7 @@ make_container() {
 
 # ─── FIX 1: build_args_flags fail-closed enforcement ─────────────────────────
 
-@test "BAU-01: build_args_flags aborts (non-zero) when REMOTE_CR key present" {
+@test "build_args_flags aborts (non-zero) when REMOTE_CR key present" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "ubuntu"
@@ -47,7 +47,7 @@ EOF
     [[ "$output" =~ "REMOTE_CR" ]]
 }
 
-@test "BAU-02: build_args_flags aborts on non-identifier key (contains space)" {
+@test "build_args_flags aborts on non-identifier key (contains space)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   "X --network host": "val"
@@ -57,7 +57,7 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-@test "BAU-03: build_args_flags aborts on key with hyphen (invalid Docker ARG)" {
+@test "build_args_flags aborts on key with hyphen (invalid Docker ARG)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   INVALID-KEY: "value"
@@ -67,7 +67,7 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-@test "BAU-04: build_args_flags aborts on value with embedded space" {
+@test "build_args_flags aborts on value with embedded space" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "foo --network host"
@@ -77,7 +77,7 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-@test "BAU-05: build_args_flags aborts on value with embedded newline" {
+@test "build_args_flags aborts on value with embedded newline" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "ubuntu\n--build-arg\nREMOTE_CR=x"
@@ -87,7 +87,7 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-@test "BAU-06: build_args_flags aborts on non-scalar value (object)" {
+@test "build_args_flags aborts on non-scalar value (object)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE:
@@ -101,7 +101,7 @@ EOF
 # ─── FIX 1: regression lock — valid config emits identical flags ──────────────
 
 # php pattern: 4 build_args, all clean identifiers + scalar values (no whitespace)
-@test "BAU-PASS-01: php-shaped config (4 valid build_args) → correct flags emitted (regression lock)" {
+@test "php-shaped config (4 valid build_args) → correct flags emitted (regression lock)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "php"
@@ -121,7 +121,7 @@ EOF
     [[ ! "$output" =~ "REMOTE_CR" ]]
 }
 
-@test "BAU-PASS-02: empty build_args section → no flags, zero exit" {
+@test "empty build_args section → no flags, zero exit" {
     make_container "myapp" "$(cat <<'EOF'
 build_args: {}
 EOF
@@ -131,7 +131,7 @@ EOF
     [ -z "$output" ]
 }
 
-@test "BAU-PASS-03: absent build_args section → no flags, zero exit" {
+@test "absent build_args section → no flags, zero exit" {
     make_container "myapp" "$(cat <<'EOF'
 base_image: "ubuntu:latest"
 EOF
@@ -141,7 +141,7 @@ EOF
     [ -z "$output" ]
 }
 
-@test "BAU-PASS-04: ansible-shaped config (7 valid build_args) → correct flags emitted (regression lock)" {
+@test "ansible-shaped config (7 valid build_args) → correct flags emitted (regression lock)" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "ubuntu"
@@ -164,7 +164,7 @@ EOF
     [[ "$output" =~ "--build-arg PYCRYPTODOME_VERSION=3.23.0" ]]
 }
 
-@test "BAU-PASS-05: value with colon+slash (image ref, no whitespace) → PASS" {
+@test "value with colon+slash (image ref, no whitespace) → PASS" {
     make_container "myapp" "$(cat <<'EOF'
 build_args:
   WORDPRESS_IMAGE: "ghcr.io/oorabona/php:latest"
@@ -175,7 +175,7 @@ EOF
     [[ "$output" =~ "--build-arg WORDPRESS_IMAGE=ghcr.io/oorabona/php:latest" ]]
 }
 
-@test "BAU-PASS-06: no config.yaml → empty output, zero exit (no-op)" {
+@test "no config.yaml → empty output, zero exit (no-op)" {
     mkdir -p empty_container
     run build_args_flags "empty_container"
     [ "$status" -eq 0 ]
@@ -190,7 +190,7 @@ make_version_stub() {
     chmod +x version.sh
 }
 
-@test "PAB-01: prepare_build_args aborts (non-zero) when config has REMOTE_CR key" {
+@test "prepare_build_args aborts (non-zero) when config has REMOTE_CR key" {
     make_container "." "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "ubuntu"
@@ -204,7 +204,7 @@ EOF
     [[ "$output" =~ "build_args validation failed" ]] || [[ "$output" =~ "REMOTE_CR" ]]
 }
 
-@test "PAB-02: prepare_build_args aborts (non-zero) when config has whitespace-injecting value" {
+@test "prepare_build_args aborts (non-zero) when config has whitespace-injecting value" {
     make_container "." "$(cat <<'EOF'
 build_args:
   BASE_IMAGE: "foo --network host"
@@ -215,7 +215,7 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-@test "PAB-03: prepare_build_args aborts (non-zero) when config has non-identifier key" {
+@test "prepare_build_args aborts (non-zero) when config has non-identifier key" {
     make_container "." "$(cat <<'EOF'
 build_args:
   "INVALID-KEY": "value"
@@ -227,7 +227,7 @@ EOF
 }
 
 # Regression lock: valid php-shaped config must still succeed end-to-end
-@test "PAB-PASS-01: prepare_build_args succeeds + sets _BUILD_ARGS for php-shaped config" {
+@test "prepare_build_args succeeds + sets _BUILD_ARGS for php-shaped config" {
     make_container "." "$(cat <<'EOF'
 build_args:
   COMPOSER_VERSION: "2.9.8"
@@ -246,7 +246,7 @@ EOF
 }
 
 # Regression lock: no config.yaml → prepare_build_args still succeeds (no abort)
-@test "PAB-PASS-02: prepare_build_args succeeds when no config.yaml present" {
+@test "prepare_build_args succeeds when no config.yaml present" {
     # TEST_DIR has no config.yaml
     mkdir -p noconfig && cd noconfig
     prepare_build_args "2.0"

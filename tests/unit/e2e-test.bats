@@ -65,7 +65,7 @@ SH
     chmod +x "$FIXTURE_REPO/openvpn/test.sh"
 }
 
-@test "S2: helper sourcing resolves from repo root" {
+@test "helper sourcing resolves from repo root" {
     run "$FIXTURE_REPO/tests/e2e-test.sh" --help
 
     [ "$status" -eq 0 ]
@@ -128,7 +128,7 @@ SH
     [[ "$output" == *"not executable"* ]]
 }
 
-@test "S6: fallback image discovery errors on zero matches" {
+@test "fallback image discovery errors on zero matches" {
     mkdir -p "$FIXTURE_REPO/debian"
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
@@ -141,7 +141,7 @@ SH
     ! grep -q '^run ' "$DOCKER_LOG"
 }
 
-@test "S6: fallback image discovery errors on ambiguous image IDs" {
+@test "fallback image discovery errors on ambiguous image IDs" {
     mkdir -p "$FIXTURE_REPO/debian"
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"

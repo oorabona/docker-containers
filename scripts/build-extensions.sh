@@ -54,11 +54,11 @@ _arch_suffix_tag() {
 # Appends ${PR_TAG_SUFFIX} to <base_ref> when PR_TAG_SUFFIX is non-empty;
 # returns <base_ref> unchanged when PR_TAG_SUFFIX is empty (push/dispatch path).
 #
-# BD-1 supply-chain policy (operator-confirmed option 2): image tags AND the
+# supply-chain policy (operator-confirmed option 2): image tags AND the
 # registry build-cache are both PR-scoped.  On a same-repo pull_request, the
 # build-extensions leg publishes per-arch images and the stage-B merge publishes
 # multi-arch manifests and the bundle — all carrying the -pr<N> suffix.
-# The build-cache ref also carries the PR suffix (see BD-1 comment in
+# The build-cache ref also carries the PR suffix (see the supply-chain comment in
 # build_ext_image) so an unmerged PR cannot influence master's canonical build
 # via a shared cache entry.  Master recompiles the bumped version on merge;
 # the prefilter skips already-canonical versions so only the newly bumped
@@ -126,7 +126,7 @@ build_ext_image() {
         # Format: <registry>/<owner>/ext-<name>:pg<major>-<ver>-<arch>${PR_TAG_SUFFIX}
         _ver_tag=$(_scoped_tag "$(_arch_suffix_tag "$_ver_image" "${ARCH_SUFFIX:-}")")
 
-        # BC-2: cache ref must ALWAYS use a writable GHCR path, independent of
+        # cache ref must ALWAYS use a writable GHCR path, independent of
         # REMOTE_CR (which is the base-image source mirror, not the cache store).
         # REMOTE_CR defaults to ghcr.io/oorabona (public GHCR postgres mirror);
         # deriving the cache ref from REMOTE_CR would produce the wrong namespace
@@ -134,7 +134,7 @@ build_ext_image() {
         # Fix: derive owner from REPO_OWNER (env, set by CI) or get_repo_owner()
         # and construct the cache ref as ghcr.io/<owner>/ext-<name>-buildcache:...
         #
-        # BD-1 supply-chain policy (operator-confirmed): the cache ref is PR-scoped
+        # supply-chain policy (operator-confirmed): the cache ref is PR-scoped
         # by appending PR_TAG_SUFFIX so an unmerged PR cannot influence master's
         # canonical build via a shared cache entry.  On a same-repo PR the ref ends
         # in pg<N>-<arch>-pr<N>; on push/dispatch (master) PR_TAG_SUFFIX is empty
@@ -154,7 +154,7 @@ build_ext_image() {
 
         # Step 1: compile — always use --load (loads image into the local docker
         # store of the native runner).  rc=1 on failure (compile / musl error).
-        # BD-1: the cache is PR-scoped (see comment above); --cache-from on a PR
+        # the cache is PR-scoped (see comment above); --cache-from on a PR
         # reads ONLY that PR's own scoped cache across re-pushes.  On push/dispatch
         # (master) the ref has no suffix so master reads/writes only its own cache.
         # --cache-to writes when we have GHCR write access (_do_push_ext=true);
@@ -781,7 +781,7 @@ _bundle_and_write_artifact() {
         return 0
     fi
 
-    # AO-1: only one version confirmed available — consumer uses single-version path.
+    # only one version confirmed available — consumer uses single-version path.
     if [[ ${#_confirmed_available[@]} -le 1 ]]; then
         log_info "$ext: only ${#_confirmed_available[@]} version(s) confirmed available — deleting stale artifact (consumer uses single-version path)"
         _delete_stale_versionset_artifact "$ext" "$major_ver"
@@ -1100,7 +1100,7 @@ build_tag_push_extensions() {
             # Write per-version lineage file with this version's own duration.
             # Dry runs must not mutate .build-lineage.
             #
-            # AY-2: When ARCH_SUFFIX is non-empty (CI per-arch leg), write the
+            # When ARCH_SUFFIX is non-empty (CI per-arch leg), write the
             # lineage file as arch-suffixed: ext-<ext>-pg<major>-<ver>-<arch>.json.
             # Both arch artifact directories are downloaded into the SAME .build-lineage/
             # during the finalize step; un-suffixed files from both legs would collide
@@ -1495,7 +1495,7 @@ _should_build_extension() {
     fi
 
     # Multi-version path: return 0 if any version in the set needs building.
-    # BH-2a fix: FORCE=true means every resolved version needs (re)build, same as
+    # fix: FORCE=true means every resolved version needs (re)build, same as
     # the single-version branch above. Skip the per-version presence checks entirely.
     if [[ "$FORCE" == "true" ]]; then
         return 0

@@ -34,10 +34,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# SC-02: container-dir file (config.yaml) change triggers expansion
+# container-dir file (config.yaml) change triggers expansion
 # ---------------------------------------------------------------------------
 
-@test "SC-02: container-dir file (config.yaml) change for openresty → openresty:true" {
+@test "container-dir file (config.yaml) change for openresty → openresty:true" {
     echo "openresty/config.yaml" >> "$CHANGED_FILES"
     run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["openresty"]'
     [ "$status" -eq 0 ]
@@ -46,10 +46,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# SC-03: container-dir file (LAST_REBUILD.md) change triggers expansion
+# container-dir file (LAST_REBUILD.md) change triggers expansion
 # ---------------------------------------------------------------------------
 
-@test "SC-03: container-dir file (LAST_REBUILD.md) change for openresty → openresty:true" {
+@test "container-dir file (LAST_REBUILD.md) change for openresty → openresty:true" {
     echo "openresty/LAST_REBUILD.md" >> "$CHANGED_FILES"
     run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["openresty"]'
     [ "$status" -eq 0 ]
@@ -58,10 +58,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# SC-04: pull_request event → all containers true regardless of diff
+# pull_request event → all containers true regardless of diff
 # ---------------------------------------------------------------------------
 
-@test "SC-04: pull_request event → all containers true regardless of diff" {
+@test "pull_request event → all containers true regardless of diff" {
     # Only Dockerfile changed (not in trigger list), but PR event wins
     echo "openresty/Dockerfile" >> "$CHANGED_FILES"
     run compute_expand_retained_map "pull_request" "false" "$CHANGED_FILES" '["openresty"]'
@@ -71,10 +71,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# SC-05: build_all_retained="true" → all containers true
+# build_all_retained="true" → all containers true
 # ---------------------------------------------------------------------------
 
-@test "SC-05: build_all_retained=true → all containers true" {
+@test "build_all_retained=true → all containers true" {
     # changed_files is empty; operator override must win
     run compute_expand_retained_map "push" "true" "$CHANGED_FILES" '["openresty","postgres"]'
     [ "$status" -eq 0 ]
@@ -85,10 +85,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# SC-11: sibling-name collision — php-fpm/config.yaml must NOT trigger php
+# sibling-name collision — php-fpm/config.yaml must NOT trigger php
 # ---------------------------------------------------------------------------
 
-@test "SC-11: php-fpm/config.yaml change does NOT trigger php expansion (exact-match regression-lock)" {
+@test "php-fpm/config.yaml change does NOT trigger php expansion (exact-match regression-lock)" {
     echo "php-fpm/config.yaml" >> "$CHANGED_FILES"
     run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["php"]'
     [ "$status" -eq 0 ]
@@ -109,10 +109,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# SC-13: empty changed_files (no sentinel) → all false
+# empty changed_files (no sentinel) → all false
 # ---------------------------------------------------------------------------
 
-@test "SC-13: empty changed_files file (no sentinel) → all containers false" {
+@test "empty changed_files file (no sentinel) → all containers false" {
     # CHANGED_FILES exists but is empty; no .diff_failed sentinel
     run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["openresty","postgres"]'
     [ "$status" -eq 0 ]
@@ -123,10 +123,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# SC-14: .diff_failed sentinel present → all containers true
+# .diff_failed sentinel present → all containers true
 # ---------------------------------------------------------------------------
 
-@test "SC-14: .diff_failed sentinel present → all containers true" {
+@test ".diff_failed sentinel present → all containers true" {
     # Sentinel file alongside changed_files
     touch "${CHANGED_FILES}.diff_failed"
     run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["openresty","postgres"]'
@@ -190,10 +190,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# SC-16: Dockerfile change in container dir triggers expansion (gate finding regression-lock)
+# Dockerfile change in container dir triggers expansion (gate finding regression-lock)
 # ---------------------------------------------------------------------------
 
-@test "SC-16: Dockerfile change in container dir → openresty:true" {
+@test "Dockerfile change in container dir → openresty:true" {
     echo "openresty/Dockerfile" >> "$CHANGED_FILES"
     run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["openresty"]'
     [ "$status" -eq 0 ]
@@ -202,10 +202,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# SC-17: variants.yaml change in container dir triggers expansion (gate finding regression-lock)
+# variants.yaml change in container dir triggers expansion (gate finding regression-lock)
 # ---------------------------------------------------------------------------
 
-@test "SC-17: variants.yaml change in container dir → openresty:true" {
+@test "variants.yaml change in container dir → openresty:true" {
     echo "openresty/variants.yaml" >> "$CHANGED_FILES"
     run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["openresty"]'
     [ "$status" -eq 0 ]
@@ -214,10 +214,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# SC-18: build script change in container dir triggers expansion (gate finding regression-lock)
+# build script change in container dir triggers expansion (gate finding regression-lock)
 # ---------------------------------------------------------------------------
 
-@test "SC-18: build script change in container dir → openresty:true" {
+@test "build script change in container dir → openresty:true" {
     echo "openresty/build" >> "$CHANGED_FILES"
     run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["openresty"]'
     [ "$status" -eq 0 ]

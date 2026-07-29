@@ -2,7 +2,7 @@
 
 # Unit tests: lifecycle behavior — P1, P2 (partial), P3, P4, date escalation
 #
-# AC-3  eol-migrate surfaced via check-dependency-versions.sh (P1)
+# eol-migrate surfaced via check-dependency-versions.sh (P1)
 # AC-11 stable-pin date escalation triple (silent / countdown / loud)
 # AC-13 pre-release exclusion + fail-closed
 # AC-15 coupled-atomic refuse (P3)
@@ -84,7 +84,7 @@ _mk_container() {
 }
 
 # ---------------------------------------------------------------------------
-# P1 — eol-migrate is LOUD, never silently skipped (AC-3)
+# eol-migrate is LOUD, never silently skipped
 # The regression lock: BEFORE this change, monitor:false → silent continue.
 # AFTER: lifecycle=eol-migrate → LOUD surface, never continue-skipped.
 #
@@ -92,7 +92,7 @@ _mk_container() {
 # would cause the test to fail because no ::warning:: line would be emitted.
 # ---------------------------------------------------------------------------
 
-@test "P1: eol-migrate entry produces a LOUD ::warning:: via check-dependency-versions.sh" {
+@test "eol-migrate entry produces a LOUD ::warning:: via check-dependency-versions.sh" {
     # Synthetic container with an eol-migrate entry — must live under REPO_ROOT
     _mk_container "bats-eol-test-$$"
     local cdir="$_MK_CONTAINER_RESULT"
@@ -131,7 +131,7 @@ EOF
     }
 }
 
-@test "P1: eol-migrate entry does NOT silently continue (output contains the dep name)" {
+@test "eol-migrate entry does NOT silently continue (output contains the dep name)" {
     _mk_container "bats-eol-test2-$$"
     local cdir="$_MK_CONTAINER_RESULT"
     local cname
@@ -316,7 +316,7 @@ _sibling_lookup() {
         "${config}" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true
 }
 
-@test "P3a: bumping RESTY_PCRE_VERSION surfaces RESTY_PCRE_SHA256 as coupled sibling (updates_with polarity)" {
+@test "bumping RESTY_PCRE_VERSION surfaces RESTY_PCRE_SHA256 as coupled sibling (updates_with polarity)" {
     # Fixture: RESTY_PCRE_SHA256 declares updates_with: RESTY_PCRE_VERSION.
     # The workflow bumps RESTY_PCRE_VERSION.
     # Correct guard: find siblings pointing AT the bumped dep.
@@ -362,7 +362,7 @@ EOF
     }
 }
 
-@test "P3b: bumping RESTY_OPENSSL_VERSION surfaces RESTY_OPENSSL_PATCH_VERSION as coupled sibling (tracks_with polarity)" {
+@test "bumping RESTY_OPENSSL_VERSION surfaces RESTY_OPENSSL_PATCH_VERSION as coupled sibling (tracks_with polarity)" {
     # Fixture: RESTY_OPENSSL_PATCH_VERSION declares tracks_with: RESTY_OPENSSL_VERSION.
     # The workflow bumps RESTY_OPENSSL_VERSION.
     _mk_container "bats-coupled-b-$$"
@@ -396,7 +396,7 @@ EOF
     }
 }
 
-@test "P3c: bumping a dep with NO declared siblings produces empty coupled_siblings (no false positive)" {
+@test "bumping a dep with NO declared siblings produces empty coupled_siblings (no false positive)" {
     # Fixture: STANDALONE_VERSION has no sibling pointing at it.
     _mk_container "bats-coupled-c-$$"
     local cdir="$_MK_CONTAINER_RESULT"
@@ -426,7 +426,7 @@ EOF
     }
 }
 
-@test "P3d: mutation trace — old polarity (broken direction) finds nothing for RESTY_PCRE_VERSION" {
+@test "mutation trace — old polarity (broken direction) finds nothing for RESTY_PCRE_VERSION" {
     # This test documents that the OLD broken yq expression returns empty.
     # When the fix is reverted to the old direction, P3a fails (siblings="").
     # This test PASSES by asserting the old expression returns empty —
@@ -458,7 +458,7 @@ EOF
     # RESTY_PCRE_VERSION has no updates_with → returns "".
     local name="RESTY_PCRE_VERSION"
     local broken_result
-    # P1-SECURITY: even in tests, use strenv() to prevent injection if name contains special chars.
+    # even in tests, use strenv() to prevent injection if name contains special chars.
     broken_result=$(YQ_DEP="$name" yq -r '.dependency_sources[strenv(YQ_DEP)].updates_with // ""' \
         "$cdir/config.yaml" 2>/dev/null || true)
 
@@ -471,7 +471,7 @@ EOF
     echo "Confirmed: old broken direction returns '${broken_result}' for ${name} (guard silent — bug demonstrated)"
 }
 
-@test "P3-compat: PCRE_SHA256 untracked is still skipped cleanly by check-dependency-versions.sh" {
+@test "PCRE_SHA256 untracked is still skipped cleanly by check-dependency-versions.sh" {
     # Regression guard for the original P3 behaviour: untracked entries must
     # still be skipped without errors — unchanged by the polarity fix.
     _mk_container "bats-coupled-compat-$$"
@@ -512,7 +512,7 @@ EOF
 # Skip gracefully if no auth available.
 # ---------------------------------------------------------------------------
 
-@test "P4: latest-github-tag returns semver for openssl/openssl ^openssl-3.5. filter" {
+@test "latest-github-tag returns semver for openssl/openssl ^openssl-3.5. filter" {
     if ! command -v gh &>/dev/null && [[ -z "${GITHUB_TOKEN:-}" ]]; then
         skip "No gh CLI auth or GITHUB_TOKEN — network test skipped"
     fi
@@ -531,7 +531,7 @@ EOF
     }
 }
 
-@test "P4: latest-github-tag returns semver for PCRE2Project/pcre2 ^pcre2-10. filter" {
+@test "latest-github-tag returns semver for PCRE2Project/pcre2 ^pcre2-10. filter" {
     if ! command -v gh &>/dev/null && [[ -z "${GITHUB_TOKEN:-}" ]]; then
         skip "No gh CLI auth or GITHUB_TOKEN — network test skipped"
     fi
@@ -550,7 +550,7 @@ EOF
     }
 }
 
-@test "P4: latest-github-tag excludes pre-release tags by default (AC-13)" {
+@test "latest-github-tag excludes pre-release tags by default (AC-13)" {
     # Test the pre-release exclusion logic using a mock tag list via stdin.
     # The helper uses: grep -viE "$PRERELEASE_EXCLUDE_REGEX"
     # where PRERELEASE_EXCLUDE_REGEX='-rc|-alpha|-beta|-dev|-pre'
@@ -587,7 +587,7 @@ pcre2-10.46"
     fi
 }
 
-@test "P4: latest-github-tag fails closed on empty tag list (AC-13)" {
+@test "latest-github-tag fails closed on empty tag list (AC-13)" {
     # Mock: pass an empty repo name that will return no tags (or fail the API)
     # We test fail-closed by calling with a repo that cannot produce valid tags.
     local result
@@ -600,7 +600,7 @@ pcre2-10.46"
     # Exit non-zero = pass (fail-closed)
 }
 
-@test "P4: latest-github-tag version_extract with no capture group is rejected" {
+@test "latest-github-tag version_extract with no capture group is rejected" {
     # version_extract must have exactly one capture group.
     # If BASH_REMATCH[1] is empty, the tag is skipped.
     # We test this by ensuring a no-capture extract produces no results.
@@ -623,7 +623,7 @@ pcre2-10.46"
 }
 
 # ---------------------------------------------------------------------------
-# P3-PRODUCTION-FORM: regression lock for the subprocess export scoping fix.
+# regression lock for the subprocess export scoping fix.
 #
 # The production workflow uses:
 #   coupled_siblings=$(YQ_DEP_NAME="${name}" yq ...)    ← CORRECT (env scopes to yq)
@@ -643,7 +643,7 @@ pcre2-10.46"
 #   3. Restore → GREEN.
 # ---------------------------------------------------------------------------
 
-@test "P3-PRODUCTION-FORM: coupled_siblings=\$(YQ_DEP_NAME=N yq ...) scopes env to yq subprocess" {
+@test "coupled_siblings=\$(YQ_DEP_NAME=N yq ...) scopes env to yq subprocess" {
     # Fixture: RESTY_PCRE_SHA256 declares updates_with: RESTY_PCRE_VERSION.
     # The workflow bumps RESTY_PCRE_VERSION.
     _mk_container "bats-p3-prod-$$"
@@ -896,7 +896,7 @@ for i, ch in enumerate(text):
 # convention (e.g. ^openssl-3\.5\.).
 # ---------------------------------------------------------------------------
 
-@test "CLASS-LEVEL: all github-tag config entries produce raw-tag URLs from build_source_url" {
+@test "all github-tag config entries produce raw-tag URLs from build_source_url" {
     # Extract build_source_url function once and reuse across all assertions.
     _call_build_source_url_fn() {
         bash -c "
@@ -1604,7 +1604,7 @@ EOF
 #   3. Restore the candidate lookup → GREEN.
 # ---------------------------------------------------------------------------
 
-@test "P2: liveness template substitutes detected latest_version over pinned version" {
+@test "liveness template substitutes detected latest_version over pinned version" {
     # Simulate the workflow step logic inline.
     # Fixture: a tracked dep with a template and a detected latest "10.99"
     local url_template="https://github.com/PCRE2Project/pcre2/releases/download/pcre2-{version}/pcre2-{version}.tar.gz"
@@ -1675,7 +1675,7 @@ EOF
 #   3. Restore "|| true" → GREEN.
 # ---------------------------------------------------------------------------
 
-@test "P1: latest-github-tag single-page (no Link header) exits 0 and returns tags" {
+@test "latest-github-tag single-page (no Link header) exits 0 and returns tags" {
     # Simulate a real single-page GitHub API response: only one page of results,
     # no Link header in the response. The helper MUST complete without error.
     #
@@ -1723,7 +1723,7 @@ EOF
 # grep finds nothing → assignment fails → test RED.
 # ---------------------------------------------------------------------------
 
-@test "P1: Link-header grep pipeline exits 0 and returns empty when no Link header present" {
+@test "Link-header grep pipeline exits 0 and returns empty when no Link header present" {
     # Create a header file with NO Link: line (normal single-page response)
     local hdr_file
     hdr_file=$(mktemp)
@@ -1769,7 +1769,7 @@ EOF
 # → the URL contains the old version → test RED.
 # ---------------------------------------------------------------------------
 
-@test "P0: liveness jq lookup succeeds against dep_version_info shape (not version_info shape)" {
+@test "liveness jq lookup succeeds against dep_version_info shape (not version_info shape)" {
     # dep_version_info shape (correct — from check-dependency-versions action)
     local dep_info
     dep_info=$(jq -n \
@@ -1838,7 +1838,7 @@ EOF
 #   3. Restore "$effective_lifecycle" in the counter case → GREEN.
 # ---------------------------------------------------------------------------
 
-@test "P2: lifecycle counter increments lc_tracked for empty-lifecycle entry (backward-compat)" {
+@test "lifecycle counter increments lc_tracked for empty-lifecycle entry (backward-compat)" {
     # Simulate the counter logic from generate-dashboard.sh using the fixed code path.
     local lifecycle=""   # empty — entry has no explicit lifecycle: field
     local lc_tracked=0
@@ -1868,7 +1868,7 @@ EOF
     }
 }
 
-@test "P2: lifecycle counter does NOT double-count when effective_lifecycle resolves to tracked" {
+@test "lifecycle counter does NOT double-count when effective_lifecycle resolves to tracked" {
     # Explicit "tracked" must count exactly once (not confused with empty-resolved-to-tracked)
     local lifecycle="tracked"
     local lc_tracked=0
@@ -1920,7 +1920,7 @@ EOF
 #   4. Restore "tracked|stable-pin)" → GREEN.
 # ---------------------------------------------------------------------------
 
-@test "Fix-R8: stable-pin liveness template substitutes detected candidate over pinned version" {
+@test "stable-pin liveness template substitutes detected candidate over pinned version" {
     # Simulate the upstream-monitor.yaml case logic for a stable-pin entry.
     local lifecycle="stable-pin"
     local url_template="https://www.openssl.org/source/openssl-{version}.tar.gz"
@@ -1990,7 +1990,7 @@ EOF
 # We assert the fallback URL equals the static liveness_url value.
 # ---------------------------------------------------------------------------
 
-@test "Fix-R8: stable-pin WITHOUT liveness_url_template falls back to static liveness_url" {
+@test "stable-pin WITHOUT liveness_url_template falls back to static liveness_url" {
     # Reproduce the advisory-warning fallback branch for stable-pin/no-template.
     local lifecycle="stable-pin"
     local url_template=""   # deliberately absent
@@ -2040,7 +2040,7 @@ EOF
 # The assertion "url must contain pinned_version" goes RED.
 # ---------------------------------------------------------------------------
 
-@test "Fix-R8: stable-pin template falls back to pinned version when no candidate detected" {
+@test "stable-pin template falls back to pinned version when no candidate detected" {
     local lifecycle="stable-pin"
     local url_template="https://www.openssl.org/source/openssl-{version}.tar.gz"
     local pinned_version="3.5.6"

@@ -2,18 +2,18 @@
 # Unit tests for helpers/mirror-dockerhub.sh — ADR-013 production cutover
 #
 # Mutation guards (named per test):
-#   MD1: Default latest cell mirrors both versioned AND :latest from GHCR
-#   MD2: Non-default flavored cell mirrors :latest-<variant> instead of :latest
-#   MD3: Retained non-latest cell mirrors ONLY the versioned tag (no rolling alias)
-#   MD4: Function skips when DOCKERHUB_USERNAME is unset
-#   MD5: A single mirror failure does NOT fail the function (best-effort; rc=0)
-#   MD6: BAKE_GENERATE_ALL_RETAINED ignored → retained GHCR tags absent on DockerHub
-#   MS1: MIRROR_STRICT unset → returns 0 even when all imagetools fail (best-effort preserved)
-#   MS2: MIRROR_STRICT=true + all imagetools succeed → returns 0
-#   MS3: MIRROR_STRICT=true + ALL imagetools fail (attempted>0, succeeded==0) → returns non-zero
-#   MS4: MIRROR_STRICT=true + PARTIAL success (some succeed, some fail) → returns 0
-#   MS5: MIRROR_STRICT=true + DOCKERHUB_USERNAME unset → returns non-zero (structural)
-#   MS6: MIRROR_STRICT=true + generator yields no cells → returns non-zero (structural)
+#   Default latest cell mirrors both versioned AND :latest from GHCR
+#   Non-default flavored cell mirrors :latest-<variant> instead of :latest
+#   Retained non-latest cell mirrors ONLY the versioned tag (no rolling alias)
+#   Function skips when DOCKERHUB_USERNAME is unset
+#   A single mirror failure does NOT fail the function (best-effort; rc=0)
+#   BAKE_GENERATE_ALL_RETAINED ignored → retained GHCR tags absent on DockerHub
+#   MIRROR_STRICT unset → returns 0 even when all imagetools fail (best-effort preserved)
+#   MIRROR_STRICT=true + all imagetools succeed → returns 0
+#   MIRROR_STRICT=true + ALL imagetools fail (attempted>0, succeeded==0) → returns non-zero
+#   MIRROR_STRICT=true + PARTIAL success (some succeed, some fail) → returns 0
+#   MIRROR_STRICT=true + DOCKERHUB_USERNAME unset → returns non-zero (structural)
+#   MIRROR_STRICT=true + generator yields no cells → returns non-zero (structural)
 
 load "../test_helper"
 
@@ -92,11 +92,11 @@ _run_mirror() {
 }
 
 # ---------------------------------------------------------------------------
-# MD-01: Default-variant (is_default=true) latest cell mirrors versioned tag
+# Default-variant (is_default=true) latest cell mirrors versioned tag
 #        AND :latest to docker.io.
 # Catches: MD1
 # ---------------------------------------------------------------------------
-@test "MD-01: default latest cell mirrors versioned tag and :latest to docker.io" {
+@test "default latest cell mirrors versioned tag and :latest to docker.io" {
     # web-shell is the simplest bake-managed container with a default variant
     run _run_mirror "web-shell"
     [ "$status" -eq 0 ]
@@ -120,10 +120,10 @@ _run_mirror() {
 }
 
 # ---------------------------------------------------------------------------
-# MD-02: Non-default flavored cell mirrors :latest-<variant> (not :latest).
+# Non-default flavored cell mirrors :latest-<variant> (not :latest).
 # Catches: MD2
 # ---------------------------------------------------------------------------
-@test "MD-02: non-default flavored cell mirrors :latest-<variant>" {
+@test "non-default flavored cell mirrors :latest-<variant>" {
     # github-runner has multiple non-default variants (e.g. ubuntu-2404)
     run _run_mirror "github-runner"
     [ "$status" -eq 0 ]
@@ -140,10 +140,10 @@ _run_mirror() {
 }
 
 # ---------------------------------------------------------------------------
-# MD-03: Retained non-latest cell mirrors ONLY the versioned tag.
+# Retained non-latest cell mirrors ONLY the versioned tag.
 # Catches: MD3
 # ---------------------------------------------------------------------------
-@test "MD-03: retained non-latest cell mirrors only versioned tag" {
+@test "retained non-latest cell mirrors only versioned tag" {
     # Use a synthetic bake-managed container that has retained non-latest versions.
     # We test this by checking the mirror logic directly: for a cell with
     # is_latest_version=false, only the versioned suffix ($tag) is published.
@@ -256,10 +256,10 @@ GEN_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MD-04: Function skips entirely when DOCKERHUB_USERNAME is unset.
+# Function skips entirely when DOCKERHUB_USERNAME is unset.
 # Catches: MD4
 # ---------------------------------------------------------------------------
-@test "MD-04: skips when DOCKERHUB_USERNAME is unset" {
+@test "skips when DOCKERHUB_USERNAME is unset" {
     unset DOCKERHUB_USERNAME
 
     run _run_mirror "web-shell"
@@ -276,10 +276,10 @@ GEN_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MD-06: BAKE_GENERATE_ALL_RETAINED=true passes --all-retained to the generator.
+# BAKE_GENERATE_ALL_RETAINED=true passes --all-retained to the generator.
 # Catches: MD6 — mirrored tag set diverges from GHCR when retained versions omitted
 # ---------------------------------------------------------------------------
-@test "MD-06: BAKE_GENERATE_ALL_RETAINED=true mirrors retained cells for terraform" {
+@test "BAKE_GENERATE_ALL_RETAINED=true mirrors retained cells for terraform" {
     # terraform has version_retention=3 and no bake_latest_only — retained versions
     # are present with --all-retained.
     export BAKE_GENERATE_ALL_RETAINED=true
@@ -306,7 +306,7 @@ GEN_EOF
             "$retained_calls" "$latest_only_calls" >&2; false)
 }
 
-@test "MD-07: BAKE_GENERATE_ALL_RETAINED=false produces latest-only mirror calls for terraform" {
+@test "BAKE_GENERATE_ALL_RETAINED=false produces latest-only mirror calls for terraform" {
     export BAKE_GENERATE_ALL_RETAINED=false
 
     run _run_mirror "terraform"
@@ -317,7 +317,7 @@ GEN_EOF
         (cat "${TEST_LOG_DIR}/run.log" >&2 && false)
 }
 
-@test "MD-08: BAKE_GENERATE_ALL_RETAINED=true github-runner remains latest-only (bake_latest_only)" {
+@test "BAKE_GENERATE_ALL_RETAINED=true github-runner remains latest-only (bake_latest_only)" {
     # github-runner has bake_latest_only=true — even with BAKE_GENERATE_ALL_RETAINED=true
     # the generator must force latest-only, so the mirror call count must equal
     # the BAKE_GENERATE_ALL_RETAINED=false call count.
@@ -342,10 +342,10 @@ GEN_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MD-05: A single mirror failure does NOT fail the function (best-effort).
+# A single mirror failure does NOT fail the function (best-effort).
 # Catches: MD5
 # ---------------------------------------------------------------------------
-@test "MD-05: single mirror failure does not fail the function" {
+@test "single mirror failure does not fail the function" {
     # Create a mock docker that always exits 1 (simulates imagetools failure)
     cat > "$MOCK_DOCKER" <<'FAIL_EOF'
 #!/usr/bin/env bash
@@ -372,10 +372,10 @@ FAIL_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MS-01: MIRROR_STRICT unset → returns 0 even when all imagetools fail.
+# MIRROR_STRICT unset → returns 0 even when all imagetools fail.
 # Catches: MS1 — best-effort behavior must be unchanged when strict mode is off.
 # ---------------------------------------------------------------------------
-@test "MS-01: MIRROR_STRICT unset returns 0 even when all imagetools fail" {
+@test "MIRROR_STRICT unset returns 0 even when all imagetools fail" {
     unset MIRROR_STRICT
 
     # All docker calls fail
@@ -395,10 +395,10 @@ FAIL_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MS-02: MIRROR_STRICT=true + all imagetools succeed → returns 0.
+# MIRROR_STRICT=true + all imagetools succeed → returns 0.
 # Catches: MS2 — strict mode must not break the happy path.
 # ---------------------------------------------------------------------------
-@test "MS-02: MIRROR_STRICT=true all-succeed returns 0" {
+@test "MIRROR_STRICT=true all-succeed returns 0" {
     export MIRROR_STRICT="true"
 
     # MOCK_DOCKER already exits 0 (default setup)
@@ -415,11 +415,11 @@ FAIL_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MS-03: MIRROR_STRICT=true + ALL imagetools fail (attempted>0, succeeded==0)
+# MIRROR_STRICT=true + ALL imagetools fail (attempted>0, succeeded==0)
 #        → returns non-zero.
 # Catches: MS3 — total failure must be observable in strict mode.
 # ---------------------------------------------------------------------------
-@test "MS-03: MIRROR_STRICT=true all-fail returns non-zero" {
+@test "MIRROR_STRICT=true all-fail returns non-zero" {
     export MIRROR_STRICT="true"
 
     # All docker calls fail
@@ -445,14 +445,14 @@ FAIL_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MS-04: MIRROR_STRICT=true + PARTIAL success (some succeed, some fail) → returns 0.
+# MIRROR_STRICT=true + PARTIAL success (some succeed, some fail) → returns 0.
 # Catches: MS4 — transient single-tag flakes must not red the nightly cron.
 #
 # Strategy: the first imagetools call succeeds, subsequent ones fail.
 # web-shell produces at least 2 tags (versioned + :latest), so the counter
 # will have succeeded≥1 and attempted≥2.
 # ---------------------------------------------------------------------------
-@test "MS-04: MIRROR_STRICT=true partial-success returns 0" {
+@test "MIRROR_STRICT=true partial-success returns 0" {
     export MIRROR_STRICT="true"
 
     # First call succeeds, all subsequent fail
@@ -483,10 +483,10 @@ PARTIAL_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MS-05: MIRROR_STRICT=true + DOCKERHUB_USERNAME unset → returns non-zero.
+# MIRROR_STRICT=true + DOCKERHUB_USERNAME unset → returns non-zero.
 # Catches: MS5 — missing credentials is a structural misconfiguration.
 # ---------------------------------------------------------------------------
-@test "MS-05: MIRROR_STRICT=true DOCKERHUB_USERNAME unset returns non-zero" {
+@test "MIRROR_STRICT=true DOCKERHUB_USERNAME unset returns non-zero" {
     export MIRROR_STRICT="true"
     unset DOCKERHUB_USERNAME
 
@@ -505,12 +505,12 @@ PARTIAL_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MS-06: MIRROR_STRICT=true + generator yields no cells → returns non-zero.
+# MIRROR_STRICT=true + generator yields no cells → returns non-zero.
 # Catches: MS6 — empty cell set is a structural failure (no-op reconciliation).
 #
 # Strategy: set _MDH_GENERATOR_OVERRIDE to a mock that returns an empty JSON array.
 # ---------------------------------------------------------------------------
-@test "MS-06: MIRROR_STRICT=true generator no-cells returns non-zero" {
+@test "MIRROR_STRICT=true generator no-cells returns non-zero" {
     export MIRROR_STRICT="true"
 
     # Mock generator returns an empty array
@@ -543,11 +543,11 @@ GEN_EOF
 }
 
 # ---------------------------------------------------------------------------
-# MD8: mirror self-derives --include-final-build for bake-final containers, so
+# mirror self-derives --include-final-build for bake-final containers, so
 # the nightly reconcile (which sets no BAKE_GENERATE_FINAL_BUILD) still mirrors
 # postgres final-image tags after the bake migration.
 # ---------------------------------------------------------------------------
-@test "MD-08: _mdh_any_bake_final true for postgres, false for non-extension containers" {
+@test "_mdh_any_bake_final true for postgres, false for non-extension containers" {
     run bash -c '
         set +u
         _MDH_SCRIPT_DIR="'"${HELPERS_DIR}"'"

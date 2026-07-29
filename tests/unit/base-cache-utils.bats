@@ -27,7 +27,7 @@ teardown() {
 
 # --- distro_uses_base_cache ---
 
-@test "BCU-DISTRO-01: distro_uses_base_cache returns false for explicit opt-out" {
+@test "distro_uses_base_cache returns false for explicit opt-out" {
     cat > config.yaml <<'EOF'
 distros:
   debian:
@@ -38,7 +38,7 @@ EOF
     [ "$status" -eq 1 ]
 }
 
-@test "BCU-DISTRO-02: distro_uses_base_cache returns true when key is absent" {
+@test "distro_uses_base_cache returns true when key is absent" {
     cat > config.yaml <<'EOF'
 distros:
   alpine:
@@ -49,7 +49,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "BCU-DISTRO-03: distro_uses_base_cache returns true without distros block" {
+@test "distro_uses_base_cache returns true without distros block" {
     cat > config.yaml <<'EOF'
 base_image_cache:
   - source: library/alpine
@@ -60,7 +60,7 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "BCU-DISTRO-04: distro_uses_base_cache returns true for empty distro arg" {
+@test "distro_uses_base_cache returns true for empty distro arg" {
     cat > config.yaml <<'EOF'
 distros:
   debian:
@@ -73,9 +73,9 @@ EOF
 
 # --- resolve_cache_check_tag ---
 
-# BCU-01: regression lock for the docker.io 429 bug
+# regression lock for the docker.io 429 bug
 # tags_from_versions: true → must return build_version, NOT "latest"
-@test "BCU-01: tags_from_versions=true returns build_version (regression lock: not 'latest')" {
+@test "tags_from_versions=true returns build_version (regression lock: not 'latest')" {
     cat > config.yaml <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -92,8 +92,8 @@ EOF
     [ "$output" != "latest" ]
 }
 
-# BCU-02: tags_from_versions=true with a different build_version
-@test "BCU-02: tags_from_versions=true returns whatever build_version is passed" {
+# tags_from_versions=true with a different build_version
+@test "tags_from_versions=true returns whatever build_version is passed" {
     cat > config.yaml <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -107,8 +107,8 @@ EOF
     [ "$output" = "17-alpine" ]
 }
 
-# BCU-03: tags[] literal array → returns the literal tag (existing behaviour preserved)
-@test "BCU-03: literal tags[0] entry returns the literal tag" {
+# tags[] literal array → returns the literal tag (existing behaviour preserved)
+@test "literal tags[0] entry returns the literal tag" {
     cat > config.yaml <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -122,8 +122,8 @@ EOF
     [ "$output" = "latest" ]
 }
 
-# BCU-04: tags[] with a template that uses ${VERSION}
-@test "BCU-04: tags[0] template using \${VERSION} is resolved to build_version" {
+# tags[] with a template that uses ${VERSION}
+@test "tags[0] template using \${VERSION} is resolved to build_version" {
     cat > config.yaml <<'EOF'
 base_image_cache:
   - arg: TERRAFORM_BASE
@@ -137,8 +137,8 @@ EOF
     [ "$output" = "1.9.5" ]
 }
 
-# BCU-05: no tags key and tags_from_versions absent → falls back to "latest"
-@test "BCU-05: absent tags and no tags_from_versions defaults to 'latest'" {
+# no tags key and tags_from_versions absent → falls back to "latest"
+@test "absent tags and no tags_from_versions defaults to 'latest'" {
     cat > config.yaml <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -151,8 +151,8 @@ EOF
     [ "$output" = "latest" ]
 }
 
-# BCU-06: second entry (index=1) is resolved correctly
-@test "BCU-06: entry at index 1 is resolved independently" {
+# second entry (index=1) is resolved correctly
+@test "entry at index 1 is resolved independently" {
     cat > config.yaml <<'EOF'
 base_image_cache:
   - arg: BASE_IMAGE
@@ -172,9 +172,9 @@ EOF
 
 # --- collect_all_cache_images / _collect_entry_tags: new-style dest path ---
 
-# BCU-11: NEW-style entry → sync_image dest preserves source path (library/postgres)
+# NEW-style entry → sync_image dest preserves source path (library/postgres)
 # sync_image must be ghcr.io/<owner>/library/postgres:<tag> — NOT ghcr.io/<owner>/postgres:<tag>
-@test "BCU-11: NEW-style collect_all_cache_images dest preserves full source path with slash" {
+@test "NEW-style collect_all_cache_images dest preserves full source path with slash" {
     mkdir -p pgcontainer
     cat > pgcontainer/variants.yaml <<'EOF'
 versions:
@@ -199,8 +199,8 @@ EOF
     [[ "$output" != *"ghcr.io/myowner/postgres:"* ]]
 }
 
-# BCU-12: OLD-style entry → sync_image dest uses ghcr_repo (regression lock)
-@test "BCU-12: OLD-style collect_all_cache_images dest uses ghcr_repo (regression lock)" {
+# OLD-style entry → sync_image dest uses ghcr_repo (regression lock)
+@test "OLD-style collect_all_cache_images dest uses ghcr_repo (regression lock)" {
     mkdir -p ubuntucontainer
     cat > ubuntucontainer/config.yaml <<'EOF'
 base_image_cache:
@@ -218,8 +218,8 @@ EOF
     [[ "$output" == *"ghcr.io/myowner/ubuntu-base:latest"* ]]
 }
 
-# BCU-13: MIXED collect_all_cache_images — both old and new sync_image dests correct
-@test "BCU-13: MIXED collect_all_cache_images — old uses ghcr_repo, new uses source path" {
+# MIXED collect_all_cache_images — both old and new sync_image dests correct
+@test "MIXED collect_all_cache_images — old uses ghcr_repo, new uses source path" {
     mkdir -p mixcontainer
     cat > mixcontainer/variants.yaml <<'EOF'
 versions:
@@ -248,8 +248,8 @@ EOF
 
 # --- Leading-slash (chained-on-own-build) source path splitting ---
 
-# BCU-14: leading-slash source → sync_image has library/ prefix, probe_image is leaf-only
-@test "BCU-14: leading-slash source (/php) → sync_image uses library/php, probe_image uses php" {
+# leading-slash source → sync_image has library/ prefix, probe_image is leaf-only
+@test "leading-slash source (/php) → sync_image uses library/php, probe_image uses php" {
     mkdir -p wpcontainer
     cat > wpcontainer/config.yaml <<'EOF'
 base_image_cache:
@@ -270,8 +270,8 @@ EOF
     [[ "$output" != *'"sync_image":"ghcr.io/myowner/php:latest"'* ]]
 }
 
-# BCU-15: normal NEW-style source → sync_image == probe_image
-@test "BCU-15: normal NEW-style source (library/postgres) → sync_image equals probe_image" {
+# normal NEW-style source → sync_image == probe_image
+@test "normal NEW-style source (library/postgres) → sync_image equals probe_image" {
     mkdir -p pgcontainer2
     cat > pgcontainer2/variants.yaml <<'EOF'
 versions:
@@ -293,8 +293,8 @@ EOF
     [[ "$output" == *'"probe_image":"ghcr.io/myowner/library/postgres:18-alpine"'* ]]
 }
 
-# BCU-15b: sync_base_images_to_ghcr with leading-slash source — source_ref has explicit library/ prefix
-@test "BCU-15b: sync_base_images_to_ghcr leading-slash source — source_ref has explicit library/ prefix" {
+# sync_base_images_to_ghcr with leading-slash source — source_ref has explicit library/ prefix
+@test "sync_base_images_to_ghcr leading-slash source — source_ref has explicit library/ prefix" {
     docker() {
         if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
             echo "MOCK_DOCKER_ARGS: $*"
@@ -318,8 +318,8 @@ EOF
     [[ "$output" == *"ghcr.io/myowner/library/php:latest"* ]]
 }
 
-# BCU-15d: mutation guard — single-segment chained source must never produce an alias-only ref
-@test "BCU-15d: sync_base_images_to_ghcr single-segment chained source — no bare alias (library/ always explicit)" {
+# mutation guard — single-segment chained source must never produce an alias-only ref
+@test "sync_base_images_to_ghcr single-segment chained source — no bare alias (library/ always explicit)" {
     docker() { return 0; }
     export -f docker
 
@@ -335,8 +335,8 @@ EOF
     [[ "$output" != *"docker.io//debian:bullseye"* ]]
 }
 
-# BCU-15c: dedup by sync_image — entries with same sync_image path are deduplicated
-@test "BCU-15c: collect_all_cache_images dedup uses sync_image field" {
+# dedup by sync_image — entries with same sync_image path are deduplicated
+@test "collect_all_cache_images dedup uses sync_image field" {
     mkdir -p dedup1 dedup2
     cat > dedup1/config.yaml <<'EOF'
 base_image_cache:
@@ -366,8 +366,8 @@ EOF
 
 # --- remote_cr_applicable: pure decision helper ---
 
-# BCU-16: all new-style entries reachable → "apply"
-@test "BCU-16: remote_cr_applicable — all new-style reachable → apply" {
+# all new-style entries reachable → "apply"
+@test "remote_cr_applicable — all new-style reachable → apply" {
     mkdir -p pgcontainer
     cat > pgcontainer/config.yaml <<'EOF'
 base_image_cache:
@@ -379,11 +379,11 @@ EOF
     [ "$output" = "apply" ]
 }
 
-# BCU-17: mixed old+new config, new-style entry unreachable → "drop"
+# mixed old+new config, new-style entry unreachable → "drop"
 # Locks the always-apply mutation: a single unreachable new-style entry in a mixed
 # config must produce "drop", not "apply". BCU-20 covers the partial-reachability
 # boundary (multiple new-style entries, only some reachable).
-@test "BCU-17: remote_cr_applicable — mixed old+new, new-style unreachable → drop (always-apply mutation lock)" {
+@test "remote_cr_applicable — mixed old+new, new-style unreachable → drop (always-apply mutation lock)" {
     mkdir -p mixcontainer
     cat > mixcontainer/config.yaml <<'EOF'
 base_image_cache:
@@ -402,8 +402,8 @@ EOF
     [ "$output" != "apply" ]
 }
 
-# BCU-18: no new-style entries → "n/a"
-@test "BCU-18: remote_cr_applicable — pure old-style config → n/a" {
+# no new-style entries → "n/a"
+@test "remote_cr_applicable — pure old-style config → n/a" {
     mkdir -p oldcontainer
     cat > oldcontainer/config.yaml <<'EOF'
 base_image_cache:
@@ -417,8 +417,8 @@ EOF
     [ "$output" = "n/a" ]
 }
 
-# BCU-19: multiple new-style entries all reachable → "apply"
-@test "BCU-19: remote_cr_applicable — multiple new-style all reachable → apply" {
+# multiple new-style entries all reachable → "apply"
+@test "remote_cr_applicable — multiple new-style all reachable → apply" {
     mkdir -p multinew
     cat > multinew/config.yaml <<'EOF'
 base_image_cache:
@@ -432,8 +432,8 @@ EOF
     [ "$output" = "apply" ]
 }
 
-# BCU-20: multiple new-style entries with one unreachable → "drop"
-@test "BCU-20: remote_cr_applicable — multiple new-style one unreachable → drop" {
+# multiple new-style entries with one unreachable → "drop"
+@test "remote_cr_applicable — multiple new-style one unreachable → drop" {
     mkdir -p multinew2
     cat > multinew2/config.yaml <<'EOF'
 base_image_cache:
@@ -447,8 +447,8 @@ EOF
     [ "$output" = "drop" ]
 }
 
-# BCU-21: mixed old+new, new reachable → "apply" (old flags are ignored)
-@test "BCU-21: remote_cr_applicable — mixed old+new, new reachable → apply" {
+# mixed old+new, new reachable → "apply" (old flags are ignored)
+@test "remote_cr_applicable — mixed old+new, new reachable → apply" {
     mkdir -p mixok
     cat > mixok/config.yaml <<'EOF'
 base_image_cache:
@@ -468,8 +468,8 @@ EOF
 
 # --- emit_reachable_cache_args: per-entry filtered arg emitter ---
 
-# BCU-22: all old-style entries reachable → all --build-arg flags emitted (regression lock)
-@test "BCU-22: emit_reachable_cache_args — all old-style reachable → all args emitted" {
+# all old-style entries reachable → all --build-arg flags emitted (regression lock)
+@test "emit_reachable_cache_args — all old-style reachable → all args emitted" {
     mkdir -p oldall
     cat > oldall/config.yaml <<'EOF'
 base_image_cache:
@@ -493,7 +493,7 @@ EOF
 # BCU-23 (RED→GREEN for FINDING A): one old-style entry unreachable → that arg omitted
 # This is the class bug: old-style args were previously bulk-applied on any-reachable.
 # Now each arg is gated on its own probe flag.
-@test "BCU-23: emit_reachable_cache_args — one old-style unreachable → only reachable arg emitted (FINDING-A lock)" {
+@test "emit_reachable_cache_args — one old-style unreachable → only reachable arg emitted (FINDING-A lock)" {
     mkdir -p oldpartial
     cat > oldpartial/config.yaml <<'EOF'
 base_image_cache:
@@ -517,8 +517,8 @@ EOF
     [[ "$output" != *"REMOTE_CR"* ]]
 }
 
-# BCU-24: mixed old+new, all reachable → old args + REMOTE_CR present
-@test "BCU-24: emit_reachable_cache_args — mixed old+new all reachable → old args + REMOTE_CR" {
+# mixed old+new, all reachable → old args + REMOTE_CR present
+@test "emit_reachable_cache_args — mixed old+new all reachable → old args + REMOTE_CR" {
     mkdir -p mixall
     cat > mixall/config.yaml <<'EOF'
 base_image_cache:
@@ -535,8 +535,8 @@ EOF
     [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
 }
 
-# BCU-25: mixed old+new, new-style unreachable → old reachable arg present, REMOTE_CR ABSENT
-@test "BCU-25: emit_reachable_cache_args — mixed old+new, new unreachable → old arg kept, REMOTE_CR absent" {
+# mixed old+new, new-style unreachable → old reachable arg present, REMOTE_CR ABSENT
+@test "emit_reachable_cache_args — mixed old+new, new unreachable → old arg kept, REMOTE_CR absent" {
     mkdir -p mixnewmissing
     cat > mixnewmissing/config.yaml <<'EOF'
 base_image_cache:
@@ -556,8 +556,8 @@ EOF
     [[ "$output" != *"REMOTE_CR"* ]]
 }
 
-# BCU-26: pure new-style, all reachable → REMOTE_CR emitted, no old-style args
-@test "BCU-26: emit_reachable_cache_args — pure new-style all reachable → REMOTE_CR only" {
+# pure new-style, all reachable → REMOTE_CR emitted, no old-style args
+@test "emit_reachable_cache_args — pure new-style all reachable → REMOTE_CR only" {
     mkdir -p newonly
     cat > newonly/config.yaml <<'EOF'
 base_image_cache:
@@ -571,8 +571,8 @@ EOF
     [[ "$output" != *"BASE_IMAGE"* ]]
 }
 
-# BCU-27: pure new-style, unreachable → empty output (no REMOTE_CR)
-@test "BCU-27: emit_reachable_cache_args — pure new-style unreachable → empty output" {
+# pure new-style, unreachable → empty output (no REMOTE_CR)
+@test "emit_reachable_cache_args — pure new-style unreachable → empty output" {
     mkdir -p newmiss
     cat > newmiss/config.yaml <<'EOF'
 base_image_cache:
@@ -586,10 +586,10 @@ EOF
 
 # ─── FIX 2 (RED→GREEN): emit_reachable_cache_args arg validation ─────────────
 
-# BCU-FIX2-01: OLD-style entry with injected shell tokens in arg → non-zero, no flag emitted
+# OLD-style entry with injected shell tokens in arg → non-zero, no flag emitted
 # This is the FINDING: "BASE_IMAGE --network host" would inject extra docker flags.
 # RED before fix (returns 0, emits the bad flag), GREEN after (returns non-zero, emits nothing).
-@test "BCU-FIX2-01: emit_reachable_cache_args — malformed arg with shell token → non-zero + no flag (injection prevention)" {
+@test "emit_reachable_cache_args — malformed arg with shell token → non-zero + no flag (injection prevention)" {
     mkdir -p badarg
     cat > badarg/config.yaml <<'EOF'
 base_image_cache:
@@ -605,8 +605,8 @@ EOF
     [[ "$output" != *"--build-arg"* ]]
 }
 
-# BCU-FIX2-02: OLD-style entry with multi-word arg (spaces) → non-zero
-@test "BCU-FIX2-02: emit_reachable_cache_args — arg with embedded spaces → non-zero" {
+# OLD-style entry with multi-word arg (spaces) → non-zero
+@test "emit_reachable_cache_args — arg with embedded spaces → non-zero" {
     mkdir -p badarg2
     cat > badarg2/config.yaml <<'EOF'
 base_image_cache:
@@ -620,8 +620,8 @@ EOF
     [[ "$output" != *"--build-arg"* ]]
 }
 
-# BCU-FIX2-03: OLD-style entry with hyphen in arg (invalid Docker ARG name) → non-zero
-@test "BCU-FIX2-03: emit_reachable_cache_args — arg with hyphen → non-zero" {
+# OLD-style entry with hyphen in arg (invalid Docker ARG name) → non-zero
+@test "emit_reachable_cache_args — arg with hyphen → non-zero" {
     mkdir -p badarg3
     cat > badarg3/config.yaml <<'EOF'
 base_image_cache:
@@ -635,9 +635,9 @@ EOF
     [[ "$output" != *"--build-arg"* ]]
 }
 
-# BCU-FIX2-PASS: valid arg identifier → clean output (regression lock)
+# valid arg identifier → clean output (regression lock)
 # This must pass before AND after the fix (it was already working; guard against over-rejection).
-@test "BCU-FIX2-PASS: emit_reachable_cache_args — valid identifier arg → emits flag correctly" {
+@test "emit_reachable_cache_args — valid identifier arg → emits flag correctly" {
     mkdir -p validarg
     cat > validarg/config.yaml <<'EOF'
 base_image_cache:
@@ -651,10 +651,10 @@ EOF
     [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
 }
 
-# BCU-FIX2-05: unreachable old-style entry with bad arg → still non-zero
+# unreachable old-style entry with bad arg → still non-zero
 # The validation must run regardless of the reachability flag — bad config is a config error,
 # not a "suppress it" signal. (Guards against: skip validation if flag==false.)
-@test "BCU-FIX2-05: emit_reachable_cache_args — bad arg in unreachable entry → non-zero (no silent skip)" {
+@test "emit_reachable_cache_args — bad arg in unreachable entry → non-zero (no silent skip)" {
     mkdir -p badarg5
     cat > badarg5/config.yaml <<'EOF'
 base_image_cache:
@@ -675,7 +675,7 @@ EOF
 #   --build-arg BASE_IMAGE=ghcr.io/owner/ubuntu-base --network host
 # which would inject extra docker flags silently.
 # After the fix, emit_reachable_cache_args must return non-zero and emit nothing.
-@test "BCU-GHCR-01: emit_reachable_cache_args — ghcr_repo with space+flag → non-zero + no flag (injection prevention)" {
+@test "emit_reachable_cache_args — ghcr_repo with space+flag → non-zero + no flag (injection prevention)" {
     mkdir -p badrepo
     cat > badrepo/config.yaml <<'EOF'
 base_image_cache:
@@ -691,8 +691,8 @@ EOF
     [[ "$output" != *"--build-arg"* ]]
 }
 
-# BCU-GHCR-02: ghcr_repo with semicolon → non-zero
-@test "BCU-GHCR-02: emit_reachable_cache_args — ghcr_repo with semicolon → non-zero" {
+# ghcr_repo with semicolon → non-zero
+@test "emit_reachable_cache_args — ghcr_repo with semicolon → non-zero" {
     mkdir -p badrepo2
     cat > badrepo2/config.yaml <<'EOF'
 base_image_cache:
@@ -706,9 +706,9 @@ EOF
     [[ "$output" != *"--build-arg"* ]]
 }
 
-# BCU-GHCR-03: malicious ghcr_repo in unreachable entry → still non-zero (no silent skip)
+# malicious ghcr_repo in unreachable entry → still non-zero (no silent skip)
 # Mirrors BCU-FIX2-05: validation runs regardless of the probe flag.
-@test "BCU-GHCR-03: emit_reachable_cache_args — bad ghcr_repo in unreachable entry → non-zero (no silent skip)" {
+@test "emit_reachable_cache_args — bad ghcr_repo in unreachable entry → non-zero (no silent skip)" {
     mkdir -p badrepo3
     cat > badrepo3/config.yaml <<'EOF'
 base_image_cache:
@@ -724,11 +724,11 @@ EOF
 
 # ─── FIX 1 (RED→GREEN): standalone source guard — log_error must be defined ────
 #
-# BCU-STANDALONE-01: source base-cache-utils.sh in a FRESH subshell (no pre-sourcing
+# source base-cache-utils.sh in a FRESH subshell (no pre-sourcing
 # of logging.sh) and trigger emit_reachable_cache_args with a malformed arg.
 # RED before FIX 1: "log_error: command not found" appears on stderr.
 # GREEN after FIX 1: the intended validation message appears; "command not found" absent.
-@test "BCU-STANDALONE-01: standalone source — log_error defined, malformed arg emits validation message not 'command not found'" {
+@test "standalone source — log_error defined, malformed arg emits validation message not 'command not found'" {
     # Build a config with a shell-unsafe arg identifier to trigger the log_error path
     mkdir -p standalone_test
     cat > standalone_test/config.yaml <<'EOF'
@@ -755,7 +755,7 @@ EOF
 }
 
 # BCU-GHCR-PASS: valid ghcr_repo values (all current containers) → exit 0 + correct flag
-@test "BCU-GHCR-PASS: emit_reachable_cache_args — all valid old-style ghcr_repo names → PASS" {
+@test "emit_reachable_cache_args — all valid old-style ghcr_repo names → PASS" {
     local repos="ubuntu-base ruby-base php-base composer-base alpine-base rocky-base debian-base terraform-base postgres-base python-base"
     for repo in $repos; do
         mkdir -p "valrepo-${repo}"
@@ -1090,10 +1090,10 @@ EOF
 
 # --- check_image construction guard (gate r3 fix — action.yaml ${source_path#/} strip) ---
 
-# BCU-ACTIONSTRIP-01: leading-slash source → probe_image has no double slash
+# leading-slash source → probe_image has no double slash
 # Mirrors the action.yaml inline check_image construction: check_image="ghcr.io/${owner}/${source_path#/}:${tag}"
 # Without the #/ strip, source: /php would yield ghcr.io/owner//php:tag.
-@test "BCU-ACTIONSTRIP-01: leading-slash source (/php) → probe_image contains no double slash" {
+@test "leading-slash source (/php) → probe_image contains no double slash" {
     mkdir -p wpstrip
     cat > wpstrip/config.yaml <<'EOF'
 base_image_cache:
@@ -1112,8 +1112,8 @@ EOF
     [[ "$output" == *'"probe_image":"ghcr.io/myowner/php:8.2-fpm-alpine"'* ]]
 }
 
-# BCU-ACTIONSTRIP-02: bash strip pattern sanity — ${source_path#/} is idempotent for non-slash sources
-@test "BCU-ACTIONSTRIP-02: strip pattern \${source_path#/} is idempotent for normal (non-leading-slash) source" {
+# bash strip pattern sanity — ${source_path#/} is idempotent for non-slash sources
+@test "strip pattern \${source_path#/} is idempotent for normal (non-leading-slash) source" {
     # Direct bash expansion check: verifies the fix applied in action.yaml does not
     # mangle normal sources like "library/postgres".
     local source_path="library/postgres"
@@ -1125,8 +1125,8 @@ EOF
     [[ "$check_image" != *'//'* ]]
 }
 
-# BCU-ACTIONSTRIP-03: bash strip pattern — ${source_path#/} strips exactly the leading slash for /php
-@test "BCU-ACTIONSTRIP-03: strip pattern \${source_path#/} produces clean path for leading-slash source /php" {
+# bash strip pattern — ${source_path#/} strips exactly the leading slash for /php
+@test "strip pattern \${source_path#/} produces clean path for leading-slash source /php" {
     local source_path="/php"
     local check_image="ghcr.io/myowner/${source_path#/}:8.2-fpm-alpine"
     [ "$check_image" = "ghcr.io/myowner/php:8.2-fpm-alpine" ]
@@ -1135,11 +1135,11 @@ EOF
 
 # --- gate r4 Bug 2 regression: multi-segment leading-slash source must not double library/ ---
 
-# BCU-MULTISEG-01: source="/library/postgres" → sync_dest_path must be "library/postgres"
+# source="/library/postgres" → sync_dest_path must be "library/postgres"
 # Regression lock for gate r4 Bug 2: the unconditional "library/${leaf}" prepend produced
 # "library/library/postgres" when source="/library/postgres" (leaf="library/postgres").
 # Fix: prepend library/ only when leaf has no slash (single-segment, like "php").
-@test "BCU-MULTISEG-01: source=/library/postgres → sync_image is library/postgres NOT library/library/postgres" {
+@test "source=/library/postgres → sync_image is library/postgres NOT library/library/postgres" {
     mkdir -p pgchained
     cat > pgchained/config.yaml <<'EOF'
 base_image_cache:
@@ -1160,9 +1160,9 @@ EOF
     [[ "$output" == *'"probe_image":"ghcr.io/myowner/library/postgres:18-alpine"'* ]]
 }
 
-# BCU-MULTISEG-02: source="/php" (single-segment) still gets library/ prepend
+# source="/php" (single-segment) still gets library/ prepend
 # Regression guard: the multi-segment fix must NOT break the original /php → library/php behaviour.
-@test "BCU-MULTISEG-02: source=/php (single-segment) still uses library/php for sync_image" {
+@test "source=/php (single-segment) still uses library/php for sync_image" {
     mkdir -p phpchained
     cat > phpchained/config.yaml <<'EOF'
 base_image_cache:
@@ -1183,10 +1183,10 @@ EOF
 
 # --- presence gate (skip_present=true) ---
 
-# BCU-PRESGATE-01: skip_present=true + GHCR already present → copy NOT invoked, rc 0
+# skip_present=true + GHCR already present → copy NOT invoked, rc 0
 # Locks the fast path: when `docker manifest inspect` succeeds (image in GHCR),
 # `buildx imagetools create` must never be called (no docker.io request).
-@test "BCU-PRESGATE-01: skip_present=true + GHCR present → copy skipped, rc 0" {
+@test "skip_present=true + GHCR present → copy skipped, rc 0" {
     # Use a marker file to detect whether buildx imagetools create was ever called.
     # A shell variable cannot survive the command-substitution subshell used by
     # _sync_one_with_backoff, so we use a real tempfile (same pattern as the
@@ -1225,10 +1225,10 @@ EOF
     rm -f "$copy_marker"
 }
 
-# BCU-PRESGATE-02: skip_present=true + GHCR absent → copy IS invoked, rc 0
+# skip_present=true + GHCR absent → copy IS invoked, rc 0
 # When `docker manifest inspect` fails (image not yet in GHCR), the normal copy
 # path must run — ensures the gate doesn't block the initial population.
-@test "BCU-PRESGATE-02: skip_present=true + GHCR absent → copy invoked, rc 0" {
+@test "skip_present=true + GHCR absent → copy invoked, rc 0" {
     local copy_marker
     copy_marker=$(mktemp)
     rm -f "$copy_marker"
@@ -1260,11 +1260,11 @@ EOF
     rm -f "$copy_marker"
 }
 
-# BCU-PRESGATE-03: skip_present=false (default, daily sync) → copy invoked even when GHCR present
+# skip_present=false (default, daily sync) → copy invoked even when GHCR present
 # Regression lock: blind-copy behavior must not be broken by the presence gate.
 # The daily upstream-monitor sync calls sync_base_images_to_ghcr without skip_present
 # (defaults to "false"), so it must always copy regardless of GHCR state.
-@test "BCU-PRESGATE-03: skip_present=false (default) → copy invoked even when GHCR present (blind refresh)" {
+@test "skip_present=false (default) → copy invoked even when GHCR present (blind refresh)" {
     local copy_marker
     copy_marker=$(mktemp)
     rm -f "$copy_marker"

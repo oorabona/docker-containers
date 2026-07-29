@@ -2,17 +2,17 @@
 # Deterministic bake/matrix build-arg parity harness.
 #
 # Mutation guards:
-#   BMP1: reverting _compute_cell_build_args to live version.sh --upstream would
+#   reverting _compute_cell_build_args to live version.sh --upstream would
 #         let retained cells build a newer source under an older matrix tag.
-#   BMP2: dropping tag-suffix validation would mis-strip containers without a
+#   dropping tag-suffix validation would mis-strip containers without a
 #         real --tag-suffix branch.
-#   BMP3: drifting hook-side strip logic would make matrix and bake builds use
+#   drifting hook-side strip logic would make matrix and bake builds use
 #         different source versions.
-#   BMP4: reintroducing openresty RESTY_VERSION would recreate the latent source
+#   reintroducing openresty RESTY_VERSION would recreate the latent source
 #         tarball 404 regression.
-#   BMP5: adding a default to source-version ARG declarations would weaken the
+#   adding a default to source-version ARG declarations would weaken the
 #         required-arg contract.
-#   BMP6: removing the _df_declares_arg gate from STEP 4 would emit UPSTREAM_VERSION
+#   removing the _df_declares_arg gate from STEP 4 would emit UPSTREAM_VERSION
 #         for jekyll/wordpress/php (no ARG UPSTREAM_VERSION) — unused build-arg
 #         warnings and matrix divergence.
 

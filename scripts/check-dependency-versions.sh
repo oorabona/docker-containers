@@ -233,7 +233,7 @@ check_container_deps() {
         lifecycle=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].lifecycle // ""' "$config")
 
         # Lifecycle dispatch — replaces the binary monitor:false blanket continue.
-        # AC-3: eol-migrate MUST NOT be silently skipped.
+        # eol-migrate MUST NOT be silently skipped.
         case "$lifecycle" in
             untracked)
                 # Declared skip: genuinely nothing to track (base-image fallback,

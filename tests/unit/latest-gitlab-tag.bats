@@ -244,7 +244,7 @@ last_output_line() {
     [[ "$output" == *"Extracted version '0.4.9|11' is not a safe normalized version"* ]]
 }
 
-@test "tag names with spaces are preserved for raw and both output" {
+@test "gitlab tag: tag names with spaces are preserved for raw and both output" {
     write_fake_curl space_tag
 
     run run_helper "tpo/core/tor" \

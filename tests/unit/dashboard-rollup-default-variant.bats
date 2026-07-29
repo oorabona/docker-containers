@@ -77,7 +77,7 @@ make_variants_yaml() {
 # Fix B: default_variant selection (NEVER filesystem-first)
 # =============================================================================
 
-@test "DRDV-01: Multi-variant single-version uses default_variant (debian is default)" {
+@test "Multi-variant single-version uses default_variant (debian is default)" {
     # Production web-shell: debian has suffix: "" (no suffix) → lineage file = web-shell-1.7.7.json
     # Non-default variants have explicit suffixes: -alpine, -ubuntu, -rocky
     # Fix B: must return the default variant's suffixless file, not the first filesystem match.
@@ -114,7 +114,7 @@ YAML
     [[ "$output" != *"-alpine.json" && "$output" != *"-ubuntu.json" && "$output" != *"-rocky.json" ]]
 }
 
-@test "DRDV-02: Multi-version multi-flavor returns latest version default flavor" {
+@test "Multi-version multi-flavor returns latest version default flavor" {
     # Postgres-style: versions [18, 17, 16], default flavor = base
     make_lineage "postgres-18-alpine" "ghcr.io/oorabona/library/postgres:18-alpine"
     make_lineage "postgres-17-alpine" "ghcr.io/oorabona/library/postgres:17-alpine"
@@ -142,7 +142,7 @@ YAML
     [[ "$output" == *"postgres-18"* ]]
 }
 
-@test "DRDV-03: Versions-only container returns latest version lineage" {
+@test "Versions-only container returns latest version lineage" {
     # ansible: no variants, just versions
     make_lineage "ansible-13.3.0-ubuntu" "ubuntu:noble"
     make_lineage "ansible-13.4.0-ubuntu" "ubuntu:noble"
@@ -160,7 +160,7 @@ YAML
     [[ "$output" == *"13.4.0"* ]]
 }
 
-@test "DRDV-04: Legacy container-level rollup file preserved" {
+@test "Legacy container-level rollup file preserved" {
     # If container.json exists, return it directly (legacy path)
     make_lineage "foo" "alpine:3.21"
 
@@ -170,7 +170,7 @@ YAML
     [[ "$output" == *"foo.json" ]]
 }
 
-@test "DRDV-05: Malformed variants.yaml returns empty sentinel, never filesystem-first" {
+@test "Malformed variants.yaml returns empty sentinel, never filesystem-first" {
     # Create real lineage files that would be found by filesystem-first
     make_lineage "foo-1.0-alpine" "alpine:3.21"
     make_lineage "foo-1.0-debian" "debian:trixie"
@@ -185,7 +185,7 @@ YAML
     [[ -z "$output" ]]
 }
 
-@test "DRDV-06: Multiple default:true variants returns first match (no ambiguity crash)" {
+@test "Multiple default:true variants returns first match (no ambiguity crash)" {
     make_lineage "bar-1.0-alpine" "alpine:3.21"
     make_lineage "bar-1.0-debian" "debian:trixie"
 
@@ -208,7 +208,7 @@ YAML
     [[ -z "$output" || "$output" == *"bar-1.0"* ]]
 }
 
-@test "DRDV-07: Default variant lineage missing, falls back to any present variant with notice" {
+@test "Default variant lineage missing, falls back to any present variant with notice" {
     # debian is default but its lineage file doesn't exist — fall back to alpine
     make_lineage "web-shell-1.7.7-alpine" "alpine:3.21"
     # No web-shell-1.7.7-debian.json
@@ -229,7 +229,7 @@ YAML
     [[ "$output" == *"web-shell-1.7.7-alpine.json" ]]
 }
 
-@test "DRDV-08: All variant lineage files missing returns empty string" {
+@test "All variant lineage files missing returns empty string" {
     # No .json files exist for baz
     make_variants_yaml "$TEST_TEMP_DIR/baz" "$(cat <<'YAML'
 versions:
@@ -249,7 +249,7 @@ YAML
 # Fix E: sanitize-at-read — base_image_ref with ${ returns empty
 # =============================================================================
 
-@test "DRDV-09: Pre-v2 entry with leaked base_image_ref treated as empty at read" {
+@test "Pre-v2 entry with leaked base_image_ref treated as empty at read" {
     # Create a pre-v2 lineage file with a leaked placeholder
     jq -n '{container:"sslh","base_image_ref":"${OS_IMAGE_BASE}:${OS_IMAGE_TAG}","version":"v2.3.1","tag":"v2.3.1-alpine"}' \
         > "$TEST_TEMP_DIR/.build-lineage/sslh-v2.3.1-alpine.json"
@@ -270,7 +270,7 @@ YAML
 # (orthogonal gate codex MEDIUM finding)
 # =============================================================================
 
-@test "DRDV-10: Postgres default-variant (base) resolves suffixless file, not -base suffixed file" {
+@test "Postgres default-variant (base) resolves suffixless file, not -base suffixed file" {
     # Production postgres tags: base variant → "18-alpine" (NO -base suffix),
     # vector variant → "18-alpine-vector". The current bug: the glob
     # *{default_name}.json = *base.json matches "postgres-18-alpine-base.json"
@@ -315,7 +315,7 @@ YAML
 # Finding #1 (gate r3 codex MEDIUM): Legacy rollup must NOT shadow newer per-tag file
 # =============================================================================
 
-@test "DRDV-11: Per-tag lineage preferred over stale legacy rollup when both exist" {
+@test "Per-tag lineage preferred over stale legacy rollup when both exist" {
     # Scenario: cache contains an OLD {container}.json (legacy rollup from a prior-era build)
     # AND a current {container}-{version}-{variant}.json (per-tag file from the new build).
     # The legacy rollup carries a STALE base_image_ref; the per-tag file has the current truth.
@@ -363,7 +363,7 @@ YAML
 # Finding #2 (gate r3 codex LOW): Sidecar files must not be returned by fallback glob
 # =============================================================================
 
-@test "DRDV-12: Sidecar files excluded from fallback glob — no false-positive match" {
+@test "Sidecar files excluded from fallback glob — no false-positive match" {
     # Scenario: .build-lineage/ contains ONLY sidecar files for a container
     # (e.g. foo-1.0-alpine.sbom.json, foo-1.0-alpine.history.json).
     # No actual lineage file (foo-1.0-alpine.json) exists.
@@ -399,7 +399,7 @@ YAML
 # Post-fix: [[ "$legacy_tag" == "$current_latest" ]]  (exact match)
 # =============================================================================
 
-@test "DRDV-13: Legacy rollup tag 11.0-alpine does NOT match current_latest 1.0 (substring false positive)" {
+@test "Legacy rollup tag 11.0-alpine does NOT match current_latest 1.0 (substring false positive)" {
     # Pre-fix: "11.0-alpine" CONTAINS "1.0" → substring match fires → wrong rollup returned
     # Post-fix: "11.0-alpine" != "1.0" → no match → empty returned (correct)
 
@@ -428,7 +428,7 @@ YAML
     }
 }
 
-@test "DRDV-14: Legacy rollup tag 2.0-debian matches current_latest 2.0 via prefix (version same)" {
+@test "Legacy rollup tag 2.0-debian matches current_latest 2.0 via prefix (version same)" {
     # Finding #2 (gate r5): prefix-match fix: legacy_tag="2.0-debian" starts with "2.0-"
     # → returns the legacy rollup (the version matches, regardless of variant suffix).
     # Note: prior to Finding #2, exact-match was used → empty; prefix-match is the r5 correction.
@@ -456,7 +456,7 @@ YAML
     }
 }
 
-@test "DRDV-15: Legacy rollup exact match — tag equals current_latest exactly (valid use case)" {
+@test "Legacy rollup exact match — tag equals current_latest exactly (valid use case)" {
     # When legacy_tag == current_latest exactly, the legacy rollup SHOULD be returned.
     # (This is the legitimate case: a versions-only container wrote {container}.json
     #  but its per-tag file somehow didn't land in .build-lineage.)
@@ -487,7 +487,7 @@ YAML
 # Post-fix: prefix match allows "1.7.7-debian" to match "1.7.7" (version prefix).
 # =============================================================================
 
-@test "DRDV-16: Legacy rollup with full tag '1.7.7-debian' matches current_latest '1.7.7'" {
+@test "Legacy rollup with full tag '1.7.7-debian' matches current_latest '1.7.7'" {
     # web-shell-style: legacy web-shell.json was written with .tag="1.7.7-debian".
     # variants.yaml has versions[0].tag="1.7.7".
     # Per-tag resolution finds nothing (no web-shell-1.7.7*.json in .build-lineage/).
@@ -523,7 +523,7 @@ YAML
 #           NEVER fall back to legacy rollup when variants.yaml is malformed.
 # =============================================================================
 
-@test "DRDV-17: Malformed variants.yaml with stale legacy rollup present — fails closed, not silent fallback" {
+@test "Malformed variants.yaml with stale legacy rollup present — fails closed, not silent fallback" {
     # Scenario: variants.yaml is malformed AND a stale {container}.json exists.
     # Pre-fix: yq fails → latest_version="" → legacy fallback fires → stale rollup returned silently.
     # Post-fix: detect yq failure → return empty AND emit stderr warning.
@@ -555,7 +555,7 @@ YAML
 #   not "1.0.1-alpine.json".
 # =============================================================================
 
-@test "DRDV-18: Version prefix-collision — '1.0' must NOT match '1.0.1-alpine.json' in fallback glob" {
+@test "Version prefix-collision — '1.0' must NOT match '1.0.1-alpine.json' in fallback glob" {
     # Scenario: latest_version="1.0" in variants.yaml.
     # .build-lineage/ has foo-1.0.1-alpine.json (NEXT major patch, NOT the latest 1.0).
     # Pre-fix glob: "${container}-${latest_version}*.json" matches "1.0.1-alpine.json"
@@ -596,7 +596,7 @@ YAML
 #   so the guard branch runs correctly.
 # =============================================================================
 
-@test "DRDV-19: Guarded yq assignment — malformed YAML does not abort parent shell under set -e" {
+@test "Guarded yq assignment — malformed YAML does not abort parent shell under set -e" {
     # This test asserts that resolve_lineage_file is callable from a set -e
     # context without killing the parent shell on a yq parse failure.
     # Technique: invoke the function from within an explicit set -e subshell,
