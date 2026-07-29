@@ -14,9 +14,12 @@
 #   th_init --name "My Tests" --report table
 #   th_group "Basics"
 #   th_start
-#   result=$(my_command)
-#   th_assert_eq "command returns hello" "$result" "hello"
+#   th_assert_cmd_contains "command greets" "hello" my_command --flag
 #   th_summary  # prints report, returns 0 if all pass
+#
+# Prefer the command probes over `result=$(my_command)` followed by a text
+# assertion: nothing there reads the command's status, so a producer that prints
+# the expected value and then fails still passes.
 #
 # Assertions (all return 0 — safe with set -e):
 #   th_assert_eq       "desc" "$actual" "$expected"
@@ -228,6 +231,9 @@ th_init() {
     _TH_PASS=0 _TH_FAIL=0 _TH_SKIP=0 _TH_TOTAL=0
     _TH_CURRENT_GROUP="" _TH_TEST_START_MS=0
     _TH_SUITE_NAME="Test Suite" _TH_REPORT="table" _TH_NO_COLOR=0
+    # Public, so it survives a re-init unless cleared here — and a stale value
+    # would let an assertion in the new suite pass against the old suite's output.
+    TH_OUTPUT=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -370,6 +376,76 @@ th_assert_matches() {
         _th_record pass "$name"
     else
         _th_record fail "$name" "'$value' does not match pattern '$pattern'"
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Command probes
+# ---------------------------------------------------------------------------
+#
+# Asserting on the text a command printed, without also requiring the command to
+# have SUCCEEDED, is a false-green channel: a producer can print plausible output
+# and then exit non-zero — a truncated HTTP transfer, a tool that prints a banner
+# before failing, a `docker exec` that never reached the binary — and the text
+# assertion passes anyway.
+#
+# `value=$(cmd)` does not hide that status; it lands in `$?`, and under `errexit`
+# a plain assignment aborts on it. The suites here run WITHOUT errexit and never
+# read `$?`, so nothing acts on it. (The form that genuinely discards it is
+# `local value=$(cmd)`: the builtin's own status wins, and errexit does not fire.)
+# Either way the omission is invisible at the call site, which is why the probe
+# takes the command rather than trusting each caller to check.
+#
+# On the diagnostics: failure details name the command but never its arguments,
+# so an argument list cannot leak a credential into a CI log. They DO carry the
+# captured output when a text assertion fails — that is what makes a failure
+# diagnosable, and a harness that hid it would not be one. The bound is therefore
+# on the caller: do not point a probe at a command whose output is secret. A
+# suite that must handle one validates it itself and reports a description
+# instead of the value.
+#
+# These probes take the command instead of its output, so the status cannot be
+# dropped on the way. Stderr is discarded, as the direct captures they replace
+# did; the exit status is what carries failure now.
+
+# Run a command, and record a failure if it did not succeed. On success its
+# stdout is in $TH_OUTPUT and the caller's own validation may run; on failure
+# $TH_OUTPUT is empty and this returns non-zero, so a caller chaining with `&&`
+# cannot assert against output the command failed to produce.
+#
+# Usage: th_capture "name" cmd args... && th_assert_contains "name" "$TH_OUTPUT" x
+th_capture() {
+    local name="$1"; shift
+    if (( $# == 0 )); then
+        # An empty "$@" is a successful empty command substitution, so without
+        # this a caller that dropped its command would silently pass.
+        TH_OUTPUT=""
+        _th_record fail "$name" "th_capture was given no command to run"
+        return 1
+    fi
+    local status=0
+    TH_OUTPUT=$("$@" 2>/dev/null) || status=$?
+    if (( status != 0 )); then
+        TH_OUTPUT=""
+        # The command's ARGUMENTS are never recorded. Results reach the table,
+        # the TAP stream and the JSON report, all of which land in CI logs, and
+        # an argument list can carry a credential, a token or a signed URL. The
+        # test name already says what was being probed.
+        _th_record fail "$name" "command '$1' exited $status"
+        return 1
+    fi
+    return 0
+}
+
+# Assert a command succeeds AND its output contains needle. Both are part of the
+# assertion; either one failing fails the test.
+#
+# Usage: th_assert_cmd_contains "name" "needle" cmd args...
+th_assert_cmd_contains() {
+    local name="$1" needle="$2"; shift 2
+    if th_capture "$name" "$@"; then
+        th_assert_contains "$name" "$TH_OUTPUT" "$needle"
     fi
     return 0
 }

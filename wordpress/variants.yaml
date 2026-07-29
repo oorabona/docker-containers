@@ -10,3 +10,6 @@ build:
 versions:
   - tag: 7.0.2-alpine
   - tag: 6.9.4-alpine
+tests:
+  e2e:
+    enabled: true

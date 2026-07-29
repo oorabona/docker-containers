@@ -17,16 +17,17 @@ th_init --name "Debian base image E2E" --report "${REPORT_FORMAT:-table}"
 
 th_group "Release"
 
-release=$(docker exec "$CONTAINER_NAME" cat /etc/debian_version 2>/dev/null)
-th_assert_not_empty "/etc/debian_version identifies the release" "$release"
+th_capture "/etc/debian_version identifies the release" \
+    docker exec "$CONTAINER_NAME" cat /etc/debian_version &&
+    th_assert_not_empty "/etc/debian_version identifies the release" "$TH_OUTPUT"
 
 th_group "Environment"
 
 # Was a warning reading "may be normal for minimal image". It holds on the
 # published image, and a base image that loses its UTF-8 locale breaks every
 # consumer assuming one, so it is asserted.
-locale_out=$(docker exec "$CONTAINER_NAME" locale 2>/dev/null)
-th_assert_contains "a UTF-8 locale is configured" "$locale_out" "UTF-8"
+th_assert_cmd_contains "a UTF-8 locale is configured" "UTF-8" \
+    docker exec "$CONTAINER_NAME" locale
 
 # Also a warning. The image ships a default unprivileged user; if it stops, every
 # downstream USER directive naming it breaks.
@@ -39,10 +40,12 @@ fi
 th_group "Core tools"
 
 for tool in bash cat ls; do
-    if docker exec "$CONTAINER_NAME" which "$tool" >/dev/null 2>&1; then
+    # `command -v` is a POSIX shell builtin; `which` is a separate package that
+    # RHEL-family minimal images do not ship.
+    if docker exec "$CONTAINER_NAME" sh -c 'command -v "$1" >/dev/null 2>&1' _ "$tool"; then
         th_pass "$tool is on PATH"
     else
-        th_fail "$tool is on PATH" "which $tool failed"
+        th_fail "$tool is on PATH" "command -v $tool found nothing"
     fi
 done
 

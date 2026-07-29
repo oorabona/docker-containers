@@ -1,54 +1,93 @@
 #!/bin/bash
-# E2E test for web-shell container
+# E2E test for the web-shell container.
+#
+# Uses the repository's test harness so the exit code is the verdict. This suite
+# was already the strictest of the unrun ones — five hard checks and no
+# warnings — so the change is the summary carrying them, and every check being
+# reported rather than the run stopping at the first failure.
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../test-harness/test-harness.sh
+source "${SCRIPT_DIR}/../test-harness/test-harness.sh"
+
 CONTAINER_NAME="${CONTAINER_NAME:-e2e-web-shell}"
 
-echo "  Testing Web Shell..."
+th_init --name "Web Shell E2E" --report "${REPORT_FORMAT:-table}"
 
-# Test ttyd binary exists and version
-echo "  Checking ttyd version..."
-if docker exec "$CONTAINER_NAME" ttyd --version 2>/dev/null; then
-    echo "  ✅ ttyd binary found"
-else
-    echo "  ❌ ttyd binary not found"
-    exit 1
-fi
+th_group "Terminal service"
 
-# Check ttyd is listening (web terminal)
-echo "  Checking web terminal..."
-if docker exec "$CONTAINER_NAME" curl -fsS http://localhost:7681/token 2>/dev/null | grep -q "token"; then
-    echo "  ✅ Web terminal responding"
-else
-    echo "  ❌ Web terminal not responding"
-    exit 1
-fi
+th_assert_cmd_contains "ttyd reports its version" "ttyd" \
+    docker exec "$CONTAINER_NAME" ttyd --version
 
-# Check common tools are installed
-echo "  Checking installed tools..."
-TOOLS="bash git curl jq htop"
-for tool in $TOOLS; do
-    if docker exec "$CONTAINER_NAME" which "$tool" &>/dev/null; then
-        echo "    ✓ $tool"
+# The token endpoint is what a browser fetches before opening the socket, so it
+# proves the service is serving rather than merely running.
+#
+# Parsed, not pattern-matched: `contains "token"` would accept an error page that
+# happens to mention it, and a `^\{"token":` prefix would accept `{"token":garbage`
+# or a body truncated at that exact point — which is what a curl partial transfer
+# produces. Parsing also catches the failed transfer that a discarded exit status
+# would otherwise let through.
+#
+# The value is deliberately not asserted, only its type: with no credential
+# configured ttyd answers an empty token, and that is the configuration the e2e
+# runs — the harness starts the image with no TTYD_CREDENTIAL, no TLS and the
+# default port. This probe is written for exactly that shape and is not valid
+# against an authenticated, TLS or alternate-port deployment; the image's own
+# healthcheck is what handles those.
+token_check="the token endpoint answers a JSON object with a string token"
+if th_capture "$token_check" \
+        docker exec "$CONTAINER_NAME" curl -fsS --connect-timeout 5 --max-time 15 \
+        http://localhost:7681/token; then
+    # Slurped, not streamed: `jq -e` on a stream takes its status from the LAST
+    # value, so `{"error":true}{"token":""}` would pass an assertion that says the
+    # response is one JSON object. Requiring exactly one is the assertion.
+    if printf '%s' "$TH_OUTPUT" |
+            jq -se 'length == 1 and (.[0] | has("token") and (.token | type == "string"))' \
+            >/dev/null 2>&1; then
+        th_pass "$token_check"
     else
-        echo "  ❌ Missing tool: $tool"
-        exit 1
+        # The body is described, never echoed: on a deployment that does configure
+        # a credential, a malformed response could carry a live token straight
+        # into the CI log. Its length is enough to tell the failures apart.
+        th_fail "$token_check" \
+            "response of ${#TH_OUTPUT} characters did not parse as one {\"token\": <string>}"
+    fi
+fi
+
+th_group "Shell environment"
+
+# The image names its unprivileged shell user in the environment; a terminal
+# whose user does not exist opens onto nothing.
+shell_user=""
+if th_capture "SHELL_USER is set in the image" \
+        docker exec "$CONTAINER_NAME" printenv SHELL_USER; then
+    shell_user=$TH_OUTPUT
+    th_assert_not_empty "SHELL_USER is set in the image" "$shell_user"
+fi
+
+# Only ask whether the user exists once its name is known. Reporting `id` as
+# failed when it was never run inflates the count and blames the wrong command —
+# the unreadable name is already recorded above.
+if [ -z "$shell_user" ]; then
+    th_skip "the shell user exists" "SHELL_USER was not readable"
+elif docker exec "$CONTAINER_NAME" id "$shell_user" >/dev/null 2>&1; then
+    th_pass "the shell user '$shell_user' exists"
+else
+    th_fail "the shell user '$shell_user' exists" "id '$shell_user' failed"
+fi
+
+th_group "Tools"
+
+for tool in bash git curl jq htop; do
+    # `command -v` is a POSIX shell builtin; `which` is a separate package the
+    # rocky variant does not ship, so testing with it failed every tool there.
+    if docker exec "$CONTAINER_NAME" sh -c 'command -v "$1" >/dev/null 2>&1' _ "$tool"; then
+        th_pass "$tool is on PATH"
+    else
+        th_fail "$tool is on PATH" "command -v $tool found nothing"
     fi
 done
 
-# Check shell user exists (read SHELL_USER from the container's environment)
-echo "  Checking shell user..."
-SHELL_USER=$(docker exec "$CONTAINER_NAME" printenv SHELL_USER 2>/dev/null)
-if [[ -z "$SHELL_USER" ]]; then
-    echo "  ❌ Could not read SHELL_USER from container environment"
-    exit 1
-fi
-if docker exec "$CONTAINER_NAME" id "$SHELL_USER" &>/dev/null; then
-    echo "  ✅ Shell user '${SHELL_USER}' exists"
-else
-    echo "  ❌ Shell user '${SHELL_USER}' not found"
-    exit 1
-fi
-
-echo "  ✅ All Web Shell tests passed"
+th_summary

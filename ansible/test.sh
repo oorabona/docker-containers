@@ -20,18 +20,20 @@ th_group "Interpreter and tooling"
 
 # The version banner used to be printed and never read, so an image with no
 # ansible at all still reached the end of the script.
-version=$(docker exec "$CONTAINER_NAME" ansible --version 2>/dev/null | head -1)
-th_assert_contains "ansible reports its version" "$version" "ansible"
+th_assert_cmd_contains "ansible reports its version" "ansible" \
+    docker exec "$CONTAINER_NAME" ansible --version
 
-playbook=$(docker exec "$CONTAINER_NAME" ansible-playbook --version 2>/dev/null | head -1)
-th_assert_contains "ansible-playbook is installed" "$playbook" "ansible-playbook"
+th_assert_cmd_contains "ansible-playbook is installed" "ansible-playbook" \
+    docker exec "$CONTAINER_NAME" ansible-playbook --version
 
 th_group "Module execution"
 
 # What the image is for: run a module against localhost over the local
 # connection, which needs the interpreter, the module path and the config to be
 # right at once.
-ping=$(docker exec "$CONTAINER_NAME" ansible localhost -m ping -c local 2>/dev/null | grep -c SUCCESS)
-th_assert_ge "the ping module reports SUCCESS" "${ping:-0}" 1
+th_capture "the ping module reports SUCCESS" \
+    docker exec "$CONTAINER_NAME" ansible localhost -m ping -c local &&
+    th_assert_ge "the ping module reports SUCCESS" \
+        "$(printf '%s\n' "$TH_OUTPUT" | grep -c SUCCESS)" 1
 
 th_summary

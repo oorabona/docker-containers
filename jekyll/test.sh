@@ -1,31 +1,34 @@
 #!/bin/bash
-# E2E test for jekyll container
+# E2E test for the jekyll container.
+#
+# Uses the repository's test harness so the exit code is the verdict. Bundler was
+# a warning; it holds on the published image, and a Jekyll image without it
+# cannot install a site's gems, so it is asserted.
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../test-harness/test-harness.sh
+source "${SCRIPT_DIR}/../test-harness/test-harness.sh"
+
 CONTAINER_NAME="${CONTAINER_NAME:-e2e-jekyll}"
 
-echo "  Testing Jekyll..."
+th_init --name "Jekyll E2E" --report "${REPORT_FORMAT:-table}"
 
-# Test Ruby version
-echo "  Checking Ruby version..."
-docker exec "$CONTAINER_NAME" ruby --version | head -1
+th_group "Ruby toolchain"
 
-# Test Jekyll version
-echo "  Checking Jekyll version..."
-if docker exec "$CONTAINER_NAME" jekyll --version 2>/dev/null; then
-    echo "  ✅ Jekyll available"
-else
-    echo "  ❌ Jekyll not found"
-    exit 1
-fi
+# Was printed and never read, so an image with no ruby reached the end.
+th_assert_cmd_contains "ruby reports its version" "ruby" \
+    docker exec "$CONTAINER_NAME" ruby --version
 
-# Test Bundler
-echo "  Checking Bundler..."
-if docker exec "$CONTAINER_NAME" bundle --version &>/dev/null; then
-    echo "  ✅ Bundler available"
-else
-    echo "  ⚠️  Bundler not found"
-fi
+# Bundler 4 prints a bare version number — no "Bundler" anywhere in it — so the
+# assertion is on the shape of what it prints, not on a word.
+th_capture "bundler reports a version" docker exec "$CONTAINER_NAME" bundle --version &&
+    th_assert_matches "bundler reports a version" "$TH_OUTPUT" '[0-9]+\.[0-9]+'
 
-echo "  ✅ All Jekyll tests passed"
+th_group "Jekyll"
+
+th_assert_cmd_contains "jekyll reports its version" "jekyll" \
+    docker exec "$CONTAINER_NAME" jekyll --version
+
+th_summary

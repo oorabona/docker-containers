@@ -92,8 +92,11 @@ output_value() {
 }
 
 @test "deleting the entrypoint opt-in check would verify a container with no e2e" {
-    # php has a test.sh and does not opt into e2e, so there is nothing to run.
-    run_find_containers_step "php/test.sh"
+    # postgres has a test.sh and deliberately does not opt into e2e yet, so there
+    # is nothing for a change to it to run. Its suite is sound; enabling it means
+    # importing the heavy postgres build into every PR that touches it, which is
+    # a separate decision.
+    run_find_containers_step "postgres/test.sh"
 
     [ "$status" -eq 0 ]
     [ "$(output_value containers)" = "[]" ]
@@ -110,6 +113,23 @@ output_value() {
 
 @test "deleting shared-harness fanout would leave opted-in e2e suites unverified" {
     run_find_containers_step "tests/e2e-test.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$(output_value containers)" = "[]" ]
+    actual=$(output_value containers_to_verify | jq -c 'sort')
+    expected=$(for file in "$PROJECT_ROOT"/*/variants.yaml; do
+        if [[ "$(yq -r '.tests.e2e.enabled // false' "$file")" == "true" ]]; then
+            basename "$(dirname "$file")"
+        fi
+    done | jq -R . | jq -sc 'sort')
+    [ "$actual" = "$expected" ]
+}
+
+@test "deleting assertion-library fanout would let a harness regression pass every suite silently" {
+    # Every opted-in suite sources this library and its return code IS their
+    # verdict, so a regression here can turn all of them green without touching
+    # a container. It must fan out exactly like the shared runner above.
+    run_find_containers_step "test-harness/test-harness.sh"
 
     [ "$status" -eq 0 ]
     [ "$(output_value containers)" = "[]" ]

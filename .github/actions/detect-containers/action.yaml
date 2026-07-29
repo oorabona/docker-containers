@@ -471,6 +471,22 @@ runs:
             # queue. Container-local tests verify that container; the shared e2e
             # harness verifies every container that explicitly opts in.
             case "$file" in
+              test-harness/*)
+                # FIRST, because the container-local patterns below span slashes:
+                # `*/tests/*` and `*/test.sh` would otherwise claim
+                # test-harness/tests/helper.sh or test-harness/x/test.sh for a
+                # container named "test-harness", which does not exist, and the
+                # change would fan out to nothing.
+                #
+                # Every opted-in suite sources this library and its return code IS
+                # their verdict, so a regression here can turn all of them green
+                # without touching a container. Same fan-out as the shared runner.
+                while IFS= read -r container; do
+                  [[ -z "$container" ]] && continue
+                  note_verification "$container" "shared assertion library changed"
+                done <<< "$valid_containers"
+                continue
+                ;;
               */tests/*)
                 note_verification "${file%%/*}" "container test changed"
                 continue

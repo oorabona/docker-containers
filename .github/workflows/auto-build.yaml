@@ -95,6 +95,8 @@ on:
       - '!**/tests/**'                          # Nested test subdirs inside container dirs
       - '*/tests/**'                             # Re-include container tests: verification only, never a production build input
       - 'tests/e2e-test.sh'                      # Re-include shared e2e harness: verifies all opted-in containers
+      - 'test-harness/*.sh'                      # Re-include the assertion library: every opted-in suite's verdict comes from it
+      - 'test-harness/**/*.sh'                   # …including any nested helper — `*` does not span `/` in a path filter
       - '**/LAST_REBUILD.md'                    # Re-include — upstream-monitor's explicit retained-rebuild trigger marker (overrides !**/*.md)
   # Triggered on merge to master (actual deployment)
   push:
