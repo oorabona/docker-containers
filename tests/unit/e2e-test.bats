@@ -185,3 +185,24 @@ SH
     ! grep -qE '\bpgrep\b' "$PROJECT_ROOT/sslh/test.sh"
     grep -q '/bin/busybox nc' "$PROJECT_ROOT/sslh/test.sh"
 }
+
+@test "terraform run profile: --entrypoint sleep, because the image entrypoint execs terraform with its args" {
+    mkdir -p "$FIXTURE_REPO/terraform"
+    printf '#!/bin/bash\nexit 0\n' > "$FIXTURE_REPO/terraform/test.sh"
+    chmod +x "$FIXTURE_REPO/terraform/test.sh"
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export DOCKER_PS_OUTPUT="e2e-terraform"
+    export E2E_IMAGE="ghcr.io/example/terraform:e2e"
+
+    run "$FIXTURE_REPO/tests/e2e-test.sh" terraform
+
+    [ "$status" -eq 0 ]
+    run_line=$(grep '^run ' "$DOCKER_LOG")
+    # The image entrypoint ends in `exec /bin/terraform "$@"`, so without an
+    # entrypoint override `sleep infinity` arrives as terraform arguments and the
+    # container is gone before the first probe. Overriding it is what keeps the
+    # container alive; dropping this line makes every terraform probe unrunnable.
+    [[ "$run_line" == *"--entrypoint sleep"* ]]
+    [[ "$run_line" == *"infinity"* ]]
+}

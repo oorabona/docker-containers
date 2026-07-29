@@ -24,12 +24,21 @@ th_assert_contains "ttyd reports its version" "$version" "ttyd"
 # The token endpoint is what a browser fetches before opening the socket, so it
 # proves the service is serving rather than merely running.
 #
-# Matched on shape, not on the word: `contains "token"` would also accept an
-# error page that happens to mention it. Not on the value either — with no
-# credential configured ttyd answers {"token": ""}, and a deployment that sets one
-# would answer differently without being broken.
-token=$(docker exec "$CONTAINER_NAME" curl -fsS http://localhost:7681/token 2>/dev/null | tr -d '[:space:]')
-th_assert_matches "the token endpoint answers JSON on :7681" "$token" '^\{"token":'
+# Parsed, not pattern-matched: `contains "token"` would accept an error page that
+# happens to mention it, and a `^\{"token":` prefix would accept `{"token":garbage`
+# or a body truncated at that exact point — which is what a curl partial transfer
+# produces. Parsing also catches the failed transfer that a discarded exit status
+# would otherwise let through.
+#
+# The value is deliberately not asserted: with no credential configured ttyd
+# answers {"token": ""}, and a deployment that sets one answers differently
+# without being broken. The type is the contract.
+token=$(docker exec "$CONTAINER_NAME" curl -fsS http://localhost:7681/token 2>/dev/null)
+if printf '%s' "$token" | jq -e 'has("token") and (.token | type == "string")' >/dev/null 2>&1; then
+    th_pass "the token endpoint answers a JSON object with a string token"
+else
+    th_fail "the token endpoint answers a JSON object with a string token" "got: ${token:-<empty>}"
+fi
 
 th_group "Shell environment"
 
