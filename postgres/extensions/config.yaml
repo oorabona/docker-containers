@@ -54,7 +54,7 @@ extensions:
     shared_preload: true
     priority: 2
   paradedb:
-    version: "0.24.3"
+    version: "0.25.0"
     rust_version: "1.96.0" # Pinned Rust toolchain; update manually when adopting new stable Rust (see postgres/version-extension.sh).
     description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
     repo: "paradedb/paradedb"
@@ -90,7 +90,7 @@ extensions:
     # Citus 14.0.0 adds PG 18 support
     max_pg_version: 18
   timescaledb:
-    version: "2.28.3"
+    version: "2.29.0"
     description: "Time-series database for high-performance analytics"
     repo: "timescale/timescaledb"
     license: "Apache-2.0 + TSL"
