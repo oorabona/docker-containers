@@ -64,15 +64,28 @@ th_group "Server"
 # real site into /site read-write, so this suite pointed at that container with
 # CONTAINER_NAME would otherwise overwrite the user's own page. It is removed
 # again below, and even a failed cleanup leaves their content untouched.
-probe_page="e2e-harness-probe"
-docker exec "$CONTAINER_NAME" sh -c \
-    'printf "%s\n" "---" "title: Harness Page" "---" "Rendered: {{ page.title }}" > "/site/$1.md"' \
-    _ "$probe_page" >/dev/null 2>&1 || true
+# Per run, not a constant: two runs against the same container would otherwise
+# write and delete each other's page, and a stale page left by an interrupted run
+# could satisfy the assertion below without this run's write ever succeeding.
+probe_page="e2e-harness-probe-$$-${RANDOM}"
+probe_token="harness-${probe_page}"
+
+# Creation is asserted, not attempted: `|| true` here means a failed write is
+# indistinguishable from a served page, which is the false green this check
+# exists to avoid. `set -C` refuses to clobber an existing file.
+if docker exec "$CONTAINER_NAME" sh -c \
+    'set -C; printf "%s\n" "---" "title: {{ page.token }}" "token: $2" "---" "Rendered: {{ page.token }}" > "/site/$1.md"' \
+    _ "$probe_page" "$probe_token" >/dev/null 2>&1; then
+    th_pass "the probe page is created in the watched source"
+else
+    th_fail "the probe page is created in the watched source" \
+        "could not write /site/$probe_page.md"
+fi
 
 # The runner does not publish 4000 to the host, but the Ruby runtime inside can
 # make the request. Retrying keeps this about the server rather than a race with
 # the rebuild it triggers.
-th_assert_cmd_contains "Jekyll serves the generated page on port 4000" "Rendered: Harness Page" \
+th_assert_cmd_contains "Jekyll serves the generated page on port 4000" "Rendered: $probe_token" \
     docker exec "$CONTAINER_NAME" ruby -rnet/http -e '
         page = ARGV[0]
         # The timeouts are why this uses the start form: Net::HTTP defaults are
@@ -82,7 +95,7 @@ th_assert_cmd_contains "Jekyll serves the generated page on port 4000" "Rendered
           begin
             Net::HTTP.start("127.0.0.1", 4000, open_timeout: 2, read_timeout: 2) do |http|
               response = http.get("/#{page}.html")
-              if response.is_a?(Net::HTTPSuccess) && response.body.include?("Rendered: Harness Page")
+              if response.is_a?(Net::HTTPSuccess) && response.body.include?("Rendered: #{ARGV[1]}")
                 puts response.body
                 exit 0
               end
@@ -92,7 +105,7 @@ th_assert_cmd_contains "Jekyll serves the generated page on port 4000" "Rendered
           sleep 1
         end
         exit 1
-    ' "$probe_page"
+    ' "$probe_page" "$probe_token"
 
 # The page belongs to the harness, not to the site: remove it whether or not the
 # assertion above passed.

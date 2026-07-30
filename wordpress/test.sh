@@ -84,11 +84,17 @@ th_group "Extensions"
 # than reported as three separate absences.
 if th_capture "php -m lists the loaded extensions" \
         docker exec "$CONTAINER_NAME" php -m; then
-    # The list this suite has always pinned, plus gd, which the base provides and
-    # the Dockerfile promises. `zip`, `apcu` and `opcache` are promised too and
-    # are NOT in the published image — that is #1017, an image defect rather than
-    # a missing assertion, and this list grows to match once it is settled.
-    for ext in mysqli json curl gd; do
+    # Everything the Dockerfile promises and a current build carries. `zip` and
+    # `apcu` are here because a freshly pulled image has them — they were missing
+    # only from an older pinned tag, so asserting them catches the silent-drop
+    # class (#996) rather than encoding a stale observation.
+    #
+    # OPcache is deliberately absent from this list and is NOT an oversight: the
+    # base has not shipped it since #996 removed it, while this image's Dockerfile
+    # still claims it and writes an opcache ini that configures nothing. Asserting
+    # it would fail every build until that contradiction is settled, which is
+    # #1017's job; asserting nothing at all is what let it go unnoticed.
+    for ext in mysqli json curl gd zip apcu; do
         if grep -qix "$ext" <<< "$TH_OUTPUT"; then
             th_pass "extension $ext is loaded"
         else

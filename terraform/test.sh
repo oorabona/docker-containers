@@ -92,7 +92,7 @@ if th_capture "Terraform image declares its flavor" \
             "$flavor" "$expected_flavor"
     else
         th_skip "the image is the flavor its tag claims" \
-            "tag '${E2E_IMAGE##*:}' names no flavor"
+            "tag '${E2E_IMAGE:+${E2E_IMAGE##*:}}' names no flavor"
     fi
     flavor_tools=()
 
