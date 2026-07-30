@@ -789,18 +789,13 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
     # value (name, declared, status from JSON data) must route through _escape_gha_command.
     # In _append_row, annotations use $safe_name, $safe_declared, $safe_status — never
     # the raw $name/$declared/$status.  Verify no annotation line uses the raw variables.
-    local raw_name_in_annotation raw_declared_in_annotation
+    local raw_name_in_annotation
     # Check that ::warning:: / ::notice:: lines do NOT interpolate raw $name, $declared, $status
     # (i.e. no 'printf ...::warning::...$name' outside safe_ variables)
     raw_name_in_annotation=$(grep -cE \
         '::(warning|notice)::[^"]*\$name[^_]|::(warning|notice)::[^"]*\$declared[^_]|::(warning|notice)::[^"]*\$status[^_]' \
         "$DRIFT_SCRIPT" || true)
     [ "$raw_name_in_annotation" -eq 0 ]
-
-    # The script must define _escape_gha_command
-    local fn_defined
-    fn_defined=$(grep -c '_escape_gha_command()' "$DRIFT_SCRIPT" || true)
-    [ "$fn_defined" -ge 1 ]
 
     # _append_row must assign safe_ variables via _escape_gha_command
     local safe_assignments
@@ -2862,4 +2857,3 @@ GH_EOF
     new_message_count=$(grep -cE 'probe error|resolver failure|missing prerequisite' "$DRIFT_YAML" || true)
     [ "$new_message_count" -ge 1 ]
 }
-

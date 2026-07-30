@@ -54,6 +54,33 @@ log_step() {
     printf '%b%s%b\n' "${BLUE}🔵 " "$*" "${NC}" >&2
 }
 
+# _escape_gha_command <value>
+#
+# Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
+# workflow command. The runner also recognizes the legacy `##[` prefix
+# anywhere in a line, so CR/LF escaping alone is not sufficient. Encode `%`
+# first, then `##[`, so the `%5B` introduced for that legacy prefix remains
+# intact. Drop remaining control bytes because they can rewrite terminal output.
+_escape_gha_command() {
+    local s="$1"
+    s="${s//\%/%25}"
+    # CR and LF are encoded rather than dropped: they are the characters a
+    # reader wants to see marked, and encoding them is what stops a value from
+    # starting a new line and with it a new `::` command.
+    s="${s//$'\n'/%0A}"
+    s="${s//$'\r'/%0D}"
+    # Every other control byte goes BEFORE the `##[` check, not after. Deleting
+    # characters closes gaps: `##<backspace>[` does not match the marker, and
+    # stripping afterwards reassembles it in the output — the escaped value then
+    # carries the very command this is here to neutralize.
+    s="${s//[[:cntrl:]]/}"
+    s="${s//##\[/##%5B}"
+    printf '%s' "$s"
+}
+
+# This helper is needed by exported functions in callers that source logging.sh.
+export -f _escape_gha_command
+
 # Helper for help text formatting (from make script)
 log_help() {
     printf "\033[36m%-25s\033[0m %s\n" "$1" "$2"

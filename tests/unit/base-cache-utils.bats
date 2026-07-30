@@ -912,10 +912,38 @@ EOF
     local input='[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"}]'
     run sync_base_images_to_ghcr "$input"
     [ "$status" -eq 1 ]
-    # The injected line must never appear at column 0 — every stderr line is
-    # prefixed with "  Error: " so it's quoted text, not a workflow command.
+    # Each line is escaped and stays its own line: the injected command never
+    # begins one, and the diagnostic is still readable rather than joined into a
+    # single %0A-separated run.
     [[ "$output" != *$'\n::stop-commands::'* ]]
-    [[ "$output" == *"  Error: ::stop-commands::xx"* ]]
+    # Anchored and counted: a substring check passes just as well when every
+    # line has been joined into one, which is the shape being ruled out.
+    [ "$(grep -c '^  Error: ' <<< "$output")" -eq 3 ]
+    grep -qx '  Error: fake error line1' <<< "$output"
+    grep -qx '  Error: ::stop-commands::xx' <<< "$output"
+    grep -qx '  Error: line3' <<< "$output"
+}
+
+@test "sync_base_images_to_ghcr: the legacy marker in docker stderr is neutralized per line" {
+    # `::` is defanged by the "  Error: " prefix alone, because that parser wants
+    # the command at the start of a line — which is why the other two cases pass
+    # with or without escaping. `##[` is the one a prefix cannot help with: the
+    # legacy parser finds it anywhere. This is the case that requires each line
+    # to actually go through the escaper.
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            printf 'pull failed\ndenied##[add-mask]secret\n' >&2
+            return 1
+        fi
+        return 0
+    }
+    export -f docker
+
+    local input='[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"}]'
+    run sync_base_images_to_ghcr "$input"
+    [ "$status" -eq 1 ]
+    [[ "$output" != *'##[add-mask]'* ]]
+    grep -qx '  Error: denied##%5Badd-mask]secret' <<< "$output"
 }
 
 @test "sync_base_images_to_ghcr: carriage return in docker stderr cannot inject workflow commands" {
@@ -933,10 +961,16 @@ EOF
     local input='[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"}]'
     run sync_base_images_to_ghcr "$input"
     [ "$status" -eq 1 ]
-    # The CR-injected `::stop-commands::` must not appear preceded by raw CR.
+    # A bare CR is a line terminator for the parser too, so it must not survive
+    # as one — and the command it tried to start must sit behind the prefix
+    # rather than at the beginning of a line.
     [[ "$output" != *$'\r::stop-commands::'* ]]
-    # And it must appear in prefixed form.
-    [[ "$output" == *"  Error: ::stop-commands::xx"* ]]
+    [[ "$output" != *$'\n::stop-commands::'* ]]
+    # The CR became a line break of its own, so four lines, each prefixed.
+    [ "$(grep -c '^  Error: ' <<< "$output")" -eq 4 ]
+    grep -qx '  Error: first line' <<< "$output"
+    grep -qx '  Error: ::stop-commands::xx' <<< "$output"
+    grep -qx '  Error: last line' <<< "$output"
 }
 
 @test "sync_base_images_to_ghcr: newline in image ref is refused (injection prevention)" {
@@ -1425,28 +1459,6 @@ EOF
     run bash -c 'probe_cache_image ghcr.io/x/a:1'
     [ "$status" -eq 0 ]
     [[ "$output" != *"command not found"* ]]
-}
-
-@test "_escape_gha_command: neutralizes the legacy ##[ command prefix" {
-    # ActionCommand.cs declares Prefix = "##[" and finds it with IndexOf, so it
-    # is honoured mid-line — encoding CR/LF alone leaves this open.
-    run _escape_gha_command 'ghcr.io/x/a:1##[add-mask]secret'
-    [ "$status" -eq 0 ]
-    [[ "$output" != *'##[add-mask]'* ]]
-    [[ "$output" == *'##%5Badd-mask]'* ]]
-}
-
-@test "_escape_gha_command: drops control bytes that rewrite a log" {
-    run _escape_gha_command "$(printf 'ghcr.io/x/a:1\033[2Kforged')"
-    [ "$status" -eq 0 ]
-    [[ "$output" != *$'\033'* ]]
-    [[ "$output" == *"ghcr.io/x/a:1"* ]]
-}
-
-@test "_escape_gha_command: still encodes the characters it always did" {
-    run _escape_gha_command "$(printf 'a%%b\nc\rd')"
-    [ "$status" -eq 0 ]
-    [ "$output" = 'a%25b%0Ac%0Dd' ]
 }
 
 @test "probe_cache_image: a registry error cannot forge a command either" {

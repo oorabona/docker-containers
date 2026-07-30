@@ -45,31 +45,9 @@ fi
 _depgraph_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./lineage-utils.sh
 source "${_depgraph_dir}/lineage-utils.sh"
+# shellcheck source=./logging.sh
+source "${_depgraph_dir}/logging.sh"
 unset _depgraph_dir
-
-# ---------------------------------------------------------------------------
-# _escape_gha_command <value>
-#
-# Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
-# workflow command.  Without this, a newline/CR/`%` in the value could
-# terminate the command early and inject another (e.g. `::set-env::`,
-# `::add-mask::`, `::stop-commands::`).  Mapping per GitHub runner spec:
-#   %  → %25
-#   \n → %0A
-#   \r → %0D
-#
-# Pattern sourced from helpers/base-cache-utils.sh::_escape_gha_command;
-# inlined here to avoid importing the full base-cache helper (which has
-# set -euo pipefail and sources logging.sh/variant-utils.sh at parse time,
-# breaking this file's explicit no-pipefail contract).
-# ---------------------------------------------------------------------------
-_escape_gha_command() {
-    local s="$1"
-    s="${s//\%/%25}"
-    s="${s//$'\n'/%0A}"
-    s="${s//$'\r'/%0D}"
-    printf '%s' "$s"
-}
 
 # ---------------------------------------------------------------------------
 # _depgraph_valid_containers

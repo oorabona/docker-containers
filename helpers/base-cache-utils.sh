@@ -41,8 +41,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Source logging if not already loaded
-if ! declare -F log_error &>/dev/null; then
+# Source logging if not already loaded.  The escaper is a logging helper too;
+# require both so a caller that defined only log_error cannot leave us without it.
+if ! declare -F log_error &>/dev/null || ! declare -F _escape_gha_command &>/dev/null; then
     source "$SCRIPT_DIR/logging.sh"
 fi
 
@@ -664,35 +665,6 @@ _append_base_sync_manifest_record() {
     fi
 }
 
-# _escape_gha_command <value>
-#
-# Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
-# workflow command. Without this, a newline/CR/`%` in the value could
-# terminate the command early and inject another (e.g. `::stop-commands::`,
-# `::add-mask::`, `::error::`). Mapping per GitHub's runner spec:
-#   %  → %25
-#   \n → %0A
-#   \r → %0D
-#
-# `::` is not the only prefix the runner honours. ActionCommand.cs declares
-# `public const string Prefix = "##["` and locates it with `IndexOf`, so a
-# `##[...]` anywhere in a line is parsed — no newline required, which is why
-# encoding CR/LF alone does not close this. The `[` is percent-encoded after the
-# `%` pass, so the encoding introduced here is not itself re-encoded.
-#
-# Remaining C0 bytes are dropped rather than encoded: ESC and backspace do
-# nothing useful in a log and plenty for someone rewriting what a reader sees.
-# CR and LF are already gone by then, so this cannot eat them.
-_escape_gha_command() {
-    local s="$1"
-    s="${s//\%/%25}"
-    s="${s//$'\n'/%0A}"
-    s="${s//$'\r'/%0D}"
-    s="${s//##\[/##%5B}"
-    s="${s//[[:cntrl:]]/}"
-    printf '%s' "$s"
-}
-
 # sync_base_images_to_ghcr <images_json> [source_registry]
 #
 # Copy each base image from <source_registry> (default: docker.io) to GHCR
@@ -745,7 +717,10 @@ sync_base_images_to_ghcr() {
         return 0
     fi
 
-    echo "📦 Syncing $count unique base images to GHCR (source: $source_registry)"
+    local safe_count safe_source_registry
+    safe_count=$(_escape_gha_command "$count")
+    safe_source_registry=$(_escape_gha_command "$source_registry")
+    echo "📦 Syncing ${safe_count} unique base images to GHCR (source: ${safe_source_registry})"
 
     local synced=0 skipped=0 failed=0
     while IFS= read -r img; do
@@ -777,8 +752,12 @@ sync_base_images_to_ghcr() {
             continue
         }
 
+        local safe_source_ref safe_sync_image
+        safe_source_ref=$(_escape_gha_command "$source_ref")
+        safe_sync_image=$(_escape_gha_command "$sync_image")
+
         echo ""
-        echo "🔄 ${source_ref} → ${sync_image}"
+        echo "🔄 ${safe_source_ref} → ${safe_sync_image}"
 
         # Presence gate: when skip_present=true, probe the GHCR target first.
         # `docker manifest inspect` against ghcr.io is read-only and free vs the
@@ -805,21 +784,22 @@ sync_base_images_to_ghcr() {
             synced=$((synced + 1))
         else
             echo "  ⚠️ Failed (continuing; daily sync will retry)"
-            # Prefix every line of $output (docker stderr) with "  Error: " so
-            # no line can begin at column 0 with `::` and be interpreted as a
-            # GitHub Actions workflow command. The upstream registry response
-            # is technically attacker-influenced, even if remote. Normalize
-            # CR → LF first so a bare carriage return (which GHA also treats
-            # as a line terminator) cannot bypass the prefix.
-            printf '%s\n' "$output" | tr '\r' '\n' | sed 's/^/  Error: /'
+            # Docker's stderr is attacker-influenced, and prefixing cannot
+            # protect against the runner's legacy `##[` parser, which scans the
+            # whole line. Escape it — but per line, keeping the lines apart: a
+            # buildx failure's useful part is its tail, and escaping the blob as
+            # one value turns every break into %0A and buries that tail in a
+            # single line long enough for a log transport to truncate.
+            # CR → LF first, since GHA treats a bare CR as a terminator too.
+            local _line
+            while IFS= read -r _line; do
+                printf '  Error: %s\n' "$(_escape_gha_command "$_line")"
+            done < <(printf '%s\n' "$output" | tr '\r' '\n')
             # Surface in the workflow summary so the maintainer notices that
             # a stale GHCR tag may persist until the next successful sync.
             # Refs come from base_image_cache.source which is not schema-
             # validated (see top-of-file docstring); escape to prevent a
             # newline-bearing value from injecting a second workflow command.
-            local safe_source_ref safe_sync_image
-            safe_source_ref=$(_escape_gha_command "$source_ref")
-            safe_sync_image=$(_escape_gha_command "$sync_image")
             echo "::warning::sync_base_images_to_ghcr: failed to sync ${safe_source_ref} → ${safe_sync_image}"
             _append_base_sync_manifest_record "$source_ref" "$sync_image" "" "failed"
             failed=$((failed + 1))
@@ -841,4 +821,4 @@ sync_base_images_to_ghcr() {
 }
 
 # Export functions
-export -f _resolve_tag_template _collect_entry_tags has_base_cache distro_uses_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args probe_cache_image _sync_one_with_backoff base_cache_canonical_source_ref base_cache_is_docker_io_origin_ref base_cache_canonical_docker_io_ref _append_base_sync_manifest_record _escape_gha_command sync_base_images_to_ghcr
+export -f _resolve_tag_template _collect_entry_tags has_base_cache distro_uses_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args probe_cache_image _sync_one_with_backoff base_cache_canonical_source_ref base_cache_is_docker_io_origin_ref base_cache_canonical_docker_io_ref _append_base_sync_manifest_record sync_base_images_to_ghcr
