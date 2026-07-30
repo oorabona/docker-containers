@@ -1296,3 +1296,169 @@ EOF
 
     rm -f "$copy_marker"
 }
+
+@test "probe_cache_image: a readable image needs no retry" {
+    # The reference is asserted, not just the verb: a probe that read a
+    # hard-coded or dropped ref would otherwise pass this.
+    local counter_file="$TEST_DIR/probe-attempts"
+    echo 0 > "$counter_file"
+    export COUNTER_FILE="$counter_file"
+    docker() {
+        echo $(( $(<"$COUNTER_FILE") + 1 )) > "$COUNTER_FILE"
+        [[ "$1" == "manifest" && "$2" == "inspect" ]] || return 1
+        [[ "$3" == "ghcr.io/x/library/ubuntu:noble" ]] || return 1
+        return 0
+    }
+    export -f docker
+    export SLEEP_CMD=:
+
+    probe_cache_image "ghcr.io/x/library/ubuntu:noble"
+    # Counted, not inferred from the absence of a message: a probe that read
+    # three times without saying so would pass an output-only assertion.
+    [ "$(<"$counter_file")" -eq 1 ]
+}
+
+@test "probe_cache_image: a transient read failure does not condemn the mirror" {
+    # The case seen on PR #1010: one read failed, the image was there all along.
+    # docker runs in a forked subshell, so the attempt counter lives in a file.
+    # Under TEST_DIR so teardown removes it even when an assertion fails.
+    local counter_file="$TEST_DIR/probe-attempts"
+    echo 0 > "$counter_file"
+    export COUNTER_FILE="$counter_file"
+
+    docker() {
+        local n
+        n=$(<"$COUNTER_FILE")
+        n=$((n + 1))
+        echo "$n" > "$COUNTER_FILE"
+        # Fails once, then reads fine.
+        [ "$n" -ge 2 ]
+    }
+    export -f docker
+    export SLEEP_CMD=:
+
+    run probe_cache_image "ghcr.io/x/library/ubuntu:noble"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"retrying"* ]]
+    [ "$(<"$counter_file")" -eq 2 ]
+}
+
+@test "probe_cache_image: an image that is really absent still fails, after three tries" {
+    local counter_file="$TEST_DIR/probe-attempts"
+    echo 0 > "$counter_file"
+    export COUNTER_FILE="$counter_file"
+
+    docker() {
+        local n
+        n=$(<"$COUNTER_FILE")
+        echo "$((n + 1))" > "$COUNTER_FILE"
+        return 1
+    }
+    export -f docker
+    export SLEEP_CMD=:
+
+    run probe_cache_image "ghcr.io/x/library/nope:1"
+    # Fail-closed is the point: a mirror that cannot be read must not be used.
+    [ "$status" -eq 1 ]
+    [ "$(<"$counter_file")" -eq 3 ]
+}
+
+@test "probe_cache_image: a newline in the reference cannot forge a workflow command" {
+    # base_image_cache is unvalidated config, and this line lands in a runner log.
+    # An unescaped newline would end the message and let the rest of the value
+    # start its own ::stop-commands:: or ::error::.
+    docker() { return 1; }
+    export -f docker
+    export SLEEP_CMD=:
+
+    run probe_cache_image "ghcr.io/x/a:1"$'\n'"::error::forged"
+    [ "$status" -eq 1 ]
+    [[ "$output" != *$'\n'"::error::forged"* ]]
+    [[ "$output" == *"%0A::error::forged"* ]]
+}
+
+@test "probe_cache_image: the registry's own error survives for the caller to report" {
+    # Every failure is the same boolean here; the text is what says whether the
+    # manifest is missing, the token is wrong, or the daemon never answered.
+    # Distinct text per attempt: with the same text every time this could not
+    # tell whether the first or the last error was the one kept.
+    local counter_file="$TEST_DIR/probe-attempts"
+    echo 0 > "$counter_file"
+    export COUNTER_FILE="$counter_file"
+    docker() {
+        local n
+        n=$(( $(<"$COUNTER_FILE") + 1 ))
+        echo "$n" > "$COUNTER_FILE"
+        echo "attempt ${n}: manifest unknown" >&2
+        return 1
+    }
+    export -f docker
+    export SLEEP_CMD=:
+
+    probe_cache_image "ghcr.io/x/library/ubuntu:noble" || true
+    [ "$(<"$counter_file")" -eq 3 ]
+    [[ "$PROBE_CACHE_IMAGE_ERROR" == *"attempt 3: manifest unknown"* ]]
+    [[ "$PROBE_CACHE_IMAGE_ERROR" != *"attempt 1"* ]]
+}
+
+@test "probe_cache_image: a successful read leaves no stale error behind" {
+    docker() { return 0; }
+    export -f docker
+    export SLEEP_CMD=:
+
+    PROBE_CACHE_IMAGE_ERROR="left over from an earlier probe"
+    probe_cache_image "ghcr.io/x/library/ubuntu:noble"
+    [ -z "$PROBE_CACHE_IMAGE_ERROR" ]
+}
+
+@test "probe_cache_image: is exported, so a child shell can see it" {
+    # Its peers are exported; one that is not disappears in an executed child.
+    # The child asks whether the function is defined rather than running it —
+    # executing the probe here would reach the real docker and the real sleeps.
+    # Run it in the child rather than just looking for the name: probe_cache_image
+    # calls _escape_gha_command, so an unexported dependency fails here too. The
+    # stub keeps the child off the network and away from the real sleeps.
+    docker() { return 0; }
+    export -f docker
+    export SLEEP_CMD=:
+
+    run bash -c 'probe_cache_image ghcr.io/x/a:1'
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"command not found"* ]]
+}
+
+@test "_escape_gha_command: neutralizes the legacy ##[ command prefix" {
+    # ActionCommand.cs declares Prefix = "##[" and finds it with IndexOf, so it
+    # is honoured mid-line — encoding CR/LF alone leaves this open.
+    run _escape_gha_command 'ghcr.io/x/a:1##[add-mask]secret'
+    [ "$status" -eq 0 ]
+    [[ "$output" != *'##[add-mask]'* ]]
+    [[ "$output" == *'##%5Badd-mask]'* ]]
+}
+
+@test "_escape_gha_command: drops control bytes that rewrite a log" {
+    run _escape_gha_command "$(printf 'ghcr.io/x/a:1\033[2Kforged')"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *$'\033'* ]]
+    [[ "$output" == *"ghcr.io/x/a:1"* ]]
+}
+
+@test "_escape_gha_command: still encodes the characters it always did" {
+    run _escape_gha_command "$(printf 'a%%b\nc\rd')"
+    [ "$status" -eq 0 ]
+    [ "$output" = 'a%25b%0Ac%0Dd' ]
+}
+
+@test "probe_cache_image: a registry error cannot forge a command either" {
+    # This one is not config: it is whatever the registry chose to say.
+    docker() {
+        printf 'denied##[add-mask]x\n' >&2
+        return 1
+    }
+    export -f docker
+    export SLEEP_CMD=:
+
+    probe_cache_image "ghcr.io/x/a:1" || true
+    [[ "$PROBE_CACHE_IMAGE_ERROR" != *'##[add-mask]'* ]]
+    [[ "$PROBE_CACHE_IMAGE_ERROR" == *'denied'* ]]
+}

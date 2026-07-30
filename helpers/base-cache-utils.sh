@@ -477,7 +477,64 @@ _sync_one_with_backoff() {
         # 5s, 10s, 20s — sublinear total wait (~35s worst case per image)
         local delay=$((base_delay * (1 << (attempt - 1))))
         echo "  ⏳ rate-limited; backing off ${delay}s (retry ${attempt}/${max_retries})" >&2
-        ${sleep_cmd} "$delay"
+        "${sleep_cmd}" "$delay"
+    done
+}
+
+# probe_cache_image <image_ref>
+#
+# Answer whether a GHCR cache image can be read, retrying a failed read before
+# concluding it cannot. A single failed `docker manifest inspect` is not evidence
+# that a mirror is missing: on PR #1010 one read of ghcr.io/<owner>/library/ubuntu:noble
+# failed while its sibling probes in the same job succeeded, the image was
+# pullable anonymously throughout, and an unchanged re-run passed. That one blip
+# failed a container build and told the operator to seed a mirror that was
+# already there.
+#
+# Retries are unconditional rather than error-matched, unlike the 429-only
+# backoff in _sync_one_with_backoff above: that one guards a mutating create and
+# fails fast when waiting cannot help, while this is an idempotent read whose
+# failure modes (transient TLS, a proxy hiccup, a registry blip) are not
+# reliably distinguishable from its error text.
+#
+# Backoff: 3 attempts, 3s then 6s. Sleep goes through the injectable $SLEEP_CMD
+# (defaults to `sleep`) so tests do not spend it.
+#
+# The reference reaches a runner log, and `base_image_cache` is unvalidated
+# config, so it goes through _escape_gha_command first — a newline in it would
+# otherwise close the line and let the rest forge its own workflow command.
+#
+# On failure the last attempt's stderr is left in $PROBE_CACHE_IMAGE_ERROR for
+# the caller to report: "missing manifest", "unauthorized" and "connection
+# refused" are the same boolean here but not the same problem, and the operator
+# cannot re-run the read with the runner's credentials from their laptop.
+#
+# stderr: retry progress
+# exit:   0 when readable, 1 when three attempts all failed
+probe_cache_image() {
+    local image_ref="$1"
+    local sleep_cmd="${SLEEP_CMD:-sleep}"
+
+    local max_attempts=3
+    local delay=3
+    local attempt=1
+    local safe_ref
+    safe_ref=$(_escape_gha_command "$image_ref")
+    PROBE_CACHE_IMAGE_ERROR=""
+
+    while true; do
+        if PROBE_CACHE_IMAGE_ERROR=$(docker manifest inspect "$image_ref" 2>&1 >/dev/null); then
+            PROBE_CACHE_IMAGE_ERROR=""
+            return 0
+        fi
+        if (( attempt >= max_attempts )); then
+            PROBE_CACHE_IMAGE_ERROR=$(_escape_gha_command "$PROBE_CACHE_IMAGE_ERROR")
+            return 1
+        fi
+        echo "  ⏳ read of ${safe_ref} failed; retrying in ${delay}s (${attempt}/$((max_attempts - 1)))" >&2
+        "${sleep_cmd}" "$delay"
+        delay=$((delay * 2))
+        attempt=$((attempt + 1))
     done
 }
 
@@ -616,11 +673,23 @@ _append_base_sync_manifest_record() {
 #   %  → %25
 #   \n → %0A
 #   \r → %0D
+#
+# `::` is not the only prefix the runner honours. ActionCommand.cs declares
+# `public const string Prefix = "##["` and locates it with `IndexOf`, so a
+# `##[...]` anywhere in a line is parsed — no newline required, which is why
+# encoding CR/LF alone does not close this. The `[` is percent-encoded after the
+# `%` pass, so the encoding introduced here is not itself re-encoded.
+#
+# Remaining C0 bytes are dropped rather than encoded: ESC and backspace do
+# nothing useful in a log and plenty for someone rewriting what a reader sees.
+# CR and LF are already gone by then, so this cannot eat them.
 _escape_gha_command() {
     local s="$1"
     s="${s//\%/%25}"
     s="${s//$'\n'/%0A}"
     s="${s//$'\r'/%0D}"
+    s="${s//##\[/##%5B}"
+    s="${s//[[:cntrl:]]/}"
     printf '%s' "$s"
 }
 
@@ -772,4 +841,4 @@ sync_base_images_to_ghcr() {
 }
 
 # Export functions
-export -f _resolve_tag_template _collect_entry_tags has_base_cache distro_uses_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args _sync_one_with_backoff base_cache_canonical_source_ref base_cache_is_docker_io_origin_ref base_cache_canonical_docker_io_ref _append_base_sync_manifest_record _escape_gha_command sync_base_images_to_ghcr
+export -f _resolve_tag_template _collect_entry_tags has_base_cache distro_uses_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args probe_cache_image _sync_one_with_backoff base_cache_canonical_source_ref base_cache_is_docker_io_origin_ref base_cache_canonical_docker_io_ref _append_base_sync_manifest_record _escape_gha_command sync_base_images_to_ghcr

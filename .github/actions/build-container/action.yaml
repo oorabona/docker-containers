@@ -423,7 +423,9 @@ runs:
               #       registry-root knob; applying it when any mirror is missing → hard-fail).
               #
               # emit_reachable_cache_args() encodes this logic as a pure helper (bats-tested).
-              # The action owns only the I/O (docker manifest inspect); the decision is in the helper.
+              # The read itself is probe_cache_image() in the same helper, so that
+              # "can this be read" answers the same way here and under test — a
+              # single failed read is retried before a mirror is called missing.
               entry_count=$(yq -r '.base_image_cache | length' "./$container/config.yaml")
               owner="${{ github.repository_owner }}"
               cache_ok=false
@@ -453,13 +455,16 @@ runs:
                   resolved_tag=$(resolve_cache_check_tag "./$container/config.yaml" "$i" "$build_version")
                   check_image="ghcr.io/${owner}/${ghcr_repo}:${resolved_tag}"
                 fi
-                if docker manifest inspect "$check_image" &>/dev/null; then
+                # base_image_cache is unvalidated config and this reaches a runner
+                # log, so the reference is escaped before it is printed.
+                safe_check_image=$(_escape_gha_command "$check_image")
+                if probe_cache_image "$check_image"; then
                   probe_flags[$i]="true"
                   cache_ok=true
-                  echo "✅ GHCR cache accessible: $check_image"
+                  echo "✅ GHCR cache accessible: $safe_check_image"
                 else
                   probe_flags[$i]="false"
-                  echo "⚠️ Not accessible: $check_image"
+                  echo "⚠️ Not readable after 3 attempts: $safe_check_image — ${PROBE_CACHE_IMAGE_ERROR:-no error text}"
                 fi
               done
 
@@ -481,7 +486,7 @@ runs:
                   if [[ "$has_chained_entry" == "true" ]]; then
                     echo "::error::GHCR base cache is configured for $container but all reachable entries produced no usable args — Docker Hub fallback is disabled (egress containment). This container depends on project-built image(s): ${chained_parents}. Build and publish those parent containers first; sync-base-images does not produce them. For upstream-mirrored bases: trigger the upstream-monitor workflow (workflow_dispatch) to seed the GHCR cache."
                   else
-                    echo "::error::GHCR base cache is configured for $container but all reachable entries produced no usable args — Docker Hub fallback is disabled (egress containment). The GHCR base cache is seeded by the daily upstream-monitor sync; trigger that workflow (workflow_dispatch) to seed it now."
+                    echo "::error::GHCR base cache is configured for $container but all reachable entries produced no usable args — Docker Hub fallback is disabled (egress containment). Every unreadable entry was retried 3 times, so this is not one failed read. Either the mirror is not seeded — the daily upstream-monitor sync does that, and workflow_dispatch runs it now — or the read itself failed; the registry's own error for the last attempt is logged above each entry."
                   fi
                   exit 1
                 fi
@@ -489,7 +494,7 @@ runs:
                 if [[ "$has_chained_entry" == "true" ]]; then
                   echo "::error::GHCR base cache is configured for $container but no cache image is accessible — Docker Hub fallback is disabled (egress containment). This container depends on project-built image(s): ${chained_parents}. Build and publish those parent containers first; sync-base-images does not produce them. For upstream-mirrored bases: trigger the upstream-monitor workflow (workflow_dispatch) to seed the GHCR cache."
                 else
-                  echo "::error::GHCR base cache is configured for $container but no cache image is accessible — Docker Hub fallback is disabled (egress containment). The GHCR base cache is seeded by the daily upstream-monitor sync; trigger that workflow (workflow_dispatch) to seed it now."
+                  echo "::error::GHCR base cache is configured for $container but no cache image is accessible — Docker Hub fallback is disabled (egress containment). Every unreadable entry was retried 3 times, so this is not one failed read. Either the mirror is not seeded — the daily upstream-monitor sync does that, and workflow_dispatch runs it now — or the read itself failed; the registry's own error for the last attempt is logged above each entry."
                 fi
                 exit 1
               fi
