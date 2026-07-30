@@ -31,27 +31,6 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# _escape_gha_command <value>
-#
-# Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
-# workflow command.  A %0A in the value would terminate the command line and
-# inject the remainder as a new command.  Mapping per GitHub's runner spec:
-#   %  → %25
-#   \n → %0A
-#   \r → %0D
-#
-# Inlined from helpers/base-cache-utils.sh::_escape_gha_command to avoid
-# importing the full base-cache helper.
-# ---------------------------------------------------------------------------
-_escape_gha_command() {
-    local s="$1"
-    s="${s//\%/%25}"
-    s="${s//$'\n'/%0A}"
-    s="${s//$'\r'/%0D}"
-    printf '%s' "$s"
-}
-
-# ---------------------------------------------------------------------------
 # Argument validation
 # ---------------------------------------------------------------------------
 if [[ $# -lt 2 ]]; then
@@ -75,6 +54,8 @@ fi
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=../helpers/logging.sh
+source "${SCRIPT_DIR}/../helpers/logging.sh"
 
 # _ULR_PROJECT_ROOT_OVERRIDE: test hook — when set, use this path as PROJECT_ROOT
 # instead of deriving it from BASH_SOURCE[0].  Avoids needing the full project

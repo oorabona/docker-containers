@@ -63,28 +63,6 @@ source "${PROJECT_ROOT}/helpers/retry.sh"
 source "${PROJECT_ROOT}/helpers/base-cache-utils.sh"
 
 # ---------------------------------------------------------------------------
-# _escape_gha_command <value>
-#
-# Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
-# workflow command.  Without this, a newline/CR/`%` in the value could
-# terminate the command early and inject another (e.g. `::add-mask::`,
-# `::stop-commands::`).  Mapping per GitHub's runner spec:
-#   %  → %25
-#   \n → %0A
-#   \r → %0D
-#
-# Pattern sourced from helpers/base-cache-utils.sh::_escape_gha_command;
-# inlined here to avoid importing the full base-cache helper.
-# ---------------------------------------------------------------------------
-_escape_gha_command() {
-    local s="$1"
-    s="${s//\%/%25}"
-    s="${s//$'\n'/%0A}"
-    s="${s//$'\r'/%0D}"
-    printf '%s' "$s"
-}
-
-# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 BASELINE_ONLY=false

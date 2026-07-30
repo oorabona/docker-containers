@@ -41,8 +41,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Source logging if not already loaded
-if ! declare -F log_error &>/dev/null; then
+# Source logging if not already loaded.  The escaper is a logging helper too;
+# require both so a caller that defined only log_error cannot leave us without it.
+if ! declare -F log_error &>/dev/null || ! declare -F _escape_gha_command &>/dev/null; then
     source "$SCRIPT_DIR/logging.sh"
 fi
 
@@ -477,7 +478,64 @@ _sync_one_with_backoff() {
         # 5s, 10s, 20s — sublinear total wait (~35s worst case per image)
         local delay=$((base_delay * (1 << (attempt - 1))))
         echo "  ⏳ rate-limited; backing off ${delay}s (retry ${attempt}/${max_retries})" >&2
-        ${sleep_cmd} "$delay"
+        "${sleep_cmd}" "$delay"
+    done
+}
+
+# probe_cache_image <image_ref>
+#
+# Answer whether a GHCR cache image can be read, retrying a failed read before
+# concluding it cannot. A single failed `docker manifest inspect` is not evidence
+# that a mirror is missing: on PR #1010 one read of ghcr.io/<owner>/library/ubuntu:noble
+# failed while its sibling probes in the same job succeeded, the image was
+# pullable anonymously throughout, and an unchanged re-run passed. That one blip
+# failed a container build and told the operator to seed a mirror that was
+# already there.
+#
+# Retries are unconditional rather than error-matched, unlike the 429-only
+# backoff in _sync_one_with_backoff above: that one guards a mutating create and
+# fails fast when waiting cannot help, while this is an idempotent read whose
+# failure modes (transient TLS, a proxy hiccup, a registry blip) are not
+# reliably distinguishable from its error text.
+#
+# Backoff: 3 attempts, 3s then 6s. Sleep goes through the injectable $SLEEP_CMD
+# (defaults to `sleep`) so tests do not spend it.
+#
+# The reference reaches a runner log, and `base_image_cache` is unvalidated
+# config, so it goes through _escape_gha_command first — a newline in it would
+# otherwise close the line and let the rest forge its own workflow command.
+#
+# On failure the last attempt's stderr is left in $PROBE_CACHE_IMAGE_ERROR for
+# the caller to report: "missing manifest", "unauthorized" and "connection
+# refused" are the same boolean here but not the same problem, and the operator
+# cannot re-run the read with the runner's credentials from their laptop.
+#
+# stderr: retry progress
+# exit:   0 when readable, 1 when three attempts all failed
+probe_cache_image() {
+    local image_ref="$1"
+    local sleep_cmd="${SLEEP_CMD:-sleep}"
+
+    local max_attempts=3
+    local delay=3
+    local attempt=1
+    local safe_ref
+    safe_ref=$(_escape_gha_command "$image_ref")
+    PROBE_CACHE_IMAGE_ERROR=""
+
+    while true; do
+        if PROBE_CACHE_IMAGE_ERROR=$(docker manifest inspect "$image_ref" 2>&1 >/dev/null); then
+            PROBE_CACHE_IMAGE_ERROR=""
+            return 0
+        fi
+        if (( attempt >= max_attempts )); then
+            PROBE_CACHE_IMAGE_ERROR=$(_escape_gha_command "$PROBE_CACHE_IMAGE_ERROR")
+            return 1
+        fi
+        echo "  ⏳ read of ${safe_ref} failed; retrying in ${delay}s (${attempt}/$((max_attempts - 1)))" >&2
+        "${sleep_cmd}" "$delay"
+        delay=$((delay * 2))
+        attempt=$((attempt + 1))
     done
 }
 
@@ -607,23 +665,6 @@ _append_base_sync_manifest_record() {
     fi
 }
 
-# _escape_gha_command <value>
-#
-# Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
-# workflow command. Without this, a newline/CR/`%` in the value could
-# terminate the command early and inject another (e.g. `::stop-commands::`,
-# `::add-mask::`, `::error::`). Mapping per GitHub's runner spec:
-#   %  → %25
-#   \n → %0A
-#   \r → %0D
-_escape_gha_command() {
-    local s="$1"
-    s="${s//\%/%25}"
-    s="${s//$'\n'/%0A}"
-    s="${s//$'\r'/%0D}"
-    printf '%s' "$s"
-}
-
 # sync_base_images_to_ghcr <images_json> [source_registry]
 #
 # Copy each base image from <source_registry> (default: docker.io) to GHCR
@@ -676,7 +717,10 @@ sync_base_images_to_ghcr() {
         return 0
     fi
 
-    echo "📦 Syncing $count unique base images to GHCR (source: $source_registry)"
+    local safe_count safe_source_registry
+    safe_count=$(_escape_gha_command "$count")
+    safe_source_registry=$(_escape_gha_command "$source_registry")
+    echo "📦 Syncing ${safe_count} unique base images to GHCR (source: ${safe_source_registry})"
 
     local synced=0 skipped=0 failed=0
     while IFS= read -r img; do
@@ -708,8 +752,12 @@ sync_base_images_to_ghcr() {
             continue
         }
 
+        local safe_source_ref safe_sync_image
+        safe_source_ref=$(_escape_gha_command "$source_ref")
+        safe_sync_image=$(_escape_gha_command "$sync_image")
+
         echo ""
-        echo "🔄 ${source_ref} → ${sync_image}"
+        echo "🔄 ${safe_source_ref} → ${safe_sync_image}"
 
         # Presence gate: when skip_present=true, probe the GHCR target first.
         # `docker manifest inspect` against ghcr.io is read-only and free vs the
@@ -736,21 +784,22 @@ sync_base_images_to_ghcr() {
             synced=$((synced + 1))
         else
             echo "  ⚠️ Failed (continuing; daily sync will retry)"
-            # Prefix every line of $output (docker stderr) with "  Error: " so
-            # no line can begin at column 0 with `::` and be interpreted as a
-            # GitHub Actions workflow command. The upstream registry response
-            # is technically attacker-influenced, even if remote. Normalize
-            # CR → LF first so a bare carriage return (which GHA also treats
-            # as a line terminator) cannot bypass the prefix.
-            printf '%s\n' "$output" | tr '\r' '\n' | sed 's/^/  Error: /'
+            # Docker's stderr is attacker-influenced, and prefixing cannot
+            # protect against the runner's legacy `##[` parser, which scans the
+            # whole line. Escape it — but per line, keeping the lines apart: a
+            # buildx failure's useful part is its tail, and escaping the blob as
+            # one value turns every break into %0A and buries that tail in a
+            # single line long enough for a log transport to truncate.
+            # CR → LF first, since GHA treats a bare CR as a terminator too.
+            local _line
+            while IFS= read -r _line; do
+                printf '  Error: %s\n' "$(_escape_gha_command "$_line")"
+            done < <(printf '%s\n' "$output" | tr '\r' '\n')
             # Surface in the workflow summary so the maintainer notices that
             # a stale GHCR tag may persist until the next successful sync.
             # Refs come from base_image_cache.source which is not schema-
             # validated (see top-of-file docstring); escape to prevent a
             # newline-bearing value from injecting a second workflow command.
-            local safe_source_ref safe_sync_image
-            safe_source_ref=$(_escape_gha_command "$source_ref")
-            safe_sync_image=$(_escape_gha_command "$sync_image")
             echo "::warning::sync_base_images_to_ghcr: failed to sync ${safe_source_ref} → ${safe_sync_image}"
             _append_base_sync_manifest_record "$source_ref" "$sync_image" "" "failed"
             failed=$((failed + 1))
@@ -772,4 +821,4 @@ sync_base_images_to_ghcr() {
 }
 
 # Export functions
-export -f _resolve_tag_template _collect_entry_tags has_base_cache distro_uses_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args _sync_one_with_backoff base_cache_canonical_source_ref base_cache_is_docker_io_origin_ref base_cache_canonical_docker_io_ref _append_base_sync_manifest_record _escape_gha_command sync_base_images_to_ghcr
+export -f _resolve_tag_template _collect_entry_tags has_base_cache distro_uses_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args probe_cache_image _sync_one_with_backoff base_cache_canonical_source_ref base_cache_is_docker_io_origin_ref base_cache_canonical_docker_io_ref _append_base_sync_manifest_record sync_base_images_to_ghcr

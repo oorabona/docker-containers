@@ -842,11 +842,16 @@ _drift_json_for_container() {
     printf '%s' '[{"container":"'"$container"'","variants":[{"variant_tag":"1.0","base_image_ref":"alpine:3.21","recorded_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","current_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"drift"}]}]'
 }
 
+_copy_update_last_rebuild_fixture() {
+    local fake_root="$1"
+    mkdir -p "$fake_root/scripts" "$fake_root/helpers"
+    cp "${SCRIPTS_DIR}/update-last-rebuild.sh" "$fake_root/scripts/update-last-rebuild.sh"
+    cp "${HELPERS_DIR}/logging.sh" "$fake_root/helpers/logging.sh"
+}
+
 @test "update-last-rebuild: exits 0 when container directory does not exist" {
     local fake_root="$TEST_TEMP_DIR/fake-root-r4"
-    local update_script="${SCRIPTS_DIR}/update-last-rebuild.sh"
-    mkdir -p "$fake_root/scripts"
-    cp "$update_script" "$fake_root/scripts/update-last-rebuild.sh"
+    _copy_update_last_rebuild_fixture "$fake_root"
 
     # Stub ./make list — "mycontainer" is valid, but directory is never created
     cat > "$fake_root/make" <<'STUB'
@@ -869,9 +874,7 @@ STUB
 
 @test "update-last-rebuild: emits ::warning:: when container directory missing" {
     local fake_root="$TEST_TEMP_DIR/fake-root-r4b"
-    local update_script="${SCRIPTS_DIR}/update-last-rebuild.sh"
-    mkdir -p "$fake_root/scripts"
-    cp "$update_script" "$fake_root/scripts/update-last-rebuild.sh"
+    _copy_update_last_rebuild_fixture "$fake_root"
 
     cat > "$fake_root/make" <<'STUB'
 #!/usr/bin/env bash
@@ -889,9 +892,7 @@ STUB
 
 @test "update-last-rebuild: exits 0 for invalid container name not in make list" {
     local fake_root="$TEST_TEMP_DIR/fake-root-r4c"
-    local update_script="${SCRIPTS_DIR}/update-last-rebuild.sh"
-    mkdir -p "$fake_root/scripts"
-    cp "$update_script" "$fake_root/scripts/update-last-rebuild.sh"
+    _copy_update_last_rebuild_fixture "$fake_root"
 
     # ./make list returns only "ansible"; "docs" is not valid
     cat > "$fake_root/make" <<'STUB'
@@ -910,10 +911,8 @@ STUB
 
 @test "update-last-rebuild: normal path appends section when container dir exists" {
     local fake_root="$TEST_TEMP_DIR/fake-root-r4d"
-    local update_script="${SCRIPTS_DIR}/update-last-rebuild.sh"
-    mkdir -p "$fake_root/scripts"
+    _copy_update_last_rebuild_fixture "$fake_root"
     mkdir -p "$fake_root/mycontainer"
-    cp "$update_script" "$fake_root/scripts/update-last-rebuild.sh"
 
     cat > "$fake_root/make" <<'STUB'
 #!/usr/bin/env bash
@@ -1674,9 +1673,7 @@ EOF
 # ---------------------------------------------------------------------------
 @test "update-last-rebuild exits 2 when make list returns empty" {
     local fake_root="$TEST_TEMP_DIR/r7fix4d"
-    local update_script="${SCRIPTS_DIR}/update-last-rebuild.sh"
-    mkdir -p "$fake_root/scripts"
-    cp "$update_script" "$fake_root/scripts/update-last-rebuild.sh"
+    _copy_update_last_rebuild_fixture "$fake_root"
 
     # ./make list succeeds but returns nothing
     cat > "$fake_root/make" <<'STUB'
@@ -1866,8 +1863,8 @@ EOF
     # Regression guard: a poisoned variant_tag containing backticks or pipes in the
     # drift JSON must be escaped before embedding in LAST_REBUILD.md markdown.
     local fake_root="$TEST_TEMP_DIR/r9fix2"
-    mkdir -p "$fake_root/scripts" "$fake_root/myimage"
-    cp "${SCRIPTS_DIR}/update-last-rebuild.sh" "$fake_root/scripts/update-last-rebuild.sh"
+    _copy_update_last_rebuild_fixture "$fake_root"
+    mkdir -p "$fake_root/myimage"
 
     # Provide a minimal ./make list stub
     cat > "$fake_root/make" <<'STUB'

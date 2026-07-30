@@ -88,6 +88,36 @@ teardown() {
     [[ "$output" == *"ls"* ]]
 }
 
+@test "_escape_gha_command: a control byte cannot splice the marker back together" {
+    # The escaper deletes control bytes, and deleting closes gaps. If the marker
+    # is checked before that deletion, `##<BS>[` slips past the check and the
+    # strip reassembles `##[` in the output — an injectable command produced by
+    # the escaper itself.
+    run _escape_gha_command "$(printf 'a##\b[add-mask]secret')"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *'##[add-mask]'* ]]
+    [ "$output" = 'a##%5Badd-mask]secret' ]
+}
+
+@test "_escape_gha_command: the splice is caught wherever the control byte sits" {
+    for value in "$(printf '#\b#[x')" "$(printf '##[\bx')" "$(printf '#\b#\b[x')"; do
+        run _escape_gha_command "$value"
+        [ "$status" -eq 0 ]
+        [[ "$output" != *'##['* ]]
+    done
+}
+
+@test "_escape_gha_command escapes workflow-command values comprehensively" {
+    local value expected
+    value=$'before%\nafter\rlegacy##[add-mask]\033\bforged'
+    expected='before%25%0Aafter%0Dlegacy##%5Badd-mask]forged'
+
+    run _escape_gha_command "$value"
+    [ "$status" -eq 0 ]
+    # The inserted %5B remains intact, proving the % pass occurs first.
+    [ "$output" = "$expected" ]
+}
+
 # =============================================================================
 # Color variable tests
 # =============================================================================

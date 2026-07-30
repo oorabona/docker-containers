@@ -61,21 +61,8 @@ source "${_vdrift_self_dir}/../helpers/variant-utils.sh"
 source "${_vdrift_self_dir}/../helpers/extension-utils.sh"
 # shellcheck source=../helpers/build-cache-utils.sh
 source "${_vdrift_self_dir}/../helpers/build-cache-utils.sh"
-
-# ---------------------------------------------------------------------------
-# _escape_gha_command <value>
-#
-# Escape a value for safe inclusion in a ::keyword::value GHA workflow command.
-# Mapping per GitHub runner spec: % → %25, \n → %0A, \r → %0D.
-# Pattern sourced from helpers/base-cache-utils.sh::_escape_gha_command.
-# ---------------------------------------------------------------------------
-_escape_gha_command() {
-    local s="$1"
-    s="${s//\%/%25}"
-    s="${s//$'\n'/%0A}"
-    s="${s//$'\r'/%0D}"
-    printf '%s' "$s"
-}
+# shellcheck source=../helpers/logging.sh
+source "${_vdrift_self_dir}/../helpers/logging.sh"
 
 # ---------------------------------------------------------------------------
 # Argument parsing
