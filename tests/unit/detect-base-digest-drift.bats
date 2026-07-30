@@ -39,9 +39,9 @@ myimage"
     export TEST_TEMP_DIR
     export DETECTOR_SCRIPT
     export FIXTURES_DIR_DRIFT
-    # The detector resolves internal image ownership through this value. CI
-    # supplies it, but the unit suite must also be runnable directly locally.
-    export GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY_OWNER:-oorabona}"
+    # Fixture references are deliberately oorabona-owned. Never inherit a fork
+    # CI owner here: tests that exercise a different owner set it explicitly.
+    export GITHUB_REPOSITORY_OWNER="oorabona"
 
     unset SYNC_MANIFEST_FILE
     unset PROBE_SENTINEL
@@ -51,6 +51,10 @@ teardown() {
     unset SYNC_MANIFEST_FILE
     unset PROBE_SENTINEL
     teardown_temp_dir
+}
+
+@test "fixtures pin the internal owner instead of inheriting fork CI" {
+    [ "$GITHUB_REPOSITORY_OWNER" = "oorabona" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -108,7 +112,9 @@ _make_slow_probe_stub() {
     mkdir -p "$TEST_TEMP_DIR/bin"
     cat > "$stub_path" <<'STUB_EOF'
 #!/usr/bin/env bash
-sleep 1
+# Ignore timeout's SIGTERM so its -k SIGKILL produces the distinct 137 status.
+trap '' TERM
+exec /bin/sleep 10
 STUB_EOF
     chmod +x "$stub_path"
     printf '%s' "$stub_path"
@@ -375,11 +381,51 @@ EOF
 }
 EOF
 
-    result=$(GITHUB_REPOSITORY_OWNER=oorabona DIGEST_PROBE_TIMEOUT=0.1 PROBE_CMD="$slow_stub" \
+    result=$(GITHUB_REPOSITORY_OWNER=oorabona DIGEST_PROBE_TIMEOUT=1 PROBE_CMD="$slow_stub" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
 
     [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "error" ]
-    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "registry did not answer within 0.1s" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "registry did not answer within 1s" ]
+}
+
+@test "probe-retry: final 401 replaces an earlier timeout reason" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local bin_dir="$TEST_TEMP_DIR/bin"
+    local counter_file="$TEST_TEMP_DIR/docker-attempts"
+    mkdir -p "$lineage_dir" "$bin_dir"
+    echo 0 > "$counter_file"
+    cat > "$lineage_dir/foo-1.0-alpine.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0-alpine",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+    cat > "$bin_dir/docker" <<'STUB_EOF'
+#!/usr/bin/env bash
+n=$(<"${DOCKER_COUNTER:?}")
+n=$((n + 1))
+echo "$n" > "${DOCKER_COUNTER:?}"
+if [[ "$n" -eq 1 ]]; then
+    trap '' TERM
+    exec /bin/sleep 10
+fi
+echo "stub: 401 unauthorized" >&2
+exit 1
+STUB_EOF
+    cat > "$bin_dir/sleep" <<'STUB_EOF'
+#!/usr/bin/env bash
+exit 0
+STUB_EOF
+    chmod +x "$bin_dir/docker" "$bin_dir/sleep"
+
+    result=$(PATH="$bin_dir:$PATH" DOCKER_COUNTER="$counter_file" DIGEST_PROBE_TIMEOUT=1 \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    [ "$(<"$counter_file")" -eq 3 ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "stub: 401 unauthorized" ]
 }
 
 # ---------------------------------------------------------------------------

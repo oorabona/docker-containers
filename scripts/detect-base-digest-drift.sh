@@ -120,8 +120,8 @@ _PROBE_DIGEST_ERROR=""
 _PROBE_DIGEST_OUT=""
 
 # retry_with_backoff normalizes final failures to status 1. This equivalent
-# local loop preserves timeout's 124, so callers can distinguish a registry
-# that did not answer from a failed manifest lookup.
+# local loop preserves timeout's exit status, so callers can distinguish a
+# registry that did not answer from a failed manifest lookup.
 _probe_digest_with_backoff() {
     local timeout_seconds="$1"
     local image_ref="$2"
@@ -136,14 +136,24 @@ _probe_digest_with_backoff() {
     _PROBE_DIGEST_OUT=""
 
     while true; do
-        if output=$(_run_with_timeout "$timeout_seconds" docker buildx imagetools inspect --format '{{json .Manifest}}' -- "$image_ref" 2>>"$stderr_file"); then
+        if output=$(_run_with_timeout DIGEST_PROBE_TIMEOUT "$timeout_seconds" docker buildx imagetools inspect --format '{{json .Manifest}}' -- "$image_ref" 2>>"$stderr_file"); then
             _PROBE_DIGEST_OUT="$output"
             return 0
         else
             attempt_exit=$?
         fi
-        if [[ $attempt_exit -eq 124 ]]; then
+        if _timeout_exit_is_timeout "$attempt_exit"; then
             _PROBE_DIGEST_ERROR="registry did not answer within ${timeout_seconds}s"
+        else
+            # Do not let a previous timeout mask the current 401/404/network
+            # failure. _probe_digest below promotes that final stderr detail.
+            _PROBE_DIGEST_ERROR=""
+        fi
+
+        # Validation errors cannot become successful with another registry
+        # attempt. Return now after _run_with_timeout printed its diagnostic.
+        if [[ $attempt_exit -eq 2 ]]; then
+            return "$attempt_exit"
         fi
 
         if (( attempt >= max_attempts )); then
@@ -171,6 +181,11 @@ _probe_digest() {
     # multi-minute stuck client as a useful retryable attempt.
     local digest_probe_timeout="${DIGEST_PROBE_TIMEOUT:-30}"
 
+    if ! _validate_timeout_duration DIGEST_PROBE_TIMEOUT "$digest_probe_timeout"; then
+        _PROBE_DIGEST_ERROR="DIGEST_PROBE_TIMEOUT must be a positive integer number of seconds"
+        return 1
+    fi
+
     # Explicit cleanup on every return path below.  We do NOT use
     # `trap '...' RETURN` because bash RETURN traps are GLOBAL — they fire on
     # every subsequent function return in the same shell, not just returns from
@@ -180,13 +195,15 @@ _probe_digest() {
 
     if [[ -n "${PROBE_CMD:-}" ]]; then
         # Stub: PROBE_CMD is a function/path that accepts image_ref as $1
-        raw=$(_run_with_timeout "$digest_probe_timeout" "${PROBE_CMD}" "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
+        raw=$(_run_with_timeout DIGEST_PROBE_TIMEOUT "$digest_probe_timeout" "${PROBE_CMD}" "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
         if [[ $probe_exit -ne 0 ]]; then
             local err_detail
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
-            if [[ $probe_exit -eq 124 ]]; then
+            if _timeout_exit_is_timeout "$probe_exit"; then
                 _PROBE_DIGEST_ERROR="registry did not answer within ${digest_probe_timeout}s"
                 printf '::error::%s for %s\n' "$_PROBE_DIGEST_ERROR" "$safe_ref" >&2
+            elif [[ -n "$err_detail" ]]; then
+                _PROBE_DIGEST_ERROR="${err_detail##*$'\n'}"
             fi
             [[ -n "$err_detail" ]] && printf '::error::probe-cmd-error for %s: %s\n' "$safe_ref" "$(_escape_gha_command "$err_detail")" >&2
             rm -f "$probe_stderr"
@@ -203,9 +220,11 @@ _probe_digest() {
         if [[ $probe_exit -ne 0 ]]; then
             local err_detail
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
-            if [[ $probe_exit -eq 124 ]]; then
+            if _timeout_exit_is_timeout "$probe_exit"; then
                 _PROBE_DIGEST_ERROR="registry did not answer within ${digest_probe_timeout}s"
                 printf '::error::%s for %s\n' "$_PROBE_DIGEST_ERROR" "$safe_ref" >&2
+            elif [[ -n "$err_detail" ]]; then
+                _PROBE_DIGEST_ERROR="${err_detail##*$'\n'}"
             fi
             printf '::error::imagetools inspect failed for %s: %s\n' "$safe_ref" "$(_escape_gha_command "$err_detail")" >&2
             rm -f "$probe_stderr"
