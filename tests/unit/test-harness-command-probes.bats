@@ -23,6 +23,12 @@ succeeding() {
     echo "ruby 3.3.0"
 }
 
+stderr_banner() {
+    # Shaped like a real banner: a reviewer reading this stub should not come away
+    # with a false picture of what the binary prints.
+    echo "sslh-ev 2.3.1" >&2
+}
+
 secret_bearing() {
     return 7
 }
@@ -74,6 +80,20 @@ secret_bearing() {
     TH_OUTPUT="stale"
     th_capture "version is readable" plausible_but_failing || true
     [ -z "$TH_OUTPUT" ]
+}
+
+@test "th_capture discards stderr, so a diagnostic cannot satisfy an assertion" {
+    # An error message that happens to carry the needle must not be able to pass
+    # a `contains` assertion, so no probe merges the two streams.
+    #
+    # Asserting only that $TH_OUTPUT excludes stderr would prove nothing: command
+    # substitution captures stdout alone whether or not the harness redirects
+    # stderr. What the redirect actually does is swallow the command's stderr, so
+    # that is what this pins — the probe itself must emit none.
+    local probe_stderr="$BATS_TEST_TMPDIR/probe-stderr"
+    th_capture "a banner written to stderr" stderr_banner 2>"$probe_stderr"
+    [ -z "$TH_OUTPUT" ]
+    [ ! -s "$probe_stderr" ]
 }
 
 @test "th_capture with no command fails instead of passing on an empty substitution" {

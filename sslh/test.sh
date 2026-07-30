@@ -19,11 +19,22 @@ th_init --name "SSLH E2E" --report "${REPORT_FORMAT:-table}"
 
 th_group "Binary"
 
-# The old version check tried sslh-ev, fell back to a plain `sslh`, and shrugged
-# if both failed. Only sslh-ev is in the image — `sslh` is not a file there — so
-# the fallback was dead and the shrug hid a real failure.
-version=$(docker exec "$CONTAINER_NAME" sslh-ev --version 2>&1 | head -1)
-th_assert_contains "sslh-ev reports its version" "$version" "sslh-ev"
+# Only sslh-ev is in the image — `sslh` is not a file there. The probe takes the
+# command, so a binary that prints a plausible banner and then exits non-zero
+# fails here instead of satisfying the text assertion. It writes the banner to
+# stdout, so nothing needs merging: the probes discard stderr on purpose, and a
+# diagnostic must not be able to pass an assertion about a version.
+banner=""
+version_read=0
+if th_capture "sslh-ev reports its version" \
+        docker exec "$CONTAINER_NAME" sslh-ev --version; then
+    version_read=1
+    # `sslh-ev 2.3.1`, then a line per compile-time option. Both checks read the
+    # first line only, as the `head -1` this probe replaced did: what appears
+    # further down says nothing about which binary answered.
+    banner="${TH_OUTPUT%%$'\n'*}"
+    th_assert_contains "sslh-ev reports its version" "$banner" "sslh-ev"
+fi
 
 # The tag carries the upstream version, so the binary disagreeing with it means
 # the image was assembled from something other than what it claims.
@@ -37,8 +48,21 @@ fi
 # Only a tag that carries a version can be compared against one. A moving tag
 # such as `latest` says nothing about the binary, and asserting on it would fail
 # for a reason that has nothing to do with the image.
+#
+# The comparison stays a substring match, deliberately: turning it into an exact
+# one means deciding what an image reference's version IS, and a tag carries a
+# flavour suffix, sometimes a prerelease hyphen and sometimes a digest, so every
+# stricter rule rejects some legitimate build. Tightening it is #983's work, on
+# every suite at once, not a side effect of this one. See #1002.
 if [[ "$expected" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
-    th_assert_contains "the binary version matches the image tag ($expected)" "$version" "$expected"
+    if (( version_read )); then
+        th_assert_contains "the binary version matches the image tag ($expected)" \
+            "$banner" "$expected"
+    else
+        # Reported as a skip rather than dropped: a test that leaves the report
+        # entirely is indistinguishable from one that was never written.
+        th_skip "the binary version matches the image tag" "the version probe failed"
+    fi
 else
     th_skip "the binary version matches the image tag" "tag '${expected:-none}' carries no version"
 fi
