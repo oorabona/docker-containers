@@ -11,8 +11,16 @@
 #
 # For containers with variants, version is required (e.g., postgres:16)
 # Set E2E_IMAGE=<image-ref> to test a preloaded image directly.
+# Set E2E_READY_TIMEOUT=<seconds> (1-99999, default 60) to give a container with a
+# slow healthcheck longer to report itself ready.
 
 set -euo pipefail
+
+# The readiness deadline is `SECONDS` plus a budget, and `SECONDS` is inherited:
+# a caller who exports a huge one would wrap that sum negative and every wait
+# would expire before it began. Reset once, here, so the deadlines below start
+# from a number this script controls.
+SECONDS=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -39,6 +47,10 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-build    Skip building images"
             echo "  -h, --help    Show this help"
             echo ""
+            echo "Environment:"
+            echo "  E2E_IMAGE            Test this image ref directly, skipping discovery"
+            echo "  E2E_READY_TIMEOUT    Seconds a container gets to report ready (1-99999, default 60)"
+            echo ""
             echo "Examples:"
             echo "  $0                    # Test all containers"
             echo "  $0 postgres openresty # Test specific containers"
@@ -55,6 +67,28 @@ done
 # Get list of containers to test
 if [ -z "$CONTAINERS" ]; then
     CONTAINERS=$(./make list 2>/dev/null)
+fi
+
+# How long each container gets to become ready. Checked here, before anything is
+# built or started: rejecting it later would leave a running container behind,
+# since `docker run --rm` only cleans up once the container stops. The upper bound
+# keeps `$((SECONDS + max_wait))` inside machine arithmetic — a value near INT64_MAX
+# wraps to a negative deadline, which reads as a budget that has already expired.
+READY_TIMEOUT="${E2E_READY_TIMEOUT:-60}"
+if ! [[ "$READY_TIMEOUT" =~ ^[1-9][0-9]{0,4}$ ]]; then
+    log_error "E2E_READY_TIMEOUT must be a whole number of seconds between 1 and 99999 (got: $READY_TIMEOUT)"
+    exit 1
+fi
+
+# The wait bounds each docker call with `timeout -k`, and so does the cleanup that
+# removes a container after a failure. A `timeout` that is missing, or too old for
+# `-k`, would therefore leave a started container running. This asks whether the
+# flag is accepted, before anything is built or started — not whether the
+# implementation honours it, which would cost a deliberately unkillable child on
+# every invocation.
+if ! timeout -k 1 1 true 2>/dev/null; then
+    log_error "this harness needs a 'timeout' accepting -k (GNU coreutils provides one)"
+    exit 1
 fi
 
 echo ""
@@ -134,6 +168,46 @@ resolve_e2e_image() {
     ')
 
     printf '%s\n' "$image"
+}
+
+# Seconds left before the deadline, or non-zero once the budget is spent. Every
+# check of "is there time left" goes through here: the loop below asks twice per
+# iteration, since time passes inside the docker calls, and a second hand-written
+# copy of the comparison is a second place to get it wrong. It never prints 0 —
+# `timeout 0` means *no timeout* to coreutils, which is the opposite of the bound
+# the caller is asking for.
+#
+# The budget is honoured to whole seconds: `SECONDS` has that resolution, so a
+# probe admitted with a second left may return just after the deadline, and a
+# child that ignores SIGTERM adds the kill-after grace on top. The bound is
+# "about the budget", not a hard real-time guarantee — enough for a test harness,
+# and the reason nothing here reaches for a monotonic clock.
+# Usage: remaining=$(readiness_remaining <deadline>) || <budget spent>
+readiness_remaining() {
+    local left=$(( $1 - SECONDS ))
+    [ "$left" -gt 0 ] || return 1
+    printf '%s' "$left"
+}
+
+# Sleep no longer than the remaining readiness budget, so the budget is an upper
+# bound on the wait rather than on its naps alone. Returns non-zero when it could
+# not sleep the whole requested time — a poll interval does not care, but a caller
+# that treats the delay itself as evidence does, and must not read a shortened one
+# as the full one.
+# Usage: sleep_within_readiness_deadline <seconds> <deadline>
+sleep_within_readiness_deadline() {
+    local requested="$1"
+    local sleep_deadline="$2"
+    local sleep_remaining=$((sleep_deadline - SECONDS))
+
+    if [ "$sleep_remaining" -le 0 ]; then
+        return 1
+    fi
+    if [ "$requested" -gt "$sleep_remaining" ]; then
+        sleep "$sleep_remaining" || true
+        return 1
+    fi
+    sleep "$requested"
 }
 
 # Test a single container (or variant)
@@ -226,21 +300,58 @@ test_container() {
 
     # Wait for container to be ready (healthcheck or basic startup)
     log_info "Waiting for $container to be ready..."
-    local max_wait=60
-    local waited=0
+    local start=$SECONDS
+    local deadline=$((start + READY_TIMEOUT))
     local ready=false
+    # Declared here, not on the assignment below: `local x=$(cmd)` returns the
+    # builtin's status, which would swallow the one the loop condition reads.
+    local remaining health
+    # Whether an image with no healthcheck has already served its grace. It is
+    # readiness only once the loop has come back around and seen the container
+    # still listed: a container that dies during the grace is not ready, it is a
+    # container that died.
+    local grace_served=0
 
-    while [ $waited -lt $max_wait ]; do
-        # Check if container is still running
-        if ! docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+    while remaining=$(readiness_remaining "$deadline"); do
+        # Check if container is still running. A `docker ps` that does not answer —
+        # because it hit its bound, or the daemon is unwell — is not the same as one
+        # that answered and did not list the container, so only the latter is
+        # reported as an exit. The former keeps polling and, if that is all we ever
+        # get, ends as the timeout it is.
+        # `-k` matters as much as the bound: plain `timeout` sends SIGTERM and then
+        # waits forever for a child that ignores it, which is the hang this whole
+        # change is about. The grace is what the wait can overshoot its budget by.
+        local names ps_status=0
+        names=$(timeout -k 2 "$remaining" docker ps --format '{{.Names}}' 2>/dev/null) || ps_status=$?
+        if [ "$ps_status" -ne 0 ]; then
+            sleep_within_readiness_deadline 2 "$deadline" || true
+            continue
+        fi
+        # Fixed-string, whole-line, and fed from a here-string: a name is not a
+        # pattern (docker allows `.` in one), and a pipeline whose producer is
+        # still writing when `grep -q` exits on a match fails under `pipefail`,
+        # which would read as the container having exited.
+        if ! grep -Fxq "$container_name" <<< "$names"; then
             log_error "$container exited unexpectedly"
-            docker logs "$container_name" 2>&1 | tail -20
+            timeout -k 2 5 docker logs "$container_name" 2>&1 | tail -20
             return 1
         fi
 
-        # Check health status if available
-        local health
-        health=$(docker inspect --format='{{.State.Health.Status}}' "$container_name" 2>/dev/null) || health="none"
+        # The container was listed just now, which is the liveness the grace was
+        # waiting to confirm.
+        if [ "$grace_served" -eq 1 ]; then
+            ready=true
+            break
+        fi
+
+        # Check health status if available. Time passed inside `docker ps`, so the
+        # budget is re-read rather than reused.
+        remaining=$(readiness_remaining "$deadline") || break
+        # The conditional template distinguishes a missing healthcheck from an
+        # inspect failure; treating the latter as no healthcheck would fail open.
+        if ! health=$(timeout -k 2 "$remaining" docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}nohealth{{end}}' "$container_name" 2>/dev/null); then
+            health="unavailable"
+        fi
 
         case "$health" in
             healthy)
@@ -249,30 +360,39 @@ test_container() {
                 ;;
             unhealthy)
                 log_error "$container is unhealthy"
-                docker logs "$container_name" 2>&1 | tail -20
-                docker rm -f "$container_name" 2>/dev/null || true
+                timeout -k 2 5 docker logs "$container_name" 2>&1 | tail -20
+                timeout -k 2 5 docker rm -f "$container_name" 2>/dev/null ||
+                log_warning "$container_name could not be removed and may still be running"
                 return 1
                 ;;
             starting)
                 ;;
-            none)
-                # No healthcheck, give processes time to initialize
-                sleep 3
-                ready=true
-                break
+            nohealth)
+                # Nothing to consult, so the only evidence of readiness is that
+                # the grace elapsed with the container still up. A grace cut short
+                # by the budget is not that evidence; neither is one the container
+                # did not survive, which is why this loops once more instead of
+                # declaring readiness on the strength of a liveness check taken
+                # three seconds ago.
+                if ! sleep_within_readiness_deadline 3 "$deadline"; then
+                    break
+                fi
+                grace_served=1
+                continue
                 ;;
         esac
 
-        sleep 2
-        waited=$((waited + 2))
-        printf "\r    ⏳ Waiting... (%ds)" "$waited"
+        # A shortened poll interval is fine — the loop condition re-checks anyway.
+        sleep_within_readiness_deadline 2 "$deadline" || true
+        printf "\r    ⏳ Waiting... (%ds)" "$((SECONDS - start))"
     done
     echo ""
 
     if [ "$ready" != true ]; then
         log_error "$container did not become ready in time"
-        docker logs "$container_name" 2>&1 | tail -20
-        docker rm -f "$container_name" 2>/dev/null || true
+        timeout -k 2 5 docker logs "$container_name" 2>&1 | tail -20
+        timeout -k 2 5 docker rm -f "$container_name" 2>/dev/null ||
+            log_warning "$container_name could not be removed and may still be running"
         return 1
     fi
 
