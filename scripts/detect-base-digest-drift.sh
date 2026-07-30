@@ -29,6 +29,11 @@
 #                     (canonical multi-arch image-index digest via buildx
 #                     imagetools — order-independent, single source of truth,
 #                     matches scripts/build-container.sh digest extraction)
+#   DIGEST_PROBE_TIMEOUT
+#                     Per-attempt registry-read bound in seconds (default 30).
+#                     Override in focused tests or constrained runners. Metadata
+#                     reads normally answer in seconds, so 30s is generous while
+#                     still preventing one wedged inspect from blocking a run.
 #   SYNC_MANIFEST_FILE
 #                     Optional path to the daily base-image sync JSONL/JSON-array
 #                     manifest. When set, Docker Hub-origin base refs are resolved
@@ -111,6 +116,47 @@ done
 # For fixture-based testing, set PROBE_CMD to a function/script that accepts
 # image_ref as $1 and outputs the `{{json .Manifest}}` JSON on stdout.
 # ---------------------------------------------------------------------------
+_PROBE_DIGEST_ERROR=""
+_PROBE_DIGEST_OUT=""
+
+# retry_with_backoff normalizes final failures to status 1. This equivalent
+# local loop preserves timeout's 124, so callers can distinguish a registry
+# that did not answer from a failed manifest lookup.
+_probe_digest_with_backoff() {
+    local timeout_seconds="$1"
+    local image_ref="$2"
+    local stderr_file="$3"
+    local max_attempts=3
+    local delay=5
+    local attempt=1
+    local output
+    local attempt_exit=0
+
+    _PROBE_DIGEST_ERROR=""
+    _PROBE_DIGEST_OUT=""
+
+    while true; do
+        if output=$(_run_with_timeout "$timeout_seconds" docker buildx imagetools inspect --format '{{json .Manifest}}' -- "$image_ref" 2>>"$stderr_file"); then
+            _PROBE_DIGEST_OUT="$output"
+            return 0
+        else
+            attempt_exit=$?
+        fi
+        if [[ $attempt_exit -eq 124 ]]; then
+            _PROBE_DIGEST_ERROR="registry did not answer within ${timeout_seconds}s"
+        fi
+
+        if (( attempt >= max_attempts )); then
+            return "$attempt_exit"
+        fi
+
+        log_warning "Attempt $attempt/$max_attempts failed, retrying in ${delay}s..." 2>>"$stderr_file"
+        sleep "$delay"
+        delay=$((delay * 2))
+        attempt=$((attempt + 1))
+    done
+}
+
 _probe_digest() {
     local image_ref="$1"
     local raw
@@ -118,6 +164,12 @@ _probe_digest() {
     local probe_exit=0
     local safe_ref
     safe_ref=$(_escape_gha_command "$image_ref")
+    _PROBE_DIGEST_ERROR=""
+    _PROBE_DIGEST_OUT=""
+    # Unlike imagetools create, this is a manifest metadata read. Thirty
+    # seconds leaves ample room for slow registry/TLS paths without treating a
+    # multi-minute stuck client as a useful retryable attempt.
+    local digest_probe_timeout="${DIGEST_PROBE_TIMEOUT:-30}"
 
     # Explicit cleanup on every return path below.  We do NOT use
     # `trap '...' RETURN` because bash RETURN traps are GLOBAL — they fire on
@@ -128,10 +180,14 @@ _probe_digest() {
 
     if [[ -n "${PROBE_CMD:-}" ]]; then
         # Stub: PROBE_CMD is a function/path that accepts image_ref as $1
-        raw=$("${PROBE_CMD}" "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
+        raw=$(_run_with_timeout "$digest_probe_timeout" "${PROBE_CMD}" "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
         if [[ $probe_exit -ne 0 ]]; then
             local err_detail
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
+            if [[ $probe_exit -eq 124 ]]; then
+                _PROBE_DIGEST_ERROR="registry did not answer within ${digest_probe_timeout}s"
+                printf '::error::%s for %s\n' "$_PROBE_DIGEST_ERROR" "$safe_ref" >&2
+            fi
             [[ -n "$err_detail" ]] && printf '::error::probe-cmd-error for %s: %s\n' "$safe_ref" "$(_escape_gha_command "$err_detail")" >&2
             rm -f "$probe_stderr"
             return 1
@@ -139,10 +195,18 @@ _probe_digest() {
     else
         # `--` separates options from the image ref: belt-and-suspenders against
         # dash-prefix option injection if a poisoned ref slips past _validate_image_ref.
-        raw=$(retry_with_backoff 3 5 docker buildx imagetools inspect --format '{{json .Manifest}}' -- "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
+        if _probe_digest_with_backoff "$digest_probe_timeout" "$image_ref" "$probe_stderr"; then
+            raw="$_PROBE_DIGEST_OUT"
+        else
+            probe_exit=$?
+        fi
         if [[ $probe_exit -ne 0 ]]; then
             local err_detail
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
+            if [[ $probe_exit -eq 124 ]]; then
+                _PROBE_DIGEST_ERROR="registry did not answer within ${digest_probe_timeout}s"
+                printf '::error::%s for %s\n' "$_PROBE_DIGEST_ERROR" "$safe_ref" >&2
+            fi
             printf '::error::imagetools inspect failed for %s: %s\n' "$safe_ref" "$(_escape_gha_command "$err_detail")" >&2
             rm -f "$probe_stderr"
             return 1
@@ -166,7 +230,7 @@ _probe_digest() {
     fi
 
     rm -f "$probe_stderr"
-    printf '%s' "$digest"
+    _PROBE_DIGEST_OUT="$digest"
     return 0
 }
 
@@ -194,10 +258,9 @@ _probe_digest_cached() {
         _probe_digest_cached_out="${_DIGEST_CACHE[$image_ref]}"
         return 0
     fi
-    local digest
-    if digest=$(_probe_digest "$image_ref"); then
-        _DIGEST_CACHE[$image_ref]="$digest"
-        _probe_digest_cached_out="$digest"
+    if _probe_digest "$image_ref"; then
+        _DIGEST_CACHE[$image_ref]="$_PROBE_DIGEST_OUT"
+        _probe_digest_cached_out="$_PROBE_DIGEST_OUT"
         return 0
     fi
     return 1   # failures left UNCACHED (smallest semantic change)
@@ -731,6 +794,9 @@ for lineage_file in "${lineage_files[@]}"; do
             current_digest="$_probe_digest_cached_out"
         else
             probe_failed=true
+            if [[ -n "${_PROBE_DIGEST_ERROR:-}" ]]; then
+                error_reason="$_PROBE_DIGEST_ERROR"
+            fi
         fi
     fi
 

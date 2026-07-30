@@ -1397,6 +1397,30 @@ EOF
     [ "$(<"$counter_file")" -eq 3 ]
 }
 
+@test "probe_cache_image: timeout is reported and remains fail-closed after three attempts" {
+    # A timeout needs its own repair path: the image may exist, but the registry
+    # did not answer. A sub-second injected bound keeps this focused test fast.
+    local counter_file="$TEST_DIR/timeout-probe-attempts"
+    echo 0 > "$counter_file"
+    export COUNTER_FILE="$counter_file"
+
+    docker() {
+        local n
+        n=$(( $(<"$COUNTER_FILE") + 1 ))
+        echo "$n" > "$COUNTER_FILE"
+        sleep 1
+    }
+    export -f docker
+    export SLEEP_CMD=:
+    export PROBE_CACHE_IMAGE_TIMEOUT=0.1
+
+    local rc=0
+    probe_cache_image "ghcr.io/x/library/slow:1" || rc=$?
+    [ "$rc" -eq 1 ]
+    [ "$(<"$counter_file")" -eq 3 ]
+    [ "$PROBE_CACHE_IMAGE_ERROR" = "registry did not answer within 0.1s" ]
+}
+
 @test "probe_cache_image: a newline in the reference cannot forge a workflow command" {
     # base_image_cache is unvalidated config, and this line lands in a runner log.
     # An unescaped newline would end the message and let the rest of the value

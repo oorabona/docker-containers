@@ -39,6 +39,9 @@ myimage"
     export TEST_TEMP_DIR
     export DETECTOR_SCRIPT
     export FIXTURES_DIR_DRIFT
+    # The detector resolves internal image ownership through this value. CI
+    # supplies it, but the unit suite must also be runnable directly locally.
+    export GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY_OWNER:-oorabona}"
 
     unset SYNC_MANIFEST_FILE
     unset PROBE_SENTINEL
@@ -95,6 +98,17 @@ _make_failing_probe_stub() {
 #!/usr/bin/env bash
 echo "stub: simulated registry failure for '$1'" >&2
 exit 1
+STUB_EOF
+    chmod +x "$stub_path"
+    printf '%s' "$stub_path"
+}
+
+_make_slow_probe_stub() {
+    local stub_path="$TEST_TEMP_DIR/bin/probe-slow"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$stub_path" <<'STUB_EOF'
+#!/usr/bin/env bash
+sleep 1
 STUB_EOF
     chmod +x "$stub_path"
     printf '%s' "$stub_path"
@@ -343,6 +357,29 @@ EOF
     current_digest=$(printf '%s' "$result" | \
         jq -r '.[0].variants[0].current_digest // "null"')
     [ "$current_digest" = "null" ]
+}
+
+@test "probe-timeout: error reason names the bounded registry read" {
+    local slow_stub
+    slow_stub=$(_make_slow_probe_stub)
+
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/foo-1.0-alpine.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0-alpine",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    result=$(GITHUB_REPOSITORY_OWNER=oorabona DIGEST_PROBE_TIMEOUT=0.1 PROBE_CMD="$slow_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "error" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "registry did not answer within 0.1s" ]
 }
 
 # ---------------------------------------------------------------------------
