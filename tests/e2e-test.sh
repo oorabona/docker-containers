@@ -210,6 +210,64 @@ sleep_within_readiness_deadline() {
     sleep "$requested"
 }
 
+# The container name is intentionally global: EXIT/INT/TERM traps run in the
+# shell process, after test_container's locals have gone out of scope. Clearing
+# it before returning makes cleanup safe to call on every path and makes the
+# eventual EXIT trap a no-op after each container in a multi-container suite.
+CLEANUP_CONTAINER_NAME=""
+# Where a probe's stderr is kept while its stdout stays the value. Removed by
+# cleanup_container, which runs on every path including the traps.
+READINESS_STDERR_FILE=""
+
+cleanup_container() {
+    local cleanup_name="$CLEANUP_CONTAINER_NAME"
+    local cleanup_output cleanup_status=0
+
+    CLEANUP_CONTAINER_NAME=""
+    trap - EXIT INT TERM
+
+    [ -n "${READINESS_STDERR_FILE:-}" ] && rm -f "$READINESS_STDERR_FILE"
+    READINESS_STDERR_FILE=""
+
+    [ -n "$cleanup_name" ] || return 0
+
+    cleanup_output=$(timeout -k 2 5 docker rm -f "$cleanup_name" 2>&1) || cleanup_status=$?
+    # `docker rm -f` reports an already-absent name as an error. That is the
+    # desired end state for an idempotent cleanup, unlike a timeout, a daemon
+    # failure, or a permission failure that can still leave it running.
+    if [ "$cleanup_status" -ne 0 ] && [[ "$cleanup_output" != *"No such container"* ]]; then
+        log_warning "$cleanup_name could not be removed and may still be running: $cleanup_output"
+        return 1
+    fi
+}
+
+# A readiness probe can fail because its bound fired or the daemon had a
+# transient problem; neither says anything about the container. These statuses
+# cannot be repaired by another poll, though: the command is unavailable or the
+# caller cannot use Docker. Docker reports the latter on stderr, which callers
+# pass here after capturing it.
+docker_readiness_failure_is_terminal() {
+    local status="$1"
+    local output="$2"
+
+    case "$status" in
+        126|127)
+            return 0
+            ;;
+        124|137)
+            return 1
+            ;;
+    esac
+
+    case "${output,,}" in
+        *"permission denied"*|*"operation not permitted"*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
 # Test a single container (or variant)
 # Usage: test_container <container> [image_tag]
 test_container() {
@@ -244,8 +302,11 @@ test_container() {
     fi
     log_info "Using image: $image"
 
-    # Clean up any existing test container
-    docker rm -f "$container_name" 2>/dev/null || true
+    # Clean up any existing test container before reusing its fixed name.
+    CLEANUP_CONTAINER_NAME="$container_name"
+    if ! cleanup_container; then
+        return 1
+    fi
 
     # Start container with appropriate options
     log_info "Starting $container..."
@@ -298,6 +359,11 @@ test_container() {
         return 1
     fi
 
+    CLEANUP_CONTAINER_NAME="$container_name"
+    trap cleanup_container EXIT
+    trap 'cleanup_container; exit 130' INT
+    trap 'cleanup_container; exit 143' TERM
+
     # Wait for container to be ready (healthcheck or basic startup)
     log_info "Waiting for $container to be ready..."
     local start=$SECONDS
@@ -305,7 +371,8 @@ test_container() {
     local ready=false
     # Declared here, not on the assignment below: `local x=$(cmd)` returns the
     # builtin's status, which would swallow the one the loop condition reads.
-    local remaining health
+    local remaining health readiness_stderr
+    READINESS_STDERR_FILE=$(mktemp)
     # Whether an image with no healthcheck has already served its grace. It is
     # readiness only once the loop has come back around and seen the container
     # still listed: a container that dies during the grace is not ready, it is a
@@ -321,12 +388,20 @@ test_container() {
         # `-k` matters as much as the bound: plain `timeout` sends SIGTERM and then
         # waits forever for a child that ignores it, which is the hang this whole
         # change is about. The grace is what the wait can overshoot its budget by.
-        local names ps_status=0
-        names=$(timeout -k 2 "$remaining" docker ps --format '{{.Names}}' 2>/dev/null) || ps_status=$?
+        local names ps_output ps_status=0
+        ps_output=$(timeout -k 2 "$remaining" docker ps --format '{{.Names}}' \
+            2>"$READINESS_STDERR_FILE") || ps_status=$?
         if [ "$ps_status" -ne 0 ]; then
+            readiness_stderr=$(cat "$READINESS_STDERR_FILE" 2>/dev/null)
+            if docker_readiness_failure_is_terminal "$ps_status" "$readiness_stderr"; then
+                log_error "docker ps failed (exit $ps_status): $readiness_stderr"
+                cleanup_container
+                return 1
+            fi
             sleep_within_readiness_deadline 2 "$deadline" || true
             continue
         fi
+        names="$ps_output"
         # Fixed-string, whole-line, and fed from a here-string: a name is not a
         # pattern (docker allows `.` in one), and a pipeline whose producer is
         # still writing when `grep -q` exits on a match fails under `pipefail`,
@@ -334,6 +409,7 @@ test_container() {
         if ! grep -Fxq "$container_name" <<< "$names"; then
             log_error "$container exited unexpectedly"
             timeout -k 2 5 docker logs "$container_name" 2>&1 | tail -20
+            cleanup_container
             return 1
         fi
 
@@ -349,8 +425,20 @@ test_container() {
         remaining=$(readiness_remaining "$deadline") || break
         # The conditional template distinguishes a missing healthcheck from an
         # inspect failure; treating the latter as no healthcheck would fail open.
-        if ! health=$(timeout -k 2 "$remaining" docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}nohealth{{end}}' "$container_name" 2>/dev/null); then
+        local inspect_output inspect_status=0
+        inspect_output=$(timeout -k 2 "$remaining" docker inspect \
+            --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}nohealth{{end}}' \
+            "$container_name" 2>"$READINESS_STDERR_FILE") || inspect_status=$?
+        if [ "$inspect_status" -ne 0 ]; then
+            readiness_stderr=$(cat "$READINESS_STDERR_FILE" 2>/dev/null)
+            if docker_readiness_failure_is_terminal "$inspect_status" "$readiness_stderr"; then
+                log_error "docker inspect failed (exit $inspect_status): $readiness_stderr"
+                cleanup_container
+                return 1
+            fi
             health="unavailable"
+        else
+            health="$inspect_output"
         fi
 
         case "$health" in
@@ -361,8 +449,7 @@ test_container() {
             unhealthy)
                 log_error "$container is unhealthy"
                 timeout -k 2 5 docker logs "$container_name" 2>&1 | tail -20
-                timeout -k 2 5 docker rm -f "$container_name" 2>/dev/null ||
-                log_warning "$container_name could not be removed and may still be running"
+                cleanup_container
                 return 1
                 ;;
             starting)
@@ -391,8 +478,7 @@ test_container() {
     if [ "$ready" != true ]; then
         log_error "$container did not become ready in time"
         timeout -k 2 5 docker logs "$container_name" 2>&1 | tail -20
-        timeout -k 2 5 docker rm -f "$container_name" 2>/dev/null ||
-            log_warning "$container_name could not be removed and may still be running"
+        cleanup_container
         return 1
     fi
 
@@ -405,24 +491,26 @@ test_container() {
     if [ ! -e "$test_script" ]; then
         log_error "$container has no test script at ${test_script#"$REPO_ROOT"/}"
         log_error "Nothing container-specific would be verified — refusing to report success."
-        docker rm -f "$container_name" 2>/dev/null || true
+        cleanup_container
         return 1
     fi
     if [ ! -x "$test_script" ]; then
         log_error "${test_script#"$REPO_ROOT"/} is not executable, so it cannot run."
-        docker rm -f "$container_name" 2>/dev/null || true
+        cleanup_container
         return 1
     fi
 
     log_info "Running custom tests for $container..."
     if ! CONTAINER_NAME="$container_name" "$test_script"; then
         log_error "Custom tests failed for $container"
-        docker rm -f "$container_name" 2>/dev/null || true
+        cleanup_container
         return 1
     fi
 
     # Cleanup
-    docker rm -f "$container_name" 2>/dev/null || true
+    if ! cleanup_container; then
+        return 1
+    fi
 
     log_success "$container passed ✅"
     return 0
