@@ -35,7 +35,7 @@ _image_identity_emit_record() {
     if [[ -z "$variant" && -z "$flavor" ]]; then
         kind="single"
     fi
-    if ! record=$(jq -cncer \
+    if ! record=$(jq -c -n -e -r \
         --arg reference "$reference" --arg tag "$tag" --arg component_version "$component_version" \
         --arg kind "$kind" --arg variant "$variant" --arg flavor "$flavor" '
         def nonempty_string: type == "string" and length > 0;
@@ -123,7 +123,7 @@ image_identity_resolve() {
         # This is an internal hand-off from resolve_e2e_image. It still has to
         # name the reference tag exactly, so an unrelated selected cell cannot
         # be attached to this image accidentally.
-        if ! cell=$(jq -cer --arg tag "$tag" '
+        if ! cell=$(jq -c -e -r --arg tag "$tag" '
             if type == "object" and .tag == $tag then .
             else error("does not name the reference tag") end
         ' <<<"$selected_cell"); then
@@ -152,7 +152,7 @@ image_identity_resolve() {
             printf 'image identity: list_build_matrix failed for %s\n' "$container_dir" >&2
             return 1
         fi
-        if ! cell=$(jq -cer --arg tag "$tag" '
+        if ! cell=$(jq -c -e -r --arg tag "$tag" '
             if type != "array" then error("build matrix is not an array")
             else [.[] | select(.tag == $tag)] as $matches |
               if ($matches | length) == 1 then $matches[0]

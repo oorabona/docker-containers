@@ -162,7 +162,7 @@ resolve_e2e_image() {
         candidate_tag="${candidate##*:}"
         # A cell is the matrix record, rather than just its tag: duplicate tags
         # are not a valid resolution and therefore do not count as a match.
-        if candidate_cell=$(jq -cer --arg tag "$candidate_tag" '
+        if candidate_cell=$(jq -c -e -r --arg tag "$candidate_tag" '
             [.[] | select(.tag == $tag)] |
             if length == 1 then .[0] else error("not one declared cell") end
         ' <<<"$matrix" 2>/dev/null); then
