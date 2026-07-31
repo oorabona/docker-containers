@@ -15,11 +15,9 @@ source "$(dirname "$0")/helpers/validate-base-cache-schema.sh"
 # Configuration
 # Increase timeouts in CI environments due to potential network latency
 if [[ "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    readonly TIMEOUT_CURRENT=60      # Extended timeout for CI current version check
-    readonly TIMEOUT_LATEST=120      # Extended timeout for CI latest version check
+    readonly VERSION_SCRIPT_TIMEOUT=60  # Extended timeout for CI
 else
-    readonly TIMEOUT_CURRENT=30      # Timeout for current version check
-    readonly TIMEOUT_LATEST=60       # Timeout for latest version check
+    readonly VERSION_SCRIPT_TIMEOUT=30  # Timeout for local runs
 fi
 readonly MAX_RETRIES=3           # Maximum retries for failed operations
 readonly RETRY_DELAY=2           # Delay between retries (seconds)
@@ -39,8 +37,7 @@ declare -A container_issues=()
 # Function to execute version script with retries
 execute_with_retry() {
     local container="$1"
-    local mode="$2"  # "current" or "latest"
-    local timeout="$3"
+    local timeout="$2"
     local retry_count=0
     local result=""
     local exit_code=0
@@ -57,7 +54,7 @@ execute_with_retry() {
     # logging helper writes to stderr, which passes through untouched — only
     # stdout is captured, and stdout here is the version.
     if ! stderr_file=$(mktemp); then
-        log_error "$container ($mode): cannot allocate a temp file for version.sh's error output"
+        log_error "$container: cannot allocate a temp file for version.sh's error output"
         echo ""
         return 1
     fi
@@ -83,7 +80,7 @@ execute_with_retry() {
 
         retry_count=$((retry_count + 1))
         if [ $retry_count -lt $MAX_RETRIES ]; then
-            log_warning "Retry $retry_count/$MAX_RETRIES for $container ($mode mode) - exit $exit_code, got: '$result'"
+            log_warning "Retry $retry_count/$MAX_RETRIES for $container - exit $exit_code, got: '$result'"
             [ -n "$script_error" ] && log_warning "  version.sh said: $script_error"
             sleep $RETRY_DELAY
         fi
@@ -93,9 +90,9 @@ execute_with_retry() {
     # All retries exhausted. The last attempt's reason is what turns this from a
     # re-run-and-hope into a diagnosis, so it is reported rather than dropped.
     if [ -n "$script_error" ]; then
-        log_error "$container ($mode): version.sh failed (exit $exit_code): $script_error"
+        log_error "$container: version.sh failed (exit $exit_code): $script_error"
     else
-        log_error "$container ($mode): version.sh failed (exit $exit_code) and wrote nothing to stderr"
+        log_error "$container: version.sh failed (exit $exit_code) and wrote nothing to stderr"
     fi
     echo ""
     return 1
@@ -176,10 +173,11 @@ check_dependencies() {
 # Function to test a single version script
 test_version_script() {
     local container="$1"
-    local quick_mode="${2:-false}"
-    local test_results=()
     local issues=()
     local has_errors=false
+    local version=""
+    local version_exit_code=0
+    local format_issues=""
     
     echo ""
     log_info "Testing $container/version.sh"
@@ -210,7 +208,6 @@ test_version_script() {
     echo "  📋 Checking syntax..."
     if bash -n version.sh 2>/dev/null; then
         log_success "Syntax check passed"
-        test_results+=("syntax_ok")
     else
         log_error "Syntax errors found"
         has_errors=true
@@ -229,85 +226,30 @@ test_version_script() {
         done
     fi
     
-    # Test 1: Check current version (no arguments) with retries
-    echo "  📋 Testing current version (with retries)..."
-    current_version=$(execute_with_retry "$container" "current" "$TIMEOUT_CURRENT")
-    current_exit_code=$?
+    # Run version.sh exactly once. Drift comparisons belong in upstream-monitor
+    # (declared versus upstream) and check-version-drift (declared versus
+    # published in GHCR); duplicating this probe cannot compare different values.
+    echo "  📋 Testing version.sh (with retries)..."
+    version=$(execute_with_retry "$container" "$VERSION_SCRIPT_TIMEOUT")
+    version_exit_code=$?
     
-    if [ $current_exit_code -eq 0 ] && [ -n "$current_version" ]; then
+    if [ $version_exit_code -eq 0 ] && [ -n "$version" ]; then
         # Validate format
-        format_issues=$(validate_version_format "$current_version")
+        format_issues=$(validate_version_format "$version")
         if [ $? -eq 0 ]; then
-            log_success "Current version: $current_version"
-            test_results+=("current_ok")
+            log_success "Version: $version"
         else
-            log_error "Current version format issues: $format_issues"
-            issues+=("current_format:$format_issues")
+            log_error "Version format issues: $format_issues"
+            issues+=("format:$format_issues")
             has_errors=true
         fi
-    elif [ $current_exit_code -eq 2 ] && [ "$current_version" = "no-published-version" ]; then
+    elif [ $version_exit_code -eq 2 ] && [ "$version" = "no-published-version" ]; then
         log_warning "No published version found (container not yet published to registry)"
-        test_results+=("current_no_published")
         # This is not considered an error for validation purposes
     else
-        log_error "Failed to get current version after $MAX_RETRIES retries"
-        issues+=("current_failed")
+        log_error "Failed to run version.sh after $MAX_RETRIES retries"
+        issues+=("failed")
         has_errors=true
-    fi
-    
-    # Test 2: Check latest version with retries (skip in quick mode)
-    if [[ "$quick_mode" != "true" ]]; then
-        echo "  📋 Testing latest version (with retries)..."
-        latest_version=$(execute_with_retry "$container" "latest" "$TIMEOUT_LATEST")
-        latest_exit_code=$?
-        
-        if [ $latest_exit_code -eq 0 ] && [ -n "$latest_version" ]; then
-            # Validate format
-            format_issues=$(validate_version_format "$latest_version")
-            if [ $? -eq 0 ]; then
-                log_success "Latest version: $latest_version"
-                test_results+=("latest_ok")
-                
-                # Compare versions if both are available
-                if [[ "$current_version" != "no-published-version" && -n "$current_version" && "$current_version" != "$latest_version" ]]; then
-                    log_info "Version difference detected: $current_version → $latest_version"
-                elif [[ "$current_version" = "no-published-version" ]]; then
-                    log_info "New container detected: no published version → $latest_version (ready for initial release)"
-                fi
-            else
-                log_error "Latest version format issues: $format_issues"
-                issues+=("latest_format:$format_issues")
-                has_errors=true
-            fi
-        elif [ $latest_exit_code -eq 2 ] && [ "$latest_version" = "no-published-version" ]; then
-            log_warning "No upstream version found (container may be deprecated or source unavailable)"
-            test_results+=("latest_no_published")
-            # This could indicate upstream source issues but isn't necessarily an error
-        else
-            log_error "Failed to get latest version after $MAX_RETRIES retries"
-            issues+=("latest_failed")
-            has_errors=true
-        fi
-    else
-        log_info "Skipping latest version check (quick mode enabled)"
-        test_results+=("latest_skipped")
-    fi
-    
-    # Test 3: Performance check (measure execution time)
-    echo "  📋 Testing performance..."
-    start_time=$(date +%s.%N)
-    if timeout "$TIMEOUT_CURRENT" bash version.sh >/dev/null 2>&1; then
-        end_time=$(date +%s.%N)
-        execution_time=$(echo "$end_time - $start_time" | bc 2>/dev/null || echo "N/A")
-        if [[ "$execution_time" != "N/A" ]] && (( $(echo "$execution_time > 5.0" | bc -l 2>/dev/null || echo 0) )); then
-            log_warning "Slow execution time: ${execution_time}s"
-            issues+=("slow_execution:${execution_time}s")
-        else
-            log_success "Performance OK (${execution_time}s)"
-        fi
-    else
-        log_warning "Performance test timed out"
-        issues+=("performance_timeout")
     fi
     
     cd ..
@@ -332,7 +274,6 @@ main() {
     local specific_container=""
     local verbose=false
     local show_help=false
-    local quick_mode=false
     
     # Parse command line arguments
     while [[ $# -gt 0 ]]; do
@@ -348,10 +289,6 @@ main() {
             -c|--container)
                 specific_container="$2"
                 shift 2
-                ;;
-            -q|--quick)
-                quick_mode=true
-                shift
                 ;;
             *)
                 specific_container="$1"
@@ -372,18 +309,15 @@ main() {
         echo "  -h, --help           Show this help message"
         echo "  -v, --verbose        Enable verbose output"
         echo "  -c, --container NAME Test specific container only"
-        echo "  -q, --quick          Quick mode - skip latest version checks"
         echo ""
         echo "EXAMPLES:"
         echo "  $0                   Test all containers"
         echo "  $0 wordpress         Test only wordpress container"
         echo "  $0 -c debian         Test only debian container"
         echo "  $0 -v                Test all containers with verbose output"
-        echo "  $0 --quick           Test all containers (current version only)"
         echo ""
         echo "CONFIGURATION:"
-        echo "  Current version timeout: ${TIMEOUT_CURRENT}s"
-        echo "  Latest version timeout:  ${TIMEOUT_LATEST}s"
+        echo "  Version script timeout: ${VERSION_SCRIPT_TIMEOUT}s"
         echo "  Max retries:            $MAX_RETRIES"
         echo "  Retry delay:            ${RETRY_DELAY}s"
         return 0
@@ -395,8 +329,7 @@ main() {
     
     if [ "$verbose" = true ]; then
         echo "Configuration:"
-        echo "  Current version timeout: ${TIMEOUT_CURRENT}s"
-        echo "  Latest version timeout:  ${TIMEOUT_LATEST}s"
+        echo "  Version script timeout: ${VERSION_SCRIPT_TIMEOUT}s"
         echo "  Max retries:            $MAX_RETRIES"
         echo "  Retry delay:            ${RETRY_DELAY}s"
         echo ""
@@ -429,7 +362,7 @@ main() {
         log_info "Testing specific container: $specific_container"
         ((total_containers++))
         
-        if test_version_script "$specific_container" "$quick_mode"; then
+        if test_version_script "$specific_container"; then
             ((passed_containers++))
             passed_list+=("$specific_container")
         else
@@ -459,7 +392,7 @@ main() {
         for container in $containers; do
             ((total_containers++))
             
-            if test_version_script "$container" "$quick_mode"; then
+            if test_version_script "$container"; then
                 ((passed_containers++))
                 passed_list+=("$container")
             else
@@ -531,7 +464,6 @@ main() {
         echo "  - For missing version.sh files, create them using the pattern in existing containers"
         echo "  - For failed scripts, check network connectivity and API rate limits"
         echo "  - For syntax errors, run 'bash -n version.sh' to debug"
-        echo "  - For slow scripts, consider caching or optimizing API calls"
         echo ""
         echo "📖 For help creating version.sh scripts, see: docs/LOCAL_DEVELOPMENT.md"
     fi
