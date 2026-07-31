@@ -84,28 +84,21 @@ resolve_e2e_image() {
         return 0
     fi
 
-    if [ -n "$image_tag" ]; then
-        local tagged_image
-        tagged_image="docker.io/${github_repository_owner}/${container}:${image_tag}"
-        if [[ "$output_format" == "--json" ]]; then
-            jq -cn --arg image "$tagged_image" '{image: $image, image_id: null, cell: null}'
-        else
-            printf '%s\n' "$tagged_image"
-        fi
-        return 0
-    fi
-
     local images=""
     images=$(timeout -k 2 10 docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' 2>/dev/null) || true
 
     local ids
-    ids=$(printf '%s\n' "$images" | awk -v owner="$github_repository_owner" -v container="$container" '
+    ids=$(printf '%s\n' "$images" | awk -v owner="$github_repository_owner" -v container="$container" -v tag="$image_tag" '
         function starts_with(value, prefix) {
             return substr(value, 1, length(prefix)) == prefix
         }
-        starts_with($2, "ghcr.io/" owner "/" container ":") ||
-        starts_with($2, "docker.io/" owner "/" container ":") ||
-        starts_with($2, container ":") {
+        function local_image(value) {
+            return starts_with(value, "ghcr.io/" owner "/" container ":") ||
+                starts_with(value, "docker.io/" owner "/" container ":") ||
+                starts_with(value, container ":")
+        }
+        local_image($2) && (tag == "" || $2 == "ghcr.io/" owner "/" container ":" tag ||
+            $2 == "docker.io/" owner "/" container ":" tag || $2 == container ":" tag) {
             print $1
         }
     ' | sort -u)
@@ -118,6 +111,17 @@ resolve_e2e_image() {
     fi
 
     if [ "$count" -eq 0 ]; then
+        if [ -n "$image_tag" ]; then
+            local tagged_image
+            tagged_image="docker.io/${github_repository_owner}/${container}:${image_tag}"
+            log_info "Image $tagged_image was not found locally; using remote reference"
+            if [[ "$output_format" == "--json" ]]; then
+                jq -cn --arg image "$tagged_image" '{image: $image, image_id: null, cell: null}'
+            else
+                printf '%s\n' "$tagged_image"
+            fi
+            return 0
+        fi
         log_error "No image found for $container; build it first, pass container:tag, or set E2E_IMAGE"
         return 1
     fi
@@ -179,11 +183,12 @@ resolve_e2e_image() {
                 selected_cell="$candidate_cell"
             fi
         fi
-    done < <(printf '%s\n' "$images" | awk -v id="$ids" -v owner="$github_repository_owner" -v container="$container" '
+    done < <(printf '%s\n' "$images" | awk -v id="$ids" -v owner="$github_repository_owner" -v container="$container" -v tag="$image_tag" '
         function starts_with(value, prefix) {
             return substr(value, 1, length(prefix)) == prefix
         }
-        $1 == id && (starts_with($2, "ghcr.io/" owner "/" container ":") || starts_with($2, "docker.io/" owner "/" container ":") || starts_with($2, container ":")) {
+        $1 == id && (starts_with($2, "ghcr.io/" owner "/" container ":") || starts_with($2, "docker.io/" owner "/" container ":") || starts_with($2, container ":")) &&
+            (tag == "" || $2 == "ghcr.io/" owner "/" container ":" tag || $2 == "docker.io/" owner "/" container ":" tag || $2 == container ":" tag) {
             print $2
         }
     ')
