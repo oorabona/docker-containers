@@ -19,15 +19,16 @@ RUN set -ex; \
     echo "wordpress ALL=(ALL) NOPASSWD: /usr/local/bin/wp" > /etc/sudoers.d/wordpress; \
     chmod 440 /etc/sudoers.d/wordpress
 
-# WordPress-specific opcache settings (override defaults if needed)
-RUN { \
-        echo 'opcache.memory_consumption=128'; \
-        echo 'opcache.interned_strings_buffer=8'; \
-        echo 'opcache.max_accelerated_files=4000'; \
-        echo 'opcache.revalidate_freq=2'; \
-        echo 'opcache.fast_shutdown=1'; \
-        echo 'opcache.enable_cli=1'; \
-    } > /usr/local/etc/php/conf.d/opcache-wordpress.ini
+# No opcache-wordpress.ini: the base image's conf.d/php.ini sets every key this
+# file used to set, and PHP reads conf.d alphabetically — "php.ini" after
+# "opcache-wordpress.ini" — so none of it ever applied. Verified on the published
+# image: it wrote memory_consumption=128 and the runtime reported 512.
+#
+# Nothing is lost by dropping it. The base is more generous everywhere the two
+# disagreed (512MB against 128, 20000 accelerated files against 4000) and
+# opcache.fast_shutdown, the one setting unique in spirit, has been a no-op since
+# PHP 7.2. If WordPress ever does need to override the base, the file has to sort
+# after php.ini to have any effect at all.
 
 # Install WP-CLI
 # Note: WP-CLI's bundled php-cli-tools triggers PHP 8.5 deprecation warnings
