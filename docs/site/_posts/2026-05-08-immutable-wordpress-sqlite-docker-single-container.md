@@ -23,7 +23,7 @@ docker pull ghcr.io/oorabona/wordpress:latest
 - **PHP-FPM** from the [oorabona/php](/docker-containers/container/php/) image (Composer, APCu baked in)
 - **Non-root user `wordpress`** with passwordless sudo scoped to `/usr/local/bin/wp` only
 - **Healthcheck** via `php-fpm -t`
-- **OPcache tuned** for WordPress (128 MB, 4 000 files, `fast_shutdown=1`)
+- **OPcache** enabled by the base PHP image, with `validate_timestamps=0` — code changes are picked up on restart, not on save
 
 The `wp-config.php` hard-codes two constants that change everything:
 
