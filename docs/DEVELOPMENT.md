@@ -212,12 +212,12 @@ versions:
 ### Output Tags
 
 ```
-<major_version><variant_suffix><base_suffix>
+<major_version><base_suffix><variant_suffix>
 
 Examples:
   17-alpine           (base variant)
-  17-vector-alpine    (vector variant)
-  17-full-alpine      (full variant)
+  17-alpine-vector    (vector variant)
+  17-alpine-full      (full variant)
 ```
 
 ### Adding a New Variant

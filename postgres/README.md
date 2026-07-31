@@ -23,7 +23,7 @@ Full walkthrough (SBOM payload, Trivy findings, multi-arch manifest inspection, 
 docker pull ghcr.io/oorabona/postgres:17-alpine
 
 # With pgvector for AI/RAG applications
-docker pull ghcr.io/oorabona/postgres:17-vector-alpine
+docker pull ghcr.io/oorabona/postgres:17-alpine-vector
 
 # With analytics extensions
 docker pull ghcr.io/oorabona/postgres:17-analytics-alpine
@@ -38,7 +38,7 @@ docker pull ghcr.io/oorabona/postgres:17-spatial-alpine
 docker pull ghcr.io/oorabona/postgres:17-distributed-alpine
 
 # All extensions included
-docker pull ghcr.io/oorabona/postgres:17-full-alpine
+docker pull ghcr.io/oorabona/postgres:17-alpine-full
 ```
 
 ## Available Flavors
@@ -63,7 +63,7 @@ Standard PostgreSQL with built-in extensions:
 - `btree_gin`, `btree_gist` - Additional index types
 - `pg_trgm` - Trigram matching for fuzzy search
 
-#### Vector (`*-vector-alpine`)
+#### Vector (`*-alpine-vector`)
 Includes base + **pgvector** for AI/ML workloads:
 ```sql
 -- Store embeddings from OpenAI, Anthropic, etc.
@@ -168,7 +168,7 @@ FROM events
 GROUP BY tenant_id;
 ```
 
-#### Full (`*-full-alpine`)
+#### Full (`*-alpine-full`)
 All extensions for development and testing. Includes everything from all other flavors (vector, analytics, timeseries, spatial, distributed).
 
 ## Supported Versions
@@ -187,9 +187,9 @@ ghcr.io/oorabona/postgres:{version}-{flavor}-alpine
 
 Examples:
 - `17-alpine` or `17-base-alpine` - PG17 base
-- `17-vector-alpine` - PG17 with pgvector
+- `17-alpine-vector` - PG17 with pgvector
 - `16-analytics-alpine` - PG16 with analytics extensions
-- `17-full-alpine` - PG17 with all extensions
+- `17-alpine-full` - PG17 with all extensions
 
 ## Usage
 
@@ -198,7 +198,7 @@ Examples:
 ```yaml
 services:
   postgres:
-    image: ghcr.io/oorabona/postgres:17-vector-alpine
+    image: ghcr.io/oorabona/postgres:17-alpine-vector
     environment:
       POSTGRES_DB: myapp
       POSTGRES_USER: myuser
@@ -227,7 +227,7 @@ docker run -d \
   -e POSTGRES_PASSWORD=secret \
   -p 5432:5432 \
   -v postgres_data:/var/lib/postgresql/data \
-  ghcr.io/oorabona/postgres:17-vector-alpine
+  ghcr.io/oorabona/postgres:17-alpine-vector
 ```
 
 ### Building Locally

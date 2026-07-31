@@ -265,7 +265,7 @@ requires_extensions() {
 
 # Generate image tag for a variant
 # Usage: variant_image_tag <pg_version> <variant_name> <container_dir>
-# Example: variant_image_tag "17" "vector" "./postgres" -> "17-vector-alpine"
+# Example: variant_image_tag "17" "vector" "./postgres" -> "17-alpine-vector"
 variant_image_tag() {
     local pg_version="$1"
     local variant_name="$2"
