@@ -8,7 +8,7 @@ setup() {
     # Cleared going in, not just coming out: one of these exported in the shell
     # that runs the suite would otherwise steer the stub through tests that never
     # asked for it.
-    unset E2E_IMAGE E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT \
+    unset E2E_IMAGE E2E_BUILD_TAG E2E_BUILD_VERSION E2E_BUILD_VARIANT E2E_BUILD_FLAVOR E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_IMAGE_ID DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT \
         DOCKER_INSPECT_ERROR DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_PS_ERROR \
         DOCKER_IMAGES_OUTPUT DOCKER_RM_FAIL_ON_SECOND
     # Each bats test is its own process, so it inherits these from the shell that
@@ -20,12 +20,14 @@ setup() {
     cp "$PROJECT_ROOT/tests/e2e-test.sh" "$FIXTURE_REPO/tests/e2e-test.sh"
     cp "$PROJECT_ROOT/helpers/logging.sh" "$FIXTURE_REPO/helpers/logging.sh"
     cp "$PROJECT_ROOT/helpers/variant-utils.sh" "$FIXTURE_REPO/helpers/variant-utils.sh"
+    mkdir -p "$FIXTURE_REPO/test-harness"
+    cp "$PROJECT_ROOT/test-harness/image-identity.sh" "$FIXTURE_REPO/test-harness/image-identity.sh"
     chmod +x "$FIXTURE_REPO/tests/e2e-test.sh"
 }
 
 teardown() {
     export PATH="$ORIG_PATH"
-    unset E2E_IMAGE E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_LOG DOCKER_IMAGES_OUTPUT DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_PS_ERROR DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT DOCKER_INSPECT_ERROR DOCKER_RM_FAIL_ON_SECOND PS_COUNT_FILE TEST_SCRIPT_MARKER RUN_STARTED TEST_SUITE_STARTED HARNESS_PID_FILE
+    unset E2E_IMAGE E2E_BUILD_TAG E2E_BUILD_VERSION E2E_BUILD_VARIANT E2E_BUILD_FLAVOR E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_LOG DOCKER_IMAGES_OUTPUT DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_PS_ERROR DOCKER_IMAGE_ID DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT DOCKER_INSPECT_ERROR DOCKER_RM_FAIL_ON_SECOND PS_COUNT_FILE TEST_SCRIPT_MARKER RUN_STARTED TEST_SUITE_STARTED HARNESS_PID_FILE
     teardown_temp_dir
 }
 
@@ -67,6 +69,9 @@ install_docker_stub() {
     cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+if [[ "$1" == "image" && "${2:-}" == "inspect" ]]; then
+    shift
+fi
 case "$1" in
     images)
         printf '%s\n' "${DOCKER_IMAGES_OUTPUT:-}"
@@ -89,6 +94,10 @@ case "$1" in
                     ;;
             esac
         done
+        if [ "$inspect_format" = '{{.Id}}' ]; then
+            printf '%s\n' "${DOCKER_IMAGE_ID:-sha256:e2e-loaded-image}"
+            exit 0
+        fi
         if [ "$inspect_format" != '{{if .State.Health}}{{.State.Health.Status}}{{else}}nohealth{{end}}' ]; then
             printf 'unexpected inspect format: %s\n' "$inspect_format" >&2
             exit 64
@@ -140,11 +149,28 @@ add_openvpn_fixture() {
 versions:
   - tag: v2.7.5-alpine
 YAML
+    cat > "$FIXTURE_REPO/openvpn/version.sh" <<'SH'
+#!/bin/bash
+if [[ "${1:-}" == "--tag-suffix" ]]; then
+    printf '%s\n' '-alpine'
+    exit 0
+fi
+exit 1
+SH
+    chmod +x "$FIXTURE_REPO/openvpn/version.sh"
     cat > "$FIXTURE_REPO/openvpn/test.sh" <<'SH'
 #!/bin/bash
 printf '%s\n' "${CONTAINER_NAME:-}" > "${TEST_SCRIPT_MARKER:?}"
 SH
     chmod +x "$FIXTURE_REPO/openvpn/test.sh"
+}
+
+add_single_image_identity_fixture() {
+    local container="$1" tag="$2" suffix="$3"
+    mkdir -p "$FIXTURE_REPO/$container"
+    printf 'versions:\n  - tag: %s\n' "$tag" > "$FIXTURE_REPO/$container/variants.yaml"
+    printf '#!/bin/bash\nif [[ "${1:-}" == "--tag-suffix" ]]; then printf "%%s\\n" %q; exit 0; fi\nexit 1\n' "$suffix" > "$FIXTURE_REPO/$container/version.sh"
+    chmod +x "$FIXTURE_REPO/$container/version.sh"
 }
 
 @test "helper sourcing resolves from repo root" {
@@ -154,17 +180,55 @@ SH
     [[ "$output" == *"--no-build"* ]]
 }
 
-@test "S3/AD3: E2E_IMAGE bypasses variant routing but still applies openvpn run profile and test.sh" {
+@test "source-only mode leaves the caller and startup commands untouched" {
+    local caller_dir="$TEST_TEMP_DIR/caller"
+    mkdir -p "$caller_dir" "$TEST_TEMP_DIR/bin"
+    printf '#!/bin/bash\n: > "${SOURCE_ONLY_MAKE_MARKER:?}"\n' > "$caller_dir/make"
+    chmod +x "$caller_dir/make"
+    printf '#!/bin/bash\n: > "${SOURCE_ONLY_TIMEOUT_MARKER:?}"\n' > "$TEST_TEMP_DIR/bin/timeout"
+    chmod +x "$TEST_TEMP_DIR/bin/timeout"
+    export SOURCE_ONLY_MAKE_MARKER="$TEST_TEMP_DIR/make-ran"
+    export SOURCE_ONLY_TIMEOUT_MARKER="$TEST_TEMP_DIR/timeout-ran"
+
+    run env E2E_TEST_SOURCE_ONLY=1 PATH="$TEST_TEMP_DIR/bin:$PATH" bash -c '
+        script="$1"
+        caller_dir="$2"
+        cd "$caller_dir"
+        set +e +u
+        set +o pipefail
+        SECONDS=37
+        set -- caller-first caller-second
+        source "$script"
+        [[ "$SECONDS" -ge 37 ]]
+        [[ "$#" -eq 2 && "$1" == caller-first && "$2" == caller-second ]]
+        [[ "$-" != *e* && "$-" != *u* ]]
+        [[ "$(set -o | awk "\$1 == \"pipefail\" { print \$2 }")" == off ]]
+        declare -F resolve_e2e_image >/dev/null
+    ' _ "$FIXTURE_REPO/tests/e2e-test.sh" "$caller_dir"
+
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -e "$SOURCE_ONLY_MAKE_MARKER" ]
+    [ ! -e "$SOURCE_ONLY_TIMEOUT_MARKER" ]
+}
+
+@test "S3/AD3: an E2E image ID and passed build cell bypass routing and run unchanged" {
     add_openvpn_fixture
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="sha256:ci-loaded-image"
+    export DOCKER_IMAGE_ID="sha256:ci-loaded-image"
+    export E2E_BUILD_TAG="v2.7.5-alpine"
+    export E2E_BUILD_VERSION="v2.7.5-alpine"
+    export E2E_BUILD_VARIANT=""
+    export E2E_BUILD_FLAVOR=""
 
     run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
 
     [ "$status" -eq 0 ]
     [ "$(cat "$TEST_SCRIPT_MARKER")" = "e2e-openvpn" ]
+    grep -q '^run .*sha256:ci-loaded-image' "$DOCKER_LOG"
 
     run_line=$(grep '^run ' "$DOCKER_LOG")
     [[ "$run_line" == *"--cap-drop ALL"* ]]
@@ -174,7 +238,7 @@ SH
     [[ "$run_line" == *"--device /dev/net/tun:/dev/net/tun"* ]]
     [[ "$run_line" == *"-e AUTO_INSTALL=y"* ]]
     [[ "$run_line" == *"-e AUTO_START=y"* ]]
-    [[ "$run_line" == *"ghcr.io/example/openvpn:e2e"* ]]
+    [[ "$run_line" == *"sha256:ci-loaded-image"* ]]
     ! grep -q '^images ' "$DOCKER_LOG"
 }
 
@@ -187,7 +251,7 @@ SH
     rm "$FIXTURE_REPO/openvpn/test.sh"
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
 
     run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
 
@@ -202,7 +266,7 @@ SH
     chmod -x "$FIXTURE_REPO/openvpn/test.sh"
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
 
     run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
 
@@ -219,6 +283,10 @@ SH
     cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+if [[ "$1" == "image" && "${2:-}" == "inspect" ]]; then
+    printf '%s\n' "sha256:e2e-loaded-image"
+    exit 0
+fi
 case "$1" in
     run)
         : > "${RUN_STARTED:?}"
@@ -238,7 +306,7 @@ esac
 STUB
     chmod +x "$TEST_TEMP_DIR/bin/docker"
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export RUN_STARTED="$TEST_TEMP_DIR/container-created"
     export HARNESS_PID_FILE="$TEST_TEMP_DIR/harness.pid"
 
@@ -276,7 +344,7 @@ SH
     chmod +x "$FIXTURE_REPO/openvpn/test.sh"
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_TEST_TIMEOUT=1
     export HARNESS_PID_FILE="$TEST_TEMP_DIR/harness.pid"
     export TEST_SUITE_STARTED="$TEST_TEMP_DIR/custom-suite-started"
@@ -318,7 +386,7 @@ SH
     chmod +x "$FIXTURE_REPO/openvpn/test.sh"
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_TEST_TIMEOUT=1
 
     run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
@@ -344,7 +412,7 @@ SH
     chmod +x "$FIXTURE_REPO/openvpn/test.sh"
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_TEST_TIMEOUT=10
 
     run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
@@ -380,8 +448,57 @@ SH
     ! grep -q '^run ' "$DOCKER_LOG"
 }
 
+@test "fallback image discovery keeps a declared cell when its tag precedes latest" {
+    add_single_image_identity_fixture debian trixie ''
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    # A build adds both of these tags to one image. A later undeclared alias
+    # must not erase the cell selected from the declared tag.
+    export DOCKER_IMAGES_OUTPUT=$'sha111 ghcr.io/oorabona/debian:trixie\nsha111 ghcr.io/oorabona/debian:latest'
+
+    run env E2E_TEST_SOURCE_ONLY=1 bash -c 'source "$1"; resolve_e2e_image debian "" --json' _ \
+        "$FIXTURE_REPO/tests/e2e-test.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.image' <<<"$output")" = "ghcr.io/oorabona/debian:trixie" ]
+    [ "$(jq -r '.image_id' <<<"$output")" = "sha111" ]
+    [ "$(jq -r '.cell.tag' <<<"$output")" = "trixie" ]
+}
+
+@test "fallback image discovery keeps a declared cell when latest precedes its tag" {
+    add_single_image_identity_fixture debian trixie ''
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export DOCKER_IMAGES_OUTPUT=$'sha111 ghcr.io/oorabona/debian:latest\nsha111 ghcr.io/oorabona/debian:trixie'
+
+    run env E2E_TEST_SOURCE_ONLY=1 bash -c 'source "$1"; resolve_e2e_image debian "" --json' _ \
+        "$FIXTURE_REPO/tests/e2e-test.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.image' <<<"$output")" = "ghcr.io/oorabona/debian:trixie" ]
+    [ "$(jq -r '.image_id' <<<"$output")" = "sha111" ]
+    [ "$(jq -r '.cell.tag' <<<"$output")" = "trixie" ]
+}
+
+@test "fallback image discovery rejects two declared cells on one image ID" {
+    add_single_image_identity_fixture debian bookworm ''
+    printf '  - tag: trixie\n' >> "$FIXTURE_REPO/debian/variants.yaml"
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export DOCKER_IMAGES_OUTPUT=$'sha111 ghcr.io/oorabona/debian:bookworm\nsha111 docker.io/oorabona/debian:trixie'
+
+    run env E2E_TEST_SOURCE_ONLY=1 bash -c 'source "$1"; resolve_e2e_image debian' _ \
+        "$FIXTURE_REPO/tests/e2e-test.sh"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Ambiguous declared image tags for debian"* ]]
+    [[ "$output" == *"ghcr.io/oorabona/debian:bookworm"* ]]
+    [[ "$output" == *"docker.io/oorabona/debian:trixie"* ]]
+}
+
 @test "sslh run profile: args-only command, port 443, NET_BIND_SERVICE (entrypoint+healthcheck match)" {
     mkdir -p "$FIXTURE_REPO/sslh"
+    add_single_image_identity_fixture sslh v2.3.1-alpine -alpine
     # The real container has one, and the harness now requires it — this fixture
     # stands in for it so the assertions below stay about the run profile.
     printf '#!/bin/bash\nexit 0\n' > "$FIXTURE_REPO/sslh/test.sh"
@@ -389,7 +506,7 @@ SH
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export DOCKER_PS_OUTPUT="e2e-sslh"
-    export E2E_IMAGE="ghcr.io/example/sslh:e2e"
+    export E2E_IMAGE="ghcr.io/example/sslh:v2.3.1-alpine"
 
     run "$FIXTURE_REPO/tests/e2e-test.sh" sslh
 
@@ -408,18 +525,35 @@ SH
 @test "sslh/test.sh proves liveness without pgrep (scratch image lacks it)" {
     # The sslh image is FROM scratch: no pgrep. The smoke check must use the
     # busybox nc applet that ships in the image, not pgrep.
-    ! grep -qE '\bpgrep\b' "$PROJECT_ROOT/sslh/test.sh"
+    if sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$PROJECT_ROOT/sslh/test.sh" | grep -qE '\bpgrep\b'; then
+        false
+    fi
     grep -q '/bin/busybox nc' "$PROJECT_ROOT/sslh/test.sh"
 }
 
 @test "terraform run profile: --entrypoint sleep, because the image entrypoint execs terraform with its args" {
     mkdir -p "$FIXTURE_REPO/terraform"
+    cat > "$FIXTURE_REPO/terraform/variants.yaml" <<'YAML'
+versions:
+  - tag: 1.15.8-alpine
+    variants:
+      - name: full
+        suffix: ""
+        flavor: full
+        default: true
+YAML
+    cat > "$FIXTURE_REPO/terraform/version.sh" <<'SH'
+#!/bin/bash
+[[ "${1:-}" == "--tag-suffix" ]] && { printf '%s\n' '-alpine'; exit 0; }
+exit 1
+SH
+    chmod +x "$FIXTURE_REPO/terraform/version.sh"
     printf '#!/bin/bash\nexit 0\n' > "$FIXTURE_REPO/terraform/test.sh"
     chmod +x "$FIXTURE_REPO/terraform/test.sh"
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export DOCKER_PS_OUTPUT="e2e-terraform"
-    export E2E_IMAGE="ghcr.io/example/terraform:e2e"
+    export E2E_IMAGE="ghcr.io/example/terraform:1.15.8-alpine"
 
     run "$FIXTURE_REPO/tests/e2e-test.sh" terraform
 
@@ -434,7 +568,7 @@ SH
     # stop applying. One glob pins the sequence.
     # The trailing space matters: without it `--entrypoint sleeper` satisfies the
     # match while being an invalid entrypoint.
-    [[ "$run_line" == *"--entrypoint sleep "*"ghcr.io/example/terraform:e2e"*"infinity"* ]]
+    [[ "$run_line" == *"--entrypoint sleep "*"sha256:e2e-loaded-image"*"infinity"* ]]
 }
 
 @test "the readiness budget bounds elapsed time, not the number of polls" {
@@ -448,6 +582,10 @@ SH
     cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+if [[ "$1" == "image" && "${2:-}" == "inspect" ]]; then
+    printf '%s\n' "sha256:e2e-loaded-image"
+    exit 0
+fi
 case "$1" in
     images) printf '%s\n' "${DOCKER_IMAGES_OUTPUT:-}" ;;
     ps)     /bin/sleep 1; printf '%s\n' "${DOCKER_PS_OUTPUT:-e2e-openvpn}" ;;
@@ -458,7 +596,7 @@ STUB
     chmod +x "$TEST_TEMP_DIR/bin/docker"
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_READY_TIMEOUT=3
 
     # Bounded so that a budget which has stopped bounding anything fails this test
@@ -493,6 +631,10 @@ STUB
     cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+if [[ "$1" == "image" && "${2:-}" == "inspect" ]]; then
+    printf '%s\n' "sha256:e2e-loaded-image"
+    exit 0
+fi
 case "$1" in
     images)  printf '%s\n' "${DOCKER_IMAGES_OUTPUT:-}" ;;
     ps)      printf '%s\n' "${DOCKER_PS_OUTPUT:-e2e-openvpn}" ;;
@@ -503,7 +645,7 @@ STUB
     chmod +x "$TEST_TEMP_DIR/bin/docker"
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     # Enough budget for two things at once: the loop certainly reaches the inspect
     # (at one second it can expire between the ps and the inspect), and a failed
     # inspect misread as "no healthcheck" would have room for its full grace and
@@ -532,7 +674,7 @@ STUB
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_READY_TIMEOUT=1
 
     run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
@@ -552,6 +694,10 @@ STUB
     cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+if [[ "$1" == "image" && "${2:-}" == "inspect" ]]; then
+    printf '%s\n' "sha256:e2e-loaded-image"
+    exit 0
+fi
 case "$1" in
     images) printf '%s\n' "${DOCKER_IMAGES_OUTPUT:-}" ;;
     ps)
@@ -570,7 +716,7 @@ STUB
     chmod +x "$TEST_TEMP_DIR/bin/docker"
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
 
     run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
 
@@ -584,9 +730,13 @@ STUB
     # sibling called e2e-v1X2 would then stand in for e2e-v1.2, and the harness
     # would call an exited container running. No fixture directory is needed —
     # this fails before the per-container suite is ever looked for.
+    add_single_image_identity_fixture v1.2 v1.2-alpine -alpine
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/dotted:e2e"
+    # The resolver correctly requires the repository component to name the
+    # requested container, so use a compatible reference and reach the
+    # liveness assertion this test is about.
+    export E2E_IMAGE="ghcr.io/example/v1.2:v1.2-alpine"
     export DOCKER_PS_OUTPUT="e2e-v1X2"
 
     run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" v1.2
@@ -605,7 +755,7 @@ STUB
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_READY_TIMEOUT=2
     # A real delay in the failing probe: the suite's sleep stub is a no-op, so a
     # stub that fails instantly would have the wait forking processes flat out for
@@ -614,6 +764,10 @@ STUB
     cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+if [[ "$1" == "image" && "${2:-}" == "inspect" ]]; then
+    printf '%s\n' "sha256:e2e-loaded-image"
+    exit 0
+fi
 case "$1" in
     images) printf '%s\n' "${DOCKER_IMAGES_OUTPUT:-}" ;;
     ps)     /bin/sleep 1; exit 1 ;;
@@ -639,7 +793,7 @@ STUB
     printf '#!/bin/bash\nprintf "mktemp: fixture allocation failed\\n" >&2\nexit 1\n' > "$TEST_TEMP_DIR/bin/mktemp"
     chmod +x "$TEST_TEMP_DIR/bin/mktemp"
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_READY_TIMEOUT=1
 
     run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
@@ -670,12 +824,9 @@ STUB
         unbounded=$(grep -nE "^[^#]*(^|[^a-zA-Z_-])docker[[:space:]]" "$source_file" |
             grep -vE "timeout -k" |
             grep -vE "log_error|log_warning|printf|echo")
-        # Deliberately unbounded, for a stated reason:
-        #   docker images  — local discovery before anything is started
-        allowed="docker images"
-        offenders=$(printf "%s\n" "$unbounded" | grep -vE "$allowed" | grep -c . || true)
+        offenders=$(printf "%s\n" "$unbounded" | grep -c . || true)
         if [ "$offenders" -ne 0 ]; then
-            printf "%s\n" "$unbounded" | grep -vE "$allowed" >&2
+            printf "%s\n" "$unbounded" >&2
             exit 1
         fi
     ' _ "$PROJECT_ROOT/tests/e2e-test.sh"
@@ -698,7 +849,7 @@ STUB
     add_openvpn_fixture
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_READY_TIMEOUT=60
     export DOCKER_PS_OUTPUT=""
     export DOCKER_PS_ERROR="docker: command not found"
@@ -719,7 +870,7 @@ STUB
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_READY_TIMEOUT=60
     export DOCKER_INSPECT_OUTPUT=""
     export DOCKER_INSPECT_ERROR="permission denied while trying to connect to the Docker daemon socket"
@@ -744,7 +895,7 @@ STUB
     printf '#!/bin/bash\nexit 127\n' > "$TEST_TEMP_DIR/bin/timeout"
     chmod +x "$TEST_TEMP_DIR/bin/timeout"
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
 
     run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
 
@@ -764,6 +915,10 @@ STUB
     cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+if [[ "$1" == "image" && "${2:-}" == "inspect" ]]; then
+    printf '%s\n' "sha256:e2e-loaded-image"
+    exit 0
+fi
 echo "Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg." >&2
 case "$1" in
     images)  printf '%s\n' "${DOCKER_IMAGES_OUTPUT:-}" ;;
@@ -775,7 +930,7 @@ STUB
     chmod +x "$TEST_TEMP_DIR/bin/docker"
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
 
     run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
 
@@ -789,7 +944,7 @@ STUB
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export DOCKER_INSPECT_OUTPUT=healthy
 
     run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
@@ -802,7 +957,7 @@ STUB
     add_openvpn_fixture
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_READY_TIMEOUT=zero
 
     run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
@@ -820,7 +975,7 @@ STUB
     add_openvpn_fixture
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_TEST_TIMEOUT=zero
 
     run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
@@ -834,7 +989,7 @@ STUB
     add_openvpn_fixture
     install_docker_stub
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
-    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_READY_TIMEOUT=99999999999999999999
 
     run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn

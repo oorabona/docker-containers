@@ -12,6 +12,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../test-harness/test-harness.sh
 source "${SCRIPT_DIR}/../test-harness/test-harness.sh"
+# shellcheck source=../test-harness/image-identity.sh
+source "${SCRIPT_DIR}/../test-harness/image-identity.sh"
 
 CONTAINER_NAME="${CONTAINER_NAME:-e2e-sslh}"
 
@@ -36,35 +38,15 @@ if th_capture "sslh-ev reports its version" \
     th_assert_contains "sslh-ev reports its version" "$banner" "sslh-ev"
 fi
 
-# The tag carries the upstream version, so the binary disagreeing with it means
-# the image was assembled from something other than what it claims.
-expected="${SSLH_EXPECTED_VERSION:-}"
-if [ -z "$expected" ] && [ -n "${E2E_IMAGE:-}" ]; then
-    # ghcr.io/owner/sslh:v2.3.1-alpine → 2.3.1
-    expected="${E2E_IMAGE##*:}"
-    expected="${expected%%-*}"
-    expected="${expected#v}"
-fi
-# Only a tag that carries a version can be compared against one. A moving tag
-# such as `latest` says nothing about the binary, and asserting on it would fail
-# for a reason that has nothing to do with the image.
-#
-# The comparison stays a substring match, deliberately: turning it into an exact
-# one means deciding what an image reference's version IS, and a tag carries a
-# flavour suffix, sometimes a prerelease hyphen and sometimes a digest, so every
-# stricter rule rejects some legitimate build. Tightening it is #983's work, on
-# every suite at once, not a side effect of this one. See #1002.
-if [[ "$expected" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
-    if (( version_read )); then
-        th_assert_contains "the binary version matches the image tag ($expected)" \
-            "$banner" "$expected"
+# The harness resolves the reference to one declared cell before this suite
+# starts.  Compare the exact binary token: a substring lets 2.2.4 pass 12.2.40
+# and lets 3.1 pass 2.3.1.  Hyphenated prereleases remain one token.
+if (( version_read )); then
+    if [[ "$banner" =~ ^sslh-ev[[:space:]]+([^[:space:]]+) ]]; then
+        e2e_assert_reported_component_version "${BASH_REMATCH[1]}"
     else
-        # Reported as a skip rather than dropped: a test that leaves the report
-        # entirely is indistinguishable from one that was never written.
-        th_skip "the binary version matches the image tag" "the version probe failed"
+        th_fail "sslh-ev reports a parseable version token" "first line: '$banner'"
     fi
-else
-    th_skip "the binary version matches the image tag" "tag '${expected:-none}' carries no version"
 fi
 
 th_group "Multiplexer"

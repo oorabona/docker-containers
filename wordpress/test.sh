@@ -10,6 +10,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../test-harness/test-harness.sh
 source "${SCRIPT_DIR}/../test-harness/test-harness.sh"
+# shellcheck source=../test-harness/image-identity.sh
+source "${SCRIPT_DIR}/../test-harness/image-identity.sh"
 
 CONTAINER_NAME="${CONTAINER_NAME:-e2e-wordpress}"
 
@@ -28,21 +30,9 @@ if th_capture "WP-CLI loads the installed WordPress core" \
     th_assert_matches "WP-CLI reports the installed WordPress core version" \
         "$reported_core" '^[0-9]+\.[0-9]+(\.[0-9]+)?$'
 
-    # A well-formed version is not the RIGHT version: the tag says which release
-    # this image is, so a 7.0.2 build shipping 6.9.4 has to fail rather than pass
-    # for looking version-shaped.
-    expected_core=""
-    if [ -n "${E2E_IMAGE:-}" ]; then
-        expected_core="${E2E_IMAGE##*:}"
-        expected_core="${expected_core%%-*}"
-    fi
-    if [[ "$expected_core" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
-        th_assert_eq "the core version matches the image tag ($expected_core)" \
-            "$reported_core" "$expected_core"
-    else
-        th_skip "the core version matches the image tag" \
-            "tag '${expected_core:-none}' carries no version"
-    fi
+    # A well-formed version is not the RIGHT version.  The identity assertion
+    # comes from the harness's declared-cell resolver, never from splitting a tag.
+    e2e_assert_reported_component_version "$reported_core"
 fi
 
 # `wp core version` succeeds without a database, making it a real WP-CLI probe

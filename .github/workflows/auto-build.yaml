@@ -313,6 +313,7 @@ jobs:
         run: sudo modprobe tun 2>/dev/null || { sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200 && sudo chmod 600 /dev/net/tun; }; test -c /dev/net/tun
 
       - name: Build loadable e2e image
+        id: build-e2e-image
         uses: ./.github/actions/build-container
         with:
           container: ${{ matrix.build.container }}
@@ -332,22 +333,36 @@ jobs:
           scan_vulnerabilities: 'false'
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Require the e2e image to be loaded
+        if: steps.build-e2e-image.outputs.image_loaded != 'true'
+        shell: bash
+        run: |
+          echo "::error::E2E requires the image built in this job to be loaded locally (image_loaded=${{ steps.build-e2e-image.outputs.image_loaded }})"
+          exit 1
+
+      - name: Resolve loaded e2e image ID
+        shell: bash
+        run: |
+          image_id=$(timeout -k 2 10 docker image inspect --format '{{.Id}}' "ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}:${{ matrix.build.tag }}")
+          test -n "$image_id"
+          echo "E2E_IMAGE_ID=$image_id" >> "$GITHUB_ENV"
+
       - name: Run e2e
         shell: bash
         env:
-          OWNER: ${{ github.repository_owner }}
           CONTAINER: ${{ matrix.build.container }}
-          TAG: ${{ matrix.build.tag }}
+          E2E_BUILD_TAG: ${{ matrix.build.tag }}
+          E2E_BUILD_VERSION: ${{ matrix.build.version }}
+          E2E_BUILD_VARIANT: ${{ matrix.build.variant }}
+          E2E_BUILD_FLAVOR: ${{ matrix.build.flavor }}
         run: |
-          E2E_IMAGE="ghcr.io/${OWNER}/${CONTAINER}:${TAG}" \
+          E2E_IMAGE="$E2E_IMAGE_ID" \
             tests/e2e-test.sh "${CONTAINER}"
 
       - name: openvpn restart lifecycle
         if: matrix.build.container == 'openvpn'
         shell: bash
-        env:
-          OPENVPN_IMAGE: ghcr.io/${{ github.repository_owner }}/openvpn:${{ matrix.build.tag }}
-        run: openvpn/tests/restart-lifecycle.sh
+        run: openvpn/tests/restart-lifecycle.sh "$E2E_IMAGE_ID"
 
   e2e-gate:
     name: e2e-gate
