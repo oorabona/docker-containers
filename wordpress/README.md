@@ -88,7 +88,7 @@ With `WP_AUTO_INSTALL=true`, the site is fully operational on first boot — no 
 
 - **Auto-install** — WordPress installs itself on first boot via wp-cli (idempotent)
 - **Security hardened** — `DISALLOW_FILE_MODS`, non-root user, no file editor
-- **Built on PHP image** — Inherits all PHP extensions (gd, mysqli, opcache, zip) from [ghcr.io/oorabona/php](../php/)
+- **Built on PHP image** — Inherits its PHP extensions (gd, mysqli, sodium, zip, apcu, OPcache) from [ghcr.io/oorabona/php](../php/)
 - **WP-CLI included** — Full command-line WordPress management
 - **Docker secrets** — All sensitive env vars support `_FILE` suffix
 - **Alpine-based** — Small image, fast startup
@@ -262,20 +262,28 @@ docker exec wordpress wp plugin status
 
 ## Performance
 
-### WordPress-Optimized OPcache
+OPcache and the PHP resource limits come from the base image's `conf.d/php.ini`; this image adds no tuning of its own. Read the values a given tag actually runs with rather than a copy of them:
 
-```ini
-opcache.memory_consumption=128
-opcache.interned_strings_buffer=8
-opcache.max_accelerated_files=4000
-opcache.revalidate_freq=2
-opcache.fast_shutdown=1
-opcache.enable_cli=1
+```bash
+docker run --rm --entrypoint php ghcr.io/oorabona/wordpress:latest -r \
+  'foreach (["memory_limit","upload_max_filesize","post_max_size",
+             "opcache.memory_consumption","opcache.max_accelerated_files",
+             "opcache.validate_timestamps"] as $k) printf("%s=%s\n", $k, ini_get($k));'
 ```
 
-### PHP Resource Limits
+`opcache.validate_timestamps=0` is the one worth knowing about: PHP never re-checks a file's mtime, so changed code is picked up on container restart, not on save. That is the intended behaviour for an immutable image.
 
-Inherited from base PHP image: memory 512M, upload 64M, execution 300s. Override via custom PHP config mount.
+To override a setting, mount a `.ini` into `/usr/local/etc/php/conf.d/` read-only:
+
+```yaml
+volumes:
+  - ./php-overrides.ini:/usr/local/etc/php/conf.d/zz-overrides.ini:ro
+```
+
+Two things that bite:
+
+- **PHP reads that directory in alphabetical order and the base's file is named `php.ini`, so an override has to sort after it.** `zz-overrides.ini` applies. So does `wordpress.ini`, since `p` precedes `w`. What does not is anything sorting earlier — `00-overrides.ini`, `cli-tuning.ini`, `opcache-tuning.ini` — which is read and then overwritten by the base, silently. Two files in this image were written that way and neither ever took effect.
+- **`:ro` is not optional.** A bind mount is writable by default, and this one is PHP configuration the interpreter obeys — a WordPress process that can rewrite it can change how PHP runs, permanently, across restarts.
 
 ## Architecture
 
@@ -303,7 +311,7 @@ Inherited from base PHP image: memory 512M, upload 64M, execution 300s. Override
 ```
 Alpine Linux
   └── PHP-FPM (from oorabona/php)
-      ├── gd, mysqli, opcache, zip, apcu
+      ├── gd, mysqli, sodium, zip, apcu, OPcache
       └── WordPress
           ├── WordPress core (downloaded at build time)
           ├── WP-CLI
