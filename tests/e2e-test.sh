@@ -13,6 +13,8 @@
 # Set E2E_IMAGE=<image-ref> to test a preloaded image directly.
 # Set E2E_READY_TIMEOUT=<seconds> (1-99999, default 60) to give a container with a
 # slow healthcheck longer to report itself ready.
+# Set E2E_TEST_TIMEOUT=<seconds> (1-99999, default 600) to bound each
+# container-specific test suite.
 
 set -euo pipefail
 
@@ -50,6 +52,7 @@ while [[ $# -gt 0 ]]; do
             echo "Environment:"
             echo "  E2E_IMAGE            Test this image ref directly, skipping discovery"
             echo "  E2E_READY_TIMEOUT    Seconds a container gets to report ready (1-99999, default 60)"
+            echo "  E2E_TEST_TIMEOUT     Seconds each container-specific suite may run (1-99999, default 600)"
             echo ""
             echo "Examples:"
             echo "  $0                    # Test all containers"
@@ -77,6 +80,12 @@ fi
 READY_TIMEOUT="${E2E_READY_TIMEOUT:-60}"
 if ! [[ "$READY_TIMEOUT" =~ ^[1-9][0-9]{0,4}$ ]]; then
     log_error "E2E_READY_TIMEOUT must be a whole number of seconds between 1 and 99999 (got: $READY_TIMEOUT)"
+    exit 1
+fi
+
+TEST_TIMEOUT="${E2E_TEST_TIMEOUT:-600}"
+if ! [[ "$TEST_TIMEOUT" =~ ^[1-9][0-9]{0,4}$ ]]; then
+    log_error "E2E_TEST_TIMEOUT must be a whole number of seconds between 1 and 99999 (got: $TEST_TIMEOUT)"
     exit 1
 fi
 
@@ -232,11 +241,27 @@ cleanup_container() {
     [ -n "$cleanup_name" ] || return 0
 
     cleanup_output=$(timeout -k 2 5 docker rm -f "$cleanup_name" 2>&1) || cleanup_status=$?
-    # `docker rm -f` reports an already-absent name as an error. That is the
-    # desired end state for an idempotent cleanup, unlike a timeout, a daemon
-    # failure, or a permission failure that can still leave it running.
-    if [ "$cleanup_status" -ne 0 ] && [[ "$cleanup_output" != *"No such container"* ]]; then
+    # An already-absent name is the end state an idempotent cleanup wants, unlike a
+    # timeout, a daemon failure, or a permission failure that can leave the
+    # container running. Runtimes disagree on how they say it: Docker exits
+    # non-zero with "No such container", while Podman on this machine exits 0 and
+    # prints nothing, so it never reaches this test at all. Matched
+    # case-insensitively because the casing is one vendor's choice and not a
+    # contract — the same reason the readiness classifier lowercases its input.
+    #
+    # A removal that hit its own bound is never accepted on the strength of that
+    # phrase: 124 and 137 mean the removal did not finish, whatever it had printed
+    # before, so they stay reported rather than being read as an absent container.
+    if [ "$cleanup_status" -ne 0 ] \
+        && { [ "$cleanup_status" -eq 124 ] || [ "$cleanup_status" -eq 137 ] \
+            || [[ "${cleanup_output,,}" != *"no such container"* ]]; }; then
         log_warning "$cleanup_name could not be removed and may still be running: $cleanup_output"
+        # No retry, deliberately, and the container is then leaked: a loop around a
+        # `docker rm -f` that already failed under its own bound is more machinery
+        # than the leak is worth on runners that are thrown away anyway. Nor does
+        # keeping the name buy anything — the traps are cleared just above, so
+        # nothing would run to use it, and the next container overwrites it. The
+        # warning naming the survivor is the whole of the report, on purpose.
         return 1
     fi
 }
@@ -308,6 +333,14 @@ test_container() {
         return 1
     fi
 
+    CLEANUP_CONTAINER_NAME="$container_name"
+    trap cleanup_container EXIT
+    # Cleanup failure is already reported by cleanup_container itself. The status
+    # here belongs to the caller's signal, so make cleanup non-fatal and preserve
+    # the promised signal exit rather than replacing it with that failure.
+    trap 'cleanup_container || true; exit 130' INT
+    trap 'cleanup_container || true; exit 143' TERM
+
     # Start container with appropriate options
     log_info "Starting $container..."
     local run_opts="--rm -d --name $container_name"
@@ -354,15 +387,18 @@ test_container() {
             ;;
     esac
 
-    if ! docker run $run_opts "$image" $run_cmd; then
+    # A signal cannot run this shell's trap while a foreground command is active,
+    # so this bound is what stops docker run deferring cleanup indefinitely over a
+    # container it may already have created. It is creation, not readiness:
+    # measured at ~0.7s for these images, so the budget is wide enough that only a
+    # genuine hang or an image this harness expected to be local and is silently
+    # pulling can reach it — and turning a pull into "Failed to start" would be a
+    # worse failure than the wait.
+    if ! timeout -k 5 120 docker run $run_opts "$image" $run_cmd; then
         log_error "Failed to start $container"
+        cleanup_container
         return 1
     fi
-
-    CLEANUP_CONTAINER_NAME="$container_name"
-    trap cleanup_container EXIT
-    trap 'cleanup_container; exit 130' INT
-    trap 'cleanup_container; exit 143' TERM
 
     # Wait for container to be ready (healthcheck or basic startup)
     log_info "Waiting for $container to be ready..."
@@ -372,7 +408,16 @@ test_container() {
     # Declared here, not on the assignment below: `local x=$(cmd)` returns the
     # builtin's status, which would swallow the one the loop condition reads.
     local remaining health readiness_stderr
-    READINESS_STDERR_FILE=$(mktemp)
+    # Status only — mktemp's stderr is deliberately NOT folded into the value. A
+    # capture that merges stderr into a variable is poisoned by anything the tool
+    # writes there on success, which is how a CLI that greets on stderr corrupts
+    # the one thing it was asked for. mktemp's own diagnostic still reaches the
+    # harness's stderr and so the run log; it just never reaches this path.
+    if ! READINESS_STDERR_FILE=$(mktemp); then
+        log_error "Harness could not allocate its readiness stderr temp file"
+        cleanup_container
+        return 1
+    fi
     # Whether an image with no healthcheck has already served its grace. It is
     # readiness only once the loop has come back around and seen the container
     # still listed: a container that dies during the grace is not ready, it is a
@@ -501,8 +546,30 @@ test_container() {
     fi
 
     log_info "Running custom tests for $container..."
-    if ! CONTAINER_NAME="$container_name" "$test_script"; then
-        log_error "Custom tests failed for $container"
+    # The suite is invoked directly, so `timeout` monitors the suite itself and its
+    # `-k` escalation lands on the process that is actually hanging.
+    #
+    # Which means 124 and 137 are ambiguous, and the message below does not pretend
+    # otherwise. `timeout` returns its command's own status when the deadline did
+    # not fire, and web-shell/test.sh runs `timeout` and can propagate exactly
+    # those. Two ways to resolve that ambiguity were built and both were worse than
+    # the ambiguity: comparing elapsed whole seconds is an inference that misreads a
+    # suite exiting across a tick, and having the suite record its own status through
+    # a wrapper put `bash -c` between `timeout` and the suite — so the bound killed
+    # the wrapper, `-k` never reached the suite, and a TERM-ignoring suite outlived
+    # the thing meant to bound it. The report states the status and what could have
+    # produced it, which is what is actually known.
+    local test_status=0
+    CONTAINER_NAME="$container_name" timeout -k 5 "$TEST_TIMEOUT" "$test_script" || test_status=$?
+    if [ "$test_status" -ne 0 ]; then
+        case "$test_status" in
+            124|137)
+                log_error "Custom tests failed for $container (exit $test_status — the ${TEST_TIMEOUT}s bound reports 124, or 137 after its kill grace, and a suite can also return either itself)"
+                ;;
+            *)
+                log_error "Custom tests failed for $container (exit $test_status)"
+                ;;
+        esac
         cleanup_container
         return 1
     fi
