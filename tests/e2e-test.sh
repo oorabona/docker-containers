@@ -562,7 +562,11 @@ test_container() {
     local ready=false
     # Declared here, not on the assignment below: `local x=$(cmd)` returns the
     # builtin's status, which would swallow the one the loop condition reads.
-    local remaining health readiness_stderr
+    local remaining health readiness_stderr readiness_stderr_for_log
+    # A timeout after probes failed is different from a container that simply
+    # stayed unready. Preserve the most recent failed probe so the report says
+    # what the wait observed without changing which failures are retryable.
+    local last_readiness_probe="" last_readiness_status="" last_readiness_stderr=""
     # Status only — mktemp's stderr is deliberately NOT folded into the value. A
     # capture that merges stderr into a variable is poisoned by anything the tool
     # writes there on success, which is how a CLI that greets on stderr corrupts
@@ -593,8 +597,12 @@ test_container() {
             2>"$READINESS_STDERR_FILE") || ps_status=$?
         if [ "$ps_status" -ne 0 ]; then
             readiness_stderr=$(cat "$READINESS_STDERR_FILE" 2>/dev/null)
+            readiness_stderr_for_log=$(_escape_gha_command "$readiness_stderr")
+            last_readiness_probe="ps"
+            last_readiness_status="$ps_status"
+            last_readiness_stderr="$readiness_stderr_for_log"
             if docker_readiness_failure_is_terminal "$ps_status" "$readiness_stderr"; then
-                log_error "docker ps failed (exit $ps_status): $readiness_stderr"
+                log_error "readiness ps probe attempt returned status $ps_status: $readiness_stderr_for_log"
                 cleanup_container
                 return 1
             fi
@@ -631,8 +639,12 @@ test_container() {
             "$container_name" 2>"$READINESS_STDERR_FILE") || inspect_status=$?
         if [ "$inspect_status" -ne 0 ]; then
             readiness_stderr=$(cat "$READINESS_STDERR_FILE" 2>/dev/null)
+            readiness_stderr_for_log=$(_escape_gha_command "$readiness_stderr")
+            last_readiness_probe="inspect"
+            last_readiness_status="$inspect_status"
+            last_readiness_stderr="$readiness_stderr_for_log"
             if docker_readiness_failure_is_terminal "$inspect_status" "$readiness_stderr"; then
-                log_error "docker inspect failed (exit $inspect_status): $readiness_stderr"
+                log_error "readiness inspect probe attempt returned status $inspect_status: $readiness_stderr_for_log"
                 cleanup_container
                 return 1
             fi
@@ -676,7 +688,11 @@ test_container() {
     echo ""
 
     if [ "$ready" != true ]; then
-        log_error "$container did not become ready in time"
+        if [ -n "$last_readiness_probe" ]; then
+            log_error "$container readiness timed out; last probe failure: $last_readiness_probe probe attempt returned status $last_readiness_status: $last_readiness_stderr"
+        else
+            log_error "$container did not become ready in time"
+        fi
         timeout -k 2 5 docker logs "$container_name" 2>&1 | tail -20
         cleanup_container
         return 1

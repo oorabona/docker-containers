@@ -650,7 +650,10 @@ STUB
     local elapsed=$((SECONDS - before))
 
     assert_harness_failed_on_its_own
-    [[ "$output" == *"did not become ready in time"* ]]
+    # The final probe may be admitted with a one-second bound and either finish
+    # or be killed by that bound.  Both reports are correct; this test is about
+    # the elapsed readiness deadline, not which side of that scheduling edge won.
+    [[ "$output" == *"readiness timed out"* || "$output" == *"did not become ready in time"* ]]
     # Both probes ran: without this, an implementation that skipped every docker
     # call and declared a timeout immediately would satisfy the timing bound.
     grep -q '^ps ' "$DOCKER_LOG"
@@ -665,12 +668,35 @@ STUB
     [ "$elapsed" -lt 20 ]
 }
 
+@test "a container whose probes remain starting reports a readiness timeout" {
+    add_openvpn_fixture
+    install_docker_stub
+    # The normal test stub suppresses sleeps. Restore them here so each successful
+    # poll is followed by a real retry delay rather than spinning until a probe is
+    # admitted with only one second left and gets killed by its own bound.
+    printf '#!/bin/bash\nexec /bin/sleep "$@"\n' > "$TEST_TEMP_DIR/bin/sleep"
+    chmod +x "$TEST_TEMP_DIR/bin/sleep"
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
+    export E2E_READY_TIMEOUT=3
+    export DOCKER_INSPECT_OUTPUT=starting
+
+    run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+
+    assert_harness_failed_on_its_own
+    # Successful probes can still be starved after admission at the final
+    # one-second boundary.  If that happens it is a real probe failure and the
+    # report must name it; otherwise the no-failure wording is correct.
+    [[ "$output" == *"did not become ready in time"* || "$output" == *"readiness timed out; last probe failure:"* ]]
+    [ ! -e "$TEST_SCRIPT_MARKER" ]
+}
+
 @test "an inspect failure never treats the container as ready" {
     add_openvpn_fixture
     install_docker_stub
-    # A second of real time per inspect: with the suite's no-op sleep stub the
-    # wait would otherwise spin hot for its whole budget, spawning processes for
-    # nothing.
+    # Restore retry sleeps below: with the suite's no-op sleep stub the wait would
+    # otherwise spin hot for its whole budget, spawning processes for nothing.
     cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
@@ -681,11 +707,16 @@ fi
 case "$1" in
     images)  printf '%s\n' "${DOCKER_IMAGES_OUTPUT:-}" ;;
     ps)      printf '%s\n' "${DOCKER_PS_OUTPUT:-e2e-openvpn}" ;;
-    inspect) /bin/sleep 1; exit 1 ;;
+    inspect)
+        printf '%s\n' "inspect transport failed" "inspect retry diagnostic" >&2
+        exit 42
+        ;;
     *)       exit 0 ;;
 esac
 STUB
     chmod +x "$TEST_TEMP_DIR/bin/docker"
+    printf '#!/bin/bash\nexec /bin/sleep "$@"\n' > "$TEST_TEMP_DIR/bin/sleep"
+    chmod +x "$TEST_TEMP_DIR/bin/sleep"
     export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
     export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
@@ -702,7 +733,7 @@ STUB
     run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
 
     assert_harness_failed_on_its_own
-    [[ "$output" == *"did not become ready in time"* ]]
+    [[ "$output" == *"readiness timed out; last probe failure: inspect probe attempt returned status 42: inspect transport failed%0Ainspect retry diagnostic"* ]]
     [ ! -e "$TEST_SCRIPT_MARKER" ]
     # The branch under test is the one that reads a failed inspect, so prove the
     # inspect was actually attempted rather than skipped past.
@@ -790,7 +821,7 @@ STUB
     [[ "$output" == *"exited unexpectedly"* ]]
 }
 
-@test "a docker ps that cannot answer is a timeout, not a container exit" {
+@test "an unrecognised docker ps failure is reported at the timeout, not as a container exit" {
     # The two are different claims: one says the runtime did not answer, the other
     # says it answered and the container was gone. Reporting the first as the
     # second blames the image for the daemon.
@@ -800,10 +831,8 @@ STUB
     export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
     export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
     export E2E_READY_TIMEOUT=2
-    # A real delay in the failing probe: the suite's sleep stub is a no-op, so a
-    # stub that fails instantly would have the wait forking processes flat out for
-    # its whole budget — CPU that shows up as flake in the timing test running
-    # alongside it.
+    # Restore retry sleeps below: without them a failing probe would make the wait
+    # fork processes flat out for its whole budget, adding flaky CPU pressure.
     cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
@@ -813,18 +842,64 @@ if [[ "$1" == "image" && "${2:-}" == "inspect" ]]; then
 fi
 case "$1" in
     images) printf '%s\n' "${DOCKER_IMAGES_OUTPUT:-}" ;;
-    ps)     /bin/sleep 1; exit 1 ;;
+    ps)
+        printf '%s\n' "ps transport failed" "ps retry diagnostic" >&2
+        exit 42
+        ;;
     *)      exit 0 ;;
 esac
 STUB
     chmod +x "$TEST_TEMP_DIR/bin/docker"
+    printf '#!/bin/bash\nexec /bin/sleep "$@"\n' > "$TEST_TEMP_DIR/bin/sleep"
+    chmod +x "$TEST_TEMP_DIR/bin/sleep"
 
     run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
 
     assert_harness_failed_on_its_own
-    [[ "$output" == *"did not become ready in time"* ]]
+    [[ "$output" == *"readiness timed out; last probe failure: ps probe attempt returned status 42: ps transport failed%0Aps retry diagnostic"* ]]
     [[ "$output" != *"exited unexpectedly"* ]]
     [ ! -e "$TEST_SCRIPT_MARKER" ]
+}
+
+@test "a retained readiness diagnostic cannot forge a workflow command" {
+    # The report is a log sink.  In particular, the second physical stderr line
+    # must stay part of the value rather than becoming a GitHub Actions command.
+    # An oversized tail confirms the report is no longer truncated while the
+    # second physical stderr line remains a value rather than an annotation.
+    add_openvpn_fixture
+    install_docker_stub
+    cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+if [[ "$1" == "image" && "${2:-}" == "inspect" ]]; then
+    printf '%s\n' "sha256:e2e-loaded-image"
+    exit 0
+fi
+case "$1" in
+    images) printf '%s\n' "${DOCKER_IMAGES_OUTPUT:-}" ;;
+    ps)
+        printf '%s\n' "ps transport failed" "::error::forged annotation" >&2
+        head -c 2048 /dev/zero | tr '\0' x >&2
+        exit 42
+        ;;
+    *) exit 0 ;;
+esac
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    printf '#!/bin/bash\nexec /bin/sleep "$@"\n' > "$TEST_TEMP_DIR/bin/sleep"
+    chmod +x "$TEST_TEMP_DIR/bin/sleep"
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export E2E_IMAGE="ghcr.io/example/openvpn:v2.7.5-alpine"
+    export E2E_READY_TIMEOUT=2
+
+    run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+
+    assert_harness_failed_on_its_own
+    [[ "$output" == *"readiness timed out; last probe failure: ps probe attempt returned status"* ]]
+    [[ "$output" == *"%0A::error::forged annotation"* ]]
+    [[ "$output" != *$'\n::error::forged annotation'* ]]
+    [[ "$output" != *"[stderr truncated after 1024 bytes]"* ]]
+    [[ "$output" == *"$(head -c 2048 /dev/zero | tr '\0' x)"* ]]
 }
 
 @test "a failed readiness stderr allocation reports the harness failure" {
@@ -903,7 +978,7 @@ STUB
     local elapsed=$((SECONDS - before))
 
     assert_harness_failed_on_its_own
-    [[ "$output" == *"docker ps failed (exit 127): docker: command not found"* ]]
+    [[ "$output" == *"readiness ps probe attempt returned status 127: docker: command not found"* ]]
     [[ "$output" != *"did not become ready in time"* ]]
     [ "$elapsed" -lt 10 ]
 }
@@ -924,7 +999,7 @@ STUB
     local elapsed=$((SECONDS - before))
 
     assert_harness_failed_on_its_own
-    [[ "$output" == *"docker inspect failed (exit 1): permission denied while trying to connect to the Docker daemon socket"* ]]
+    [[ "$output" == *"readiness inspect probe attempt returned status 1: permission denied while trying to connect to the Docker daemon socket"* ]]
     [[ "$output" != *"did not become ready in time"* ]]
     [ "$elapsed" -lt 10 ]
     [ ! -e "$TEST_SCRIPT_MARKER" ]
