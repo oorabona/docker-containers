@@ -13,6 +13,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../test-harness/test-harness.sh
 source "${SCRIPT_DIR}/../test-harness/test-harness.sh"
+# shellcheck source=../test-harness/image-identity.sh
+source "${SCRIPT_DIR}/../test-harness/image-identity.sh"
 
 CONTAINER_NAME="${CONTAINER_NAME:-e2e-terraform}"
 
@@ -65,35 +67,15 @@ fi
 
 th_group "Flavor-specific cloud tooling"
 
-# TERRAFORM_FLAVOR is set from the selected build variant in the Dockerfile. It
-# is available even when the e2e runner resolved a local image rather than the
-# caller supplying E2E_IMAGE, so every variant is checked against its own promise.
-# The tag is the independent statement of what this image was meant to be; the
-# environment variable is the image's own account of itself. An -aws build that
-# was accidentally built as base declares base, excludes every cloud CLI and
-# passes on its own say-so — so where the tag names a flavor, the two must agree
-# before anything else is asserted.
-expected_flavor=""
-if [ -n "${E2E_IMAGE:-}" ]; then
-    case "${E2E_IMAGE##*:}" in
-        *-aws)   expected_flavor=aws ;;
-        *-azure) expected_flavor=azure ;;
-        *-gcp)   expected_flavor=gcp ;;
-        *-base)  expected_flavor=base ;;
-    esac
-fi
+# TERRAFORM_FLAVOR is the image's account of its flavor.  The harness supplies
+# the independently resolved declared cell, so a locally discovered image gets
+# the same assertion as an E2E_IMAGE run.
 
 if th_capture "Terraform image declares its flavor" \
         docker exec "$CONTAINER_NAME" sh -c 'printf %s "$TERRAFORM_FLAVOR"'; then
     flavor="$TH_OUTPUT"
 
-    if [ -n "$expected_flavor" ]; then
-        th_assert_eq "the image is the flavor its tag claims ($expected_flavor)" \
-            "$flavor" "$expected_flavor"
-    else
-        th_skip "the image is the flavor its tag claims" \
-            "tag '${E2E_IMAGE:+${E2E_IMAGE##*:}}' names no flavor"
-    fi
+    e2e_assert_declared_flavor "$flavor"
     flavor_tools=()
 
     case "$flavor" in

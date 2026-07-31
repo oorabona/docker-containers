@@ -11,10 +11,210 @@
 #
 # For containers with variants, version is required (e.g., postgres:16)
 # Set E2E_IMAGE=<image-ref> to test a preloaded image directly.
+# Set E2E_BUILD_TAG, E2E_BUILD_VERSION, E2E_BUILD_VARIANT, and
+# E2E_BUILD_FLAVOR when the caller already knows the exact build cell.
 # Set E2E_READY_TIMEOUT=<seconds> (1-99999, default 60) to give a container with a
 # slow healthcheck longer to report itself ready.
 # Set E2E_TEST_TIMEOUT=<seconds> (1-99999, default 600) to bound each
 # container-specific test suite.
+
+# Resolve the real version exactly as the workflow does for a `tag: latest`
+# declaration: ask version.sh and use latest as its failure/unknown fallback.
+# There is no live lookup when the declaration has no latest tag, which keeps
+# resolution of pinned retained cells independent of the current upstream.
+resolve_declared_real_version() {
+    local container_dir="$1"
+    local real_version
+
+    if ! yq -e '.versions[]? | select(.tag == "latest")' "$container_dir/variants.yaml" >/dev/null 2>&1; then
+        printf '\n'
+        return 0
+    fi
+
+    if ! real_version=$(cd "$container_dir" && ./version.sh 2>/dev/null); then
+        real_version="latest"
+    fi
+    if [[ -z "$real_version" || "$real_version" == "unknown" ]]; then
+        real_version="latest"
+    fi
+    printf '%s\n' "$real_version"
+}
+
+# Resolve a local image only after inspecting every tag attached to its one
+# image ID. The default output is the image reference for callers of the
+# original helper; --json also carries the selected declared cell and local
+# image ID to the identity resolver, so the normal harness path does not
+# enumerate or re-resolve it twice.
+# This is defined before source-only mode so unit tests can source this routing
+# helper without entering the CLI setup below.
+resolve_e2e_image() {
+    local container="$1"
+    local image_tag="${2:-}"
+    local output_format="${3:-image}"
+    local repo_root="${REPO_ROOT:-}"
+    local github_repository_owner="${GITHUB_REPOSITORY_OWNER:-oorabona}"
+
+    case "$output_format" in
+        image|--json) ;;
+        *)
+            printf 'Unknown resolve_e2e_image output format: %s\n' "$output_format" >&2
+            return 2
+            ;;
+    esac
+
+    if [[ -z "$repo_root" ]]; then
+        repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    fi
+
+    if ! declare -F image_identity_resolve >/dev/null; then
+        # shellcheck source=../test-harness/image-identity.sh
+        source "$repo_root/test-harness/image-identity.sh"
+    fi
+    if ! declare -F log_error >/dev/null; then
+        # shellcheck source=../helpers/logging.sh
+        source "$repo_root/helpers/logging.sh"
+    fi
+
+    if [ -n "${E2E_IMAGE:-}" ]; then
+        if [[ "$output_format" == "--json" ]]; then
+            jq -cn --arg image "$E2E_IMAGE" '{image: $image, image_id: null, cell: null}'
+        else
+            printf '%s\n' "$E2E_IMAGE"
+        fi
+        return 0
+    fi
+
+    if [ -n "$image_tag" ]; then
+        local tagged_image
+        tagged_image="docker.io/${github_repository_owner}/${container}:${image_tag}"
+        if [[ "$output_format" == "--json" ]]; then
+            jq -cn --arg image "$tagged_image" '{image: $image, image_id: null, cell: null}'
+        else
+            printf '%s\n' "$tagged_image"
+        fi
+        return 0
+    fi
+
+    local images=""
+    images=$(timeout -k 2 10 docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' 2>/dev/null) || true
+
+    local ids
+    ids=$(printf '%s\n' "$images" | awk -v owner="$github_repository_owner" -v container="$container" '
+        function starts_with(value, prefix) {
+            return substr(value, 1, length(prefix)) == prefix
+        }
+        starts_with($2, "ghcr.io/" owner "/" container ":") ||
+        starts_with($2, "docker.io/" owner "/" container ":") ||
+        starts_with($2, container ":") {
+            print $1
+        }
+    ' | sort -u)
+
+    local count
+    if [ -z "$ids" ]; then
+        count=0
+    else
+        count=$(printf '%s\n' "$ids" | grep -c .)
+    fi
+
+    if [ "$count" -eq 0 ]; then
+        log_error "No image found for $container; build it first, pass container:tag, or set E2E_IMAGE"
+        return 1
+    fi
+
+    if [ "$count" -gt 1 ]; then
+        log_error "Ambiguous local images for $container ($count distinct image IDs); set E2E_IMAGE"
+        printf '%s\n' "$images" | awk -v owner="$github_repository_owner" -v container="$container" '
+            function starts_with(value, prefix) {
+                return substr(value, 1, length(prefix)) == prefix
+            }
+            starts_with($2, "ghcr.io/" owner "/" container ":") ||
+            starts_with($2, "docker.io/" owner "/" container ":") ||
+            starts_with($2, container ":") {
+                print "  " $1 " " $2
+            }
+        ' >&2
+        return 1
+    fi
+
+    # :latest commonly shares an image ID with one declared tag. Listing order
+    # is not an identity contract: enumerate all retained declared cells once,
+    # collect every matching tag on the image ID, and refuse if it names more
+    # than one distinct cell.
+    local harness_dir matrix real_version image image_id candidate candidate_tag candidate_cell selected_cell declared_cells declared_candidates declared_count
+    harness_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    if ! real_version=$(resolve_declared_real_version "$repo_root/$container"); then
+        log_error "Could not resolve the current version for $container"
+        return 1
+    fi
+    if ! matrix=$(source "$harness_dir/helpers/variant-utils.sh" && list_build_matrix "$repo_root/$container" "$real_version" true 2>/dev/null); then
+        log_error "Could not enumerate declared image tags for $container"
+        return 1
+    fi
+    image=""
+    image_id="$ids"
+    selected_cell=""
+    declared_cells=""
+    declared_candidates=""
+    declared_count=0
+    while IFS= read -r candidate; do
+        [ -n "$candidate" ] || continue
+        candidate_tag="${candidate##*:}"
+        # A cell is the matrix record, rather than just its tag: duplicate tags
+        # are not a valid resolution and therefore do not count as a match.
+        if candidate_cell=$(jq -cer --arg tag "$candidate_tag" '
+            [.[] | select(.tag == $tag)] |
+            if length == 1 then .[0] else error("not one declared cell") end
+        ' <<<"$matrix" 2>/dev/null); then
+            if [[ $'\n'"$declared_cells"$'\n' != *$'\n'"$candidate_cell"$'\n'* ]]; then
+                if [[ -n "$declared_cells" ]]; then
+                    declared_candidates+=$'\n'
+                fi
+                declared_cells+="${declared_cells:+$'\n'}$candidate_cell"
+                declared_candidates+="$candidate"
+                declared_count=$((declared_count + 1))
+                image="$candidate"
+                # Keep the selected cell separate from the probe result: a
+                # later undeclared alias must not erase this successful match.
+                selected_cell="$candidate_cell"
+            fi
+        fi
+    done < <(printf '%s\n' "$images" | awk -v id="$ids" -v owner="$github_repository_owner" -v container="$container" '
+        function starts_with(value, prefix) {
+            return substr(value, 1, length(prefix)) == prefix
+        }
+        $1 == id && (starts_with($2, "ghcr.io/" owner "/" container ":") || starts_with($2, "docker.io/" owner "/" container ":") || starts_with($2, container ":")) {
+            print $2
+        }
+    ')
+
+    if [ "$declared_count" -eq 0 ]; then
+        log_error "No declared image tag found for local image $ids; set E2E_IMAGE"
+        return 1
+    fi
+
+    if [ "$declared_count" -gt 1 ]; then
+        log_error "Ambiguous declared image tags for $container on local image $ids ($declared_count distinct declared cells); set E2E_IMAGE"
+        while IFS= read -r candidate; do
+            printf '  %s\n' "$candidate"
+        done <<<"$declared_candidates" >&2
+        return 1
+    fi
+
+    if [[ "$output_format" == "--json" ]]; then
+        jq -cn --arg image "$image" --arg image_id "$image_id" --argjson cell "$selected_cell" \
+            '{image: $image, image_id: $image_id, cell: $cell}'
+    else
+        printf '%s\n' "$image"
+    fi
+}
+
+# This must stay before shell options, argument parsing, ./make, command
+# validation, and the banner: sourcing for the helper above must not mutate the
+# caller's shell state or run startup work.
+if [[ "${E2E_TEST_SOURCE_ONLY:-}" == "1" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 set -euo pipefail
 
@@ -28,6 +228,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$REPO_ROOT/helpers/logging.sh"
 source "$REPO_ROOT/helpers/variant-utils.sh"
+# shellcheck source=../test-harness/image-identity.sh
+source "$REPO_ROOT/test-harness/image-identity.sh"
 
 BUILD=true
 CONTAINERS=""
@@ -51,6 +253,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Environment:"
             echo "  E2E_IMAGE            Test this image ref directly, skipping discovery"
+            echo "  E2E_BUILD_*          Authoritative build cell for E2E_IMAGE (workflow use)"
             echo "  E2E_READY_TIMEOUT    Seconds a container gets to report ready (1-99999, default 60)"
             echo "  E2E_TEST_TIMEOUT     Seconds each container-specific suite may run (1-99999, default 600)"
             echo ""
@@ -104,80 +307,6 @@ echo ""
 echo "🧪 E2E Container Tests"
 echo "======================"
 echo ""
-
-resolve_e2e_image() {
-    local container="$1"
-    local image_tag="${2:-}"
-
-    if [ -n "${E2E_IMAGE:-}" ]; then
-        printf '%s\n' "$E2E_IMAGE"
-        return 0
-    fi
-
-    if [ -n "$image_tag" ]; then
-        printf 'docker.io/%s/%s:%s\n' "$GITHUB_REPOSITORY_OWNER" "$container" "$image_tag"
-        return 0
-    fi
-
-    local images=""
-    images=$(docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' 2>/dev/null) || true
-
-    local ids
-    ids=$(printf '%s\n' "$images" | awk -v owner="$GITHUB_REPOSITORY_OWNER" -v container="$container" '
-        function starts_with(value, prefix) {
-            return substr(value, 1, length(prefix)) == prefix
-        }
-        starts_with($2, "ghcr.io/" owner "/" container ":") ||
-        starts_with($2, "docker.io/" owner "/" container ":") ||
-        starts_with($2, container ":") {
-            print $1
-        }
-    ' | sort -u)
-
-    local count
-    if [ -z "$ids" ]; then
-        count=0
-    else
-        count=$(printf '%s\n' "$ids" | grep -c .)
-    fi
-
-    if [ "$count" -eq 0 ]; then
-        log_error "No image found for $container; build it first, pass container:tag, or set E2E_IMAGE"
-        return 1
-    fi
-
-    if [ "$count" -gt 1 ]; then
-        log_error "Ambiguous local images for $container ($count distinct image IDs); set E2E_IMAGE"
-        printf '%s\n' "$images" | awk -v owner="$GITHUB_REPOSITORY_OWNER" -v container="$container" '
-            function starts_with(value, prefix) {
-                return substr(value, 1, length(prefix)) == prefix
-            }
-            starts_with($2, "ghcr.io/" owner "/" container ":") ||
-            starts_with($2, "docker.io/" owner "/" container ":") ||
-            starts_with($2, container ":") {
-                print "  " $1 " " $2
-            }
-        ' >&2
-        return 1
-    fi
-
-    local image
-    image=$(printf '%s\n' "$images" | awk -v id="$ids" -v owner="$GITHUB_REPOSITORY_OWNER" -v container="$container" '
-        function starts_with(value, prefix) {
-            return substr(value, 1, length(prefix)) == prefix
-        }
-        $1 == id && (
-            starts_with($2, "ghcr.io/" owner "/" container ":") ||
-            starts_with($2, "docker.io/" owner "/" container ":") ||
-            starts_with($2, container ":")
-        ) {
-            print $2
-            exit
-        }
-    ')
-
-    printf '%s\n' "$image"
-}
 
 # Seconds left before the deadline, or non-zero once the budget is spent. Every
 # check of "is there time left" goes through here: the loop below asks twice per
@@ -317,15 +446,36 @@ test_container() {
     fi
 
     # Determine image name
-    local image
-    if ! image=$(resolve_e2e_image "$container" "$image_tag"); then
+    local image_resolution image identity selected_cell image_id
+    if ! image_resolution=$(resolve_e2e_image "$container" "$image_tag" --json); then
         return 1
     fi
+    if ! image=$(jq -er '.image | strings | select(length > 0)' <<<"$image_resolution") || \
+        ! selected_cell=$(jq -c '.cell' <<<"$image_resolution") || \
+        ! image_id=$(jq -er '
+            if .image_id == null then ""
+            elif (.image_id | type == "string" and length > 0) then .image_id
+            else error("invalid image ID") end
+        ' <<<"$image_resolution"); then
+        log_error "Could not read the resolved image for $test_name"
+        return 1
+    fi
+    [[ "$selected_cell" == "null" ]] && selected_cell=""
     if [ -z "$image" ]; then
         log_error "No image found for $test_name"
         return 1
     fi
     log_info "Using image: $image"
+    if ! identity=$(image_identity_resolve "$REPO_ROOT/$container" "$image" "$selected_cell"); then
+        log_error "Could not resolve image identity for $image"
+        return 1
+    fi
+    if [[ -z "$image_id" ]]; then
+        if ! image_id=$(timeout -k 2 10 docker image inspect --format '{{.Id}}' "$image") || [[ -z "$image_id" ]]; then
+            log_error "Could not resolve local image ID for $image"
+            return 1
+        fi
+    fi
 
     # Clean up any existing test container before reusing its fixed name.
     CLEANUP_CONTAINER_NAME="$container_name"
@@ -391,10 +541,10 @@ test_container() {
     # so this bound is what stops docker run deferring cleanup indefinitely over a
     # container it may already have created. It is creation, not readiness:
     # measured at ~0.7s for these images, so the budget is wide enough that only a
-    # genuine hang or an image this harness expected to be local and is silently
-    # pulling can reach it — and turning a pull into "Failed to start" would be a
-    # worse failure than the wait.
-    if ! timeout -k 5 120 docker run $run_opts "$image" $run_cmd; then
+    # genuine hang can reach it. Run the immutable local image ID, not its mutable
+    # tag: the container started is the exact image whose tags established the
+    # identity above, so docker cannot pull or retag-substitute it before run.
+    if ! timeout -k 5 120 docker run $run_opts "$image_id" $run_cmd; then
         log_error "Failed to start $container"
         cleanup_container
         return 1
@@ -560,7 +710,11 @@ test_container() {
     # the thing meant to bound it. The report states the status and what could have
     # produced it, which is what is actually known.
     local test_status=0
-    CONTAINER_NAME="$container_name" timeout -k 5 "$TEST_TIMEOUT" "$test_script" || test_status=$?
+    # Suites receive one already-resolved record and assertion helpers, rather
+    # than the reference itself or separately-derived version/flavor variables.
+    # Unset E2E_IMAGE so a suite cannot accidentally revive tag parsing.
+    env -u E2E_IMAGE CONTAINER_NAME="$container_name" E2E_IMAGE_IDENTITY="$identity" \
+        timeout -k 5 "$TEST_TIMEOUT" "$test_script" || test_status=$?
     if [ "$test_status" -ne 0 ]; then
         case "$test_status" in
             124|137)
