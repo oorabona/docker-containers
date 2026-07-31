@@ -44,36 +44,59 @@ execute_with_retry() {
     local retry_count=0
     local result=""
     local exit_code=0
-    
+    local stderr_file script_error=""
+
+    # version.sh's own stderr is the only thing that says WHY it failed. Without
+    # it a network outage, a rate limit, a parse failure and an outright broken
+    # script all reach the caller as the same empty value, and the operator is
+    # left re-running and hoping. It goes to a FILE rather than into the value:
+    # merging stderr into a capture poisons the version string with anything the
+    # script writes there on a successful run.
+    #
+    # The reports below are safe inside a command substitution because every
+    # logging helper writes to stderr, which passes through untouched — only
+    # stdout is captured, and stdout here is the version.
+    if ! stderr_file=$(mktemp); then
+        log_error "$container ($mode): cannot allocate a temp file for version.sh's error output"
+        echo ""
+        return 1
+    fi
+
     while [ $retry_count -lt $MAX_RETRIES ]; do
-        if [ "$mode" = "current" ]; then
-            result=$(timeout "$timeout" bash version.sh 2>/dev/null)
-            exit_code=$?
-        else
-            result=$(timeout "$timeout" bash version.sh 2>/dev/null)
-            exit_code=$?
-        fi
-        
+        result=$(timeout "$timeout" bash version.sh 2>"$stderr_file")
+        exit_code=$?
+        script_error=$(cat "$stderr_file" 2>/dev/null)
+
         # Handle special case for no published version
         if [[ "$result" == "no-published-version" ]]; then
+            rm -f "$stderr_file"
             echo "$result"
             return 2  # Special return code for no published version
         fi
-        
+
         # Check if result is valid
         if [[ $exit_code -eq 0 && -n "$result" && "$result" != "null" && "$result" != "unknown" ]]; then
+            rm -f "$stderr_file"
             echo "$result"
             return 0
         fi
-        
+
         retry_count=$((retry_count + 1))
         if [ $retry_count -lt $MAX_RETRIES ]; then
-            log_warning "Retry $retry_count/$MAX_RETRIES for $container ($mode mode) - got: '$result'"
+            log_warning "Retry $retry_count/$MAX_RETRIES for $container ($mode mode) - exit $exit_code, got: '$result'"
+            [ -n "$script_error" ] && log_warning "  version.sh said: $script_error"
             sleep $RETRY_DELAY
         fi
     done
-    
-    # All retries exhausted
+
+    rm -f "$stderr_file"
+    # All retries exhausted. The last attempt's reason is what turns this from a
+    # re-run-and-hope into a diagnosis, so it is reported rather than dropped.
+    if [ -n "$script_error" ]; then
+        log_error "$container ($mode): version.sh failed (exit $exit_code): $script_error"
+    else
+        log_error "$container ($mode): version.sh failed (exit $exit_code) and wrote nothing to stderr"
+    fi
     echo ""
     return 1
 }
