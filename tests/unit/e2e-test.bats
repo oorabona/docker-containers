@@ -448,6 +448,49 @@ SH
     ! grep -q '^run ' "$DOCKER_LOG"
 }
 
+@test "an explicit tag uses its local ghcr image" {
+    add_single_image_identity_fixture debian trixie ''
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export DOCKER_IMAGES_OUTPUT='sha111 ghcr.io/oorabona/debian:trixie'
+
+    run env E2E_TEST_SOURCE_ONLY=1 bash -c 'source "$1"; resolve_e2e_image debian trixie --json' _ \
+        "$FIXTURE_REPO/tests/e2e-test.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.image' <<<"$output")" = "ghcr.io/oorabona/debian:trixie" ]
+    [ "$(jq -r '.image_id' <<<"$output")" = "sha111" ]
+    [ "$(jq -r '.cell.tag' <<<"$output")" = "trixie" ]
+}
+
+@test "an explicit tag on two local prefixes sharing one image ID is unambiguous" {
+    add_single_image_identity_fixture debian trixie ''
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export DOCKER_IMAGES_OUTPUT=$'sha111 ghcr.io/oorabona/debian:trixie\nsha111 docker.io/oorabona/debian:trixie'
+
+    run env E2E_TEST_SOURCE_ONLY=1 bash -c 'source "$1"; resolve_e2e_image debian trixie --json' _ \
+        "$FIXTURE_REPO/tests/e2e-test.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.image' <<<"$output")" = "ghcr.io/oorabona/debian:trixie" ]
+    [ "$(jq -r '.image_id' <<<"$output")" = "sha111" ]
+    [ "$(jq -r '.cell.tag' <<<"$output")" = "trixie" ]
+}
+
+@test "an explicit tag absent locally falls back to Docker Hub with an explanation" {
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export DOCKER_IMAGES_OUTPUT=''
+
+    run env E2E_TEST_SOURCE_ONLY=1 bash -c 'source "$1"; resolve_e2e_image debian trixie' _ \
+        "$FIXTURE_REPO/tests/e2e-test.sh"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Image docker.io/oorabona/debian:trixie was not found locally; using remote reference"* ]]
+    [[ "$output" == *"docker.io/oorabona/debian:trixie"* ]]
+}
+
 @test "fallback image discovery keeps a declared cell when its tag precedes latest" {
     add_single_image_identity_fixture debian trixie ''
     install_docker_stub
