@@ -129,3 +129,62 @@ secret_bearing() {
     echo "$output" | jq -e '.tests[0].status == "fail"' >/dev/null
     [[ "$output" != *"s3cr3t"* ]]
 }
+
+@test "numeric assertions accept plain integers" {
+    run th_assert_ge "four is at least three" "4" "3"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS"* ]]
+
+    run th_assert_gt "four is greater than three" "4" "3"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS"* ]]
+}
+
+@test "numeric assertions preserve negative and zero comparisons" {
+    run th_assert_ge "negative equality" "-2" "-2"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS"* ]]
+
+    run th_assert_gt "zero is greater than negative one" "0" "-1"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS"* ]]
+}
+
+@test "numeric assertions trim surrounding whitespace" {
+    run th_assert_ge "whitespace is ignored" $' \t 4 \n' $' 3 '
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS"* ]]
+}
+
+@test "numeric assertions fail for non-decimal operands" {
+    run th_assert_ge "invalid actual" "not-a-number" "3"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"FAIL"* ]]
+    [[ "$output" == *"received actual: 'not-a-number'"* ]]
+    [[ "$output" != *"PASS"* ]]
+    [[ "$output" != *"SKIP"* ]]
+
+    run th_assert_gt "invalid minimum" "3" "not-a-number"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"FAIL"* ]]
+    [[ "$output" == *"minimum: 'not-a-number'"* ]]
+}
+
+@test "numeric assertions do not evaluate arithmetic-looking operands" {
+    local pwned_file="/tmp/pwned"
+    local malicious='x[$(touch /tmp/pwned)0]'
+
+    if [[ -e "$pwned_file" ]]; then
+        skip "$pwned_file already exists"
+    fi
+
+    run th_assert_ge "malicious operand" "$malicious" "0"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"FAIL"* ]]
+    [ ! -e "$pwned_file" ]
+
+    run th_assert_gt "malicious operand" "$malicious" "0"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"FAIL"* ]]
+    [ ! -e "$pwned_file" ]
+}

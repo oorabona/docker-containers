@@ -350,7 +350,12 @@ th_assert_not_empty() {
 # Assert numeric greater-than-or-equal.
 th_assert_ge() {
     local name="$1" actual="$2" minimum="$3"
-    if [[ "$actual" -ge "$minimum" ]] 2>/dev/null; then
+
+    _th_trim_whitespace "$actual"; actual="$REPLY"
+    _th_trim_whitespace "$minimum"; minimum="$REPLY"
+    if ! _th_is_decimal "$actual" || ! _th_is_decimal "$minimum"; then
+        _th_record fail "$name" "expected decimal operands; received actual: '$actual', minimum: '$minimum'"
+    elif [[ "$actual" -ge "$minimum" ]] 2>/dev/null; then
         _th_record pass "$name"
     else
         _th_record fail "$name" "expected >= $minimum, got: '$actual'"
@@ -361,12 +366,30 @@ th_assert_ge() {
 # Assert numeric greater-than.
 th_assert_gt() {
     local name="$1" actual="$2" minimum="$3"
-    if [[ "$actual" -gt "$minimum" ]] 2>/dev/null; then
+
+    _th_trim_whitespace "$actual"; actual="$REPLY"
+    _th_trim_whitespace "$minimum"; minimum="$REPLY"
+    if ! _th_is_decimal "$actual" || ! _th_is_decimal "$minimum"; then
+        _th_record fail "$name" "expected decimal operands; received actual: '$actual', minimum: '$minimum'"
+    elif [[ "$actual" -gt "$minimum" ]] 2>/dev/null; then
         _th_record pass "$name"
     else
         _th_record fail "$name" "expected > $minimum, got: '$actual'"
     fi
     return 0
+}
+
+# Trim surrounding whitespace without evaluating the value as shell code.
+_th_trim_whitespace() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    REPLY="${value%"${value##*[![:space:]]}"}"
+}
+
+# Decimal-only validation before an arithmetic comparison prevents bash from
+# interpreting an assertion operand as an arithmetic expression.
+_th_is_decimal() {
+    [[ "$1" =~ ^[+-]?[0-9]+$ ]]
 }
 
 # Assert value matches regex pattern.
