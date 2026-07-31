@@ -8,8 +8,9 @@ setup() {
     # Cleared going in, not just coming out: one of these exported in the shell
     # that runs the suite would otherwise steer the stub through tests that never
     # asked for it.
-    unset E2E_IMAGE E2E_READY_TIMEOUT DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT \
-        DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_IMAGES_OUTPUT
+    unset E2E_IMAGE E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT \
+        DOCKER_INSPECT_ERROR DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_PS_ERROR \
+        DOCKER_IMAGES_OUTPUT DOCKER_RM_FAIL_ON_SECOND
     # Each bats test is its own process, so it inherits these from the shell that
     # launched the suite: an exported E2E_IMAGE walks straight past the discovery
     # tests, and a different owner invalidates the ambiguous-image fixture.
@@ -24,7 +25,7 @@ setup() {
 
 teardown() {
     export PATH="$ORIG_PATH"
-    unset E2E_IMAGE E2E_READY_TIMEOUT DOCKER_LOG DOCKER_IMAGES_OUTPUT DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT PS_COUNT_FILE TEST_SCRIPT_MARKER
+    unset E2E_IMAGE E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_LOG DOCKER_IMAGES_OUTPUT DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_PS_ERROR DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT DOCKER_INSPECT_ERROR DOCKER_RM_FAIL_ON_SECOND PS_COUNT_FILE TEST_SCRIPT_MARKER RUN_STARTED TEST_SUITE_STARTED HARNESS_PID_FILE
     teardown_temp_dir
 }
 
@@ -39,6 +40,28 @@ assert_harness_failed_on_its_own() {
     [ "$status" -ne 137 ]
 }
 
+# The signal fixtures run the harness beneath an outer watchdog. A missing
+# marker used to leave them polling after that watchdog had exited, so fail the
+# test itself instead of turning a harness crash into a stuck bats worker.
+wait_for_marker() {
+    local marker="$1"
+    local watchdog_pid="$2"
+    local path_description="$3"
+    local marker_deadline=$((SECONDS + 10))
+
+    while [ ! -e "$marker" ]; do
+        if ! kill -0 "$watchdog_pid" 2>/dev/null; then
+            printf '%s marker was never written: outer watchdog exited\n' "$path_description" >&2
+            return 1
+        fi
+        if [ "$SECONDS" -ge "$marker_deadline" ]; then
+            printf '%s marker was not written within 10 seconds\n' "$path_description" >&2
+            return 1
+        fi
+        /bin/sleep 0.05
+    done
+}
+
 install_docker_stub() {
     mkdir -p "$TEST_TEMP_DIR/bin"
     cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
@@ -49,14 +72,51 @@ case "$1" in
         printf '%s\n' "${DOCKER_IMAGES_OUTPUT:-}"
         ;;
     inspect)
+        inspect_format=""
+        shift
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --format)
+                    inspect_format="$2"
+                    shift 2
+                    ;;
+                --format=*)
+                    inspect_format="${1#--format=}"
+                    shift
+                    ;;
+                *)
+                    shift
+                    ;;
+            esac
+        done
+        if [ "$inspect_format" != '{{if .State.Health}}{{.State.Health.Status}}{{else}}nohealth{{end}}' ]; then
+            printf 'unexpected inspect format: %s\n' "$inspect_format" >&2
+            exit 64
+        fi
+        inspect_exit="${DOCKER_INSPECT_EXIT:-0}"
+        if [ "$inspect_exit" -ne 0 ]; then
+            printf '%s\n' "${DOCKER_INSPECT_ERROR:-inspect failed}" >&2
+            exit "$inspect_exit"
+        fi
         printf '%s\n' "${DOCKER_INSPECT_OUTPUT:-nohealth}"
-        exit "${DOCKER_INSPECT_EXIT:-0}"
         ;;
     ps)
+        ps_exit="${DOCKER_PS_EXIT:-0}"
+        if [ "$ps_exit" -ne 0 ]; then
+            printf '%s\n' "${DOCKER_PS_ERROR:-ps failed}" >&2
+            exit "$ps_exit"
+        fi
         printf '%s\n' "${DOCKER_PS_OUTPUT:-e2e-openvpn}"
-        exit "${DOCKER_PS_EXIT:-0}"
         ;;
-    rm|run|logs|exec)
+    rm)
+        # Signal fixtures make their trapped removal fail so the asserted status
+        # proves the handler reached its explicit exit rather than falling out.
+        if [ "${DOCKER_RM_FAIL_ON_SECOND:-false}" = true ] && [ "$(grep -c '^rm ' "${DOCKER_LOG:?}")" -eq 2 ]; then
+            exit 1
+        fi
+        exit 0
+        ;;
+    run|logs|exec)
         exit 0
         ;;
     *)
@@ -148,6 +208,150 @@ SH
 
     [ "$status" -ne 0 ]
     [[ "$output" == *"not executable"* ]]
+}
+
+@test "a TERM while docker run is still returning removes the active container through the armed trap" {
+    # #1008: docker run creates the detached container before it returns. The old
+    # trap was armed after that return, so a TERM in this window left the newly
+    # created container behind; the marker below stands in for that creation.
+    add_openvpn_fixture
+    install_docker_stub
+    cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+case "$1" in
+    run)
+        : > "${RUN_STARTED:?}"
+        /bin/sleep 2
+        ;;
+    rm)
+        # The stale-name cleanup succeeds; the signal-path removal fails. This
+        # makes the status assertion below red against the old fatal handler.
+        if [ "$(grep -c '^rm ' "${DOCKER_LOG:?}")" -eq 2 ]; then
+            exit 1
+        fi
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export RUN_STARTED="$TEST_TEMP_DIR/container-created"
+    export HARNESS_PID_FILE="$TEST_TEMP_DIR/harness.pid"
+
+    timeout -k 2 15 bash -c 'printf "%s\\n" "$$" > "$1"; shift; exec "$@"' _ \
+        "$HARNESS_PID_FILE" "$FIXTURE_REPO/tests/e2e-test.sh" openvpn > "$TEST_TEMP_DIR/harness.out" 2>&1 &
+    local watchdog_pid=$!
+    if ! wait_for_marker "$RUN_STARTED" "$watchdog_pid" "docker run signal fixture"; then
+        kill "$watchdog_pid" 2>/dev/null || true
+        wait "$watchdog_pid" 2>/dev/null || true
+        return 1
+    fi
+    # Signal the harness PID only. The test is specifically not relying on a
+    # terminal-style process-group signal to interrupt docker run for us.
+    kill -TERM "$(cat "$HARNESS_PID_FILE")"
+    local watchdog_status=0
+    wait "$watchdog_pid" || watchdog_status=$?
+
+    # The first removal clears a possible stale name before docker run; the
+    # second proves the armed TERM trap removed the newly started one. Before
+    # #1008 this was one: the signal arrived before any trap existed.
+    [ "$watchdog_status" -eq 143 ]
+    [ "$(grep -c '^rm ' "$DOCKER_LOG")" -eq 2 ]
+}
+
+@test "a TERM during a hanging custom suite reaches cleanup once its bound ends" {
+    # #1007: Bash defers a TERM trap while the foreground suite runs. Without
+    # this bound, signalling only the harness PID leaves both it and its named
+    # container stuck forever; the outer watchdog makes that regression fail.
+    add_openvpn_fixture
+    cat > "$FIXTURE_REPO/openvpn/test.sh" <<'SH'
+#!/bin/bash
+: > "${TEST_SUITE_STARTED:?}"
+while :; do /bin/sleep 1; done
+SH
+    chmod +x "$FIXTURE_REPO/openvpn/test.sh"
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_TEST_TIMEOUT=1
+    export HARNESS_PID_FILE="$TEST_TEMP_DIR/harness.pid"
+    export TEST_SUITE_STARTED="$TEST_TEMP_DIR/custom-suite-started"
+    export DOCKER_RM_FAIL_ON_SECOND=true
+
+    local before=$SECONDS
+    timeout -k 2 15 bash -c 'printf "%s\\n" "$$" > "$1"; shift; exec "$@"' _ \
+        "$HARNESS_PID_FILE" "$FIXTURE_REPO/tests/e2e-test.sh" openvpn > "$TEST_TEMP_DIR/harness.out" 2>&1 &
+    local watchdog_pid=$!
+    if ! wait_for_marker "$TEST_SUITE_STARTED" "$watchdog_pid" "custom-suite signal fixture"; then
+        kill "$watchdog_pid" 2>/dev/null || true
+        wait "$watchdog_pid" 2>/dev/null || true
+        return 1
+    fi
+    # This is intentionally the script PID, not the foreground process group.
+    kill -TERM "$(cat "$HARNESS_PID_FILE")"
+    local watchdog_status=0
+    wait "$watchdog_pid" || watchdog_status=$?
+    local elapsed=$((SECONDS - before))
+
+    [ "$watchdog_status" -eq 143 ]
+    [ "$elapsed" -lt 13 ]
+    # As above, one removal is stale-name cleanup; the other is the deferred TERM
+    # trap after timeout has ended the otherwise infinite suite.
+    [ "$(grep -c '^rm ' "$DOCKER_LOG")" -eq 2 ]
+}
+
+@test "a hanging custom suite is stopped by the bound and names it in the report" {
+    # #1007: the point of the bound is that a suite which never returns still ends,
+    # and that the report says what happened. It does not say "timed out" as a
+    # fact — see the sibling test below for why the harness cannot know that from
+    # the status alone — but the bound has to be named, or an operator reading
+    # "exit 124" has nothing to go on.
+    add_openvpn_fixture
+    cat > "$FIXTURE_REPO/openvpn/test.sh" <<'SH'
+#!/bin/bash
+while :; do /bin/sleep 1; done
+SH
+    chmod +x "$FIXTURE_REPO/openvpn/test.sh"
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_TEST_TIMEOUT=1
+
+    run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+
+    assert_harness_failed_on_its_own
+    [[ "$output" == *"Custom tests failed for openvpn (exit 124"* ]]
+    [[ "$output" == *"1s bound"* ]]
+    [ "$(grep -c '^rm ' "$DOCKER_LOG")" -eq 2 ]
+}
+
+@test "a custom suite returning 124 is not asserted to have timed out" {
+    # `timeout` preserves its command's status when its deadline did not fire, and
+    # web-shell/test.sh runs `timeout` and can propagate 124 without having timed
+    # out. The harness cannot tell the two apart from the status alone — every
+    # mechanism tried for that cost more than the ambiguity — so what is locked
+    # here is that it does not CLAIM to: the status is reported, the bound is
+    # offered as one cause among others, and nothing states a timeout as fact.
+    add_openvpn_fixture
+    cat > "$FIXTURE_REPO/openvpn/test.sh" <<'SH'
+#!/bin/bash
+exit 124
+SH
+    chmod +x "$FIXTURE_REPO/openvpn/test.sh"
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_TEST_TIMEOUT=10
+
+    run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Custom tests failed for openvpn (exit 124"* ]]
+    [[ "$output" != *"Custom tests timed out for openvpn"* ]]
 }
 
 @test "fallback image discovery errors on zero matches" {
@@ -426,27 +630,110 @@ STUB
     [ ! -e "$TEST_SCRIPT_MARKER" ]
 }
 
+@test "a failed readiness stderr allocation reports the harness failure" {
+    # #1009: readiness stderr classifies terminal Docker failures. Falling back
+    # to an empty filename turns mktemp's own failure into repeated transient
+    # probes, ending with the false claim that the container was merely slow.
+    add_openvpn_fixture
+    install_docker_stub
+    printf '#!/bin/bash\nprintf "mktemp: fixture allocation failed\\n" >&2\nexit 1\n' > "$TEST_TEMP_DIR/bin/mktemp"
+    chmod +x "$TEST_TEMP_DIR/bin/mktemp"
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_READY_TIMEOUT=1
+
+    run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+
+    assert_harness_failed_on_its_own
+    [[ "$output" == *"Harness could not allocate its readiness stderr temp file"* ]]
+    # mktemp's own diagnostic reaches the log on its own stderr rather than being
+    # folded into the harness's value, so both are present and neither depends on
+    # a capture that a chatty tool could poison.
+    [[ "$output" == *"mktemp: fixture allocation failed"* ]]
+    [[ "$output" != *"did not become ready in time"* ]]
+    [ "$(grep -c '^rm ' "$DOCKER_LOG")" -eq 2 ]
+}
+
+@test "every docker call in the wait and the cleanup is bounded" {
+    # The property, not the spelling. An earlier version pinned whole source
+    # lines verbatim, which broke on reformatting and — worse — had baked the
+    # probes' `2>&1` into the expectation, so it was holding a defect in place.
+    #
+    # Two ways a bound can be missing: a `timeout` that lost its -k, and a
+    # wrapper deleted outright. Requiring every docker-invoking line to carry
+    # `timeout -k` catches both, because a deleted wrapper leaves the docker call
+    # behind on a line that no longer matches.
+    run bash -c '
+        source_file="$1"
+        # Lines that invoke docker as a command, ignoring comments, log text and
+        # the readiness stderr messages that merely name it.
+        unbounded=$(grep -nE "^[^#]*(^|[^a-zA-Z_-])docker[[:space:]]" "$source_file" |
+            grep -vE "timeout -k" |
+            grep -vE "log_error|log_warning|printf|echo")
+        # Deliberately unbounded, for a stated reason:
+        #   docker images  — local discovery before anything is started
+        allowed="docker images"
+        offenders=$(printf "%s\n" "$unbounded" | grep -vE "$allowed" | grep -c . || true)
+        if [ "$offenders" -ne 0 ]; then
+            printf "%s\n" "$unbounded" | grep -vE "$allowed" >&2
+            exit 1
+        fi
+    ' _ "$PROJECT_ROOT/tests/e2e-test.sh"
+
+    [ "$status" -eq 0 ]
+}
+
 @test "no timeout call omits its kill-after grace" {
-    # A plain `timeout` sends SIGTERM and then waits forever for a child that
-    # ignores it, so a bound without -k is not a bound. This checks exactly that
-    # — every `timeout` here passes -k — and not the broader claim that every
-    # docker call is bounded; the cleanup calls outside the wait are not, which
-    # is #1007. Structural because reproducing a TERM-resistant docker would
-    # demonstrate coreutils' behaviour rather than this script's — and blind to a
-    # wrapper deleted outright, which is #1008.
-    # Every line that invokes it must carry -k, rather than only rejecting a
-    # bound whose next character is not a hyphen: `timeout -s TERM 5 …` and
-    # `timeout --verbose 5 …` pass that weaker check while omitting the grace.
-    # The path is an argument, not interpolated into the program: a checkout whose
-    # path contains a quote would otherwise change what this runs. A grep that
-    # errors is not the same as one that found nothing, so the two statuses are
-    # told apart rather than both counting as a pass.
+    # A bound without -k is not a bound: plain `timeout` sends SIGTERM and then
+    # waits forever for a child that ignores it.
     run bash -c '
         matches=$(grep -nE "^[^#]*\btimeout\b" "$1") || exit 3
         printf "%s\n" "$matches" | grep -vE "(^|[[:space:]])-k[[:space:]]"
     ' _ "$PROJECT_ROOT/tests/e2e-test.sh"
 
     [ "$status" -eq 1 ]
+}
+
+@test "a docker command missing from PATH stops readiness immediately and reports stderr" {
+    add_openvpn_fixture
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_READY_TIMEOUT=60
+    export DOCKER_PS_OUTPUT=""
+    export DOCKER_PS_ERROR="docker: command not found"
+    export DOCKER_PS_EXIT=127
+
+    local before=$SECONDS
+    run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+    local elapsed=$((SECONDS - before))
+
+    assert_harness_failed_on_its_own
+    [[ "$output" == *"docker ps failed (exit 127): docker: command not found"* ]]
+    [[ "$output" != *"did not become ready in time"* ]]
+    [ "$elapsed" -lt 10 ]
+}
+
+@test "a Docker permission error stops inspect readiness immediately and reports stderr" {
+    add_openvpn_fixture
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
+    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_READY_TIMEOUT=60
+    export DOCKER_INSPECT_OUTPUT=""
+    export DOCKER_INSPECT_ERROR="permission denied while trying to connect to the Docker daemon socket"
+    export DOCKER_INSPECT_EXIT=1
+
+    local before=$SECONDS
+    run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+    local elapsed=$((SECONDS - before))
+
+    assert_harness_failed_on_its_own
+    [[ "$output" == *"docker inspect failed (exit 1): permission denied while trying to connect to the Docker daemon socket"* ]]
+    [[ "$output" != *"did not become ready in time"* ]]
+    [ "$elapsed" -lt 10 ]
+    [ ! -e "$TEST_SCRIPT_MARKER" ]
 }
 
 @test "a timeout that cannot bound anything is refused before the container starts" {
@@ -464,6 +751,37 @@ STUB
     [ "$status" -ne 0 ]
     [[ "$output" == *"accepting -k"* ]]
     [ ! -s "$DOCKER_LOG" ]
+}
+
+@test "a docker CLI that chatters on stderr does not poison the health value" {
+    # podman's docker shim prints "Emulate Docker CLI using podman…" to stderr on
+    # every call. Merging that into the captured value makes $health neither
+    # nohealth nor a status, so the wait matches no arm and polls to its budget —
+    # and real Docker says nothing there, so this passes CI and breaks everyone
+    # running podman.
+    add_openvpn_fixture
+    install_docker_stub
+    cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+echo "Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg." >&2
+case "$1" in
+    images)  printf '%s\n' "${DOCKER_IMAGES_OUTPUT:-}" ;;
+    ps)      printf '%s\n' "${DOCKER_PS_OUTPUT:-e2e-openvpn}" ;;
+    inspect) printf '%s\n' "nohealth" ;;
+    *)       exit 0 ;;
+esac
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/openvpn-test.marker"
+    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+
+    run timeout -k 2 30 "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"did not become ready in time"* ]]
+    [ "$(cat "$TEST_SCRIPT_MARKER")" = "e2e-openvpn" ]
 }
 
 @test "a healthy inspect result proceeds to the per-container suite" {
@@ -493,6 +811,22 @@ STUB
     [[ "$output" == *"between 1 and 99999"* ]]
     # Rejecting it after `docker run` would strand the container: --rm removes it
     # when it stops, and nothing stops it on this path.
+    [ ! -s "$DOCKER_LOG" ]
+}
+
+@test "an invalid E2E_TEST_TIMEOUT is rejected before anything is started" {
+    # #1007: this value bounds a foreground suite that can otherwise defer the
+    # cleanup trap indefinitely, so it must be rejected before docker run.
+    add_openvpn_fixture
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export E2E_IMAGE="ghcr.io/example/openvpn:e2e"
+    export E2E_TEST_TIMEOUT=zero
+
+    run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"E2E_TEST_TIMEOUT must be a whole number of seconds between 1 and 99999"* ]]
     [ ! -s "$DOCKER_LOG" ]
 }
 
