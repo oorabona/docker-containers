@@ -50,6 +50,78 @@ fi
 # Source variant utils for tags_from_versions resolution
 source "$SCRIPT_DIR/variant-utils.sh"
 
+# Registry commands below must have a real kill-after timeout. A plain timeout
+# only sends SIGTERM, then can wait forever for a stuck docker child; check the
+# interface once while this helper is loaded, before a caller starts work.
+if ! timeout -k 1 1 true 2>/dev/null; then
+    log_error "base-cache-utils.sh needs a 'timeout' accepting -k (GNU coreutils provides one)" >&2
+    return 1
+fi
+
+# _validate_timeout_duration <variable-name> <seconds>
+_validate_timeout_duration() {
+    local variable_name="$1"
+    local timeout_seconds="$2"
+
+    # `timeout 0` disables the deadline, while option-like values can make it
+    # succeed without running the command. Only an integer greater than zero
+    # is a safe, unambiguous per-attempt bound.
+    if [[ ! "$timeout_seconds" =~ ^0*[1-9][0-9]*$ ]]; then
+        printf '::error::%s must be a positive integer number of seconds; got %q\n' \
+            "$variable_name" "$timeout_seconds" >&2
+        return 1
+    fi
+}
+
+# _timeout_exit_is_timeout <exit-code>
+#
+# GNU timeout reports 124 for its initial SIGTERM deadline and 137 when its
+# -k SIGKILL deadline fires. Both mean the registry command did not answer.
+_timeout_exit_is_timeout() {
+    [[ "$1" -eq 124 || "$1" -eq 137 ]]
+}
+
+# _run_with_timeout <variable-name> <seconds> <command> [args...]
+#
+# Run a command through bash so exported shell-function stubs work in Bats as
+# well as the real docker executable in production. This necessarily runs a
+# function command in a fresh child shell: it may rely only on exported
+# functions and environment, and cannot read or update caller-local state.
+# Export a function command on demand for that documented child-shell contract.
+_run_with_timeout() {
+    local variable_name="$1"
+    local timeout_seconds="$2"
+    local command_name="$3"
+    shift 3
+
+    _validate_timeout_duration "$variable_name" "$timeout_seconds" || return 2
+
+    if declare -F "$command_name" &>/dev/null; then
+        # shellcheck disable=SC2163 # command_name is intentionally dynamic.
+        export -f "$command_name"
+    fi
+
+    # Output goes to a file, and the caller reads the file: bounding `timeout`
+    # does not bound a CALLER that captured through `$( … )`, because the pipe
+    # stays open while any orphan of the killed command still holds its write
+    # end. Measured: a command ignoring SIGTERM returned rc=124 at the 2s
+    # deadline while the surrounding capture waited the full 60s the orphan ran,
+    # three attempts making 180s against a 2s bound. A file has no EOF to wait
+    # for, so the deadline reaches the caller.
+    local out_file err_file status=0
+    out_file=$(mktemp) || return 2
+    err_file=$(mktemp) || { rm -f "$out_file"; return 2; }
+    timeout -k 2 -- "$timeout_seconds" bash -c '"$@"' _ "$command_name" "$@" \
+        >"$out_file" 2>"$err_file" || status=$?
+    # Replayed onto the streams the caller expects, each from its own file:
+    # merging them here would put a registry's chatter inside a value someone
+    # parses, which is the defect this helper exists alongside, not one to add.
+    cat "$out_file"
+    cat "$err_file" >&2
+    rm -f "$out_file" "$err_file"
+    return "$status"
+}
+
 # Resolve a tag template by substituting placeholders:
 #   ${VERSION}          → detected build version (e.g., "1.14.5-alpine")
 #   ${UPSTREAM_VERSION} → raw upstream version via version.sh --upstream (e.g., "1.14.5")
@@ -434,7 +506,10 @@ resolve_cache_check_tag() {
 # rate-limit (429) errors. Other failures (auth, network, malformed ref) fail
 # fast — backoff only burns wall-time when it cannot help.
 #
-# Backoff schedule: 5s, 10s, 20s (3 retries max, then give up).
+# Backoff schedule: 5s, 10s, 20s (3 retries max, then give up). Each create is
+# bounded by $SYNC_IMAGETOOLS_CREATE_TIMEOUT (default 300s): copying layers can
+# legitimately take minutes, unlike a manifest read, so the read-scale bound
+# would turn healthy large-image copies into failures.
 # Sleep is performed via the injectable $SLEEP_CMD (defaults to `sleep`); tests
 # pass `:` or `true` to skip real sleeps.
 #
@@ -450,13 +525,26 @@ _sync_one_with_backoff() {
     local base_delay=5
     local attempt=0
     local output
+    # Overridable for focused tests and constrained runners; five minutes gives
+    # layer-copy work time to finish while still recovering from a wedged client.
+    local create_timeout="${SYNC_IMAGETOOLS_CREATE_TIMEOUT:-300}"
+    _validate_timeout_duration SYNC_IMAGETOOLS_CREATE_TIMEOUT "$create_timeout" || return 1
 
     while true; do
-        if output=$(docker buildx imagetools create \
+        local create_exit=0
+        if output=$(_run_with_timeout SYNC_IMAGETOOLS_CREATE_TIMEOUT "$create_timeout" docker buildx imagetools create \
             --tag "$ghcr_image" \
             "$source_ref" 2>&1); then
             printf '%s' "$output"
             return 0
+        else
+            create_exit=$?
+        fi
+
+        if _timeout_exit_is_timeout "$create_exit"; then
+            printf 'registry did not answer within %ss while copying %s' \
+                "$create_timeout" "$source_ref"
+            return 1
         fi
 
         # Only retry rate-limit / 429 — anything else is non-transient.
@@ -499,7 +587,10 @@ _sync_one_with_backoff() {
 # reliably distinguishable from its error text.
 #
 # Backoff: 3 attempts, 3s then 6s. Sleep goes through the injectable $SLEEP_CMD
-# (defaults to `sleep`) so tests do not spend it.
+# (defaults to `sleep`) so tests do not spend it. Each manifest read is bounded
+# by $PROBE_CACHE_IMAGE_TIMEOUT (default 30s): a registry metadata response
+# normally takes seconds, so 30s leaves generous network slack without letting
+# one stuck read hold a build forever.
 #
 # The reference reaches a runner log, and `base_image_cache` is unvalidated
 # config, so it goes through _escape_gha_command first — a newline in it would
@@ -519,14 +610,35 @@ probe_cache_image() {
     local max_attempts=3
     local delay=3
     local attempt=1
-    local safe_ref
-    safe_ref=$(_escape_gha_command "$image_ref")
+    # Cleared before anything can return: callers read this under `set -u`, so a
+    # validation failure that returned early left it unset — aborting the shell —
+    # or, worse, left the previous call's diagnosis in place.
     PROBE_CACHE_IMAGE_ERROR=""
 
+    local read_timeout="${PROBE_CACHE_IMAGE_TIMEOUT:-30}"
+    _validate_timeout_duration PROBE_CACHE_IMAGE_TIMEOUT "$read_timeout" || {
+        PROBE_CACHE_IMAGE_ERROR="invalid PROBE_CACHE_IMAGE_TIMEOUT"
+        return 1
+    }
+    local safe_ref
+    safe_ref=$(_escape_gha_command "$image_ref")
+
     while true; do
-        if PROBE_CACHE_IMAGE_ERROR=$(docker manifest inspect "$image_ref" 2>&1 >/dev/null); then
+        local probe_exit=0
+        if PROBE_CACHE_IMAGE_ERROR=$(_run_with_timeout PROBE_CACHE_IMAGE_TIMEOUT "$read_timeout" docker manifest inspect "$image_ref" 2>&1 >/dev/null); then
             PROBE_CACHE_IMAGE_ERROR=""
             return 0
+        else
+            probe_exit=$?
+        fi
+        if _timeout_exit_is_timeout "$probe_exit"; then
+            PROBE_CACHE_IMAGE_ERROR="registry did not answer within ${read_timeout}s"
+        fi
+        # A bad operator override is a configuration error, not a registry
+        # blip; do not retry it and risk hiding the diagnostic among retries.
+        if [[ $probe_exit -eq 2 ]]; then
+            PROBE_CACHE_IMAGE_ERROR=$(_escape_gha_command "$PROBE_CACHE_IMAGE_ERROR")
+            return 1
         fi
         if (( attempt >= max_attempts )); then
             PROBE_CACHE_IMAGE_ERROR=$(_escape_gha_command "$PROBE_CACHE_IMAGE_ERROR")
@@ -764,17 +876,43 @@ sync_base_images_to_ghcr() {
         # docker.io pull rate limit — same pattern used in build-container/action.yaml.
         # We use the literal `docker` (not $DOCKER) to match that convention: this is
         # a read-only probe, not a write/build command that dry-run mode should mock.
-        if [[ "$skip_present" == "true" ]] && docker manifest inspect "$sync_image" >/dev/null 2>&1; then
-            echo "  ⏭️ Already in GHCR, skipping (no docker.io request): ${sync_image}"
-            skipped=$((skipped + 1))
-            continue
+        if [[ "$skip_present" == "true" ]]; then
+            if probe_cache_image "$sync_image"; then
+                echo "  ⏭️ Already in GHCR, skipping (no docker.io request): ${sync_image}"
+                skipped=$((skipped + 1))
+                continue
+            fi
+            if [[ "$PROBE_CACHE_IMAGE_ERROR" == registry\ did\ not\ answer\ within* ]]; then
+                echo "  ⚠️ GHCR presence check timed out; attempting the copy: ${PROBE_CACHE_IMAGE_ERROR}"
+            fi
         fi
 
         if output=$(_sync_one_with_backoff "$source_ref" "$sync_image"); then
             echo "  ✅ Synced"
             if [[ -n "${SYNC_MANIFEST_OUT:-}" ]]; then
                 local sync_digest=""
-                sync_digest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$sync_image" 2>/dev/null | jq -r '.digest // empty' 2>/dev/null || true)
+                # This is another metadata read, not a layer copy: use the same
+                # generous 30s default as probe_cache_image. It is separate from
+                # SYNC_IMAGETOOLS_CREATE_TIMEOUT because a completed copy should
+                # not leave manifest bookkeeping waiting minutes on a wedged read.
+                local digest_read_timeout="${SYNC_IMAGETOOLS_INSPECT_TIMEOUT:-30}"
+                local digest_raw=""
+                local digest_exit=0
+                if ! _validate_timeout_duration SYNC_IMAGETOOLS_INSPECT_TIMEOUT "$digest_read_timeout"; then
+                    _append_base_sync_manifest_record "$source_ref" "$sync_image" "" "failed"
+                    failed=$((failed + 1))
+                    continue
+                fi
+                # Keep diagnostics on stderr. Merging them into digest_raw
+                # corrupts otherwise-valid JSON (notably podman's greeting).
+                if digest_raw=$(_run_with_timeout SYNC_IMAGETOOLS_INSPECT_TIMEOUT "$digest_read_timeout" docker buildx imagetools inspect --format '{{json .Manifest}}' "$sync_image"); then
+                    sync_digest=$(printf '%s' "$digest_raw" | jq -r '.digest // empty' 2>/dev/null || true)
+                else
+                    digest_exit=$?
+                    if _timeout_exit_is_timeout "$digest_exit"; then
+                        echo "::warning::sync_base_images_to_ghcr: registry did not answer within ${digest_read_timeout}s while reading GHCR digest for ${safe_sync_image}; manifest record will fail closed"
+                    fi
+                fi
                 if [[ -n "$sync_digest" && ! "$sync_digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
                     echo "::warning::sync_base_images_to_ghcr: GHCR digest for ${sync_image} had unexpected shape; manifest record will fail closed"
                     sync_digest=""
@@ -821,4 +959,4 @@ sync_base_images_to_ghcr() {
 }
 
 # Export functions
-export -f _resolve_tag_template _collect_entry_tags has_base_cache distro_uses_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args probe_cache_image _sync_one_with_backoff base_cache_canonical_source_ref base_cache_is_docker_io_origin_ref base_cache_canonical_docker_io_ref _append_base_sync_manifest_record sync_base_images_to_ghcr
+export -f _validate_timeout_duration _timeout_exit_is_timeout _run_with_timeout _resolve_tag_template _collect_entry_tags has_base_cache distro_uses_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args probe_cache_image _sync_one_with_backoff base_cache_canonical_source_ref base_cache_is_docker_io_origin_ref base_cache_canonical_docker_io_ref _append_base_sync_manifest_record sync_base_images_to_ghcr

@@ -128,13 +128,14 @@ That's it. The CI picks it up automatically on next push.
 - Docker Engine 20.10+ (or Podman)
 - Bash 4.0+
 - [yq](https://github.com/mikefarah/yq) (for variant containers)
-- A `timeout` accepting `-k`, to run the e2e suite — it is what keeps a probe
-  from hanging forever and leaving a container behind. GNU coreutils provides it
-  and most Linux distributions ship it; on macOS, `brew install coreutils` and
-  put its `libexec/gnubin` on `PATH`. The suite probes at startup for a `timeout`
-  that accepts `-k`, so one that does not fails immediately rather than at
-  cleanup. That probe reads the interface, not the behaviour: an implementation
-  that took the flag and ignored it would still get through.
+- A `timeout` accepting `-k`, for the e2e suite and registry helpers — it keeps
+  container cleanup and registry operations from waiting forever on a child
+  that ignores SIGTERM. GNU coreutils provides it and most Linux distributions
+  ship it; on macOS, `brew install coreutils` and put its `libexec/gnubin` on
+  `PATH`. Both consumers probe at startup for a `timeout` that accepts `-k`, so
+  one that does not fails immediately rather than during cleanup or a registry
+  operation. That probe reads the interface, not the behaviour: an
+  implementation that took the flag and ignored it would still get through.
 
 ## Documentation
 

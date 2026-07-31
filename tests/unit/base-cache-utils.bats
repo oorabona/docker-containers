@@ -16,11 +16,11 @@ setup() {
     source "$ORIG_DIR/helpers/variant-utils.sh"
     source "$ORIG_DIR/helpers/base-cache-utils.sh"
 
-    unset SYNC_MANIFEST_OUT
+    unset SYNC_MANIFEST_OUT PROBE_CACHE_IMAGE_TIMEOUT SYNC_IMAGETOOLS_CREATE_TIMEOUT SYNC_IMAGETOOLS_INSPECT_TIMEOUT
 }
 
 teardown() {
-    unset SYNC_MANIFEST_OUT
+    unset SYNC_MANIFEST_OUT PROBE_CACHE_IMAGE_TIMEOUT SYNC_IMAGETOOLS_CREATE_TIMEOUT SYNC_IMAGETOOLS_INSPECT_TIMEOUT
     cd "$ORIG_DIR" || true
     rm -rf "$TEST_DIR"
 }
@@ -867,6 +867,9 @@ EOF
             return 1
         fi
         if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
+            # Podman (and some registry helpers) can print an informational
+            # greeting on stderr even after a successful inspect.
+            echo "podman: using containers.conf" >&2
             printf '{"digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111"}'
             return 0
         fi
@@ -892,6 +895,7 @@ EOF
 
     [ "$synced_source" = "docker.io/library/alpine:3.18" ]
     [ "$synced_digest" = "sha256:1111111111111111111111111111111111111111111111111111111111111111" ]
+    [[ "$output" == *"podman: using containers.conf"* ]]
     [ "$failed_source" = "docker.io/library/postgres:18-alpine" ]
     [ "$failed_status" = "failed" ]
     [ "$failed_digest" = "" ]
@@ -1331,6 +1335,31 @@ EOF
     rm -f "$copy_marker"
 }
 
+@test "probe_cache_image: the deadline reaches the caller, not just timeout" {
+    # Bounding `timeout` does not bound a caller that captured through a pipe:
+    # an orphan of the killed command keeps the write end open, so `$( … )`
+    # waits for EOF long after the deadline fired. Measured before the fix: the
+    # probe returned rc=124 at its 2s deadline while the surrounding capture sat
+    # for the full 60s the orphan ran — 180s across three attempts against a 2s
+    # bound. Every other stub here exits promptly, so nothing else can see this.
+    local stub="$TEST_DIR/stubborn-docker"
+    printf '#!/usr/bin/env bash\ntrap "" TERM\nsleep 60\n' > "$stub"
+    chmod +x "$stub"
+    export STUBBORN_DOCKER="$stub"
+    docker() { "$STUBBORN_DOCKER"; }
+    export -f docker
+    export SLEEP_CMD=: PROBE_CACHE_IMAGE_TIMEOUT=2
+
+    local before=$SECONDS
+    probe_cache_image "ghcr.io/x/a:1" || true
+    local elapsed=$((SECONDS - before))
+
+    # Three attempts of 2s, plus the kill-after grace. Generous, and far below
+    # the 180s a piped capture cost.
+    [ "$elapsed" -lt 30 ]
+    [[ "$PROBE_CACHE_IMAGE_ERROR" == *"did not answer"* ]]
+}
+
 @test "probe_cache_image: a readable image needs no retry" {
     # The reference is asserted, not just the verb: a probe that read a
     # hard-coded or dropped ref would otherwise pass this.
@@ -1395,6 +1424,64 @@ EOF
     # Fail-closed is the point: a mirror that cannot be read must not be used.
     [ "$status" -eq 1 ]
     [ "$(<"$counter_file")" -eq 3 ]
+}
+
+@test "probe_cache_image: timeout is reported and remains fail-closed after three attempts" {
+    # A timeout needs its own repair path: the image may exist, but the registry
+    # did not answer. Use a whole-second duration because timeout overrides are
+    # intentionally restricted to positive integer seconds.
+    local counter_file="$TEST_DIR/timeout-probe-attempts"
+    echo 0 > "$counter_file"
+    export COUNTER_FILE="$counter_file"
+
+    docker() {
+        local n
+        n=$(( $(<"$COUNTER_FILE") + 1 ))
+        echo "$n" > "$COUNTER_FILE"
+        sleep 2
+    }
+    export -f docker
+    export SLEEP_CMD=:
+    export PROBE_CACHE_IMAGE_TIMEOUT=1
+
+    local rc=0
+    probe_cache_image "ghcr.io/x/library/slow:1" || rc=$?
+    [ "$rc" -eq 1 ]
+    [ "$(<"$counter_file")" -eq 3 ]
+    [ "$PROBE_CACHE_IMAGE_ERROR" = "registry did not answer within 1s" ]
+}
+
+@test "probe_cache_image: invalid timeout override fails before docker runs" {
+    local counter_file="$TEST_DIR/invalid-timeout-probe-attempts"
+    echo 0 > "$counter_file"
+    export COUNTER_FILE="$counter_file"
+
+    docker() {
+        echo $(( $(<"$COUNTER_FILE") + 1 )) > "$COUNTER_FILE"
+        return 0
+    }
+    export -f docker
+    export PROBE_CACHE_IMAGE_TIMEOUT=--help
+
+    run probe_cache_image "ghcr.io/x/library/ubuntu:noble"
+    [ "$status" -eq 1 ]
+    [ "$(<"$counter_file")" -eq 0 ]
+    [[ "$output" == *"PROBE_CACHE_IMAGE_TIMEOUT must be a positive integer number of seconds"* ]]
+}
+
+@test "_sync_one_with_backoff: kill-after exit 137 is reported as a timeout" {
+    # Ignore timeout's initial SIGTERM, then exec sleep so timeout's -k SIGKILL
+    # is what ends the command. This exercises GNU timeout's 137 exit status.
+    docker() {
+        trap '' TERM
+        exec sleep 10
+    }
+    export -f docker
+    export SYNC_IMAGETOOLS_CREATE_TIMEOUT=1
+
+    run _sync_one_with_backoff "docker.io/library/alpine:3.18" "ghcr.io/x/lib/a:3.18"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"registry did not answer within 1s while copying docker.io/library/alpine:3.18"* ]]
 }
 
 @test "probe_cache_image: a newline in the reference cannot forge a workflow command" {
