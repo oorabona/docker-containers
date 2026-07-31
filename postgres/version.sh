@@ -17,7 +17,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --tag-suffix)
             # Network-free suffix of the published tags (e.g. 18-alpine,
-            # 17-vector-alpine). Mirrors the other bake-managed version.sh
+            # 17-alpine-vector). Mirrors the other bake-managed version.sh
             # scripts so the bake generator's UPSTREAM_VERSION derivation stays
             # offline. postgres's Dockerfile does not consume UPSTREAM_VERSION
             # today, but the branch keeps the fleet parity contract intact.
