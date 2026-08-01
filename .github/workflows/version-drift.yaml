@@ -131,7 +131,12 @@ jobs:
           fi
 
           if [[ "$sweep_rc" -eq 0 ]]; then
-            echo "::notice::version-drift sweep: all declared versions are in sync or in_flight"
+            log_step "Commenting on provenance-marked version-drift issues, if any..."
+            ( set -euo pipefail; source helpers/retry.sh
+              # shellcheck disable=SC1091
+              source scripts/open-dep-failure-issue.sh
+              comment_version_drift_issues_on_recovery "$drift_json" "${{ steps.app-token.outputs.app-slug }}" )
+            echo "::notice::version-drift sweep: no drift among the rows evaluated"
             exit 0
           fi
 
