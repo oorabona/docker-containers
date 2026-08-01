@@ -23,9 +23,10 @@ setup() {
     export GITHUB_EVENT_NAME="push"
     export GITHUB_REF_NAME="master"
     export COMMIT_SUBJECT="chore: update readme"
+    export VDRIFT_APP_SLUG="test-drift-app"
 
     # Optional vars — cleared so each test can set what it needs
-    unset PR_NUMBER PR_TITLE PR_BODY PR_LABELS FAILED_JOBS_JSON
+    unset PR_NUMBER PR_TITLE PR_BODY PR_LABELS FAILED_JOBS_JSON VDRIFT_GH_ERROR VDRIFT_RETRY_FLAG VDRIFT_VIEW_JSON
     export DRY_RUN="true"
 
     # Provide a mock gh that does nothing (prevents any real network call)
@@ -490,9 +491,288 @@ GHEOF
     [[ "$output" != *"DRY_RUN"* && "$output" != *"dry-run"* && "$output" != *"Issue"* ]]
 }
 
+_install_version_drift_issue_gh_mock() {
+    export VDRIFT_CALL_LOG="$TEST_TEMP_DIR/version-drift-issue-gh-calls.log"
+    export VDRIFT_ISSUES_JSON="$1"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/gh" << 'GHEOF'
+#!/usr/bin/env bash
+echo "$*" >> "$VDRIFT_CALL_LOG"
+case "$*" in
+    *"issue list"*) printf '%s\n' "$VDRIFT_ISSUES_JSON" ;;
+    *"label create"*|*"issue comment"*) : ;;
+    *"issue create"*) echo "https://github.com/oorabona/docker-containers/issues/106" ;;
+    *) echo "unexpected gh args: $*" >&2; exit 1 ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+}
+
+@test "version-drift create: issue body carries the provenance marker" {
+    _install_version_drift_issue_gh_mock '[]'
+    export DRY_RUN="false"
+    local drift_json='[{"status":"drift","kind":"container","name":"postgres","declared":"18.2","published":"18.1"}]'
+
+    run open_version_drift_issue "$drift_json" "postgres"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"created #106"* ]]
+    grep -Fq '<!-- version-drift-issue: provenance=v1 -->' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift refresh: never edits an existing issue body" {
+    _install_version_drift_issue_gh_mock '[{"number":107,"body":"legacy version-drift body"}]'
+    export DRY_RUN="false"
+    local drift_json='[{"status":"drift","kind":"container","name":"postgres","declared":"18.2","published":"18.1"}]'
+
+    run open_version_drift_issue "$drift_json" "postgres"
+    [ "$status" -eq 0 ]
+    grep -q '^issue comment .* 107 ' "$VDRIFT_CALL_LOG"
+    ! grep -q '^issue edit ' "$VDRIFT_CALL_LOG"
+}
+
 # ---------------------------------------------------------------------------
 # Dedup: mock gh issue list returns empty → "created"
 # ---------------------------------------------------------------------------
+
+_install_retraction_gh_mock() {
+    export VDRIFT_CALL_LOG="$TEST_TEMP_DIR/retraction-gh-calls.log"
+    export VDRIFT_ISSUES_JSON="$1"
+    export VDRIFT_COMMENTS_JSON="${2:-}"
+    if [[ -z "$VDRIFT_COMMENTS_JSON" ]]; then
+        export VDRIFT_COMMENTS_JSON='{"comments":[]}'
+    fi
+    export VDRIFT_GH_MODE="${3:-success}"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/gh" << 'GHEOF'
+#!/usr/bin/env bash
+echo "$*" >> "$VDRIFT_CALL_LOG"
+case "$*" in
+    *"issue list"*)
+        if [[ "$VDRIFT_GH_MODE" == "list_fail" ]]; then
+            echo "gh: API unavailable" >&2
+            exit 1
+        fi
+        printf '%s\n' "$VDRIFT_ISSUES_JSON"
+        ;;
+    *"issue view"*) printf '%s\n' "$VDRIFT_COMMENTS_JSON" ;;
+    *"issue comment"*) : ;;
+    *) echo "unexpected gh args: $*" >&2; exit 1 ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+}
+
+@test "version-drift retraction: marked App-authored issue receives one comment" {
+    _install_retraction_gh_mock '[{"number":101,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"}}]'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"},{"status":"window_ok"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    grep -q 'issue comment 101' "$VDRIFT_CALL_LOG"
+    grep -q 'rows it evaluated (in_sync=1, window_ok=1)' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: an empty sweep warns and posts no comment" {
+    _install_retraction_gh_mock '[{"number":108,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"}}]'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"sweep output was empty; no comments posted"* ]]
+    [[ ! -e "$VDRIFT_CALL_LOG" ]]
+}
+
+@test "version-drift retraction: human-authored issue receives no comment" {
+    _install_retraction_gh_mock '[{"number":102,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"octocat"}}]'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    ! grep -q '^issue comment ' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: unmarked App-authored issue receives no comment" {
+    _install_retraction_gh_mock '[{"number":103,"body":"ordinary issue body","author":{"login":"app/test-drift-app"}}]'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    ! grep -q '^issue comment ' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: a human reply after the bot retraction does not duplicate it" {
+    _install_retraction_gh_mock '[{"number":104,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"}}]' '{"comments":[{"body":"<!-- version-drift-retraction: v1 -->","author":{"login":"test-drift-app"}},{"body":"Thanks, I will check.","author":{"login":"octocat"}}]}'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    grep -q 'issue view 104' "$VDRIFT_CALL_LOG"
+    ! grep -q '^issue comment ' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: unrecognised sweep statuses post no comment" {
+    _install_retraction_gh_mock '[{"number":110,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"}}]'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"error"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"sweep contains an unrecognised status; no comments posted"* ]]
+    ! grep -q '^issue comment ' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: window_empty sweep status posts no comment" {
+    _install_retraction_gh_mock '[{"number":111,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"}}]'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"window_empty"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"sweep contains an unrecognised status; no comments posted"* ]]
+    ! grep -q '^issue comment ' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: missing sweep status posts no comment" {
+    _install_retraction_gh_mock '[{"number":112,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"}}]'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"sweep contains an unrecognised status; no comments posted"* ]]
+    ! grep -q '^issue comment ' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: malformed comment history warns and posts no comment" {
+    _install_retraction_gh_mock '[{"number":109,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"}}]' 'not JSON'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"could not parse comment history for #109; skipping"* ]]
+    ! grep -q '^issue comment ' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: malformed comment author warns and posts no comment" {
+    # An object without author.login cannot be interpreted as an App or human
+    # comment, so it must still fail closed.
+    _install_retraction_gh_mock '[{"number":113,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"}}]' '{"comments":[{"body":"<!-- version-drift-retraction: v1 -->","author":{}}]}'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"could not parse comment history for #113; skipping"* ]]
+    ! grep -q '^issue comment ' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: deleted-account comment is skipped while history is evaluated" {
+    # GitHub returns author:null when an account has been deleted. That is a
+    # known non-match, not malformed history: it cannot be this App.
+    _install_retraction_gh_mock '[{"number":115,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"}}]' '{"comments":[{"body":"<!-- version-drift-retraction: v1 -->","author":null},{"body":"## Version drift still detected","author":{"login":"test-drift-app"}}]}'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"could not parse comment history for #115; skipping"* ]]
+    grep -q '^issue comment 115 ' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: comment entry without a body warns and posts no comment" {
+    # body is also read by the latest-automation check; omit it without
+    # letting jq coerce the entry into an apparently harmless empty comment.
+    _install_retraction_gh_mock '[{"number":114,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"}}]' '{"comments":[{"author":{"login":"test-drift-app"}}]}'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"could not parse comment history for #114; skipping"* ]]
+    ! grep -q '^issue comment ' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: marked App candidate without a number warns and is skipped" {
+    _install_retraction_gh_mock '[{"title":"Version drift detected — postgres","body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"}}]'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'dropping marked App-authored version-drift issue "Version drift detected — postgres" because its number is missing or invalid; skipping'* ]]
+    ! grep -q '^issue view ' "$VDRIFT_CALL_LOG"
+    ! grep -q '^issue comment ' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: full episode cycle comments again after a drift refresh" {
+    # Model the full lifecycle: clean sweep retraction, App drift refresh, then
+    # a later clean sweep. The second retraction is allowed only because the
+    # refresh became the newest automation activity on the open issue.
+    export VDRIFT_CALL_LOG="$TEST_TEMP_DIR/retraction-cycle-gh-calls.log"
+    local comments_file="$TEST_TEMP_DIR/retraction-cycle-comments.json"
+    printf '%s\n' '{"comments":[]}' > "$comments_file"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/gh" << 'GHEOF'
+#!/usr/bin/env bash
+echo "$*" >> "$VDRIFT_CALL_LOG"
+case "$*" in
+    *"label create"*) : ;;
+    *"issue list"*)
+        # The same per-container issue is visible to the broad recovery scan
+        # and to the dep:postgres refresh query; it is never a scope change.
+        if [[ "$*" != *"--label dep:postgres"* && "$*" != *"--json number,body,author"* ]]; then
+            echo "unexpected version-drift issue-list scope: $*" >&2
+            exit 1
+        fi
+        printf '%s\n' '[{"number":120,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"},"labels":[{"name":"version-drift"},{"name":"automation"},{"name":"dep:postgres"}]}]'
+        ;;
+    *"issue view"*) cat "$VDRIFT_COMMENTS_FILE" ;;
+    *"issue comment"*)
+        if [[ "$*" == *"version-drift-retraction: v1"* ]]; then
+            jq '.comments += [{"body":"<!-- version-drift-retraction: v1 -->","author":{"login":"test-drift-app"}}]' "$VDRIFT_COMMENTS_FILE" > "${VDRIFT_COMMENTS_FILE}.tmp"
+        elif [[ "$*" == *"Version drift still detected"* ]]; then
+            jq '.comments += [{"body":"## Version drift still detected","author":{"login":"test-drift-app"}}]' "$VDRIFT_COMMENTS_FILE" > "${VDRIFT_COMMENTS_FILE}.tmp"
+        else
+            echo "unexpected issue comment: $*" >&2
+            exit 1
+        fi
+        mv "${VDRIFT_COMMENTS_FILE}.tmp" "$VDRIFT_COMMENTS_FILE"
+        ;;
+    *) echo "unexpected gh args: $*" >&2; exit 1 ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export VDRIFT_COMMENTS_FILE="$comments_file"
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    run open_version_drift_issue '[{"status":"drift","kind":"container","name":"postgres","declared":"18.2","published":"18.1"}]' "postgres"
+    [ "$status" -eq 0 ]
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+
+    [ "$(grep -c 'version-drift-retraction: v1' "$VDRIFT_CALL_LOG")" -eq 2 ]
+    [ "$(grep -c 'Version drift still detected' "$VDRIFT_CALL_LOG")" -eq 1 ]
+    grep -q '^issue list .*--label dep:postgres ' "$VDRIFT_CALL_LOG"
+}
+
+@test "version-drift retraction: a sweep still reporting drift posts no comment" {
+    # The clean-status gate must reject drift as well as unrecognised failures:
+    # the comment says no drift was found, so it must never be written here.
+    _install_retraction_gh_mock '[{"number":105,"body":"<!-- version-drift-issue: provenance=v1 -->","author":{"login":"app/test-drift-app"},"labels":[{"name":"version-drift"},{"name":"automation"},{"name":"version-drift-sweep"}]}]' '{"comments":[]}'
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"},{"status":"drift"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    ! grep -q '^issue comment ' "$VDRIFT_CALL_LOG"
+    [[ "$output" == *"sweep contains an unrecognised status; no comments posted"* ]]
+}
+
+@test "version-drift retraction: gh failure warns and returns 0" {
+    _install_retraction_gh_mock '[]' '{"comments":[]}' list_fail
+    export DRY_RUN="false"
+
+    run comment_version_drift_issues_on_recovery '[{"status":"in_sync"}]' "$VDRIFT_APP_SLUG"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::warning::comment_version_drift_issues_on_recovery: gh issue list failed"* ]]
+}
 
 # ---------------------------------------------------------------------------
 # recovery mode: --mode recovery
