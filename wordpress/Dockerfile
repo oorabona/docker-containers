@@ -54,32 +54,36 @@ RUN set -ex; \
 # When a supported WP-CLI release stops emitting the warning, remove the wrapper
 # and move the phar back to /usr/local/bin/wp.
 ARG WPCLI_VERSION
+ARG WPCLI_KEY_FPR
 
 # Validate required build args
-RUN : "${WPCLI_VERSION:?required}"
+RUN : "${WPCLI_VERSION:?required}" "${WPCLI_KEY_FPR:?required}"
+
+# WP-CLI release signing key (WP-CLI Releases <releases@wp-cli.org>; fingerprint
+# 63AF 7AA1 5067 C056 16FD DD88 A3A2 E8F2 26F0 BC06). Vendored as the trust
+# anchor so the build can verify the fetched WP-CLI phar's GPG signature (#1025).
+# Key rotation/expiry is monitored separately.
+COPY wp-cli-signing-key.asc /usr/local/share/wp-cli/wp-cli-signing-key.asc
 
 # The phar is fetched over TLS and then executed as root two lines later, so TLS
-# is authenticating the CDN rather than the artifact. Upstream publishes a
-# SHA-512 beside every release asset; check it before the file is ever run, and
-# fail the build if it does not match.
-#
-# Be clear about what that buys, because it is not everything: the digest comes
-# from the SAME release authority as the phar, so it catches a truncated or
-# corrupted download and an attacker who can alter one file but not the other —
-# and it does NOT survive a compromise of the release itself, which could serve
-# a matching pair. Closing that needs the signature upstream also publishes
-# (.asc) verified against a fingerprint pinned in this repository, the way #918
-# does for EasyRSA. Tracked in #1025.
+# authenticates the CDN rather than the artifact. Verify the upstream signature
+# against the vendored, fingerprint-pinned release key before the file is run.
 RUN set -ex; \
     rm -f /usr/local/etc/php/conf.d/cli-no-deprecated.ini; \
+    apk add --no-cache --virtual .gpg-deps gnupg; \
     curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/wp-cli.phar https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar; \
-    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 -o /tmp/wp-cli.phar.sha512 https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar.sha512; \
-    expected_sha512="$(cat /tmp/wp-cli.phar.sha512)"; \
-    case "$expected_sha512" in \
-        *[!0-9a-fA-F]* | "") echo "wp-cli sha512 asset is not a hex digest" >&2; exit 1 ;; \
-    esac; \
-    echo "${expected_sha512}  /usr/local/bin/wp-cli.phar" | sha512sum -c -; \
-    rm -f /tmp/wp-cli.phar.sha512; \
+    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 -o /tmp/wp-cli.phar.asc https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar.asc; \
+    GNUPGHOME="$(mktemp -d)"; export GNUPGHOME; \
+    gpg --batch --import /usr/local/share/wp-cli/wp-cli-signing-key.asc; \
+    # The throwaway keyring must hold EXACTLY the one expected key, so \
+    # `gpg --verify` can only accept that key's signatures (a vendored file with a \
+    # second key would otherwise widen trust silently). \
+    [ "$(gpg --batch --list-keys --with-colons | grep -c '^pub:')" = "1" ]; \
+    [ "$(gpg --batch --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')" = "${WPCLI_KEY_FPR}" ]; \
+    gpg --batch --verify /tmp/wp-cli.phar.asc /usr/local/bin/wp-cli.phar; \
+    rm -rf "$GNUPGHOME" /tmp/wp-cli.phar.asc; \
+    unset GNUPGHOME; \
+    apk del .gpg-deps; \
     printf '%s\n' \
         '#!/bin/sh' \
         'exec /usr/local/bin/php -d "error_reporting=E_ALL & ~E_NOTICE & ~E_DEPRECATED" \' \
@@ -87,6 +91,12 @@ RUN set -ex; \
         > /usr/local/bin/wp; \
     chown root:root /usr/local/bin/wp /usr/local/bin/wp-cli.phar; \
     chmod 755 /usr/local/bin/wp /usr/local/bin/wp-cli.phar; \
+    # --allow-root because the build runs as root and WP-CLI refuses every command
+    # without it, including --version: it exits 1 with EMPTY stdout, so the
+    # assertion below would compare "" and fail every build. Measured.
+    wpcli_reported_version="$(/usr/local/bin/wp --version --allow-root)"; \
+    [ "$wpcli_reported_version" = "WP-CLI ${WPCLI_VERSION}" ]; \
+    printf 'WP-CLI version assertion passed: %s\n' "$wpcli_reported_version"; \
     # Verify WP-CLI works through the wrapper
     /usr/local/bin/wp --info --allow-root
 

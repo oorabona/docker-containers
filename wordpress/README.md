@@ -141,6 +141,8 @@ All variables support the `_FILE` suffix for Docker secrets (e.g. `WP_ADMIN_PASS
 | `REMOTE_CR` | Registry root for the base PHP image | `docker.io/oorabona` |
 | `PHP_TAG` | Tag of the base PHP-FPM image | `latest` |
 | `WPCLI_VERSION` | WP-CLI version | `2.12.0` |
+| `WPCLI_KEY_FPR` | Pinned WP-CLI release-signing key fingerprint | `63AF7AA15067C05616FDDD88A3A2E8F226F0BC06` |
+| `SQLITE_PLUGIN_VERSION` | SQLite Database Integration plugin version | `2.2.23` |
 | `VERSION` | WordPress version | latest |
 
 ## Security Model
@@ -336,6 +338,8 @@ docker build \
   --build-arg REMOTE_CR=ghcr.io/oorabona \
   --build-arg PHP_TAG=latest \
   --build-arg WPCLI_VERSION=2.12.0 \
+  --build-arg WPCLI_KEY_FPR=63AF7AA15067C05616FDDD88A3A2E8F226F0BC06 \
+  --build-arg SQLITE_PLUGIN_VERSION=2.2.23 \
   --build-arg VERSION=6.9.1 \
   -t wordpress:custom .
 ```

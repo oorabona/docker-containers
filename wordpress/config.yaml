@@ -5,6 +5,10 @@ base_image: "${REMOTE_CR}/php:${PHP_TAG}"
 build_args:
   PHP_TAG: "latest"
   WPCLI_VERSION: "2.12.0"
+  # Pinned WP-CLI release-signing key fingerprint (primary). SINGLE SOURCE OF TRUTH:
+  # consumed as a --build-arg by the Dockerfile bake (exactly-one-key + fingerprint
+  # assertion) AND read by the GPG key-lifecycle monitor (scripts/check-gpg-keys.sh).
+  WPCLI_KEY_FPR: "63AF7AA15067C05616FDDD88A3A2E8F226F0BC06"
   SQLITE_PLUGIN_VERSION: "2.2.23"
 dependency_sources:
   WPCLI_VERSION:
@@ -12,6 +16,17 @@ dependency_sources:
     type: github-release
     repo: wp-cli/wp-cli
     strip_v: true
+    gpg_key:
+      file: wp-cli-signing-key.asc
+      expiry_warn_days: 60
+      fingerprint_arg: WPCLI_KEY_FPR
+      release_asset_template: "wp-cli-{version}.phar"
+      release_tag_template: "v{version}"
+      signature_suffix: ".asc"
+  WPCLI_KEY_FPR:
+    monitor: false
+    lifecycle: untracked
+    reason: "Pinned WP-CLI signing-key fingerprint (see WPCLI_VERSION.gpg_key); a constant, not a tracked version"
   SQLITE_PLUGIN_VERSION:
     lifecycle: tracked
     type: github-release
