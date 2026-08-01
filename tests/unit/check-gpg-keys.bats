@@ -347,6 +347,25 @@ require_live_gpg_keygen() {
     done
 }
 
+@test "a signature_suffix outside {.sig,.asc} is a config finding, not a key rotation" {
+    local suffix
+    for suffix in '""' '".gpg"' '"../../etc/passwd"' '{}' '[]'; do
+        yq -i ".dependency_sources.EASYRSA_VERSION.gpg_key.signature_suffix = ${suffix}" \
+            "$TEST_PROJECT_ROOT/openvpn/config.yaml"
+
+        run run_check openvpn --json
+
+        [ "$status" -eq 0 ]
+        [ "$(jq -r '.[0].config[0].reason' <<< "$(json_output)")" = "gpg-key-shape-invalid" ]
+        [ "$(jq -r '.[0].config[0].severity' <<< "$(json_output)")" = "high" ]
+        # The defect this pins: an empty suffix made the signature path equal the
+        # artifact path, so gpg verified the artifact against itself, failed, and
+        # the monitor announced a high-severity rotation that had not happened.
+        [ "$(jq -r '.[0].rotation.rotation' <<< "$(json_output)")" = "false" ]
+        [ "$(jq -r '.[0].rotation.severity' <<< "$(json_output)")" != "high" ]
+    done
+}
+
 @test "non-scalar gpg_key field is a high config finding before field access" {
     yq -i '.dependency_sources.EASYRSA_VERSION.gpg_key.release_asset_template = []' "$TEST_PROJECT_ROOT/openvpn/config.yaml"
 
@@ -764,7 +783,7 @@ EOF
     [ "$(jq -r '.[0].expiry.severity' <<< "$(json_output)")" = "none" ]
 }
 
-@test "rotation is false when verify emits VALIDSIG, including EXPKEYSIG plus VALIDSIG" {
+@test "rotation fetches the default .sig and configured signature suffixes" {
     export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
     export FAKE_GPG_VERIFY_STATUS=validsig
     export FAKE_CURL_LOG="$TEST_TEMP_DIR/curl.urls"
@@ -776,6 +795,15 @@ EOF
     [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "ok" ]
     grep -qx 'https://github.com/OpenVPN/easy-rsa/releases/download/v4.0.0/EasyRSA-4.0.0.tgz' "$FAKE_CURL_LOG"
     grep -qx 'https://github.com/OpenVPN/easy-rsa/releases/download/v4.0.0/EasyRSA-4.0.0.tgz.sig' "$FAKE_CURL_LOG"
+
+    yq -i '.dependency_sources.EASYRSA_VERSION.gpg_key.signature_suffix = ".asc"' "$TEST_PROJECT_ROOT/openvpn/config.yaml"
+    : > "$FAKE_CURL_LOG"
+    run run_check openvpn --json
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].rotation.rotation' <<< "$(json_output)")" = "false" ]
+    [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "ok" ]
+    grep -qx 'https://github.com/OpenVPN/easy-rsa/releases/download/v4.0.0/EasyRSA-4.0.0.tgz' "$FAKE_CURL_LOG"
+    grep -qx 'https://github.com/OpenVPN/easy-rsa/releases/download/v4.0.0/EasyRSA-4.0.0.tgz.asc' "$FAKE_CURL_LOG"
 
     export FAKE_GPG_VERIFY_STATUS=expkeysig_validsig
     run run_check openvpn --json

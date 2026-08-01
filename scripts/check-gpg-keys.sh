@@ -276,9 +276,10 @@ rotation_result() {
     local errors_json="$6"
     local config="$7"
 
-    local asset_template tag_template asset tag base_url
+    local asset_template tag_template signature_suffix asset tag base_url
     asset_template="$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].gpg_key.release_asset_template // ""' "$config")"
     tag_template="$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].gpg_key.release_tag_template // ""' "$config")"
+    signature_suffix="$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].gpg_key.signature_suffix // ".sig"' "$config")"
     if [[ -z "$asset_template" || "$asset_template" == "null" || -z "$tag_template" || "$tag_template" == "null" ]]; then
         local msg="${dep}: missing gpg_key release_asset_template or release_tag_template"
         jq -nc --arg msg "$msg" --argjson errors "$errors_json" '
@@ -320,9 +321,9 @@ rotation_result() {
     }
 
     tgz="${tmpdir}/$(basename -- "$asset")"
-    sig="${tgz}.sig"
+    sig="${tgz}${signature_suffix}"
 
-    if ! fetch_release_artifact "$base_url" "$tgz" || ! fetch_release_artifact "${base_url}.sig" "$sig"; then
+    if ! fetch_release_artifact "$base_url" "$tgz" || ! fetch_release_artifact "${base_url}${signature_suffix}" "$sig"; then
         cleanup_rotation_tmp
         local msg="${dep}: failed to fetch release artifact/signature for ${latest}"
         jq -nc --arg latest "$latest" --arg msg "$msg" --argjson errors "$errors_json" '
@@ -441,6 +442,18 @@ config_shape_result() {
         }'
 }
 
+# signature_suffix is a closed set, not a free-form string. GnuPG detached
+# signatures are ".sig" (binary) or ".asc" (armored) and nothing else, so the
+# field is checked against those two rather than sanitized. An empty value would
+# otherwise make the signature path equal the artifact path, and gpg would be
+# asked to verify the artifact against itself: the check fails, and the monitor
+# reports a high-severity KEY ROTATION that never happened. A value outside the
+# set is reported for what it is — a configuration error — through the channel
+# below. Bounded, and worth stating as such: this check and the fetch that uses
+# the value read config.yaml separately, as the two release templates beside it
+# already did, so the guarantee covers a tree that is not being rewritten during
+# the run. Absent stays absent: null keeps resolving to the ".sig" default, which
+# is what openvpn relies on by declaring no suffix at all.
 gpg_key_shape_valid() {
     local config="$1"
     local dep="$2"
@@ -456,6 +469,10 @@ gpg_key_shape_valid() {
           $gpg_key.release_asset_template,
           $gpg_key.release_tag_template
         ] | map(select(. != null and (type == "!!map" or type == "!!seq"))) | length) == 0)
+      | select(
+          $gpg_key.signature_suffix == null
+          or $gpg_key.signature_suffix == ".sig"
+          or $gpg_key.signature_suffix == ".asc")
     ' "$config" >/dev/null 2>&1
 }
 
@@ -463,7 +480,7 @@ gpg_key_shape_result() {
     local container="$1"
     local dep="$2"
     local config="$PROJECT_ROOT/${container}/config.yaml"
-    local msg="${dep}: gpg_key in ${config} must be a mapping with scalar fields"
+    local msg="${dep}: gpg_key in ${config} must be a mapping with scalar fields, and signature_suffix must be omitted, \".sig\" or \".asc\""
 
     jq -nc \
         --arg container "$container" \
