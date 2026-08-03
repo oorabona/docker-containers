@@ -81,7 +81,7 @@ for CONTAINER in $CONTAINERS; do
     KEEP_REASON=""
 
     # Rule 1: Keep "latest" tag
-    if echo ",$TAGS," | grep -q ",latest,"; then
+    if grep -q ",latest," <<< ",$TAGS,"; then
       KEEP_REASON="has 'latest' tag"
     fi
 

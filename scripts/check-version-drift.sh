@@ -253,8 +253,7 @@ _vdrift_probe_published() {
             # Only manifest-specific messages map to absent; everything else is error
             # (fail-closed): credential helper failures, "command not found", auth-endpoint
             # 404s, network errors, and 5xx responses all remain in the error branch.
-            if printf '%s' "$sk_stderr" | grep -qiE \
-                'manifest unknown|MANIFEST_UNKNOWN|was deleted or has expired'; then
+            if grep -qiE 'manifest unknown|MANIFEST_UNKNOWN|was deleted or has expired' <<< "$sk_stderr"; then
                 printf 'absent'
             else
                 printf 'error'
