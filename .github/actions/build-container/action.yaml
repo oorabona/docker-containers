@@ -94,7 +94,7 @@ runs:
   steps:
     - name: Log in to GitHub Container Registry
       if: runner.os != 'Windows'
-      uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
@@ -103,7 +103,7 @@ runs:
     - name: Log in to Docker Hub
       if: runner.os != 'Windows' && inputs.dockerhub_username != '' && inputs.dockerhub_token != ''
       id: dockerhub-login
-      uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
       with:
         registry: docker.io
         username: ${{ inputs.dockerhub_username }}
@@ -669,7 +669,7 @@ runs:
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' }}
       id: sarif-upload
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+      uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
       with:
         sarif_file: 'trivy-results.sarif'
         category: 'container-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}-${{ inputs.platform }}'
@@ -684,7 +684,7 @@ runs:
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' && steps.sarif-upload.outcome == 'failure' }}
       id: sarif-upload-retry
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+      uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
       with:
         sarif_file: 'trivy-results.sarif'
         category: 'container-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}-${{ inputs.platform }}'
