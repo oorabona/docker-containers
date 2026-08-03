@@ -49,6 +49,17 @@ exec_sql() {
         -t -A -c "$1" 2>/dev/null || true
 }
 
+# Execute a SQL statement that must succeed for the test to continue.
+exec_sql_statement() {
+    local sql="$1" db="${2:-$POSTGRES_DB}"
+
+    if ! docker exec "$CONTAINER_NAME" psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$db" \
+        -c "$sql" >/dev/null; then
+        th_fail "SQL statement failed in database '$db': $sql"
+        return 1
+    fi
+}
+
 # Execute SQL against a specific database
 exec_sql_db() {
     local db="$1" sql="$2"
@@ -172,15 +183,15 @@ test_pgvector() {
     th_pass "pgvector extension installed"
 
     # Test vector operations
-    exec_sql "CREATE TABLE IF NOT EXISTS test_vectors (id serial PRIMARY KEY, embedding vector(3));" >/dev/null
-    exec_sql "INSERT INTO test_vectors (embedding) VALUES ('[1,2,3]'), ('[4,5,6]') ON CONFLICT DO NOTHING;" >/dev/null
+    exec_sql_statement "CREATE TABLE IF NOT EXISTS test_vectors (id serial PRIMARY KEY, embedding vector(3));" || return
+    exec_sql_statement "INSERT INTO test_vectors (embedding) VALUES ('[1,2,3]'), ('[4,5,6]') ON CONFLICT DO NOTHING;" || return
 
     th_start
     local result
     result=$(exec_sql "SELECT COUNT(*) FROM test_vectors WHERE embedding <-> '[1,2,3]' < 10;")
     th_assert_ge "pgvector: vector similarity search works" "$result" 1
 
-    exec_sql "DROP TABLE IF EXISTS test_vectors;" >/dev/null
+    exec_sql_statement "DROP TABLE IF EXISTS test_vectors;" || return
 }
 
 test_pg_partman() {
@@ -205,15 +216,15 @@ test_hypopg() {
     fi
     th_pass "hypopg extension installed"
 
-    exec_sql "CREATE TABLE IF NOT EXISTS test_hypopg (id int, name text);" >/dev/null
+    exec_sql_statement "CREATE TABLE IF NOT EXISTS test_hypopg (id int, name text);" || return
 
     th_start
     local result
     result=$(exec_sql "SELECT hypopg_create_index('CREATE INDEX ON test_hypopg (id)');")
     th_assert_not_empty "hypopg: hypothetical index creation works" "$result"
 
-    exec_sql "SELECT hypopg_reset();" >/dev/null
-    exec_sql "DROP TABLE IF EXISTS test_hypopg;" >/dev/null
+    exec_sql_statement "SELECT hypopg_reset();" || return
+    exec_sql_statement "DROP TABLE IF EXISTS test_hypopg;" || return
 }
 
 test_pg_qualstats() {
@@ -242,16 +253,16 @@ test_timescaledb() {
     fi
     th_pass "timescaledb extension installed"
 
-    exec_sql "CREATE TABLE IF NOT EXISTS test_timeseries (time TIMESTAMPTZ NOT NULL, value DOUBLE PRECISION);" >/dev/null
-    exec_sql "SELECT create_hypertable('test_timeseries', by_range('time'), if_not_exists => TRUE);" >/dev/null
-    exec_sql "INSERT INTO test_timeseries (time, value) VALUES (NOW(), 42.0) ON CONFLICT DO NOTHING;" >/dev/null
+    exec_sql_statement "CREATE TABLE IF NOT EXISTS test_timeseries (time TIMESTAMPTZ NOT NULL, value DOUBLE PRECISION);" || return
+    exec_sql_statement "SELECT create_hypertable('test_timeseries', by_range('time'), if_not_exists => TRUE);" || return
+    exec_sql_statement "INSERT INTO test_timeseries (time, value) VALUES (NOW(), 42.0) ON CONFLICT DO NOTHING;" || return
 
     th_start
     local result
     result=$(exec_sql "SELECT time_bucket('1 hour', NOW())::text IS NOT NULL;")
     th_assert_eq "timescaledb: hypertable and time_bucket work" "$result" "t"
 
-    exec_sql "DROP TABLE IF EXISTS test_timeseries CASCADE;" >/dev/null
+    exec_sql_statement "DROP TABLE IF EXISTS test_timeseries CASCADE;" || return
 }
 
 test_citus() {
@@ -267,17 +278,13 @@ test_citus() {
     result=$(exec_sql "SELECT citus_version();")
     th_assert_not_empty "citus: version check passed" "$result"
 
-    exec_sql "CREATE TABLE IF NOT EXISTS test_distributed (id int, data text);" >/dev/null
+    exec_sql_statement "CREATE TABLE IF NOT EXISTS test_distributed (id int, data text);" || return
 
     th_start
-    result=$(exec_sql "SELECT create_reference_table('test_distributed');" 2>/dev/null || echo "skip")
-    if [[ "$result" != "skip" ]]; then
-        th_pass "citus: reference table creation works"
-    else
-        th_skip "citus: reference table creation" "may need coordinator setup"
-    fi
+    exec_sql_statement "SELECT create_reference_table('test_distributed');" || return
+    th_pass "citus: reference table creation works"
 
-    exec_sql "DROP TABLE IF EXISTS test_distributed CASCADE;" >/dev/null
+    exec_sql_statement "DROP TABLE IF EXISTS test_distributed CASCADE;" || return
 }
 
 test_paradedb() {
@@ -288,8 +295,8 @@ test_paradedb() {
     fi
     th_pass "pg_search (ParadeDB) extension installed"
 
-    exec_sql "CREATE TABLE IF NOT EXISTS test_search (id SERIAL PRIMARY KEY, content TEXT);" >/dev/null
-    exec_sql "INSERT INTO test_search (content) VALUES ('hello world'), ('postgresql database'), ('full text search') ON CONFLICT DO NOTHING;" >/dev/null
+    exec_sql_statement "CREATE TABLE IF NOT EXISTS test_search (id SERIAL PRIMARY KEY, content TEXT);" || return
+    exec_sql_statement "INSERT INTO test_search (content) VALUES ('hello world'), ('postgresql database'), ('full text search') ON CONFLICT DO NOTHING;" || return
 
     th_start
     local index_ok
@@ -303,7 +310,7 @@ test_paradedb() {
         th_skip "paradedb: BM25 index creation" "index type not available"
     fi
 
-    exec_sql "DROP TABLE IF EXISTS test_search CASCADE;" >/dev/null
+    exec_sql_statement "DROP TABLE IF EXISTS test_search CASCADE;" || return
 }
 
 test_pg_cron() {
@@ -324,7 +331,7 @@ test_pg_cron() {
     cron_db=$(exec_sql "SHOW cron.database_name;" 2>/dev/null)
     [[ -z "$cron_db" ]] && cron_db="postgres"
 
-    exec_sql_db "$cron_db" "CREATE EXTENSION IF NOT EXISTS pg_cron;" >/dev/null 2>&1
+    exec_sql_statement "CREATE EXTENSION IF NOT EXISTS pg_cron;" "$cron_db" || return
 
     th_start
     result=$(exec_sql_db "$cron_db" \
@@ -340,15 +347,15 @@ test_pg_ivm() {
     fi
     th_pass "pg_ivm extension installed"
 
-    exec_sql "CREATE TABLE IF NOT EXISTS test_ivm_base (id int, val int);" >/dev/null
-    exec_sql "INSERT INTO test_ivm_base VALUES (1, 10), (2, 20) ON CONFLICT DO NOTHING;" >/dev/null
+    exec_sql_statement "CREATE TABLE IF NOT EXISTS test_ivm_base (id int, val int);" || return
+    exec_sql_statement "INSERT INTO test_ivm_base VALUES (1, 10), (2, 20) ON CONFLICT DO NOTHING;" || return
 
     th_start
     local result
     result=$(exec_sql "SELECT COUNT(*) FROM pg_proc WHERE proname = 'create_immv';")
     th_assert_ge "pg_ivm: create_immv function available" "$result" 1
 
-    exec_sql "DROP TABLE IF EXISTS test_ivm_base CASCADE;" >/dev/null
+    exec_sql_statement "DROP TABLE IF EXISTS test_ivm_base CASCADE;" || return
 }
 
 test_postgis() {
@@ -364,14 +371,14 @@ test_postgis() {
     result=$(exec_sql "SELECT PostGIS_Version();")
     th_assert_not_empty "postgis: version check" "$result"
 
-    exec_sql "CREATE TABLE IF NOT EXISTS test_geo (id serial PRIMARY KEY, geom geometry(Point, 4326));" >/dev/null
-    exec_sql "INSERT INTO test_geo (geom) VALUES (ST_SetSRID(ST_MakePoint(-73.99, 40.73), 4326)) ON CONFLICT DO NOTHING;" >/dev/null
+    exec_sql_statement "CREATE TABLE IF NOT EXISTS test_geo (id serial PRIMARY KEY, geom geometry(Point, 4326));" || return
+    exec_sql_statement "INSERT INTO test_geo (geom) VALUES (ST_SetSRID(ST_MakePoint(-73.99, 40.73), 4326)) ON CONFLICT DO NOTHING;" || return
 
     th_start
     result=$(exec_sql "SELECT ST_AsText(geom) FROM test_geo LIMIT 1;")
     th_assert_contains "postgis: spatial operations work" "$result" "POINT"
 
-    exec_sql "DROP TABLE IF EXISTS test_geo;" >/dev/null
+    exec_sql_statement "DROP TABLE IF EXISTS test_geo;" || return
 }
 
 # ============================================================================
