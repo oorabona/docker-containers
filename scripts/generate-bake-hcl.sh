@@ -392,7 +392,7 @@ _materialize_dockerfile() {
     fi
 
     # Verify no @@ markers remain after expansion.
-    if printf '%s' "$content" | grep -qE '@@[A-Z_]+@@' 2>/dev/null; then
+    if grep -qE '@@[A-Z_]+@@' <<< "$content" 2>/dev/null; then
         printf 'ERROR: unexpanded @@ markers remain in generated Dockerfile for %s (flavor=%s)\n' \
             "$container" "$flavor" >&2
         return 1
@@ -413,7 +413,7 @@ _df_declares_arg() {
     [[ -n "$df" ]] || return 1
     local re="^ARG[[:space:]]+${arg_name}([[:space:]=]|\$)"
     if [[ "$is_inline" == "1" ]]; then
-        printf '%s' "$df" | grep -qE "$re" 2>/dev/null
+        grep -qE "$re" <<< "$df" 2>/dev/null
     else
         [[ -f "$df" ]] && grep -qE "$re" "$df" 2>/dev/null
     fi
@@ -607,7 +607,7 @@ _resolve_cell_base_ref() {
 
         # Extract first non-AS FROM line
         local from_line
-        from_line=$(printf '%s' "$df_text" | grep -m1 -E '^FROM ') || from_line=""
+        from_line=$(grep -m1 -E '^FROM ' <<< "$df_text") || from_line=""
         local raw_ref
         raw_ref=$(awk '{print $2}' <<< "$from_line") || raw_ref=""
         [[ -z "$raw_ref" ]] && { printf ''; return 0; }
@@ -782,7 +782,7 @@ _enumerate_cells_init() {
 
     local c
     for c in "${requested_containers[@]}"; do
-        if ! printf '%s\n' "$all_containers_newline" | grep -qxF -- "$c"; then
+        if ! grep -qxF -- "$c" <<< "$all_containers_newline"; then
             printf 'ERROR: unknown container %q — not in ./make list\n' "$c" >&2
             printf 'Valid containers:\n%s\n' "$all_containers_newline" >&2
             return 1
@@ -1031,7 +1031,7 @@ _on_cell_bake() {
             df_text_for_stage=$(< "$abs_dockerfile")
         fi
         if [[ -n "$df_text_for_stage" ]] && \
-           printf '%s' "$df_text_for_stage" | grep -qE "^FROM .* AS ${build_flavor}\b" 2>/dev/null; then
+           grep -qE "^FROM .* AS ${build_flavor}\b" <<< "$df_text_for_stage" 2>/dev/null; then
             target_stage="$build_flavor"
         fi
     fi
