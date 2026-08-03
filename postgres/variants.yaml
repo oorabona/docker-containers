@@ -137,3 +137,7 @@ versions:
         flavor: full
         description: "PostgreSQL with all compiled extensions"
         when_to_use: All extensions enabled — pick when prototyping or when scope is not yet defined.
+tests:
+  e2e:
+    enabled: false
+    flavor: full

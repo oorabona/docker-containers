@@ -8,7 +8,7 @@ setup() {
     # Cleared going in, not just coming out: one of these exported in the shell
     # that runs the suite would otherwise steer the stub through tests that never
     # asked for it.
-    unset E2E_IMAGE E2E_BUILD_TAG E2E_BUILD_VERSION E2E_BUILD_VARIANT E2E_BUILD_FLAVOR E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_IMAGE_ID DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT \
+    unset E2E_IMAGE E2E_BUILD_TAG E2E_BUILD_VERSION E2E_BUILD_VARIANT E2E_BUILD_FLAVOR FLAVOR E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_IMAGE_ID DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT \
         DOCKER_INSPECT_ERROR DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_PS_ERROR \
         DOCKER_IMAGES_OUTPUT DOCKER_RM_FAIL_ON_SECOND
     # Each bats test is its own process, so it inherits these from the shell that
@@ -27,7 +27,7 @@ setup() {
 
 teardown() {
     export PATH="$ORIG_PATH"
-    unset E2E_IMAGE E2E_BUILD_TAG E2E_BUILD_VERSION E2E_BUILD_VARIANT E2E_BUILD_FLAVOR E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_LOG DOCKER_IMAGES_OUTPUT DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_PS_ERROR DOCKER_IMAGE_ID DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT DOCKER_INSPECT_ERROR DOCKER_RM_FAIL_ON_SECOND PS_COUNT_FILE TEST_SCRIPT_MARKER RUN_STARTED TEST_SUITE_STARTED HARNESS_PID_FILE
+    unset E2E_IMAGE E2E_BUILD_TAG E2E_BUILD_VERSION E2E_BUILD_VARIANT E2E_BUILD_FLAVOR FLAVOR E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_LOG DOCKER_IMAGES_OUTPUT DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_PS_ERROR DOCKER_IMAGE_ID DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT DOCKER_INSPECT_ERROR DOCKER_RM_FAIL_ON_SECOND PS_COUNT_FILE TEST_SCRIPT_MARKER RUN_STARTED TEST_SUITE_STARTED HARNESS_PID_FILE
     teardown_temp_dir
 }
 
@@ -165,6 +165,15 @@ SH
     chmod +x "$FIXTURE_REPO/openvpn/test.sh"
 }
 
+add_flavor_aware_openvpn_fixture() {
+    add_openvpn_fixture
+    cat > "$FIXTURE_REPO/openvpn/test.sh" <<'SH'
+#!/bin/bash
+printf '%s\n' "${FLAVOR:-base}" > "${TEST_SCRIPT_MARKER:?}"
+SH
+    chmod +x "$FIXTURE_REPO/openvpn/test.sh"
+}
+
 add_single_image_identity_fixture() {
     local container="$1" tag="$2" suffix="$3"
     mkdir -p "$FIXTURE_REPO/$container"
@@ -240,6 +249,40 @@ add_single_image_identity_fixture() {
     [[ "$run_line" == *"-e AUTO_START=y"* ]]
     [[ "$run_line" == *"sha256:ci-loaded-image"* ]]
     ! grep -q '^images ' "$DOCKER_LOG"
+}
+
+@test "E2E_BUILD_FLAVOR reaches a flavor-aware test suite as FLAVOR" {
+    # Regression lock: removing the forwarding makes postgres/test.sh fall back
+    # to base while the workflow has loaded the full image.
+    add_flavor_aware_openvpn_fixture
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/flavor.marker"
+    export E2E_IMAGE="sha256:ci-loaded-image"
+    export E2E_BUILD_TAG="v2.7.5-alpine"
+    export E2E_BUILD_VERSION="v2.7.5-alpine"
+    export E2E_BUILD_VARIANT="full"
+    export E2E_BUILD_FLAVOR="full"
+
+    run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+
+    [ "$status" -eq 0 ]
+    [ "$(cat "$TEST_SCRIPT_MARKER")" = "full" ]
+}
+
+@test "an unset E2E_BUILD_FLAVOR leaves the test suite's own flavor default intact" {
+    # Regression lock for hand-run harnesses: only a supplied build-cell flavor
+    # may set FLAVOR; otherwise a suite's own default remains authoritative.
+    add_flavor_aware_openvpn_fixture
+    install_docker_stub
+    export DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
+    export TEST_SCRIPT_MARKER="$TEST_TEMP_DIR/flavor.marker"
+    export E2E_IMAGE="ghcr.io/oorabona/openvpn:v2.7.5-alpine"
+
+    run "$FIXTURE_REPO/tests/e2e-test.sh" openvpn
+
+    [ "$status" -eq 0 ]
+    [ "$(cat "$TEST_SCRIPT_MARKER")" = "base" ]
 }
 
 @test "deleting the missing-script check would pass a run that verified nothing" {
