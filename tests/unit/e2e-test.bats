@@ -189,6 +189,7 @@ add_single_image_identity_fixture() {
     chmod +x "$TEST_TEMP_DIR/bin/timeout"
     export SOURCE_ONLY_MAKE_MARKER="$TEST_TEMP_DIR/make-ran"
     export SOURCE_ONLY_TIMEOUT_MARKER="$TEST_TEMP_DIR/timeout-ran"
+    export SOURCE_ONLY_DOCKER_MARKER="$TEST_TEMP_DIR/docker-ran"
 
     run env E2E_TEST_SOURCE_ONLY=1 PATH="$TEST_TEMP_DIR/bin:$PATH" bash -c '
         script="$1"
@@ -198,18 +199,44 @@ add_single_image_identity_fixture() {
         set +o pipefail
         SECONDS=37
         set -- caller-first caller-second
+        docker() { : > "${SOURCE_ONLY_DOCKER_MARKER:?}"; }
         source "$script"
         [[ "$SECONDS" -ge 37 ]]
         [[ "$#" -eq 2 && "$1" == caller-first && "$2" == caller-second ]]
         [[ "$-" != *e* && "$-" != *u* ]]
         [[ "$(set -o | awk "\$1 == \"pipefail\" { print \$2 }")" == off ]]
-        declare -F resolve_e2e_image >/dev/null
+        declare -F resolve_e2e_image >/dev/null || exit 1
+        docker
     ' _ "$FIXTURE_REPO/tests/e2e-test.sh" "$caller_dir"
 
     [ "$status" -eq 0 ]
     [ -z "$output" ]
     [ ! -e "$SOURCE_ONLY_MAKE_MARKER" ]
     [ ! -e "$SOURCE_ONLY_TIMEOUT_MARKER" ]
+    [ -e "$SOURCE_ONLY_DOCKER_MARKER" ]
+}
+
+@test "source-only callers retain docker while the bounded helper reaches Docker" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    printf '#!/bin/sh\n: > "${SOURCE_ONLY_HELPER_TIMEOUT_MARKER:?}"\nshift 3\nexec "$@"\n' > "$TEST_TEMP_DIR/bin/timeout"
+    chmod +x "$TEST_TEMP_DIR/bin/timeout"
+    printf '#!/bin/sh\n: > "${SOURCE_ONLY_HELPER_DOCKER_MARKER:?}"\n' > "$TEST_TEMP_DIR/bin/docker"
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export SOURCE_ONLY_HELPER_TIMEOUT_MARKER="$TEST_TEMP_DIR/helper-timeout-ran"
+    export SOURCE_ONLY_HELPER_DOCKER_MARKER="$TEST_TEMP_DIR/helper-docker-ran"
+    export SOURCE_ONLY_DOCKER_MARKER="$TEST_TEMP_DIR/caller-docker-ran"
+
+    run env E2E_TEST_SOURCE_ONLY=1 PATH="$TEST_TEMP_DIR/bin:$PATH" bash -c '
+        docker() { : > "${SOURCE_ONLY_DOCKER_MARKER:?}"; }
+        source "$1"
+        docker
+        _e2e_docker images
+    ' _ "$PROJECT_ROOT/tests/e2e-test.sh"
+
+    [ "$status" -eq 0 ]
+    [ -e "$SOURCE_ONLY_DOCKER_MARKER" ]
+    [ -e "$SOURCE_ONLY_HELPER_TIMEOUT_MARKER" ]
+    [ -e "$SOURCE_ONLY_HELPER_DOCKER_MARKER" ]
 }
 
 @test "S3/AD3: an E2E image ID and passed build cell bypass routing and run unchanged" {
@@ -926,41 +953,116 @@ STUB
     [ "$(grep -c '^rm ' "$DOCKER_LOG")" -eq 2 ]
 }
 
-@test "every docker call in the wait and the cleanup is bounded" {
-    # The property, not the spelling. An earlier version pinned whole source
-    # lines verbatim, which broke on reformatting and — worse — had baked the
-    # probes' `2>&1` into the expectation, so it was holding a defect in place.
-    #
-    # Two ways a bound can be missing: a `timeout` that lost its -k, and a
-    # wrapper deleted outright. Requiring every docker-invoking line to carry
-    # `timeout -k` catches both, because a deleted wrapper leaves the docker call
-    # behind on a line that no longer matches.
+@test "the bounded implementation carries a kill-after and the facade delegates to it" {
+    # The property, not the spelling. An earlier version of this test pinned
+    # whole source lines with `grep -Fx`, which is what the comment above the
+    # docker-call guard already warns against: it breaks on reformatting and
+    # holds one implementation in place rather than the behaviour.
     run bash -c '
-        source_file="$1"
-        # Lines that invoke docker as a command, ignoring comments, log text and
-        # the readiness stderr messages that merely name it.
-        unbounded=$(grep -nE "^[^#]*(^|[^a-zA-Z_-])docker[[:space:]]" "$source_file" |
-            grep -vE "timeout -k" |
-            grep -vE "log_error|log_warning|printf|echo")
-        offenders=$(printf "%s\n" "$unbounded" | grep -c . || true)
-        if [ "$offenders" -ne 0 ]; then
-            printf "%s\n" "$unbounded" >&2
-            exit 1
-        fi
+        awk "/^_e2e_docker\\(\\) \\{/,/^}/" "$1" | grep -qE "timeout[[:space:]]+-k[[:space:]]"
     ' _ "$PROJECT_ROOT/tests/e2e-test.sh"
+    [ "$status" -eq 0 ]
 
+    run bash -c '
+        awk "/^docker\\(\\) \\{/,/^}/" "$1" | grep -qE "_e2e_docker[[:space:]]+\"\\\$@\""
+    ' _ "$PROJECT_ROOT/tests/e2e-test.sh"
     [ "$status" -eq 0 ]
 }
 
-@test "no timeout call omits its kill-after grace" {
-    # A bound without -k is not a bound: plain `timeout` sends SIGTERM and then
-    # waits forever for a child that ignores it.
+@test "only the bounded implementation names docker after timeout" {
+    # Counted rather than pattern-exempted: exactly one line may spell
+    # `timeout ... docker`, and that is the line applying the bound. A second
+    # occurrence is a call that escaped the function. Counting avoids an
+    # exemption regex pinned to the implementation's current wording.
     run bash -c '
-        matches=$(grep -nE "^[^#]*\btimeout\b" "$1") || exit 3
-        printf "%s\n" "$matches" | grep -vE "(^|[[:space:]])-k[[:space:]]"
+        grep -cE "timeout[[:space:]].*[[:space:]]docker([[:space:]]|$)" "$1"
+    ' _ "$PROJECT_ROOT/tests/e2e-test.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$output" -eq 1 ]
+}
+
+@test "the bounded implementation refuses a non-positive bound" {
+    # `timeout 0` means no limit, so an inherited or mistyped zero would turn the
+    # bound off silently. It must fail loudly instead.
+    run bash -c '
+        set -uo pipefail
+        E2E_TEST_SOURCE_ONLY=1 source "$1" >/dev/null 2>&1 || true
+        _DOCKER_TIMEOUT=0 _e2e_docker ps
+    ' _ "$PROJECT_ROOT/tests/e2e-test.sh"
+
+    [ "$status" -eq 64 ]
+    [[ "$output" == *"needs positive bounds"* ]]
+}
+
+@test "no script invocation bypasses the bounded Docker implementation" {
+    # This is intentionally a token-absence check, not a shell parser. The
+    # implementation is the sole place that resolves Docker's binary; every
+    # script call must name _e2e_docker instead.
+    run bash -c '
+        set -o pipefail
+        grep -E "^[^#]*(^|[[:space:]])docker[[:space:]]" "$1" |
+            grep -vE "^[[:space:]]*command timeout -k \"\\\$grace\" \"\\\$duration\" docker \"\\\$@\"$"
     ' _ "$PROJECT_ROOT/tests/e2e-test.sh"
 
     [ "$status" -eq 1 ]
+}
+
+@test "the bounded Docker implementation stops a slow Docker binary at its configured bound" {
+    add_openvpn_fixture
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
+#!/bin/sh
+: > "${DOCKER_MARKER:?}"
+printf '%s\n' "$$" > "${DOCKER_PID_FILE:?}"
+trap '' TERM
+exec /bin/sleep 1000
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    cat > "$TEST_TEMP_DIR/bash-env" <<'BASH_ENV'
+printf 'BASH_ENV was sourced unexpectedly\n' >&2
+: > "${BASH_ENV_MARKER:?}"
+BASH_ENV
+    cat > "$TEST_TEMP_DIR/bin/timeout" <<'STUB'
+#!/bin/bash
+export BASH_ENV="${TEST_BASH_ENV:?}"
+exec "${REAL_TIMEOUT:?}" "$@"
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/timeout"
+    export DOCKER_MARKER="$TEST_TEMP_DIR/docker-invoked"
+    export DOCKER_PID_FILE="$TEST_TEMP_DIR/docker.pid"
+    export BASH_ENV_MARKER="$TEST_TEMP_DIR/bash-env-sourced"
+    export TEST_BASH_ENV="$TEST_TEMP_DIR/bash-env"
+    REAL_TIMEOUT="$(command -v timeout)"
+    export REAL_TIMEOUT
+    export E2E_IMAGE="ghcr.io/oorabona/openvpn:v2.7.5-alpine"
+
+    local before=$SECONDS
+    # The outer watchdog only protects this test if the wrapper regresses. The
+    # Docker stub ignores TERM, so only the wrapper's kill-after can end it.
+    # The inherited function removes a bare timeout bound; `command timeout`
+    # must bypass it. The timeout stub also injects BASH_ENV immediately before
+    # the wrapper's bash -c, so its marker proves that environment was cleared.
+    run bash -c '
+        "$REAL_TIMEOUT" --foreground -k 2 20 env PATH="$1" bash -c "
+            timeout() { shift 3; \"\$@\"; }
+            export -f timeout
+            exec \"\$@\"
+        " _ "$2" openvpn
+        run_status=$?
+        if [ -s "$DOCKER_PID_FILE" ]; then
+            kill -KILL "$(cat "$DOCKER_PID_FILE")" 2>/dev/null || true
+        fi
+        exit "$run_status"
+    ' _ "$TEST_TEMP_DIR/bin:$PATH" "$FIXTURE_REPO/tests/e2e-test.sh"
+    local elapsed=$((SECONDS - before))
+
+    [ "$status" -eq 1 ]
+    [ -e "$DOCKER_MARKER" ]
+    [ ! -e "$BASH_ENV_MARKER" ]
+    [[ "$output" != *"BASH_ENV was sourced unexpectedly"* ]]
+    [ "$elapsed" -ge 10 ]
+    [ "$elapsed" -lt 16 ]
 }
 
 @test "a docker command missing from PATH stops readiness immediately and reports stderr" {
