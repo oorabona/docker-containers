@@ -593,19 +593,34 @@ _process_extensions() {
         while IFS= read -r ext_name; do
             [[ -z "$ext_name" ]] && continue
 
-            # Check if this extension has a version_set resolver (timescaledb pattern)
+            # Check if this extension has a version_set resolver (timescaledb pattern).
+            # Same rule as the container path above: `// ""` already yields empty
+            # for an absent key, so a non-zero exit is a parse or tool failure and
+            # nothing else. Swallowing it classified the extension as standard on
+            # a file that could not be read.
             local has_resolver
-            has_resolver=$(yq -r ".extensions.${ext_name}.version_set.resolver // \"\"" \
-                "$ext_config" 2>/dev/null || true)
+            if ! has_resolver=$(VDRIFT_EXT="$ext_name" yq -r '.extensions[strenv(VDRIFT_EXT)].version_set.resolver // ""' \
+                "$ext_config" 2>/dev/null); then
+                echo "::error::version-drift: failed to read version_set resolver for $(_escape_gha_command "$ext_name") from $(_escape_gha_command "$ext_config") (yq/parse error)" >&2
+                _HAS_ERROR=true
+                continue
+            fi
 
             if [[ -n "$has_resolver" ]]; then
                 # Timescaledb-style: check the resolver window per PG major
                 _check_timescaledb_extension "$owner" "$ext_name" "$pg_major" "$ext_config"
             else
-                # Standard extension: single declared version from config
+                # Standard extension: single declared version from config.
+                # An unreadable file is not an extension without a version — it is
+                # a target this sweep never evaluated, and skipping it silently let
+                # a clean verdict cover it.
                 local ext_version
-                ext_version=$(yq -r ".extensions.${ext_name}.version // \"\"" \
-                    "$ext_config" 2>/dev/null || true)
+                if ! ext_version=$(VDRIFT_EXT="$ext_name" yq -r '.extensions[strenv(VDRIFT_EXT)].version // ""' \
+                    "$ext_config" 2>/dev/null); then
+                    echo "::error::version-drift: failed to read declared version for $(_escape_gha_command "$ext_name") from $(_escape_gha_command "$ext_config") (yq/parse error)" >&2
+                    _HAS_ERROR=true
+                    continue
+                fi
 
                 if [[ -z "$ext_version" || "$ext_version" == "null" ]]; then
                     continue
@@ -658,8 +673,12 @@ _check_timescaledb_extension() {
     local ext_config="$4"
 
     local resolver
-    resolver=$(yq -r ".extensions.${ext_name}.version_set.resolver // \"\"" \
-        "$ext_config" 2>/dev/null || true)
+    if ! resolver=$(VDRIFT_EXT="$ext_name" yq -r '.extensions[strenv(VDRIFT_EXT)].version_set.resolver // ""' \
+        "$ext_config" 2>/dev/null); then
+        echo "::error::version-drift: failed to read version_set resolver for $(_escape_gha_command "$ext_name") from $(_escape_gha_command "$ext_config") (yq/parse error)" >&2
+        _HAS_ERROR=true
+        return 0
+    fi
 
     if [[ -z "$resolver" ]]; then
         return 0
@@ -667,11 +686,11 @@ _check_timescaledb_extension() {
 
     # Derive ceiling from declared version field
     local ceiling
-    ceiling=$(yq -r ".extensions.${ext_name}.version // \"\"" \
+    ceiling=$(VDRIFT_EXT="$ext_name" yq -r '.extensions[strenv(VDRIFT_EXT)].version // ""' \
         "$ext_config" 2>/dev/null || true)
 
     local retain_count
-    retain_count=$(yq -r ".extensions.${ext_name}.version_set.retain_count // 12" \
+    retain_count=$(VDRIFT_EXT="$ext_name" yq -r '.extensions[strenv(VDRIFT_EXT)].version_set.retain_count // 12' \
         "$ext_config" 2>/dev/null || echo "12")
 
     # Run the resolver to get the version window
