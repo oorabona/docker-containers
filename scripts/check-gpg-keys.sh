@@ -352,17 +352,40 @@ rotation_result() {
     # EXPKEYSIG is deliberately accepted for the rotation verdict: the build's
     # `gpg --verify` accepts expired-key signatures, expiry is covered by the
     # separate expiry check, and this throwaway keyring contains only the
-    # vendored key. Rotation here means the latest release is no longer signed
-    # by the pinned key.
+    # vendored key.
+    #
+    # A failed verification is an error, not a rotation. This keyring holds one
+    # key, so a verification that does not succeed says gpg could not confirm
+    # the pinned key signed the release — nothing about who did. A truncated
+    # download, an HTML error body served with HTTP 200, or a corrupted
+    # signature all land here, and reporting them as "the project rotated its
+    # signing key" sent the operator looking for something that had not
+    # happened. Rotation would need an authenticated successor, which this
+    # monitor has no way to obtain.
     if grep -q '^\[GNUPG:\] VALIDSIG ' <<< "$verify_out" \
         && ! grep -Eq '^\[GNUPG:\] (REVKEYSIG|BADSIG|ERRSIG|NO_PUBKEY|EXPSIG)( |$)' <<< "$verify_out"; then
         log_info "[${container}/${dep}] release ${latest} verifies with vendored key"
         jq -nc --arg latest "$latest" --argjson errors "$errors_json" '
           {rotation: {status:"ok", rotation:false, reason:"verified", severity:"none", latest:$latest, runtime:true}, errors: $errors}'
     else
-        log_warning "[${container}/${dep}] release ${latest} signature no longer verifies with vendored key"
-        jq -nc --arg latest "$latest" --argjson errors "$errors_json" '
-          {rotation: {status:"rotation", rotation:true, reason:"no-valid-signature", severity:"high", latest:$latest, runtime:true}, errors: $errors}'
+        log_warning "[${container}/${dep}] release ${latest} signature did not verify with the vendored key"
+        # Name what gpg actually reported. Without this the finding reaches the
+        # operator as "Failure detail: unknown", indistinguishable from a fetch
+        # that never got a byte — and the two want different responses.
+        # `|| true` is precautionary, and worth stating as such. Under `set -euo
+        # pipefail` a grep matching nothing exits 1 and the pipeline inherits it,
+        # which aborts an assignment — demonstrated in an isolated harness. It
+        # does NOT reproduce through this call path, where the substitution sits
+        # inside another, so removing the guard breaks no test here. Kept because
+        # the failure it prevents loses the finding being built, and because the
+        # call path is not the sort of thing to re-derive on the next edit.
+        local gpg_summary
+        gpg_summary="$(grep -oE '^\[GNUPG:\] (VALIDSIG|REVKEYSIG|BADSIG|ERRSIG|NO_PUBKEY|EXPSIG|EXPKEYSIG|NODATA)' <<< "$verify_out" \
+            | awk '{print $2}' | sort -u | paste -sd, - || true)"
+        jq -nc --arg latest "$latest" --arg summary "${gpg_summary:-no GnuPG status output}" \
+            --arg dep "$dep" --argjson errors "$errors_json" '
+          {rotation: {status:"error", rotation:false, reason:"rotation-check-unavailable", severity:"high", latest:$latest, runtime:true},
+           errors: ($errors + ["\($dep): signature verification failed for \($latest) (gpg reported: \($summary))"])}'
     fi
 }
 

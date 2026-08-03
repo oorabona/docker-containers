@@ -170,6 +170,12 @@ for arg in "$@"; do
         printf '[GNUPG:] BADSIG FAKEKEYID Fake Signer\n'
         exit 1
         ;;
+      unrecognised)
+        # gpg failing with no status keyword the summary knows about — a
+        # malformed packet, a future GnuPG, an internal error.
+        printf 'gpg: cannot open the signature: unexpected internal condition\n' >&2
+        exit 2
+        ;;
       expsig_validsig)
         printf '[GNUPG:] EXPSIG FAKEKEYID Fake Signer\n'
         printf '[GNUPG:] VALIDSIG FAKEFPR 2026-01-01 0 0 0 0 0 0 0\n'
@@ -858,54 +864,87 @@ EOF
     [ ! -f "$FAKE_CURL_LOG" ]
 }
 
-@test "rotation is true/high when fetched signature has no valid signature from vendored key" {
+@test "a signature the vendored key cannot verify is a high error, not a rotation" {
     export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
     export FAKE_GPG_VERIFY_STATUS=nopubkey
 
     run run_check openvpn --json
 
     [ "$status" -eq 0 ]
-    [ "$(jq -r '.[0].rotation.rotation' <<< "$(json_output)")" = "true" ]
-    [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "rotation" ]
+    # NO_PUBKEY names a key id read from an unauthenticated signature packet, so
+    # it says gpg could not verify with the key it holds — not that upstream
+    # signed with a different one.
+    [ "$(jq -r '.[0].rotation.rotation' <<< "$(json_output)")" = "false" ]
+    [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "error" ]
+    [ "$(jq -r '.[0].rotation.reason' <<< "$(json_output)")" = "rotation-check-unavailable" ]
     [ "$(jq -r '.[0].rotation.severity' <<< "$(json_output)")" = "high" ]
 }
 
-@test "rotation is true/high when verify emits REVKEYSIG plus VALIDSIG" {
+@test "a REVKEYSIG plus VALIDSIG verification is a high error, not a rotation" {
     export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
     export FAKE_GPG_VERIFY_STATUS=revkeysig_validsig
 
     run run_check openvpn --json
 
     [ "$status" -eq 0 ]
-    [ "$(jq -r '.[0].rotation.rotation' <<< "$(json_output)")" = "true" ]
-    [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "rotation" ]
-    [ "$(jq -r '.[0].rotation.reason' <<< "$(json_output)")" = "no-valid-signature" ]
+    [ "$(jq -r '.[0].rotation.rotation' <<< "$(json_output)")" = "false" ]
+    [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "error" ]
+    [ "$(jq -r '.[0].rotation.reason' <<< "$(json_output)")" = "rotation-check-unavailable" ]
     [ "$(jq -r '.[0].rotation.severity' <<< "$(json_output)")" = "high" ]
 }
 
-@test "rotation is true/high when verify emits BADSIG" {
+@test "a BADSIG verification is a high error, not a rotation" {
     export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
     export FAKE_GPG_VERIFY_STATUS=badsig
 
     run run_check openvpn --json
 
     [ "$status" -eq 0 ]
-    [ "$(jq -r '.[0].rotation.rotation' <<< "$(json_output)")" = "true" ]
-    [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "rotation" ]
-    [ "$(jq -r '.[0].rotation.reason' <<< "$(json_output)")" = "no-valid-signature" ]
+    [ "$(jq -r '.[0].rotation.rotation' <<< "$(json_output)")" = "false" ]
+    [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "error" ]
+    [ "$(jq -r '.[0].rotation.reason' <<< "$(json_output)")" = "rotation-check-unavailable" ]
     [ "$(jq -r '.[0].rotation.severity' <<< "$(json_output)")" = "high" ]
 }
 
-@test "rotation is true/high when verify emits EXPSIG plus VALIDSIG" {
+@test "gpg output with no recognised keyword still emits a finding" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_GPG_VERIFY_STATUS=unrecognised
+
+    run run_check openvpn --json
+
+    # Under `set -euo pipefail` the summary's grep exits 1 when it matches
+    # nothing, and without a guard that status aborts the function building this
+    # very finding. Measured: the caller returns 1 and emits nothing at all.
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "error" ]
+    [ "$(jq -r '.[0].rotation.reason' <<< "$(json_output)")" = "rotation-check-unavailable" ]
+    [[ "$(jq -r '.[0].errors | join("; ")' <<< "$(json_output)")" == *"no GnuPG status output"* ]]
+}
+
+@test "a failed verification names what gpg reported, not just that it failed" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_GPG_VERIFY_STATUS=badsig
+
+    run run_check openvpn --json
+
+    [ "$status" -eq 0 ]
+    # This reason is shared with a fetch that never completed, so the errors
+    # entry is the only thing telling an operator which of the two happened.
+    # Without it the issue reads "Failure detail: unknown".
+    [[ "$(jq -r '.[0].errors | join("; ")' <<< "$(json_output)")" == *"signature verification failed"* ]]
+    [[ "$(jq -r '.[0].errors | join("; ")' <<< "$(json_output)")" == *"BADSIG"* ]]
+}
+
+@test "an EXPSIG plus VALIDSIG verification is a high error, not a rotation" {
     export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
     export FAKE_GPG_VERIFY_STATUS=expsig_validsig
 
     run run_check openvpn --json
 
     [ "$status" -eq 0 ]
-    [ "$(jq -r '.[0].rotation.rotation' <<< "$(json_output)")" = "true" ]
-    [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "rotation" ]
-    [ "$(jq -r '.[0].rotation.reason' <<< "$(json_output)")" = "no-valid-signature" ]
+    [ "$(jq -r '.[0].rotation.rotation' <<< "$(json_output)")" = "false" ]
+    [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "error" ]
+    [ "$(jq -r '.[0].rotation.reason' <<< "$(json_output)")" = "rotation-check-unavailable" ]
     [ "$(jq -r '.[0].rotation.severity' <<< "$(json_output)")" = "high" ]
 }
 
@@ -1079,7 +1118,7 @@ EOF
     [ "$(jq -r '.[0].expiry.severity' <<< "$(json_output)")" = "high" ]
 }
 
-@test "invalid expiry_warn_days leaves contract valid and does not suppress rotation" {
+@test "invalid expiry_warn_days leaves contract valid and does not suppress the signature verdict" {
     yq -i '.dependency_sources.EASYRSA_VERSION.gpg_key.expiry_warn_days = "sixty"' "$TEST_PROJECT_ROOT/openvpn/config.yaml"
     export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
     export FAKE_GPG_VERIFY_STATUS=nopubkey
@@ -1091,8 +1130,9 @@ EOF
     [ "$(jq -r '.[0].contract.reason' <<< "$(json_output)")" = "valid" ]
     [ "$(jq -r '.[0].expiry.reason' <<< "$(json_output)")" = "valid" ]
     [ "$(jq -r '.[0].config[0].reason' <<< "$(json_output)")" = "invalid-warn-days" ]
-    [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "rotation" ]
-    [ "$(jq -r '.[0].rotation.rotation' <<< "$(json_output)")" = "true" ]
+    [ "$(jq -r '.[0].rotation.status' <<< "$(json_output)")" = "error" ]
+    [ "$(jq -r '.[0].rotation.reason' <<< "$(json_output)")" = "rotation-check-unavailable" ]
+    [ "$(jq -r '.[0].rotation.rotation' <<< "$(json_output)")" = "false" ]
 }
 
 @test "malformed config for a monitored container is surfaced as a finding" {
