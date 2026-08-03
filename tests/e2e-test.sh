@@ -774,8 +774,14 @@ test_container() {
     # Suites receive one already-resolved record and assertion helpers, rather
     # than the reference itself or separately-derived version/flavor variables.
     # Unset E2E_IMAGE so a suite cannot accidentally revive tag parsing.
-    env -u E2E_IMAGE CONTAINER_NAME="$container_name" E2E_IMAGE_IDENTITY="$identity" \
-        timeout -k 5 "$TEST_TIMEOUT" "$test_script" || test_status=$?
+    local -a test_environment=(env -u E2E_IMAGE "CONTAINER_NAME=$container_name" "E2E_IMAGE_IDENTITY=$identity")
+    # CI knows the exact matrix cell it loaded. Preserve that flavor for suites
+    # that select assertions by flavor, but leave FLAVOR untouched for hand-run
+    # harnesses where there is no build cell and the suite owns its default.
+    if [[ -v E2E_BUILD_FLAVOR ]]; then
+        test_environment+=("FLAVOR=$E2E_BUILD_FLAVOR")
+    fi
+    "${test_environment[@]}" timeout -k 5 "$TEST_TIMEOUT" "$test_script" || test_status=$?
     if [ "$test_status" -ne 0 ]; then
         case "$test_status" in
             124|137)

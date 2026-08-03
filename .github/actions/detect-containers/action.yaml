@@ -884,6 +884,7 @@ runs:
           --argjson verification "$verification_builds_input" \
           '$builds + $verification | unique_by(.container, .tag)')
         e2e_builds='[]'
+        e2e_declared_flavors='{}'
 
         while IFS= read -r build; do
           [[ -z "$build" ]] && continue
@@ -897,14 +898,42 @@ runs:
           fi
 
           e2e_enabled=false
+          e2e_flavor=""
           if [[ -f "$container/variants.yaml" ]]; then
             e2e_enabled=$(yq -r '.tests.e2e.enabled // false' "$container/variants.yaml" 2>/dev/null || echo "false")
+            # A flavor here is the matrix cell's `.flavor` value. A full image
+            # contains every Postgres extension, so its e2e suite covers the
+            # narrower flavors as a superset instead of spending seven builds to
+            # learn less.
+            e2e_flavor=$(yq -r '.tests.e2e.flavor // ""' "$container/variants.yaml" 2>/dev/null || echo "")
           fi
 
           if [[ "$e2e_enabled" == "true" ]]; then
-            e2e_builds=$(jq -c --argjson build "$build" '. + [$build]' <<< "$e2e_builds")
+            if [[ -n "$e2e_flavor" ]]; then
+              e2e_declared_flavors=$(jq -c --arg container "$container" --arg flavor "$e2e_flavor" \
+                '. + {($container): $flavor}' <<< "$e2e_declared_flavors")
+            fi
+            build_flavor=$(echo "$build" | jq -r '.flavor // ""')
+            if [[ -z "$e2e_flavor" || "$build_flavor" == "$e2e_flavor" ]]; then
+              e2e_builds=$(jq -c --argjson build "$build" '. + [$build]' <<< "$e2e_builds")
+            fi
           fi
         done < <(echo "$e2e_candidates" | jq -c '.[]')
+
+        # A configured flavor is a contract, not a best-effort filter. Failing
+        # here prevents a typo or a removed cell from silently disabling e2e for
+        # an opted-in container.
+        while IFS=$'\t' read -r container e2e_flavor; do
+          [[ -z "$container" || -z "$e2e_flavor" ]] && continue
+          matching_cells=$(echo "$e2e_candidates" | jq -r \
+            --arg container "$container" \
+            --arg flavor "$e2e_flavor" \
+            '[.[] | select(.container == $container and (.is_latest_version // false) == true and (.os // "linux") != "windows" and (.flavor // "") == $flavor)] | length')
+          if [[ "$matching_cells" -eq 0 ]]; then
+            echo "::error::${container} declares tests.e2e.flavor=${e2e_flavor}, but no latest non-Windows build cell has that flavor"
+            exit 1
+          fi
+        done < <(echo "$e2e_declared_flavors" | jq -r 'to_entries[] | [.key, .value] | @tsv')
 
         bake_count=$(echo "$bake_builds" | jq 'length')
         matrix_count=$(echo "$matrix_builds" | jq 'length')

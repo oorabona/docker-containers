@@ -92,11 +92,18 @@ output_value() {
 }
 
 @test "deleting the entrypoint opt-in check would verify a container with no e2e" {
-    # postgres has a test.sh and deliberately does not opt into e2e yet, so there
-    # is nothing for a change to it to run. Its suite is sound; enabling it means
-    # importing the heavy postgres build into every PR that touches it, which is
-    # a separate decision.
-    run_find_containers_step "postgres/test.sh"
+    # openresty ships a test.sh and does not opt into e2e, so a change to that
+    # script alone has nothing to run. It is blocked on #988 — the container
+    # never reports healthy under the readiness wait.
+    #
+    # postgres is in the same position for different reasons: its suite is
+    # sound and its cell is now declared, but the e2e job does not depend on
+    # the extension pipeline, so a green run on a PR touching an extension
+    # would have tested the previous canonical artifact.
+    #
+    # If either is enabled, this fixture needs the next container that ships a
+    # script without opting in, or the test silently stops covering anything.
+    run_find_containers_step "openresty/test.sh"
 
     [ "$status" -eq 0 ]
     [ "$(output_value containers)" = "[]" ]
