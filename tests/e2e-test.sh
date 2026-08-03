@@ -18,6 +18,41 @@
 # Set E2E_TEST_TIMEOUT=<seconds> (1-99999, default 600) to bound each
 # container-specific test suite.
 
+# Every Docker invocation in this harness goes through this implementation.
+# `timeout` executes a binary rather than a shell function, so run a short
+# shell which replaces itself with the real Docker binary through `env`.
+# `command timeout` likewise prevents an inherited shell function from removing
+# the bound.
+#
+# BASH_ENV must be absent while the intermediary Bash starts, or Bash sources
+# it once per Docker invocation. Preserve it for Docker itself, though: it is
+# Docker's caller environment, not configuration for this harness.
+#
+# Per-call prefix assignments are intentionally scoped to the function call:
+# `_DOCKER_TIMEOUT=120 _DOCKER_TIMEOUT_KILL_AFTER=5 _e2e_docker run ...`
+# changes one bound without leaking to later calls.
+_e2e_docker() {
+    local duration="${_DOCKER_TIMEOUT:-10}"
+    local grace="${_DOCKER_TIMEOUT_KILL_AFTER:-2}"
+
+    # A zero or empty duration is `timeout`'s "no limit", which would silently
+    # turn the bound off — an inherited environment variable or a typo, not an
+    # attack. Refuse rather than run unbounded.
+    if ! [[ "$duration" =~ ^[1-9][0-9]*$ ]] || ! [[ "$grace" =~ ^[1-9][0-9]*$ ]]; then
+        printf '::error::e2e: _e2e_docker needs positive bounds, got duration=%s grace=%s\n' \
+            "$(_escape_gha_command "$duration")" "$(_escape_gha_command "$grace")" >&2
+        return 64
+    fi
+
+    # `timeout` execs the binary, so this line is the one place the script names
+    # docker after timeout — the guard below exempts it by line, and nothing
+    # else. An earlier version routed through `bash -c` to keep even this line
+    # clear of the construct; that bought one less exemption at the price of a
+    # shell per call, a BASH_ENV question, and a guard pinned to the payload's
+    # exact spelling. One exemption on the single source of truth is cheaper.
+    command timeout -k "$grace" "$duration" docker "$@"
+}
+
 # Resolve the real version exactly as the workflow does for a `tag: latest`
 # declaration: ask version.sh and use latest as its failure/unknown fallback.
 # There is no live lookup when the declaration has no latest tag, which keeps
@@ -85,7 +120,7 @@ resolve_e2e_image() {
     fi
 
     local images=""
-    images=$(timeout -k 2 10 docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' 2>/dev/null) || true
+    images=$(_DOCKER_TIMEOUT=10 _DOCKER_TIMEOUT_KILL_AFTER=2 _e2e_docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' 2>/dev/null) || true
 
     local ids
     ids=$(printf '%s\n' "$images" | awk -v owner="$github_repository_owner" -v container="$container" -v tag="$image_tag" '
@@ -223,6 +258,12 @@ fi
 
 set -euo pipefail
 
+# Source-only users keep their own docker function, while normal execution
+# makes a bare docker call bounded too.
+docker() {
+    _e2e_docker "$@"
+}
+
 # The readiness deadline is `SECONDS` plus a budget, and `SECONDS` is inherited:
 # a caller who exports a huge one would wrap that sum negative and every wait
 # would expire before it began. Reset once, here, so the deadlines below start
@@ -297,13 +338,12 @@ if ! [[ "$TEST_TIMEOUT" =~ ^[1-9][0-9]{0,4}$ ]]; then
     exit 1
 fi
 
-# The wait bounds each docker call with `timeout -k`, and so does the cleanup that
-# removes a container after a failure. A `timeout` that is missing, or too old for
-# `-k`, would therefore leave a started container running. This asks whether the
-# flag is accepted, before anything is built or started — not whether the
-# implementation honours it, which would cost a deliberately unkillable child on
-# every invocation.
-if ! timeout -k 1 1 true 2>/dev/null; then
+# The Docker wrapper bounds each call with `timeout -k`, including cleanup after
+# a failure. A `timeout` that is missing, or too old for `-k`, would therefore
+# leave a started container running. This asks whether the flag is accepted,
+# before anything is built or started — not whether the implementation honours
+# it, which would cost a deliberately unkillable child on every invocation.
+if ! command timeout -k 1 1 true 2>/dev/null; then
     log_error "this harness needs a 'timeout' accepting -k (GNU coreutils provides one)"
     exit 1
 fi
@@ -374,7 +414,7 @@ cleanup_container() {
 
     [ -n "$cleanup_name" ] || return 0
 
-    cleanup_output=$(timeout -k 2 5 docker rm -f "$cleanup_name" 2>&1) || cleanup_status=$?
+    cleanup_output=$(_DOCKER_TIMEOUT=5 _DOCKER_TIMEOUT_KILL_AFTER=2 _e2e_docker rm -f "$cleanup_name" 2>&1) || cleanup_status=$?
     # An already-absent name is the end state an idempotent cleanup wants, unlike a
     # timeout, a daemon failure, or a permission failure that can leave the
     # container running. Runtimes disagree on how they say it: Docker exits
@@ -476,7 +516,7 @@ test_container() {
         return 1
     fi
     if [[ -z "$image_id" ]]; then
-        if ! image_id=$(timeout -k 2 10 docker image inspect --format '{{.Id}}' "$image") || [[ -z "$image_id" ]]; then
+        if ! image_id=$(_DOCKER_TIMEOUT=10 _DOCKER_TIMEOUT_KILL_AFTER=2 _e2e_docker image inspect --format '{{.Id}}' "$image") || [[ -z "$image_id" ]]; then
             log_error "Could not resolve local image ID for $image"
             return 1
         fi
@@ -549,7 +589,7 @@ test_container() {
     # genuine hang can reach it. Run the immutable local image ID, not its mutable
     # tag: the container started is the exact image whose tags established the
     # identity above, so docker cannot pull or retag-substitute it before run.
-    if ! timeout -k 5 120 docker run $run_opts "$image_id" $run_cmd; then
+    if ! _DOCKER_TIMEOUT=120 _DOCKER_TIMEOUT_KILL_AFTER=5 _e2e_docker run $run_opts "$image_id" $run_cmd; then
         log_error "Failed to start $container"
         cleanup_container
         return 1
@@ -593,7 +633,7 @@ test_container() {
         # waits forever for a child that ignores it, which is the hang this whole
         # change is about. The grace is what the wait can overshoot its budget by.
         local names ps_output ps_status=0
-        ps_output=$(timeout -k 2 "$remaining" docker ps --format '{{.Names}}' \
+        ps_output=$(_DOCKER_TIMEOUT="$remaining" _DOCKER_TIMEOUT_KILL_AFTER=2 _e2e_docker ps --format '{{.Names}}' \
             2>"$READINESS_STDERR_FILE") || ps_status=$?
         if [ "$ps_status" -ne 0 ]; then
             readiness_stderr=$(cat "$READINESS_STDERR_FILE" 2>/dev/null)
@@ -616,7 +656,7 @@ test_container() {
         # which would read as the container having exited.
         if ! grep -Fxq "$container_name" <<< "$names"; then
             log_error "$container exited unexpectedly"
-            timeout -k 2 5 docker logs "$container_name" 2>&1 | tail -20
+            _DOCKER_TIMEOUT=5 _DOCKER_TIMEOUT_KILL_AFTER=2 _e2e_docker logs "$container_name" 2>&1 | tail -20
             cleanup_container
             return 1
         fi
@@ -634,7 +674,7 @@ test_container() {
         # The conditional template distinguishes a missing healthcheck from an
         # inspect failure; treating the latter as no healthcheck would fail open.
         local inspect_output inspect_status=0
-        inspect_output=$(timeout -k 2 "$remaining" docker inspect \
+        inspect_output=$(_DOCKER_TIMEOUT="$remaining" _DOCKER_TIMEOUT_KILL_AFTER=2 _e2e_docker inspect \
             --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}nohealth{{end}}' \
             "$container_name" 2>"$READINESS_STDERR_FILE") || inspect_status=$?
         if [ "$inspect_status" -ne 0 ]; then
@@ -660,7 +700,7 @@ test_container() {
                 ;;
             unhealthy)
                 log_error "$container is unhealthy"
-                timeout -k 2 5 docker logs "$container_name" 2>&1 | tail -20
+                _DOCKER_TIMEOUT=5 _DOCKER_TIMEOUT_KILL_AFTER=2 _e2e_docker logs "$container_name" 2>&1 | tail -20
                 cleanup_container
                 return 1
                 ;;
@@ -693,7 +733,7 @@ test_container() {
         else
             log_error "$container did not become ready in time"
         fi
-        timeout -k 2 5 docker logs "$container_name" 2>&1 | tail -20
+        _DOCKER_TIMEOUT=5 _DOCKER_TIMEOUT_KILL_AFTER=2 _e2e_docker logs "$container_name" 2>&1 | tail -20
         cleanup_container
         return 1
     fi
