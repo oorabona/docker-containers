@@ -122,12 +122,33 @@ run_tests() {
     echo "==================================="
     echo ""
 
+    # --print-output-on-failure: 1201 assertions in these files are a bare
+    # `[ "$status" -eq 0 ]`, and without this flag a failing one prints that
+    # line and nothing else — not the stderr of the script that exited
+    # non-zero. Every intermittent failure recorded in #964 looks identical
+    # for that reason, which is why none could be diagnosed from its run.
+    #
+    # Probed rather than assumed: check_bats accepts whichever bats is on PATH,
+    # and one too old to know the option exits non-zero with no `not ok` line —
+    # which is exactly the signature _bats_with_retry treats as a flake, so it
+    # would sleep, retry twice, and report a phantom flake instead of naming the
+    # unsupported option. Costing an operator the time this change saves.
+    local -a output_flag=()
+    local bats_help=""
+    if ! bats_help="$(bats --help 2>&1)"; then
+        log_warning "could not read 'bats --help' to probe options; running without --print-output-on-failure, so a failing test will not show its captured output (see #964)"
+    elif grep -q -- '--print-output-on-failure' <<< "$bats_help"; then
+        output_flag=(--print-output-on-failure)
+    else
+        log_warning "this bats lacks --print-output-on-failure; a failing test will not show its captured output (see #964)"
+    fi
+
     if [[ -n "$test_pattern" ]]; then
         log_info "Running tests matching: $test_pattern"
-        _bats_with_retry --tap --jobs 4 "$SCRIPT_DIR/unit/"*"$test_pattern"*.bats
+        _bats_with_retry --tap --jobs 4 ${output_flag[@]+"${output_flag[@]}"} "$SCRIPT_DIR/unit/"*"$test_pattern"*.bats
     else
         log_info "Running all unit tests..."
-        _bats_with_retry --tap --jobs 4 "$SCRIPT_DIR/unit/"*.bats
+        _bats_with_retry --tap --jobs 4 ${output_flag[@]+"${output_flag[@]}"} "$SCRIPT_DIR/unit/"*.bats
     fi
 }
 
