@@ -35,13 +35,21 @@ runs:
     # per-attempt timeout so a transient registry 5xx/429/timeout does not fail
     # the build. The ref was format-validated (and is digest-pinned) above.
     - name: Verify BuildKit image is present in GHCR (retry on transient)
+      id: probe
       uses: ./.github/actions/retry-run
       with:
         max-attempts: '4'
         delay: '5'
         timeout: '45s'
         run: |
-          docker manifest inspect "${{ inputs.image }}" >/dev/null 2>&1 || {
-            echo "::error::buildkit builder image is not present in GHCR (after retries). It is seeded by the upstream-monitor workflow (Seed buildkit image to GHCR). Trigger upstream-monitor (workflow_dispatch) to seed it, then re-run. (Egress is fail-closed: there is no Docker Hub fallback for the builder image.)"
-            exit 1
-          }
+          # docker's own stderr is left to reach the step log, and nothing here
+          # reads it. A probe that fails cannot tell absence from a rate limit,
+          # a 5xx, an expired token or a DNS blip, so it does not try: any
+          # classifier over free-form registry text is a denylist that the next
+          # unseen wording escapes, and the wrong half of that guess is what
+          # sends a reader to re-seed an image that was there all along.
+          if docker manifest inspect "${{ inputs.image }}" >/dev/null; then
+            exit 0
+          fi
+          echo "::error::the BuildKit builder image probe failed; docker's own output, if it produced any, is above. This does NOT establish that the image is absent: a rate limit, a 5xx, an expired token, a DNS failure and a genuinely missing manifest all end up here. Re-run first. If docker reported specifically that the manifest does not exist, then the image needs seeding — it comes from the upstream-monitor workflow (Seed buildkit image to GHCR), so trigger that (workflow_dispatch) and re-run. (Egress is fail-closed: there is no Docker Hub fallback for the builder image.)"
+          exit 1
