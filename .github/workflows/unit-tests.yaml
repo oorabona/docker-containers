@@ -41,6 +41,23 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
           yq --version
 
+      - name: Install busybox
+        timeout-minutes: 5
+        # postgres images are built FROM an Alpine base with no SHELL directive,
+        # so their RUN steps execute under BusyBox ash with BusyBox applets.
+        # tests/unit/postgres-extension-presence.bats runs the extracted
+        # install_ext under this runner's BusyBox — the same shell and applet
+        # family, not Alpine's own build of it — which is what lets the suite
+        # see a GNU-only construct before the image build does. The test fails
+        # rather than skips when /bin/busybox is absent.
+        run: |
+          command -v busybox >/dev/null 2>&1 || {
+            sudo apt-get update
+            sudo apt-get install -y busybox-static
+          }
+          test -x /bin/busybox || sudo ln -s "$(command -v busybox)" /bin/busybox
+          /bin/busybox sh -c 'echo busybox ok'
+
       - name: Install bats
         uses: ./.github/actions/setup-bats
 
