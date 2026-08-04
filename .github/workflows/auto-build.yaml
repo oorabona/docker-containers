@@ -278,11 +278,15 @@ jobs:
 
   e2e-test:
     name: E2E ${{ matrix.build.container }}:${{ matrix.build.tag }}
-    needs: [detect-containers]
-    if: >-
-      github.event_name == 'pull_request'
-      && github.event.pull_request.head.repo.full_name == github.repository
-      && needs.detect-containers.outputs.e2e_builds != '[]'
+    needs: [detect-containers, build-extensions, merge-extension-manifests, sync-base-images]
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.detect-containers.outputs.e2e_builds != '[]' &&
+      (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
+      (needs.merge-extension-manifests.result == 'success' || needs.merge-extension-manifests.result == 'skipped') &&
+      (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Least privilege: this job checks out and runs branch-controlled build/test
@@ -298,6 +302,10 @@ jobs:
       # so PR-built layers can't land in the canonical <ref>:buildcache
       # (mirrors the bake engine's PR guard).
       BUILD_CACHE_EXPORT: 'false'
+      # Keep postgres's extension refs aligned with the production build: on a
+      # same-repository PR, build-extensions and merge-extension-manifests
+      # publish the PR-scoped extension images that this e2e build must consume.
+      PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
     strategy:
       fail-fast: false
       matrix:
