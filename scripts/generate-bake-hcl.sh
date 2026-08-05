@@ -382,14 +382,25 @@ _materialize_dockerfile() {
     # (e.g. "Dockerfile") resolve correctly inside expand_template().
     # Both github-runner (4-arg via parse_generator_args) and web-shell (3-arg)
     # accept this 4-arg call; extra args are safely ignored.
+    # The generator's stderr is kept and replayed on failure. Discarding it left
+    # "generate-dockerfile.sh failed" as the whole of the diagnosis, which is a
+    # message that says a thing happened and nothing about why — four wrong
+    # hypotheses' worth of guessing before anyone reads the generator's own words.
+    local _gen_err
+    _gen_err=$(mktemp) || return 1
     content=$(cd "${PROJECT_ROOT}/${container}" && \
-        "${generator}" "$template_rel" "${flavor:-}" "$version" "${build_flavor:-}" 2>/dev/null)
+        "${generator}" "$template_rel" "${flavor:-}" "$version" "${build_flavor:-}" 2>"$_gen_err")
     local rc=$?
     if [[ $rc -ne 0 ]]; then
         printf 'ERROR: generate-dockerfile.sh failed for %s (flavor=%s version=%s build_flavor=%s)\n' \
             "$container" "$flavor" "$version" "$build_flavor" >&2
+        printf -- '--- generator stderr ---\n' >&2
+        tail -c 4000 "$_gen_err" >&2
+        printf -- '------------------------\n' >&2
+        rm -f "$_gen_err"
         return 1
     fi
+    rm -f "$_gen_err"
 
     # Verify no @@ markers remain after expansion.
     if grep -qE '@@[A-Z_]+@@' <<< "$content" 2>/dev/null; then
