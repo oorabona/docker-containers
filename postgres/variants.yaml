@@ -139,5 +139,11 @@ versions:
         when_to_use: All extensions enabled — pick when prototyping or when scope is not yet defined.
 tests:
   e2e:
-    enabled: false
+    enabled: true
+    # One cell. `full` assembles every compiled extension, so it exercises each
+    # one's install and initialisation. What it does NOT exercise is the other
+    # six `case` arms in the Dockerfile that assemble the narrower flavours:
+    # dropping an `install_ext` from the `vector)` arm leaves `full)` intact and
+    # this cell green. That gap wants the arms generated from the same filtered
+    # list rather than six more e2e jobs — #1083.
     flavor: full

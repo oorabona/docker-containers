@@ -49,7 +49,7 @@ The rest of the wiring:
 
 - A per-container opt-in flag, `tests.e2e.enabled` in `variants.yaml`, surfaced as an output on the container-detection action, so a run is scoped to changed, eligible containers only.
 - The job runs on non-fork pull requests. It boots images under elevated runtime options — OpenVPN needs `/dev/net/tun` and specific capabilities — which is not something to grant to code from an untrusted fork.
-- A small aggregator job is the check that can be marked required. It passes on a real green run or a legitimate skip (a fork PR, or a PR that changed no eligible container) and fails only on an actual e2e failure. Without it, a required check that is skipped for a skipped job would leave unrelated pull requests waiting indefinitely.
+- A small aggregator job is the check that can be marked required. It passes on a real green run, and on a skip that is honest: a pull request that changed no eligible container, or an event that runs no e2e at all. A fork pull request that *did* change an eligible container fails it, because the fork guard stopped the suite from running and calling that green would report a verification that never happened. The cost is real — an external contributor cannot turn the check green alone, and a maintainer has to run the branch. Without the aggregator, a required check skipped along with its job would leave unrelated pull requests waiting indefinitely.
 
 The first increment covers four containers that already had tailored run profiles: openvpn, ansible, debian, sslh.
 
