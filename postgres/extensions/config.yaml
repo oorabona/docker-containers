@@ -28,6 +28,9 @@ extensions:
       - clang-dev
       - llvm-dev
     shared_preload: false
+    initdb:
+      mode: create
+      sql_name: vector
     priority: 1 # Build order (lower = first)
   pg_partman:
     version: "5.5.0"
@@ -36,6 +39,8 @@ extensions:
     build_deps:
       - build-base
     shared_preload: false
+    initdb:
+      mode: create
     priority: 2
   hypopg:
     version: "1.4.3"
@@ -44,6 +49,8 @@ extensions:
     build_deps:
       - build-base
     shared_preload: false
+    initdb:
+      mode: create
     priority: 2
   pg_qualstats:
     version: "2.1.4"
@@ -52,6 +59,8 @@ extensions:
     build_deps:
       - build-base
     shared_preload: true
+    initdb:
+      mode: create
     priority: 2
   paradedb:
     version: "0.25.0"
@@ -76,6 +85,9 @@ extensions:
     runtime_deps:
       - openblas
     shared_preload: false # Not required for PG17+
+    initdb:
+      mode: create
+      sql_name: pg_search
     priority: 3
     # EXPERIMENTAL: Alpine/musl build with RUSTFLAGS="-C target-feature=-crt-static"
     # If build fails, re-add disabled: true and fall back to Debian-based build
@@ -93,6 +105,8 @@ extensions:
     runtime_deps:
       - libcurl
     shared_preload: true
+    initdb:
+      mode: create
     priority: 3
     # Citus 14.0.0 adds PG 18 support
     max_pg_version: 18
@@ -106,6 +120,8 @@ extensions:
       - cmake
       - openssl-dev
     shared_preload: true
+    initdb:
+      mode: create
     priority: 3
     version_set:
       resolver: "scripts/resolvers/timescaledb-ha.sh"
@@ -117,6 +133,9 @@ extensions:
     build_deps:
       - build-base
     shared_preload: true
+    initdb:
+      mode: manual
+      reason: "Creatable only in cron.database_name, which may differ from POSTGRES_DB."
     priority: 1
   pg_ivm:
     version: "1.15"
@@ -125,6 +144,8 @@ extensions:
     build_deps:
       - build-base
     shared_preload: false
+    initdb:
+      mode: create
     priority: 1
   postgis:
     version: "3.6.4"
@@ -145,6 +166,8 @@ extensions:
       - libxml2-dev
       - protobuf-c-dev
     shared_preload: false
+    initdb:
+      mode: create
     priority: 2
     # Runtime dependencies: apk packages needed in the final image
     runtime_deps:
@@ -177,9 +200,8 @@ builtin_extensions:
 # The build system uses this to generate per-flavor Dockerfile FROM/COPY blocks
 # Extensions are filtered at build time by max_pg_version and disabled status
 #
-# WARNING: This mapping must stay in sync with the install_ext case statement
-# in postgres/Dockerfile. If you add/remove an extension from a flavor here,
-# update the corresponding case branch in the Dockerfile as well.
+# Each compiled extension declares an explicit initdb policy above. Generated
+# Dockerfiles use the filtered flavor list for stages, copies, installs, and SQL.
 flavors:
   base: []
   vector:

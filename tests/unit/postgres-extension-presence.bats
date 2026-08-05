@@ -9,7 +9,12 @@ load "../test_helper"
 
 _extract_install_ext() {
     printf '%s\n' '# shellcheck shell=sh' > "$TEST_TEMP_DIR/install-ext.sh"
-    sed -n '/^RUN set -eux; \\/,/^    # Install extensions based on flavor/{p; /^    # Install extensions based on flavor/q;}' \
+    # End the range on the generator's own marker, not on a comment. The prose
+    # landmark this used before was reworded by #1083, the range then ran to end
+    # of file, and the extracted body executed the staging cleanup — fifteen
+    # tests red for a comment edit. A marker cannot drift silently: the
+    # generator fails when it is missing.
+    sed -n '/^RUN set -eux; \\/,/^    @@EXTENSION_INSTALLS@@/{/^    @@EXTENSION_INSTALLS@@/{q}; p;}' \
         "$PROJECT_ROOT/postgres/Dockerfile" \
         | sed -e '1s/^RUN //' -e 's/; \\$//' \
             -e "s|/tmp/ext|$STAGING_ROOT|g" \
@@ -31,6 +36,19 @@ _extract_install_ext() {
     grep -q 'has no staging root at' "$body"
     grep -q 'ceiling control' "$body"
     [ "$(wc -l < "$body")" -gt 60 ]
+    # And that the range ended where it was told to. Pinning only presence lets
+    # an over-capture pass: when the range ran past its end, every landmark
+    # above was still found and the body additionally carried the staging
+    # cleanup, which then ran. The marker being the last line says the range
+    # stopped, without a line count anyone would have to keep current.
+    # The marker itself is excluded — it is bare, so leaving it in would abort
+    # the sourced body as an unknown command. Its absence proves nothing on its
+    # own; the cleanup's absence is what says the range stopped where it was
+    # told. Pinning only what must be PRESENT let an over-capture satisfy every
+    # landmark and pass, which is how a comment edit once turned fifteen tests
+    # red by running the staging cleanup instead.
+    ! grep -q '@@' "$body"
+    ! grep -q 'rm -rf' "$body"
 }
 
 _run_install_ext() {
