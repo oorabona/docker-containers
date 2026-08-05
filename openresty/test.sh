@@ -14,9 +14,15 @@ if ! docker exec "$CONTAINER_NAME" nginx -t 2>&1; then
 fi
 echo "  ✅ Nginx config syntax OK"
 
-# Test OpenResty version
+# Report the version the image carries. This does not compare it to the tag —
+# rolling package repositories plus version_retention make installed-equals-
+# declared false by construction here — but nginx failing to answer at all is a
+# broken image, not a line to skip.
 echo "  Checking OpenResty version..."
-docker exec "$CONTAINER_NAME" nginx -v 2>&1 || true
+if ! docker exec "$CONTAINER_NAME" nginx -v 2>&1; then
+    echo "  ❌ nginx could not report its version"
+    exit 1
+fi
 
 # Test HTTP response on the non-privileged port the non-root default server
 # listens on. Uses busybox wget (curl is not in the runtime image) and asserts
@@ -29,17 +35,19 @@ else
     exit 1
 fi
 
-# Test Lua module availability (optional)
+# Lua is what makes this OpenResty rather than nginx, so its absence is a
+# failure and not something to skip past. Treating it as optional let the suite
+# print "All OpenResty tests passed" for an image with no `resty` at all.
 echo "  Testing Lua module..."
-if docker exec "$CONTAINER_NAME" which resty &>/dev/null; then
-    lua_test=$(docker exec "$CONTAINER_NAME" resty -e 'print(1+1)' 2>/dev/null) || lua_test=""
-    if [ "$lua_test" = "2" ]; then
-        echo "  ✅ Lua/resty working"
-    else
-        echo "  ⚠️  Lua test returned: '$lua_test'"
-    fi
-else
-    echo "  (resty not in PATH, skipping Lua test)"
+if ! docker exec "$CONTAINER_NAME" which resty >/dev/null 2>&1; then
+    echo "  ❌ resty is not in PATH — the image does not ship the Lua CLI it advertises"
+    exit 1
 fi
+lua_test=$(docker exec "$CONTAINER_NAME" resty -e 'print(1+1)' 2>/dev/null) || lua_test=""
+if [ "$lua_test" != "2" ]; then
+    echo "  ❌ resty ran but did not evaluate Lua: expected '2', got '$lua_test'"
+    exit 1
+fi
+echo "  ✅ Lua/resty working"
 
 echo "  ✅ All OpenResty tests passed"

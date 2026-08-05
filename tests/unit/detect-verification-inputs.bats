@@ -12,8 +12,25 @@ teardown() {
     teardown_temp_dir
 }
 
+# A workspace holding exactly one container, which ships a test.sh and opts into
+# nothing. Pointing the step at this instead of at the repository is what stops a
+# test about "a container with no e2e" from depending on which containers happen
+# to have opted in — a dependency that has already invalidated it once, when the
+# real container it named was enabled.
+make_scratch_workspace_with_unopted_container() {
+    local ws="$TEST_TEMP_DIR/ws"
+    mkdir -p "$ws/unopted"
+    cp "$PROJECT_ROOT/make" "$ws/"
+    cp -r "$PROJECT_ROOT/helpers" "$PROJECT_ROOT/scripts" "$ws/"
+    : > "$ws/unopted/Dockerfile"
+    printf 'versions:\n  - tag: "1.0"\n' > "$ws/unopted/variants.yaml"
+    : > "$ws/unopted/test.sh"
+    printf '%s' "$ws"
+}
+
 run_find_containers_step() {
     local changed_files="$1"
+    local workspace="${2:-$PROJECT_ROOT}"
     local script="$TEST_TEMP_DIR/find-containers.sh"
 
     yq -r '.runs.steps[] | select(.id == "find-containers") | .run' \
@@ -34,11 +51,15 @@ run_find_containers_step() {
     export BASELINE_VALID="false"
     export GITHUB_ACTION_PATH="$PROJECT_ROOT/.github/actions/detect-containers"
     export GITHUB_OUTPUT="$TEST_TEMP_DIR/github-output"
-    export GITHUB_WORKSPACE="$PROJECT_ROOT"
+    export GITHUB_WORKSPACE="$workspace"
     export RUNNER_TEMP="$TEST_TEMP_DIR"
     export TEST_CHANGED_FILES="$changed_files"
 
-    run bash "$script"
+    # The step reads `$container/variants.yaml` relative to the working
+    # directory and uses GITHUB_WORKSPACE only for `./make list`, so the
+    # workspace has to be the working directory too. With the default it is the
+    # repository root, which is where these tests already ran.
+    run bash -c 'cd "$1" || exit 1; exec bash "$2"' _ "$workspace" "$script"
 }
 
 output_value() {
@@ -92,18 +113,14 @@ output_value() {
 }
 
 @test "deleting the entrypoint opt-in check would verify a container with no e2e" {
-    # openresty ships a test.sh and does not opt into e2e, so a change to that
-    # script alone has nothing to run. It is blocked on #988 — the container
-    # never reports healthy under the readiness wait.
-    #
-    # postgres is in the same position for different reasons: its suite is
-    # sound and its cell is now declared, but the e2e job does not depend on
-    # the extension pipeline, so a green run on a PR touching an extension
-    # would have tested the previous canonical artifact.
-    #
-    # If either is enabled, this fixture needs the next container that ships a
-    # script without opting in, or the test silently stops covering anything.
-    run_find_containers_step "openresty/test.sh"
+    # The fixture is a workspace this test builds, not a container that happens
+    # to be off today. Every container in the repository that ships a test.sh
+    # now opts in — openresty, vector and postgres were the last three — so
+    # naming one of them here was a dependency on a state that no longer exists
+    # and would go stale again the moment the next one flipped.
+    local ws
+    ws=$(make_scratch_workspace_with_unopted_container)
+    run_find_containers_step "unopted/test.sh" "$ws"
 
     [ "$status" -eq 0 ]
     [ "$(output_value containers)" = "[]" ]
