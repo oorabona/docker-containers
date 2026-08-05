@@ -87,6 +87,18 @@ assert_rejected_fixture() {
     [[ "$output" == *"declares the same name more than once"* ]]
 }
 
+# The same trick at the document root. Checking only inside the sections left
+# `!!str flavors:` beside `flavors:` open: every rule validated one mapping while
+# the generator read the other.
+@test "a tagged duplicate of a top-level key is rejected" {
+    run yamllint -c "$PROJECT_ROOT/.yamllint.yml" "$FIXTURES_DIR/tagged-duplicate-root-key.yaml"
+    [ "$status" -eq 0 ]
+
+    run validate_extensions_schema "$FIXTURES_DIR/tagged-duplicate-root-key.yaml"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"same top-level name more than once"* ]]
+}
+
 # jq's `$` matches before one trailing newline, so a block scalar slipped
 # "vector\n" past the identifier pattern. The generator strips it through command
 # substitution, so validation saw two names where the build emits one.

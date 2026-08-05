@@ -59,6 +59,18 @@ validate_extensions_schema() {
     # `!!str vector:` beside `vector:` is textually distinct. What is left is
     # this — the parsed key count against its distinct count, on the YAML side,
     # which is spelling-independent in a way no text rule can be.
+    # The root mapping first, then each section. Checking only the sections left
+    # the same trick one level up: `!!str flavors:` beside `flavors:` means the
+    # lookup reads one of them and every rule below validates the other.
+    local _root_keys _root_distinct
+    _root_keys=$(yq -r 'select(tag == "!!map") | keys | length' "$config_file" 2>/dev/null) || _root_keys=""
+    _root_distinct=$(yq -r 'select(tag == "!!map") | keys | unique | length' "$config_file" 2>/dev/null) || _root_distinct=""
+    if [[ -n "$_root_keys" && -n "$_root_distinct" && "$_root_keys" != "$_root_distinct" ]]; then
+        printf 'ERROR [extensions schema] %s: the document declares the same top-level name more than once (%s entries, %s distinct)\n' \
+            "$config_file" "$_root_keys" "$_root_distinct" >&2
+        return 1
+    fi
+
     local _dup_section
     for _dup_section in flavors extensions; do
         local _keys _distinct
