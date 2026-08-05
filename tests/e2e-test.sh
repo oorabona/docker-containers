@@ -733,6 +733,17 @@ test_container() {
         else
             log_error "$container did not become ready in time"
         fi
+        # What the wait was actually watching. `docker logs` alone is not enough
+        # and has already proved it: an image that writes its logs to files
+        # inside the container gives an empty dump, so the run reports only that
+        # 60 seconds passed. The health record names the probe, its exit code
+        # and its output, which is the difference between knowing the cause and
+        # guessing between the run profile, the healthcheck and the wait.
+        echo "    health record:"
+        _DOCKER_TIMEOUT=5 _DOCKER_TIMEOUT_KILL_AFTER=2 _e2e_docker inspect \
+            --format '{{json .State.Health}}' "$container_name" 2>&1 | tail -c 2000
+        echo ""
+        echo "    container logs (last 20 lines, empty if the image logs to files):"
         _DOCKER_TIMEOUT=5 _DOCKER_TIMEOUT_KILL_AFTER=2 _e2e_docker logs "$container_name" 2>&1 | tail -20
         cleanup_container
         return 1
