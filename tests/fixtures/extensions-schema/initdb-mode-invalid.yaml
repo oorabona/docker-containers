@@ -1,0 +1,7 @@
+extensions:
+  alpha:
+    initdb:
+      mode: later
+flavors:
+  sample:
+    - alpha

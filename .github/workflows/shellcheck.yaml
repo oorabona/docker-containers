@@ -4,12 +4,18 @@ on:
   pull_request:
     paths:
       - '**/*.sh'
+      - '**/config.yaml'
+      - '**/variants.yaml'
+      - '.yamllint.yml'
       - 'make'
       - '.github/workflows/shellcheck.yaml'
   push:
     branches: [master]
     paths:
       - '**/*.sh'
+      - '**/config.yaml'
+      - '**/variants.yaml'
+      - '.yamllint.yml'
       - 'make'
       - '.github/workflows/shellcheck.yaml'
   workflow_dispatch:
@@ -28,6 +34,14 @@ jobs:
       - name: Install shellcheck
         run: |
           echo "shellcheck version: $(shellcheck --version | head -2)"
+
+      - name: Check duplicate YAML mapping keys
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y yamllint
+          find . -type f \( -name config.yaml -o -name variants.yaml \) \
+            -not -path './.git/*' -print0 | xargs -0 yamllint -c .yamllint.yml
 
       - name: Run shellcheck on scripts
         run: |

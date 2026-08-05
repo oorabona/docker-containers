@@ -1,0 +1,13 @@
+extensions:
+  alpha:
+    initdb:
+      mode: create
+      sql_name: shared_name
+  beta:
+    initdb:
+      mode: create
+      sql_name: shared_name
+flavors:
+  sample:
+    - alpha
+    - beta

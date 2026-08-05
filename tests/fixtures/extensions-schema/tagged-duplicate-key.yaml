@@ -1,0 +1,19 @@
+# Two entries resolving to one name, spelled differently so that no rule over
+# the raw text sees a duplicate: yamllint's key-duplicates accepts this, because
+# `!!str vector:` and `vector:` are textually distinct. yq keeps both in the YAML
+# document, but emitting JSON writes the key twice and the last one wins — so the
+# flavour a lookup returns is the empty one, and the image comes out with no
+# compiled extensions under a name that declares four.
+extensions:
+  pgvector:
+    version: "0.8.2"
+    repo: "pgvector/pgvector"
+    initdb:
+      mode: create
+      sql_name: vector
+
+flavors:
+  base: []
+  !!str vector:
+    - pgvector
+  vector: []

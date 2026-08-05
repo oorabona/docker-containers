@@ -15,6 +15,9 @@ if ! declare -F log_info &>/dev/null; then
     source "$HELPERS_DIR/logging.sh"
 fi
 
+# shellcheck source=helpers/validate-extensions-schema.sh
+source "$HELPERS_DIR/validate-extensions-schema.sh"
+
 # Source generic template utilities (provides expand_template, has_template_markers)
 if ! declare -F expand_template &>/dev/null; then
     source "$HELPERS_DIR/template-utils.sh"
@@ -248,7 +251,8 @@ ext_config() {
         return 1
     fi
 
-    yq -r ".extensions.${ext_name}.${key} // \"\"" "$config_file"
+    ext="$ext_name" yq -o=json '.extensions[strenv(ext)] // {}' "$config_file" | \
+        jq -r --arg config_key "$key" 'getpath($config_key | split(".")) // ""'
 }
 
 # List extensions from config, sorted by priority
@@ -262,7 +266,7 @@ list_extensions_by_priority() {
         pgver="$pg_version" yq -r '
             [.extensions | to_entries[]
              | select(.value.disabled == true | not)
-             | select((.value.max_pg_version // 999) >= env(pgver))]
+             | select((.value.max_pg_version // 999) >= (strenv(pgver) | tonumber))]
             | sort_by(.value.priority // 99)
             | .[].key
         ' "$config_file"
@@ -563,45 +567,10 @@ get_flavor_extensions() {
     local flavor="$2"
     local pg_major="$3"
     local declared_flavors
-    local invalid_flavor_record
-    local invalid_flavor
-    local safe_invalid_flavor
     local flavor_exists
 
     if ! declared_flavors=$(yq -r '.flavors | keys | join(", ")' "$config_file"); then
         log_error "get_flavor_extensions: could not read declared flavors from ${config_file}"
-        return 1
-    fi
-
-    # Five structural properties, checked together rather than one per defect
-    # found: a name-shaped key, mapping to a list, of name-shaped strings, each
-    # naming a declared extension, none of them twice. Each was a malformed
-    # declaration that read as a legitimately empty one and produced an image
-    # with no compiled extensions carrying the flavour's label.
-    #
-    # This is not "the section is well-formed" — that claim is not one any check
-    # here can make. A duplicate mapping key, for instance, is resolved by the
-    # YAML parser before this sees it: `vector:` declared twice silently keeps
-    # the last. Detecting that needs the raw document, not the parsed one (#1092).
-    if ! invalid_flavor_record=$(yq -r '
-        . as $root
-        | [.flavors | to_entries[]
-           | select((.key | test("^[a-zA-Z0-9_-]+$") | not)
-                    or (.value | type) != "!!seq"
-                    or ([.value[] | select((type) != "!!str" or (test("^[a-zA-Z0-9_-]+$") | not))] | length > 0)
-                    or ([.value[] | . as $m | select($root.extensions | has($m) | not)] | length > 0)
-                    or ((.value | length) != (.value | unique | length)))
-           | "invalid:" + .key] | .[0]
-    ' "$config_file"); then
-        log_error "get_flavor_extensions: could not read declared flavors from ${config_file}"
-        return 1
-    fi
-
-    if [[ "$invalid_flavor_record" != "null" ]]; then
-        invalid_flavor="${invalid_flavor_record#invalid:}"
-        safe_invalid_flavor=$(_sanitize_for_log "$invalid_flavor")
-        safe_invalid_flavor="${safe_invalid_flavor//[[:cntrl:]]/?}"
-        log_error "get_flavor_extensions: invalid flavor name '${safe_invalid_flavor}' in ${config_file} (allowed: letters, digits, underscore, hyphen)"
         return 1
     fi
 
@@ -631,7 +600,7 @@ get_flavor_extensions() {
         .flavors[strenv(flav)] // [] | .[] | . as $ext |
         select(
             ($root.extensions[$ext].disabled == true | not) and
-            (($root.extensions[$ext].max_pg_version // 999) >= env(pgver))
+            (($root.extensions[$ext].max_pg_version // 999) >= (strenv(pgver) | tonumber))
         )
     ' "$config_file"
 }
@@ -650,54 +619,8 @@ _generate_flavor_initdb_block() {
     local ext_name
     local mode
     local sql_name
-    local reason
-    local builtin_name
-    local builtin_sql_names=$'\n'
-    local seen_sql_names=$'\n'
     local -a create_sql_names=()
     local initdb_block=""
-
-    # Validate every compiled extension declaration, not only the selected
-    # flavor. A missing policy must fail at generation time even when a current
-    # flavor happens not to include the newly added extension yet.
-    while IFS= read -r ext_name; do
-        [[ -z "$ext_name" ]] && continue
-        if [[ ! "$ext_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-            log_error "generate_dockerfile: invalid extension name '$(_sanitize_for_log "$ext_name")' in ${config_file} (allowed: letters, digits, underscore, hyphen)"
-            return 1
-        fi
-        mode=$(ext="$ext_name" yq -r '.extensions[strenv(ext)].initdb.mode // ""' "$config_file" 2>/dev/null) || {
-            log_error "generate_dockerfile: could not read initdb policy for extension ${ext_name} from ${config_file}"
-            return 1
-        }
-        case "$mode" in
-            create)
-                ;;
-            manual)
-                reason=$(ext="$ext_name" yq -r '.extensions[strenv(ext)].initdb.reason // ""' "$config_file" 2>/dev/null) || {
-                    log_error "generate_dockerfile: could not read initdb manual reason for extension ${ext_name} from ${config_file}"
-                    return 1
-                }
-                if [[ -z "$reason" ]]; then
-                    log_error "generate_dockerfile: extension ${ext_name} has initdb.mode manual but no initdb.reason"
-                    return 1
-                fi
-                ;;
-            "")
-                log_error "generate_dockerfile: extension ${ext_name} has no initdb.mode (expected create or manual)"
-                return 1
-                ;;
-            *)
-                log_error "generate_dockerfile: extension ${ext_name} has unrecognised initdb.mode '$(_sanitize_for_log "$mode")' (expected create or manual)"
-                return 1
-                ;;
-        esac
-    done < <(yq -r '.extensions | keys[]' "$config_file")
-
-    while IFS= read -r builtin_name; do
-        [[ -z "$builtin_name" ]] && continue
-        builtin_sql_names+="${builtin_name}"$'\n'
-    done < <(yq -r '(.builtin_extensions // [])[]' "$config_file")
 
     # Only selected, compatible extensions can produce flavor SQL.
     while IFS= read -r ext_name; do
@@ -707,25 +630,6 @@ _generate_flavor_initdb_block() {
 
         sql_name=$(ext="$ext_name" yq -r '.extensions[strenv(ext)].initdb.sql_name // ""' "$config_file") || return 1
         [[ -z "$sql_name" ]] && sql_name="$ext_name"
-        # An unquoted PostgreSQL identifier: it may not start with a digit, and
-        # it is folded to lower case. Requiring the folded form means the name
-        # emitted is the name the server sees, so the duplicate and built-in
-        # collision checks below can compare exactly. Accepting mixed case let
-        # `vector` and `Vector` both pass as distinct while folding to one, and
-        # `123ext` pass generation only to make CREATE EXTENSION fail at initdb.
-        if [[ ! "$sql_name" =~ ^[a-z_][a-z0-9_]*$ ]]; then
-            log_error "generate_dockerfile: extension ${ext_name} has unsafe initdb.sql_name '$(_sanitize_for_log "$sql_name")' (allowed: letters, digits, underscore)"
-            return 1
-        fi
-        if [[ "$builtin_sql_names" == *$'\n'"$sql_name"$'\n'* ]]; then
-            log_error "generate_dockerfile: extension ${ext_name} initdb.sql_name ${sql_name} is already created by 00-init-extensions.sql"
-            return 1
-        fi
-        if [[ "$seen_sql_names" == *$'\n'"$sql_name"$'\n'* ]]; then
-            log_error "generate_dockerfile: duplicate initdb.sql_name ${sql_name} in flavor ${flavor}"
-            return 1
-        fi
-        seen_sql_names+="${sql_name}"$'\n'
         create_sql_names+=("$sql_name")
     done <<< "$extensions"
 
@@ -813,6 +717,11 @@ generate_dockerfile() {
     local pg_major="$4"
     local registry="${5:-$(get_registry)}"
     local owner="${6:-$(get_repo_owner)}"
+
+    if ! validate_extensions_schema "$config_file"; then
+        log_error "generate_dockerfile: extensions schema validation failed for ${config_file}"
+        return 1
+    fi
 
     # Derive FORCE from REBUILD env so a forced PR run prefers freshly-rebuilt
     # PR-scoped refs over stale canonical refs for non-resolver/single-version
@@ -969,8 +878,8 @@ generate_dockerfile() {
                 # _committed_versionset_satisfies is the SAME predicate used by resolve_version_set
                 # so preflight and resolver share one source of truth — no duplication of conditions.
                 local _preflight_retain_count
-                _preflight_retain_count=$(yq -r \
-                    ".extensions.${ext_name}.version_set.retain_count // \"\"" \
+                _preflight_retain_count=$(ext="$ext_name" yq -r \
+                    '.extensions[strenv(ext)].version_set.retain_count // ""' \
                     "$config_file" 2>/dev/null || true)
                 local _preflight_effective_retain="${_preflight_retain_count:-12}"
                 if ! _committed_versionset_satisfies \

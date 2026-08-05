@@ -1,0 +1,8 @@
+extensions:
+  alpha:
+    initdb:
+      mode: create
+flavors:
+  sample:
+    - alpha
+  sample: []

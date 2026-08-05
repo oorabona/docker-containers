@@ -1,0 +1,8 @@
+extensions:
+  alpha:
+    initdb:
+      mode: create
+      sql_name: Alpha
+flavors:
+  sample:
+    - alpha

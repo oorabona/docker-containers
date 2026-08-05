@@ -1,0 +1,14 @@
+builtin_extensions:
+  - builtin_one
+extensions:
+  alpha:
+    initdb:
+      mode: create
+  beta:
+    initdb:
+      mode: manual
+      reason: This extension needs database-specific setup.
+flavors:
+  sample:
+    - alpha
+    - beta

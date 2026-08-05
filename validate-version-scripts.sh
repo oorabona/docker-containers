@@ -12,6 +12,9 @@ source "$(dirname "$0")/helpers/logging.sh"
 # Source config schema guard (base_image_cache dual-schema validation)
 source "$(dirname "$0")/helpers/validate-base-cache-schema.sh"
 
+# Source PostgreSQL extensions schema guard.
+source "$(dirname "$0")/helpers/validate-extensions-schema.sh"
+
 # Configuration
 # Increase timeouts in CI environments due to potential network latency
 if [[ "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ]]; then
@@ -339,6 +342,15 @@ main() {
     # any version.sh tests run. When a specific container is requested, validate only
     # that container's config.yaml so unrelated containers do not cause early exit.
     echo ""
+    log_info "Validating PostgreSQL extensions schema..."
+    if validate_extensions_schema "postgres/extensions/config.yaml"; then
+        log_success "PostgreSQL extensions schema: clean"
+    else
+        log_error "PostgreSQL extensions schema validation failed — see the errors above"
+        exit 1
+    fi
+    echo ""
+
     if [ -n "$specific_container" ]; then
         log_info "Validating base_image_cache schema for container: $specific_container..."
         if validate_container_base_cache_schema "$specific_container"; then

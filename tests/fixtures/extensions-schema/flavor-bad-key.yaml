@@ -1,0 +1,7 @@
+extensions:
+  alpha:
+    initdb:
+      mode: create
+flavors:
+  bad key:
+    - alpha

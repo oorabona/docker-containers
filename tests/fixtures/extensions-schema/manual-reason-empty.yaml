@@ -1,0 +1,8 @@
+extensions:
+  alpha:
+    initdb:
+      mode: manual
+      reason: ''
+flavors:
+  sample:
+    - alpha

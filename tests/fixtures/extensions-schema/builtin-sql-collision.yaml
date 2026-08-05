@@ -1,0 +1,10 @@
+builtin_extensions:
+  - builtin_one
+extensions:
+  alpha:
+    initdb:
+      mode: create
+      sql_name: builtin_one
+flavors:
+  sample:
+    - alpha

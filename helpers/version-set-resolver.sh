@@ -123,12 +123,14 @@ resolve_version_set() {
     # Read single version (always present) for fallback; -r (raw output) strips
     # surrounding quotes so yq v4 returns a bare string regardless of version.
     local single_version
-    single_version=$(yq -r ".extensions.${ext_name}.version" "${_config_file}")
+    single_version=$(ext="$ext_name" yq -r \
+        '.extensions[strenv(ext)].version' "${_config_file}")
 
     # Read optional resolver path; -r ensures the fallback empty string is bare,
     # not a quoted "\"\"" on older yq v4 variants.
     local resolver_path
-    resolver_path=$(yq -r ".extensions.${ext_name}.version_set.resolver // \"\"" "${_config_file}")
+    resolver_path=$(ext="$ext_name" yq -r \
+        '.extensions[strenv(ext)].version_set.resolver // ""' "${_config_file}")
 
     if [[ -z "$resolver_path" ]]; then
         # No resolver configured — validate version before emitting single-version array.
@@ -147,7 +149,8 @@ resolve_version_set() {
     # We use 12 as the fast-path fallback so the committed slice is trimmed
     # consistently with what the live resolver would produce.
     local retain_count
-    retain_count=$(yq -r ".extensions.${ext_name}.version_set.retain_count // \"\"" "${_config_file}")
+    retain_count=$(ext="$ext_name" yq -r \
+        '.extensions[strenv(ext)].version_set.retain_count // ""' "${_config_file}")
     local _effective_retain
     _effective_retain=$(_normalize_retain_count "$retain_count")
 
