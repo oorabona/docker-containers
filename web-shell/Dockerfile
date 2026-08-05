@@ -10,7 +10,7 @@ ARG REMOTE_CR=ghcr.io/oorabona
 ARG VERSION
 ARG UPSTREAM_VERSION
 ARG TTYD_VERSION
-# @@BASE_IMAGE@@
+@@BASE_IMAGE@@
 
 USER root
 
@@ -20,7 +20,7 @@ ARG TARGETARCH
 # Validate required build args
 RUN : "${TTYD_VERSION:?required}"
 
-# @@INSTALL_PACKAGES@@
+@@INSTALL_PACKAGES@@
 
 # Install ttyd pre-built binary (static binary, works on all distros)
 RUN case "${TARGETARCH}" in \
@@ -33,11 +33,11 @@ RUN case "${TARGETARCH}" in \
     && chmod +x /usr/local/bin/ttyd \
     && ttyd --version
 
-# @@SSH_SETUP@@
+@@SSH_SETUP@@
 
 # Password is set at runtime via SHELL_PASSWORD env var (see entrypoint.sh)
 # No default password baked into the image for security
-# @@USER_SETUP@@
+@@USER_SETUP@@
 
 # Propagate SHELL_USER from build-time ARG to runtime ENV
 # (entrypoint.sh reads this to configure password, SSH, and ttyd)

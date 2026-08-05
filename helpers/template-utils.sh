@@ -57,6 +57,16 @@ expand_template() {
         return 1
     fi
 
+    # Validate every requested marker before producing any output.  A missing
+    # marker would otherwise silently omit generated content from the Dockerfile.
+    local marker
+    for marker in "${_marker_names[@]}"; do
+        if ! grep -qF -- "@@${marker}@@" "$template"; then
+            log_error "expand_template: marker @@${marker}@@ not found in template: $template"
+            return 1
+        fi
+    done
+
     # Process template line by line
     while IFS= read -r line; do
         local matched=false

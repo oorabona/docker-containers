@@ -33,12 +33,16 @@ extensions:
     version: "2.27.1"
     repo: "timescale/timescaledb"
     priority: 1
+    initdb:
+      mode: create
     version_set:
       resolver: "scripts/resolvers/timescaledb-ha.sh"
   pgvector:
     version: "0.8.2"
     repo: "pgvector/pgvector"
     priority: 2
+    initdb:
+      mode: create
 
 flavors:
   timeseries:
@@ -55,7 +59,10 @@ EOF
 ARG VERSION
 # @@EXTENSION_STAGES@@
 FROM postgres:${VERSION}
+# @@FLAVOR_ARG@@
 # @@EXTENSION_COPIES@@
+# @@EXTENSION_INSTALLS@@
+# @@FLAVOR_INITDB@@
 # @@RUNTIME_DEPS@@
 EOF
 
@@ -296,6 +303,8 @@ extensions:
     version: "${ceiling_ver}"
     repo: "timescale/timescaledb"
     priority: 1
+    initdb:
+      mode: create
     version_set:
       resolver: "scripts/resolvers/timescaledb-ha.sh"
 

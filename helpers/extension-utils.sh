@@ -562,15 +562,185 @@ get_flavor_extensions() {
     local config_file="$1"
     local flavor="$2"
     local pg_major="$3"
+    local declared_flavors
+    local invalid_flavor_record
+    local invalid_flavor
+    local safe_invalid_flavor
+    local flavor_exists
+
+    if ! declared_flavors=$(yq -r '.flavors | keys | join(", ")' "$config_file"); then
+        log_error "get_flavor_extensions: could not read declared flavors from ${config_file}"
+        return 1
+    fi
+
+    # Five structural properties, checked together rather than one per defect
+    # found: a name-shaped key, mapping to a list, of name-shaped strings, each
+    # naming a declared extension, none of them twice. Each was a malformed
+    # declaration that read as a legitimately empty one and produced an image
+    # with no compiled extensions carrying the flavour's label.
+    #
+    # This is not "the section is well-formed" — that claim is not one any check
+    # here can make. A duplicate mapping key, for instance, is resolved by the
+    # YAML parser before this sees it: `vector:` declared twice silently keeps
+    # the last. Detecting that needs the raw document, not the parsed one (#1092).
+    if ! invalid_flavor_record=$(yq -r '
+        . as $root
+        | [.flavors | to_entries[]
+           | select((.key | test("^[a-zA-Z0-9_-]+$") | not)
+                    or (.value | type) != "!!seq"
+                    or ([.value[] | select((type) != "!!str" or (test("^[a-zA-Z0-9_-]+$") | not))] | length > 0)
+                    or ([.value[] | . as $m | select($root.extensions | has($m) | not)] | length > 0)
+                    or ((.value | length) != (.value | unique | length)))
+           | "invalid:" + .key] | .[0]
+    ' "$config_file"); then
+        log_error "get_flavor_extensions: could not read declared flavors from ${config_file}"
+        return 1
+    fi
+
+    if [[ "$invalid_flavor_record" != "null" ]]; then
+        invalid_flavor="${invalid_flavor_record#invalid:}"
+        safe_invalid_flavor=$(_sanitize_for_log "$invalid_flavor")
+        safe_invalid_flavor="${safe_invalid_flavor//[[:cntrl:]]/?}"
+        log_error "get_flavor_extensions: invalid flavor name '${safe_invalid_flavor}' in ${config_file} (allowed: letters, digits, underscore, hyphen)"
+        return 1
+    fi
+
+    # The REQUESTED flavour, not only the declared keys. `env()` parses its value
+    # as YAML, so `vector # $(id)` reduces to `vector` and membership succeeds
+    # while the original text is what reaches the generated ARG, the guard and
+    # its echo — executing the substitution before the guard can reject it.
+    # `strenv()` takes the value as a string, and the same name shape the keys
+    # must satisfy applies here too.
+    if [[ ! "$flavor" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        log_error "get_flavor_extensions: invalid flavor name requested: $(_sanitize_for_log "$flavor")"
+        return 1
+    fi
+
+    if ! flavor_exists=$(flav="$flavor" yq -r '.flavors | has(strenv(flav))' "$config_file"); then
+        log_error "get_flavor_extensions: could not read declared flavors from ${config_file}"
+        return 1
+    fi
+
+    if [[ "$flavor_exists" != "true" ]]; then
+        log_error "get_flavor_extensions: unknown flavor '${flavor}' (declared flavors: ${declared_flavors})"
+        return 1
+    fi
 
     pgver="$pg_major" flav="$flavor" yq -r '
         . as $root |
-        .flavors[env(flav)] // [] | .[] | . as $ext |
+        .flavors[strenv(flav)] // [] | .[] | . as $ext |
         select(
             ($root.extensions[$ext].disabled == true | not) and
             (($root.extensions[$ext].max_pg_version // 999) >= env(pgver))
         )
     ' "$config_file"
+}
+
+# _generate_flavor_initdb_block <config_file> <flavor> <extensions>
+#
+# Render the one flavor-specific compiled-extension initdb block from the same
+# already-filtered extension list used for stages, COPYs, and install_ext calls.
+# Every compiled extension must state an explicit policy: create or manual.
+# A manual policy emits no SQL; it documents an extension that cannot safely be
+# created during the image's first-database initialization.
+_generate_flavor_initdb_block() {
+    local config_file="$1"
+    local flavor="$2"
+    local extensions="$3"
+    local ext_name
+    local mode
+    local sql_name
+    local reason
+    local builtin_name
+    local builtin_sql_names=$'\n'
+    local seen_sql_names=$'\n'
+    local -a create_sql_names=()
+    local initdb_block=""
+
+    # Validate every compiled extension declaration, not only the selected
+    # flavor. A missing policy must fail at generation time even when a current
+    # flavor happens not to include the newly added extension yet.
+    while IFS= read -r ext_name; do
+        [[ -z "$ext_name" ]] && continue
+        if [[ ! "$ext_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            log_error "generate_dockerfile: invalid extension name '$(_sanitize_for_log "$ext_name")' in ${config_file} (allowed: letters, digits, underscore, hyphen)"
+            return 1
+        fi
+        mode=$(ext="$ext_name" yq -r '.extensions[strenv(ext)].initdb.mode // ""' "$config_file" 2>/dev/null) || {
+            log_error "generate_dockerfile: could not read initdb policy for extension ${ext_name} from ${config_file}"
+            return 1
+        }
+        case "$mode" in
+            create)
+                ;;
+            manual)
+                reason=$(ext="$ext_name" yq -r '.extensions[strenv(ext)].initdb.reason // ""' "$config_file" 2>/dev/null) || {
+                    log_error "generate_dockerfile: could not read initdb manual reason for extension ${ext_name} from ${config_file}"
+                    return 1
+                }
+                if [[ -z "$reason" ]]; then
+                    log_error "generate_dockerfile: extension ${ext_name} has initdb.mode manual but no initdb.reason"
+                    return 1
+                fi
+                ;;
+            "")
+                log_error "generate_dockerfile: extension ${ext_name} has no initdb.mode (expected create or manual)"
+                return 1
+                ;;
+            *)
+                log_error "generate_dockerfile: extension ${ext_name} has unrecognised initdb.mode '$(_sanitize_for_log "$mode")' (expected create or manual)"
+                return 1
+                ;;
+        esac
+    done < <(yq -r '.extensions | keys[]' "$config_file")
+
+    while IFS= read -r builtin_name; do
+        [[ -z "$builtin_name" ]] && continue
+        builtin_sql_names+="${builtin_name}"$'\n'
+    done < <(yq -r '(.builtin_extensions // [])[]' "$config_file")
+
+    # Only selected, compatible extensions can produce flavor SQL.
+    while IFS= read -r ext_name; do
+        [[ -z "$ext_name" ]] && continue
+        mode=$(ext="$ext_name" yq -r '.extensions[strenv(ext)].initdb.mode' "$config_file") || return 1
+        [[ "$mode" == "manual" ]] && continue
+
+        sql_name=$(ext="$ext_name" yq -r '.extensions[strenv(ext)].initdb.sql_name // ""' "$config_file") || return 1
+        [[ -z "$sql_name" ]] && sql_name="$ext_name"
+        # An unquoted PostgreSQL identifier: it may not start with a digit, and
+        # it is folded to lower case. Requiring the folded form means the name
+        # emitted is the name the server sees, so the duplicate and built-in
+        # collision checks below can compare exactly. Accepting mixed case let
+        # `vector` and `Vector` both pass as distinct while folding to one, and
+        # `123ext` pass generation only to make CREATE EXTENSION fail at initdb.
+        if [[ ! "$sql_name" =~ ^[a-z_][a-z0-9_]*$ ]]; then
+            log_error "generate_dockerfile: extension ${ext_name} has unsafe initdb.sql_name '$(_sanitize_for_log "$sql_name")' (allowed: letters, digits, underscore)"
+            return 1
+        fi
+        if [[ "$builtin_sql_names" == *$'\n'"$sql_name"$'\n'* ]]; then
+            log_error "generate_dockerfile: extension ${ext_name} initdb.sql_name ${sql_name} is already created by 00-init-extensions.sql"
+            return 1
+        fi
+        if [[ "$seen_sql_names" == *$'\n'"$sql_name"$'\n'* ]]; then
+            log_error "generate_dockerfile: duplicate initdb.sql_name ${sql_name} in flavor ${flavor}"
+            return 1
+        fi
+        seen_sql_names+="${sql_name}"$'\n'
+        create_sql_names+=("$sql_name")
+    done <<< "$extensions"
+
+    if [[ ${#create_sql_names[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    initdb_block+="RUN set -eux; \\"$'\n'
+    initdb_block+="    printf '%s\\n' \\"$'\n'
+    initdb_block+="        '-- ${flavor} flavor: compiled extensions' \\"$'\n'
+    for sql_name in "${create_sql_names[@]}"; do
+        initdb_block+="        'CREATE EXTENSION IF NOT EXISTS ${sql_name};' \\"$'\n'
+    done
+    initdb_block+="        > /docker-entrypoint-initdb.d/01-init-flavor.sql"$'\n'
+    printf '%s' "$initdb_block"
 }
 
 # _emit_collector_stage <ext> <ver_ref_list>
@@ -656,7 +826,36 @@ generate_dockerfile() {
 
     # Get filtered extension list for this flavor + PG version
     local extensions
-    extensions=$(get_flavor_extensions "$config_file" "$flavor" "$pg_major")
+    if ! extensions=$(get_flavor_extensions "$config_file" "$flavor" "$pg_major"); then
+        log_error "generate_dockerfile: cannot determine extensions for flavor '${flavor}'"
+        return 1
+    fi
+
+    local flavor_initdb_block
+    if ! flavor_initdb_block=$(_generate_flavor_initdb_block "$config_file" "$flavor" "$extensions"); then
+        return 1
+    fi
+
+    # FLAVOR is build-time input, but this file is generated for exactly one
+    # flavor. Bind it to that flavor so labels, COPY stages, and installations
+    # cannot describe different images when a caller passes --build-arg FLAVOR.
+    local flavor_arg_block="ARG FLAVOR=${flavor}"$'\n'
+    local install_block=""
+    install_block+="    # Generated flavor guard and install list for ${flavor}."$'\n'
+    install_block+="    if [ \"\${FLAVOR}\" != \"${flavor}\" ]; then \\"$'\n'
+    install_block+="        echo \"ERROR: generated Dockerfile is for flavor ${flavor}, got \${FLAVOR}\" >&2; \\"$'\n'
+    install_block+="        exit 1; \\"$'\n'
+    install_block+="    fi; \\"$'\n'
+
+    if [[ -n "$extensions" ]]; then
+        local install_ext_name
+        while IFS= read -r install_ext_name; do
+            [[ -z "$install_ext_name" ]] && continue
+            install_block+="    install_ext ${install_ext_name}; \\"$'\n'
+        done <<< "$extensions"
+    else
+        install_block+="    echo \"Base flavor: no compiled extensions\"; \\"$'\n'
+    fi
 
     # Build the FROM stages block
     local stages_block=""
@@ -1105,8 +1304,11 @@ generate_dockerfile() {
     # (missing template file, no markers provided). Let the exit status
     # propagate so callers see real failures instead of always succeeding.
     expand_template "$template" \
+        "FLAVOR_ARG" "$flavor_arg_block" \
         "EXTENSION_STAGES" "$stages_block" \
         "EXTENSION_COPIES" "$copies_block" \
+        "EXTENSION_INSTALLS" "$install_block" \
+        "FLAVOR_INITDB" "$flavor_initdb_block" \
         "RUNTIME_DEPS" "$runtime_deps_block"
 }
 
@@ -1198,6 +1400,7 @@ compute_affected_flavors() {
     echo "$result"
 }
 
+
 # Pull extension image from registry
 pull_ext_image() {
     local ext_name="$1"
@@ -1252,4 +1455,3 @@ get_flavor_extensions_yaml() {
 
     echo "$result"
 }
-

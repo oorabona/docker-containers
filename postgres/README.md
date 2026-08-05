@@ -233,15 +233,12 @@ docker run -d \
 ### Building Locally
 
 ```bash
-# Build base flavor
-docker build --build-arg VERSION=17-alpine --build-arg FLAVOR=base -t postgres:17 .
-
-# Build vector flavor
-docker build --build-arg VERSION=17-alpine --build-arg FLAVOR=vector -t postgres:17-vector .
-
-# Build with all extensions
-docker build --build-arg VERSION=17-alpine --build-arg FLAVOR=full -t postgres:17-full .
+# Build a flavor through the supported generator path
+./make build postgres --flavor vector
 ```
+
+`postgres/Dockerfile` is a template, not a directly buildable Dockerfile.
+Alternatively, generate a flavor-specific Dockerfile first and build that generated file.
 
 ## Configuration
 
@@ -507,7 +504,26 @@ postgres/
 
 You can create your own flavor by combining extensions to match your specific needs.
 
-### Step 1: Create a Flavor Definition
+A flavour is declared in two places, and both are required. `extensions/config.yaml`
+is what the build reads: its `flavors` section lists which compiled extensions the
+image assembles, and generation fails if the flavour is missing there. The file in
+`flavors/` carries the flavour's description and is what the cache-digest path uses
+to recognise a postgres-style build.
+
+### Step 1: Declare the extensions the flavour assembles
+
+In `extensions/config.yaml`, under `flavors`, add the flavour and the extensions it
+includes. Each name must be an extension declared in the same file's `extensions`
+section, listed once:
+
+```yaml
+flavors:
+  myapp:
+    - pgvector
+    - pg_partman
+```
+
+### Step 2: Create the Flavor Definition
 
 Create a new file in `flavors/`:
 
@@ -535,7 +551,7 @@ tags:
   - "{major}-myapp-alpine"
 ```
 
-### Step 2: Update variants.yaml
+### Step 3: Update variants.yaml
 
 Add your variant to the version matrix:
 
@@ -551,43 +567,27 @@ versions:
         description: "Custom flavor for my application"
 ```
 
-### Step 3: Update Dockerfile
+### Step 4: Declare Initdb Policy
 
-Add your flavor to the install script in the Dockerfile:
+Every compiled extension needs an explicit `initdb.mode` in `config.yaml`:
 
-```dockerfile
-case "${FLAVOR}" in
-    # ... existing flavors ...
-    myapp) \
-        install_ext pgvector; \
-        install_ext pg_partman \
-        ;; \
-esac
+```yaml
+extensions:
+  myext:
+    initdb:
+      mode: create
+      # sql_name: my_extension_name  # optional; defaults to the config key
 ```
 
-And create the initialization script:
+Use `mode: manual` with a `reason` when creating the extension cannot be done
+reliably during initdb. Flavor installs and `01-init-flavor.sql` are generated
+from the same filtered flavor list.
 
-```dockerfile
-RUN case "${FLAVOR}" in
-    # ... existing flavors ...
-    myapp) \
-        printf '%s\n' \
-            '-- MyApp flavor extensions' \
-            'CREATE EXTENSION IF NOT EXISTS vector;' \
-            'CREATE EXTENSION IF NOT EXISTS pg_partman;' \
-            > /docker-entrypoint-initdb.d/01-init-flavor.sql \
-        ;; \
-esac
-```
-
-### Step 4: Build Your Flavor
+### Step 5: Build Your Flavor
 
 ```bash
-# Build locally
-docker build \
-  --build-arg VERSION=17-alpine \
-  --build-arg FLAVOR=myapp \
-  -t postgres:17-myapp .
+# Build locally through the supported generator path
+./make build postgres --flavor myapp
 
 # Test it
 docker run -d --name pg-test \
