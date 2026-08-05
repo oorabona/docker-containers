@@ -18,7 +18,13 @@ fi
 
 # Check Vector API is responding (health endpoint)
 echo "  Checking Vector API health..."
-if docker exec "$CONTAINER_NAME" wget -qO- http://localhost:8686/health 2>/dev/null | grep -q "ok"; then
+# The endpoint answers `{"ok":true}`, so match that field rather than the
+# substring `ok`, which `{"ok":false}` and a body reading `not ok` both satisfy.
+# The here-string is not decoration: `set -o pipefail` plus `producer | grep -q`
+# surfaces 141 when grep exits first and the producer takes SIGPIPE, which reads
+# as "not responding" for a healthy API (#1060).
+health=$(docker exec "$CONTAINER_NAME" wget -qO- http://127.0.0.1:8686/health 2>/dev/null) || health=""
+if grep -qE '"ok"[[:space:]]*:[[:space:]]*true' <<< "$health"; then
     echo "  ✅ Vector API healthy"
 else
     echo "  ❌ Vector API not responding"
