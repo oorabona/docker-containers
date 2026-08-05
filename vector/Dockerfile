@@ -55,6 +55,10 @@ USER vector
 EXPOSE 8686
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD ["wget", "-qO-", "http://localhost:8686/health"]
+    # 127.0.0.1, not localhost: the API binds 0.0.0.0, which is IPv4 only, while
+    # a runner's /etc/hosts also maps localhost to ::1. Resolved that way the
+    # probe is refused and the container never reports healthy, which is what
+    # #988 saw as a readiness timeout with no cause attached.
+    CMD ["wget", "-qO-", "http://127.0.0.1:8686/health"]
 
 ENTRYPOINT ["vector"]

@@ -28,7 +28,7 @@ fi
 # listens on. Uses busybox wget (curl is not in the runtime image) and asserts
 # a successful response, so this actually protects the :8080 port contract.
 echo "  Testing HTTP endpoint on :8080..."
-if docker exec "$CONTAINER_NAME" wget -q -O /dev/null "http://localhost:8080/"; then
+if docker exec "$CONTAINER_NAME" wget -q -O /dev/null "http://127.0.0.1:8080/"; then
     echo "  ✅ HTTP endpoint responding on :8080"
 else
     echo "  ❌ HTTP endpoint did not respond on :8080"

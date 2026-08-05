@@ -324,7 +324,11 @@ RUN addgroup -g 101 -S nginx \
 # the user adds a stub_status location (see README), so it can't be the default
 # probe target.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD wget -q -O /dev/null http://localhost:8080/ || exit 1
+    # 127.0.0.1, not localhost: nginx listens on IPv4 here, while a runner's
+    # /etc/hosts also maps localhost to ::1. Resolved that way the probe is
+    # refused and the container never reports healthy — #988's readiness
+    # timeout, which carried no cause until the harness printed the health record.
+    CMD wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1
 
 LABEL org.opencontainers.image.title="OpenResty" \
       org.opencontainers.image.description="OpenResty (Nginx + Lua) with LuaRocks and custom modules" \

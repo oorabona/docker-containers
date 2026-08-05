@@ -23,7 +23,7 @@ echo "  Checking Vector API health..."
 # The here-string is not decoration: `set -o pipefail` plus `producer | grep -q`
 # surfaces 141 when grep exits first and the producer takes SIGPIPE, which reads
 # as "not responding" for a healthy API (#1060).
-health=$(docker exec "$CONTAINER_NAME" wget -qO- http://localhost:8686/health 2>/dev/null) || health=""
+health=$(docker exec "$CONTAINER_NAME" wget -qO- http://127.0.0.1:8686/health 2>/dev/null) || health=""
 if grep -qE '"ok"[[:space:]]*:[[:space:]]*true' <<< "$health"; then
     echo "  ✅ Vector API healthy"
 else
