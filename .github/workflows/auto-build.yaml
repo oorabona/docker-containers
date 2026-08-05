@@ -329,7 +329,8 @@ jobs:
           tag: ${{ matrix.build.tag }}
           # Pass the full build cell through so an e2e-enabled variant / alternate
           # Dockerfile builds and tests the SAME image the detector selected.
-          # (Current opt-ins are flavor-less, so these are empty today.)
+          # postgres routes through here with flavor and variant set to `full`;
+          # the other opt-ins declare no flavour and leave these empty.
           flavor: ${{ matrix.build.flavor }}
           build_flavor: ${{ matrix.build.build_flavor }}
           variant: ${{ matrix.build.variant }}
