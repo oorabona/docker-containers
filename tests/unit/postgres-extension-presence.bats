@@ -1,59 +1,21 @@
 #!/usr/bin/env bats
 #
-# Execute the install_ext transport shell from postgres/Dockerfile. These tests
-# deliberately do not inspect a generated Dockerfile: they exercise the guards
-# that decide whether a staged payload is copied or a build stops. CI needs
-# BusyBox installed: the shipped PostgreSQL image uses BusyBox ash and applets.
+# Execute the install_ext transport shell used by postgres/Dockerfile. These
+# tests exercise the guards that decide whether a staged payload is copied or a
+# build stops. CI needs BusyBox installed: the shipped PostgreSQL image uses
+# BusyBox ash and applets.
 
 load "../test_helper"
 
-_extract_install_ext() {
-    printf '%s\n' '# shellcheck shell=sh' > "$TEST_TEMP_DIR/install-ext.sh"
-    # End the range on the generator's own marker, not on a comment. The prose
-    # landmark this used before was reworded by #1083, the range then ran to end
-    # of file, and the extracted body executed the staging cleanup — fifteen
-    # tests red for a comment edit. A marker cannot drift silently: the
-    # generator fails when it is missing.
-    sed -n '/^RUN set -eux; \\/,/^    @@EXTENSION_INSTALLS@@/{/^    @@EXTENSION_INSTALLS@@/{q}; p;}' \
-        "$PROJECT_ROOT/postgres/Dockerfile" \
-        | sed -e '1s/^RUN //' -e 's/; \\$//' \
-            -e "s|/tmp/ext|$STAGING_ROOT|g" \
-            -e "s|/usr/local/share/postgresql/extension|$EXTENSION_DEST|g" \
-            -e "s|/usr/local/lib/postgresql|$LIB_DEST|g" \
-        >> "$TEST_TEMP_DIR/install-ext.sh"
-    printf '%s\n' 'install_ext "$@"' >> "$TEST_TEMP_DIR/install-ext.sh"
-
-    # A total extraction failure announces itself — install_ext would be
-    # undefined and every test would die. A PARTIAL one does not: the sed range
-    # still yields a callable function while silently dropping whichever guard
-    # the Dockerfile's continuation style moved out of range. Pin the landmarks
-    # that must survive, so drift fails here rather than passing a suite that
-    # tests less than it names.
-    local body="$TEST_TEMP_DIR/install-ext.sh"
-    grep -q 'install_ext() {' "$body"
-    grep -q 'copy_payload' "$body"
-    grep -q 'set -eux' "$body"
-    grep -q 'has no staging root at' "$body"
-    grep -q 'ceiling control' "$body"
-    [ "$(wc -l < "$body")" -gt 60 ]
-    # And that the range ended where it was told to. Pinning only presence lets
-    # an over-capture pass: when the range ran past its end, every landmark
-    # above was still found and the body additionally carried the staging
-    # cleanup, which then ran. The marker being the last line says the range
-    # stopped, without a line count anyone would have to keep current.
-    # The marker itself is excluded — it is bare, so leaving it in would abort
-    # the sourced body as an unknown command. Its absence proves nothing on its
-    # own; the cleanup's absence is what says the range stopped where it was
-    # told. Pinning only what must be PRESENT let an over-capture satisfy every
-    # landmark and pass, which is how a comment edit once turned fifteen tests
-    # red by running the staging cleanup instead.
-    ! grep -q '@@' "$body"
-    ! grep -q 'rm -rf' "$body"
-}
-
 _run_install_ext() {
-    run env "PATH=$BUSYBOX_APPLET_DIR" /bin/busybox sh \
-        "$TEST_TEMP_DIR/install-ext.sh" "$@"
+    run env "PATH=$BUSYBOX_APPLET_DIR" /bin/busybox sh -eux -c '
+        . "$1"
+        shift
+        install_ext "$@"
+        if [ "${ASSERT_NO_BASH:-0}" = 1 ] && command -v bash >/dev/null; then
+            exit 1
+        fi
+    ' sh "$PROJECT_ROOT/postgres/install-ext.sh" "$@"
 }
 
 _write_file() {
@@ -77,7 +39,6 @@ setup() {
     for utility in $(/bin/busybox --list); do
         ln -s /bin/busybox "$BUSYBOX_APPLET_DIR/$utility"
     done
-    _extract_install_ext
 }
 
 teardown() {
@@ -145,10 +106,9 @@ teardown() {
 
 @test "BusyBox harness does not resolve utilities outside its applet directory" {
     mkdir -p "$STAGING_ROOT/busybox-only/extension"
-    printf '%s\n' 'if command -v bash >/dev/null; then exit 1; fi' \
-        >> "$TEST_TEMP_DIR/install-ext.sh"
-
+    export ASSERT_NO_BASH=1
     _run_install_ext busybox-only
+    unset ASSERT_NO_BASH
 
     [ "$status" -eq 0 ]
 }
@@ -261,6 +221,84 @@ teardown() {
 
     [ "$status" -ne 0 ]
     [[ "$output" == *"extension unset-layout staging root"* ]]
-    [[ "$output" == *"matches no supported layout"* ]]
     [[ "$output" != *"parameter not set"* ]]
+    [[ "$output" == *"matches no supported layout"* ]]
+}
+
+# The Dockerfile sources this file into the shell that then runs the generated
+# install calls, so anything it does at the top level runs during the build, with
+# `set -eux` already active and before any of those calls. It must define the two
+# functions and do nothing else.
+#
+# The old sed extraction had a weaker version of this — it asserted the cut body
+# contained no `rm -rf`, guarding against the range swallowing the staging
+# cleanup. There is no range now, and the property it was protecting is the one
+# below: sourcing has no effect.
+#
+# What this cannot see is a top-level statement guarded by a variable that is
+# unset here and set during the build. Nothing sets one today.
+@test "sourcing the helper defines the two functions and does nothing else" {
+    local canary="$TEST_TEMP_DIR/untouched"
+    local witness="$TEST_TEMP_DIR/reached-the-end"
+
+    mkdir -p "$canary"
+    printf 'original\n' > "$canary/file"
+
+    # The witness is written AFTER the source and the function checks, on a
+    # channel the test does not require to be silent. A top-level `exit 0` or
+    # `exec true` in the helper ends this shell with status 0, no output and an
+    # untouched canary — satisfying every other assertion here — and in the build
+    # it would end the RUN successfully before a single extension was installed.
+    # Only something that has to happen after the source can tell the difference.
+    #
+    # `$-` is checked for `e` because a top-level `set +e` also passes silently,
+    # and in the build it would disarm the errexit the whole RUN depends on: a
+    # failed install_ext would be followed by a successful cleanup and a layer
+    # that committed.
+    #
+    # The build ARGs in scope where the Dockerfile sources this file are set here
+    # too. A top-level statement guarded on one of them — `if [ -n "$FLAVOR" ];
+    # then LIB_DEST=/tmp/elsewhere; fi` — is invisible to a witness shell that
+    # leaves them unset, and in the build it would put the libraries outside
+    # PostgreSQL's directory while every later check still passed. An earlier
+    # version of this comment asserted nothing set such a variable, which was
+    # simply untrue: `postgres/Dockerfile` declares FLAVOR, MAJOR_VERSION,
+    # VERSION, LOCALES and SHARED_PRELOAD_LIBRARIES before line 77.
+    #
+    # A guard on an inherited base-image variable this list does not name stays
+    # invisible. That bound is real and is what this test cannot close.
+    # -u on the three roots: setup() exports them for the other tests here, and
+    # this one has to see the environment the build sees, where they are absent
+    # and the functions take their production defaults.
+    run env -u STAGING_ROOT -u EXTENSION_DEST -u LIB_DEST \
+        "PATH=$BUSYBOX_APPLET_DIR" \
+        FLAVOR=full MAJOR_VERSION=18 VERSION=18-alpine \
+        LOCALES=en_US.UTF-8 SHARED_PRELOAD_LIBRARIES=pg_stat_statements \
+        /bin/busybox sh -eu -c '
+        cd "$2"
+        . "$1"
+        case "$-" in *e*) ;; *) echo "errexit was disarmed by sourcing" >&2; exit 1 ;; esac
+        command -v install_ext >/dev/null || { echo "install_ext undefined" >&2; exit 1; }
+        command -v copy_payload >/dev/null || { echo "copy_payload undefined" >&2; exit 1; }
+        # The three roots must still be unset, so the functions take their
+        # production defaults. A top-level assignment produces no output and
+        # touches nothing, so every other assertion here passes while the build
+        # copies libraries somewhere PostgreSQL does not look — and the later
+        # control-file check still succeeds, because that checks the extension
+        # directory, not the library one.
+        for v in STAGING_ROOT EXTENSION_DEST LIB_DEST; do
+            eval "value=\${$v-__unset__}"
+            [ "$value" = "__unset__" ] || { echo "sourcing set $v to $value" >&2; exit 1; }
+        done
+        : > "$3"
+    ' sh "$PROJECT_ROOT/postgres/install-ext.sh" "$canary" "$witness"
+
+    [ "$status" -eq 0 ]
+    # Execution reached past the source rather than ending inside it.
+    [ -f "$witness" ]
+    # Sourcing printed nothing: no progress line, no warning, no trace.
+    [ -z "$output" ]
+    # And touched nothing: same entries, and the one file's content unchanged.
+    [ "$(find "$canary" -mindepth 1 | wc -l)" -eq 1 ]
+    [ "$(cat "$canary/file")" = "original" ]
 }

@@ -51,6 +51,17 @@ compute_build_digest() {
         digest_inputs+=("FILE:Dockerfile=")
     fi
 
+    # A file a Dockerfile bind-mounts is a build input this digest does not see.
+    # It is not covered here, and the gap is #1103: nothing that reaches this
+    # function uses a bind mount today, because the one container that does —
+    # postgres — is built by bake, which never consults a digest.
+    #
+    # A parser over the Dockerfile's mount lines was written and removed rather
+    # than kept: it recognised one spelling of a flag that has many, and its
+    # comment claimed a future mount would enter the digest automatically, which
+    # was false. A guard that names a property it does not have is worse than an
+    # absence someone can look up.
+
     # --- Detect container type and collect flavor-specific inputs ---
 
     if [[ -n "$flavor" && -f "flavors/${flavor}.yaml" ]]; then
