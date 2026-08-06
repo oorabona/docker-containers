@@ -784,29 +784,37 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
     [ "$guard_count" -ge 1 ]
 }
 
-@test "check-version-drift.sh routes untrusted names through _escape_gha_command" {
-    # Every ::warning:: / ::notice:: annotation line that includes a user-derived
-    # value (name, declared, status from JSON data) must route through _escape_gha_command.
-    # In _append_row, annotations use $safe_name, $safe_declared, $safe_status — never
-    # the raw $name/$declared/$status.  Verify no annotation line uses the raw variables.
-    local raw_name_in_annotation
-    # Check that ::warning:: / ::notice:: lines do NOT interpolate raw $name, $declared, $status
-    # (i.e. no 'printf ...::warning::...$name' outside safe_ variables)
-    raw_name_in_annotation=$(grep -cE \
-        '::(warning|notice)::[^"]*\$name[^_]|::(warning|notice)::[^"]*\$declared[^_]|::(warning|notice)::[^"]*\$status[^_]' \
-        "$DRIFT_SCRIPT" || true)
-    [ "$raw_name_in_annotation" -eq 0 ]
+# This checks two things it can, and deliberately stops there.
+#
+# It does NOT verify that a format's arguments are bound in the right order:
+# swapping two `%s` values passes every assertion here, and the only honest way
+# to catch that is to read the call — which the review of this migration did,
+# confirming all 26. Twenty-six per-call assertions would be a second copy of the
+# source, wrong the moment the source changes, and the next slice would owe fifty
+# more.
+#
+# The raw-emission check finds the literal spelling and nothing else.
+# `printf '::%s::...' error` passes it. That escape is not closable here: shell
+# is not a structured format, and a check over its text always has one more
+# spelling. The repository-wide policy check lands after the last call site
+# migrates and will carry the same bound, stated rather than implied.
+@test "check-version-drift.sh emits no literal workflow command and sources the emitter" {
+    # The script sources the settled emitter API directly rather than relying on
+    # logging.sh's transitional copy of the escaper.
+    grep -q 'source "${_vdrift_self_dir}/../helpers/gha.sh"' "$DRIFT_SCRIPT"
 
-    # _append_row must assign safe_ variables via _escape_gha_command
-    local safe_assignments
-    safe_assignments=$(grep -c 'safe_.*=.*_escape_gha_command' "$DRIFT_SCRIPT" || true)
-    [ "$safe_assignments" -ge 3 ]
-
-    # _escape_gha_command must be called for all ::error:: lines that include user data
-    # (grep for ::error:: lines that use printf %s with a subshell call to _escape_gha_command)
-    local escaped_errors
-    escaped_errors=$(grep -cE '::error::.*_escape_gha_command' "$DRIFT_SCRIPT" || true)
-    [ "$escaped_errors" -ge 1 ]
+    # The command NAME followed by its closing delimiter or the space that starts
+    # its parameters, and the legacy `##[` spelling the runner also accepts. An
+    # earlier version matched `::error::` alone, which `::error file=x::y` walks
+    # straight past — the same escape found in the retry-run guard this morning,
+    # and the same shape of fix. `tests/unit/retry-run-annotations.bats` carries
+    # the repository-wide version of this pattern.
+    #
+    # A comment mentioning one of these fails the test too: a false positive
+    # costs a word, the reverse costs a regression.
+    local raw_annotations
+    raw_annotations=$(grep -cE '(::|##\[)(error|warning|notice)(::|\]|[[:space:]])' "$DRIFT_SCRIPT" || true)
+    [ "$raw_annotations" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------

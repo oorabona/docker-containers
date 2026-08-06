@@ -37,8 +37,7 @@
 #   _VDRIFT_PROBE_OVERRIDE              — function/path: probe(<image> <tag>) → "present"|"absent"|"error"
 #
 # GHA command injection prevention:
-#   All user-derived strings emitted via ::notice::/::warning:: are escaped via
-#   _escape_gha_command (pattern from helpers/base-cache-utils.sh).
+#   All annotations are emitted through helpers/gha.sh, which escapes their values.
 
 set -euo pipefail
 
@@ -63,6 +62,8 @@ source "${_vdrift_self_dir}/../helpers/extension-utils.sh"
 source "${_vdrift_self_dir}/../helpers/build-cache-utils.sh"
 # shellcheck source=../helpers/logging.sh
 source "${_vdrift_self_dir}/../helpers/logging.sh"
+# shellcheck source=../helpers/gha.sh
+source "${_vdrift_self_dir}/../helpers/gha.sh"
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -86,28 +87,28 @@ while [[ $# -gt 0 ]]; do
             grep '^#' "$0" | grep -v '#!/' | sed 's/^# \?//'
             exit 0 ;;
         *)
-            printf '::error::Unknown argument: %s\n' "$(_escape_gha_command "$1")" >&2
+            gha_error 'Unknown argument: %s' "$1" >&2
             exit 2 ;;
     esac
 done
 
 if [[ -z "$MODE" ]]; then
-    echo "::error::--mode is required (post-build|sweep)" >&2
+    gha_error '--mode is required (post-build|sweep)' >&2
     exit 2
 fi
 
 if [[ "$MODE" != "post-build" && "$MODE" != "sweep" ]]; then
-    echo "::error::--mode must be 'post-build' or 'sweep'" >&2
+    gha_error "--mode must be 'post-build' or 'sweep'" >&2
     exit 2
 fi
 
 if [[ "$MODE" == "post-build" && -z "$CONTAINER_ARG" ]]; then
-    echo "::error::--container is required with --mode post-build" >&2
+    gha_error '--container is required with --mode post-build' >&2
     exit 2
 fi
 
 if ! [[ "$GRACE_HOURS" =~ ^[0-9]+$ ]]; then
-    echo "::error::--grace-hours must be a non-negative integer" >&2
+    gha_error '--grace-hours must be a non-negative integer' >&2
     exit 2
 fi
 
@@ -129,15 +130,14 @@ _vdrift_ghcr_owner() {
     fi
     local remote_url
     if ! remote_url=$(cd "$PROJECT_ROOT" && git remote get-url origin 2>/dev/null); then
-        echo "::error::Cannot determine GHCR owner (no GITHUB_REPOSITORY_OWNER and git remote get-url origin failed)" >&2
+        gha_error 'Cannot determine GHCR owner (no GITHUB_REPOSITORY_OWNER and git remote get-url origin failed)' >&2
         return 1
     fi
     if [[ "$remote_url" =~ github\.com[:/]([^/]+)/ ]]; then
         printf '%s' "${BASH_REMATCH[1]}"
         return 0
     fi
-    printf '::error::Cannot parse owner from git remote URL: %s\n' \
-        "$(_escape_gha_command "$remote_url")" >&2
+    gha_error 'Cannot parse owner from git remote URL: %s' "$remote_url" >&2
     return 1
 }
 
@@ -153,12 +153,12 @@ _vdrift_list_containers() {
     fi
     local out
     if ! out=$(cd "$PROJECT_ROOT" && ./make list 2>/dev/null); then
-        echo "::error::Failed to enumerate containers via './make list'" >&2
+        gha_error "Failed to enumerate containers via './make list'" >&2
         return 1
     fi
     out=$(printf '%s' "$out" | grep -E '^[a-z0-9_-]+$' || true)
     if [[ -z "$out" ]]; then
-        echo "::error::'./make list' returned empty container set" >&2
+        gha_error "'./make list' returned empty container set" >&2
         return 1
     fi
     printf '%s' "$out"
@@ -285,8 +285,7 @@ _vdrift_probe_published() {
                 else
                     # Linux tag backed only by a single-arch placeholder — treat as absent
                     # so partial/failed multi-arch publishes are flagged as drift.
-                    printf '::warning::version-drift: %s single-arch manifest where multi-arch expected\n' \
-                        "$(_escape_gha_command "${full_ref}")" >&2
+                    gha_warning 'version-drift: %s single-arch manifest where multi-arch expected' "$full_ref" >&2
                     printf 'absent'
                 fi
                 ;;
@@ -358,8 +357,7 @@ _vdrift_probe_published() {
                     if [[ "$tag" == *windows* ]]; then
                         printf 'present'
                     else
-                        printf '::warning::version-drift: %s single-arch manifest where multi-arch expected\n' \
-                            "$(_escape_gha_command "${full_ref}")" >&2
+                        gha_warning 'version-drift: %s single-arch manifest where multi-arch expected' "$full_ref" >&2
                         printf 'absent'
                     fi
                     ;;
@@ -411,25 +409,19 @@ _append_row() {
         window_empty)   _HAS_ERROR=true ;;
     esac
 
-    # GHA annotations
-    local safe_name safe_declared safe_status
-    safe_name=$(_escape_gha_command "$name")
-    safe_declared=$(_escape_gha_command "$declared")
-    safe_status=$(_escape_gha_command "$status")
-
     case "$status" in
         drift)
-            printf '::warning::version-drift: %s declared=%s status=%s\n' \
-                "$safe_name" "$safe_declared" "$safe_status" >&2 ;;
+            gha_warning 'version-drift: %s declared=%s status=%s' \
+                "$name" "$declared" "$status" >&2 ;;
         in_flight)
-            printf '::notice::version-drift: %s declared=%s status=in_flight (within grace window)\n' \
-                "$safe_name" "$safe_declared" >&2 ;;
+            gha_notice 'version-drift: %s declared=%s status=in_flight (within grace window)' \
+                "$name" "$declared" >&2 ;;
         error)
-            printf '::warning::version-drift: %s declared=%s probe error\n' \
-                "$safe_name" "$safe_declared" >&2 ;;
+            gha_warning 'version-drift: %s declared=%s probe error' \
+                "$name" "$declared" >&2 ;;
         window_empty)
-            printf '::warning::version-drift: %s declared=%s timescaledb window empty\n' \
-                "$safe_name" "$safe_declared" >&2 ;;
+            gha_warning 'version-drift: %s declared=%s timescaledb window empty' \
+                "$name" "$declared" >&2 ;;
     esac
 }
 
@@ -489,7 +481,7 @@ _process_container() {
     # so validate the file directly here: a malformed or schema-broken
     # variants.yaml must fail closed (exit 2), not silently yield "no versions".
     if ! yq -e '.versions[].tag' "$variants_file" >/dev/null 2>&1; then
-        echo "::error::version-drift: variants.yaml for ${container} failed to parse or declares no .versions[].tag" >&2
+        gha_error 'version-drift: variants.yaml for %s failed to parse or declares no .versions[].tag' "$container" >&2
         _HAS_ERROR=true
         return 0
     fi
@@ -498,7 +490,7 @@ _process_container() {
     # Distinguish parse/tool failure (non-zero exit) from genuinely empty result.
     local versions
     if ! versions=$(list_versions "$container_dir" 2>/dev/null); then
-        echo "::error::version-drift: failed to read declared versions for ${container} (yq/parse error)" >&2
+        gha_error 'version-drift: failed to read declared versions for %s (yq/parse error)' "$container" >&2
         _HAS_ERROR=true
         return 0
     fi
@@ -564,7 +556,7 @@ _process_extensions() {
     # Read PG major versions — distinguish tool failure from genuinely empty config.
     local pg_majors
     if ! pg_majors=$(yq -r '.pg_versions[]' "$ext_config" 2>/dev/null); then
-        echo "::error::version-drift: failed to read pg_versions from ${ext_config} (yq/parse error)" >&2
+        gha_error 'version-drift: failed to read pg_versions from %s (yq/parse error)' "$ext_config" >&2
         _HAS_ERROR=true
         return 0
     fi
@@ -580,7 +572,7 @@ _process_extensions() {
 
         local ext_names
         if ! ext_names=$(list_extensions_by_priority "$ext_config" "$pg_major" 2>/dev/null); then
-            echo "::error::version-drift: failed to list extensions for pg${pg_major} from ${ext_config} (yq/parse error)" >&2
+            gha_error 'version-drift: failed to list extensions for pg%s from %s (yq/parse error)' "$pg_major" "$ext_config" >&2
             _HAS_ERROR=true
             continue
         fi
@@ -600,7 +592,7 @@ _process_extensions() {
             local has_resolver
             if ! has_resolver=$(VDRIFT_EXT="$ext_name" yq -r '.extensions[strenv(VDRIFT_EXT)].version_set.resolver // ""' \
                 "$ext_config" 2>/dev/null); then
-                echo "::error::version-drift: failed to read version_set resolver for $(_escape_gha_command "$ext_name") from $(_escape_gha_command "$ext_config") (yq/parse error)" >&2
+                gha_error 'version-drift: failed to read version_set resolver for %s from %s (yq/parse error)' "$ext_name" "$ext_config" >&2
                 _HAS_ERROR=true
                 continue
             fi
@@ -616,7 +608,7 @@ _process_extensions() {
                 local ext_version
                 if ! ext_version=$(VDRIFT_EXT="$ext_name" yq -r '.extensions[strenv(VDRIFT_EXT)].version // ""' \
                     "$ext_config" 2>/dev/null); then
-                    echo "::error::version-drift: failed to read declared version for $(_escape_gha_command "$ext_name") from $(_escape_gha_command "$ext_config") (yq/parse error)" >&2
+                    gha_error 'version-drift: failed to read declared version for %s from %s (yq/parse error)' "$ext_name" "$ext_config" >&2
                     _HAS_ERROR=true
                     continue
                 fi
@@ -674,7 +666,7 @@ _check_timescaledb_extension() {
     local resolver
     if ! resolver=$(VDRIFT_EXT="$ext_name" yq -r '.extensions[strenv(VDRIFT_EXT)].version_set.resolver // ""' \
         "$ext_config" 2>/dev/null); then
-        echo "::error::version-drift: failed to read version_set resolver for $(_escape_gha_command "$ext_name") from $(_escape_gha_command "$ext_config") (yq/parse error)" >&2
+        gha_error 'version-drift: failed to read version_set resolver for %s from %s (yq/parse error)' "$ext_name" "$ext_config" >&2
         _HAS_ERROR=true
         return 0
     fi
@@ -795,16 +787,16 @@ _emit_output() {
 # A missing tool causes silent false-clean results; we must exit 2 explicitly.
 # ---------------------------------------------------------------------------
 if ! command -v yq >/dev/null 2>&1; then
-    echo "::error::version-drift: required tool 'yq' not found on PATH — cannot run guard" >&2
+    gha_error "version-drift: required tool 'yq' not found on PATH — cannot run guard" >&2
     exit 2
 fi
 if ! command -v jq >/dev/null 2>&1; then
-    echo "::error::version-drift: required tool 'jq' not found on PATH — cannot run guard" >&2
+    gha_error "version-drift: required tool 'jq' not found on PATH — cannot run guard" >&2
     exit 2
 fi
 
 if ! GHCR_OWNER=$(_vdrift_ghcr_owner); then
-    echo "::error::version-drift: GHCR owner resolution failed — cannot run guard" >&2
+    gha_error 'version-drift: GHCR owner resolution failed — cannot run guard' >&2
     exit 2
 fi
 
@@ -817,7 +809,7 @@ else
     # Sweep mode: all containers + extensions
     containers=""
     if ! containers=$(_vdrift_list_containers); then
-        echo "::error::version-drift: container enumeration failed — cannot run guard" >&2
+        gha_error 'version-drift: container enumeration failed — cannot run guard' >&2
         exit 2
     fi
 
