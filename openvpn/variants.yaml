@@ -5,6 +5,6 @@ tests:
   e2e:
     enabled: true
 versions:
+  - tag: v2.7.6-alpine
   - tag: v2.7.5-alpine
   - tag: v2.7.4-alpine
-  - tag: v2.7.3-alpine
