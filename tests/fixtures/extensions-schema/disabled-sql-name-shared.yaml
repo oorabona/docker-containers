@@ -1,0 +1,24 @@
+# A disabled extension declaring the same SQL name as an active one. The
+# generator filters it out, so it reaches no image and cannot collide with
+# anything. Rejecting this would refuse a configuration whose failure mode
+# cannot occur — a validator stricter than the thing it validates.
+extensions:
+  pgvector:
+    version: "0.8.2"
+    repo: "pgvector/pgvector"
+    initdb:
+      mode: create
+      sql_name: vector
+  shadow:
+    version: "1.0.0"
+    repo: "example/shadow"
+    disabled: true
+    initdb:
+      mode: create
+      sql_name: vector
+
+flavors:
+  base: []
+  vector:
+    - pgvector
+    - shadow

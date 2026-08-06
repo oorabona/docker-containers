@@ -1,0 +1,6 @@
+extensions:
+  alpha:
+    initdb: {}
+flavors:
+  sample:
+    - alpha

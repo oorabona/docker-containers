@@ -48,10 +48,10 @@ _declared_extensions() {
 
     pgver=18 flav="$flavor" yq -r '
         . as $root |
-        .flavors[env(flav)][] | . as $ext |
+        .flavors[strenv(flav)][] | . as $ext |
         select(
             ($root.extensions[$ext].disabled == true | not) and
-            (($root.extensions[$ext].max_pg_version // 999) >= env(pgver))
+            (($root.extensions[$ext].max_pg_version // 999) >= (strenv(pgver) | tonumber))
         )
     ' "$CONFIG_FILE"
 }
@@ -158,7 +158,7 @@ teardown() {
         testowner
 
     [ "$status" -ne 0 ]
-    [[ "$output" == *"invalid flavor name '\$(>/tmp/pwn)'"* ]]
+    [[ "$output" == *'R1 flavor key'* ]]
 }
 
 @test "generated FLAVOR default is bound to its guard" {
@@ -221,7 +221,7 @@ teardown() {
     run generate_dockerfile "$invalid_config" "$PROJECT_ROOT/postgres/Dockerfile" vector 18 ghcr.io testowner
 
     [ "$status" -ne 0 ]
-    [[ "$output" == *'extension pgvector has no initdb.mode'* ]]
+    [[ "$output" == *'R4 extension "pgvector" must declare initdb.mode'* ]]
 }
 
 @test "an unrecognised initdb mode fails generation" {
@@ -233,7 +233,7 @@ teardown() {
     run generate_dockerfile "$invalid_config" "$PROJECT_ROOT/postgres/Dockerfile" vector 18 ghcr.io testowner
 
     [ "$status" -ne 0 ]
-    [[ "$output" == *'extension pgvector has unrecognised initdb.mode'* ]]
+    [[ "$output" == *'R4 extension "pgvector" must declare initdb.mode'* ]]
 }
 
 @test "duplicate initdb SQL names within a flavor fail generation" {
@@ -245,7 +245,7 @@ teardown() {
     run generate_dockerfile "$invalid_config" "$PROJECT_ROOT/postgres/Dockerfile" vector 18 ghcr.io testowner
 
     [ "$status" -ne 0 ]
-    [[ "$output" == *'duplicate initdb.sql_name vector in flavor vector'* ]]
+    [[ "$output" == *'R6 flavor "vector" resolves more than one extension to SQL name "vector"'* ]]
 }
 
 @test "unsafe and built-in initdb SQL names fail generation" {
@@ -256,13 +256,13 @@ teardown() {
     yq -i '.extensions.pgvector.initdb.sql_name = "vector; DROP"' "$unsafe_config"
     run generate_dockerfile "$unsafe_config" "$PROJECT_ROOT/postgres/Dockerfile" vector 18 ghcr.io testowner
     [ "$status" -ne 0 ]
-    [[ "$output" == *'extension pgvector has unsafe initdb.sql_name'* ]]
+    [[ "$output" == *'R4 extension "pgvector" resolves to an invalid SQL name'* ]]
 
     cp "$CONFIG_FILE" "$builtin_config"
     yq -i '.extensions.pgvector.initdb.sql_name = "pgcrypto"' "$builtin_config"
     run generate_dockerfile "$builtin_config" "$PROJECT_ROOT/postgres/Dockerfile" vector 18 ghcr.io testowner
     [ "$status" -ne 0 ]
-    [[ "$output" == *'initdb.sql_name pgcrypto is already created by 00-init-extensions.sql'* ]]
+    [[ "$output" == *'R7 flavor "vector" resolves an extension to built-in SQL name "pgcrypto"'* ]]
 }
 
 # A flavour declared as a scalar, or holding anything that is not a list of
@@ -329,13 +329,13 @@ teardown() {
     yq -i '.extensions.pgvector.initdb.sql_name = "123ext"' "$digit_config"
     run generate_dockerfile "$digit_config" "$PROJECT_ROOT/postgres/Dockerfile" vector 18 ghcr.io oorabona
     [ "$status" -ne 0 ]
-    [[ "$output" == *'extension pgvector has unsafe initdb.sql_name'* ]]
+    [[ "$output" == *'R4 extension "pgvector" resolves to an invalid SQL name'* ]]
 
     cp "$CONFIG_FILE" "$case_config"
     yq -i '.extensions.pgvector.initdb.sql_name = "Vector"' "$case_config"
     run generate_dockerfile "$case_config" "$PROJECT_ROOT/postgres/Dockerfile" vector 18 ghcr.io oorabona
     [ "$status" -ne 0 ]
-    [[ "$output" == *'extension pgvector has unsafe initdb.sql_name'* ]]
+    [[ "$output" == *'R4 extension "pgvector" resolves to an invalid SQL name'* ]]
 }
 
 @test "unexpanded source templates have bare markers that Dockerfile parsing rejects" {
