@@ -633,6 +633,34 @@ ENV CONTAINER_VERSION=${VERSION}        # Runtime version visibility
 
 ## Troubleshooting
 
+### `e2e-gate` is red on a pull request from a fork
+
+Expected, and not something the contributor can fix. It does not block the merge.
+
+The e2e job is guarded on `github.event.pull_request.head.repo.full_name == github.repository`,
+so it never runs for a fork. `e2e-gate` then sees eligible containers and a job that did
+not run, and fails — deliberately. Reporting success there would call a suite verified
+that never executed, which is the one outcome worse than a red mark. Its output says so:
+
+```
+e2e-gate FAIL: e2e was eligible ([…]) but the job did not run.
+A pull request from a fork cannot run it; a maintainer has to run this branch.
+```
+
+**What it does not do is block anything.** The only required status check on `master` is
+`unit-tests`. A red `e2e-gate` on a fork pull request is a mark, not a gate.
+
+**The handshake.** A maintainer pushes the branch inside the repository and lets the run
+complete there, then merges. Nothing is expected of the contributor.
+
+The guard is deliberate: running a fork's code with this workflow's `DOCKERHUB_TOKEN` and
+`GITHUB_TOKEN` in scope is the escalation class `pull_request_target` is known for, and it
+is not worth trading for a green mark on a check that blocks nothing.
+
+Every container shipping a `test.sh` is e2e-enabled — ansible, debian, jekyll, openresty,
+openvpn, php, postgres, sslh, terraform, vector, web-shell, wordpress — so a pull request
+touching any of the twelve reaches this.
+
 ### Workflow Architecture Issues
 
 **Scheduling Conflicts (RESOLVED):**
