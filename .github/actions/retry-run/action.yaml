@@ -5,6 +5,19 @@ description: |
   `run:` step (registry probe/pull/push, GHCR/API call) so a transient failure
   retries with backoff instead of failing the job on the first blip.
 
+  Boundary: the wrapped script signals with its exit status and prints no workflow
+  command (`::name::…`, or the legacy `##[name]…`). Ordinary output is fine and
+  belongs here — a wrapped command's own stdout and stderr are what a reader needs
+  to see per attempt. A workflow command is not ordinary output: this script runs
+  once per attempt, so one written here is emitted once per FAILING attempt,
+  including attempts a later retry makes moot, and a per-attempt `timeout` kills
+  the script before it can emit one at all. Annotations, masks and `::group::`
+  therefore belong in a step after the retry, which runs once.
+
+  Enforced for the literal forms by tests/unit/retry-run-annotations.bats. A
+  command a script assembles at runtime is beyond what reading the workflow can
+  see; the guard catches the mistake, not a determined author.
+
   Scope: this wraps a SHELL script. It cannot wrap a `uses:` action step (GitHub
   composite actions cannot re-invoke another action) — for those (setup-buildx,
   attest-sbom, upload-sarif) use a staged retry (attempt + conditional retry +

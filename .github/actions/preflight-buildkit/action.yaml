@@ -42,14 +42,26 @@ runs:
         delay: '5'
         timeout: '45s'
         run: |
-          # docker's own stderr is left to reach the step log, and nothing here
-          # reads it. A probe that fails cannot tell absence from a rate limit,
-          # a 5xx, an expired token or a DNS blip, so it does not try: any
-          # classifier over free-form registry text is a denylist that the next
-          # unseen wording escapes, and the wrong half of that guess is what
-          # sends a reader to re-seed an image that was there all along.
           if docker manifest inspect "${{ inputs.image }}" >/dev/null; then
             exit 0
           fi
-          echo "::error::the BuildKit builder image probe failed; docker's own output, if it produced any, is above. This does NOT establish that the image is absent: a rate limit, a 5xx, an expired token, a DNS failure and a genuinely missing manifest all end up here. Re-run first. If docker reported specifically that the manifest does not exist, then the image needs seeding — it comes from the upstream-monitor workflow (Seed buildkit image to GHCR), so trigger that (workflow_dispatch) and re-run. (Egress is fail-closed: there is no Docker Hub fallback for the builder image.)"
           exit 1
+
+    - name: Diagnose failed BuildKit image probe
+      id: diagnose
+      # always(), not failure(): failure() is false once a job is cancelled, so a
+      # cancellation landing between the exhausted probe and this step would drop
+      # the only explanation of a probe that really did fail — and this repository
+      # cancels superseded runs. The outcome clause is what decides, and it is
+      # what keeps the message tied to THIS probe as the composite grows; measured
+      # under act, neither form fires when the probe succeeds.
+      if: ${{ always() && steps.probe.outcome == 'failure' }}
+      shell: bash
+      run: |
+        # docker's own stderr is left to reach the step log, and nothing here
+        # reads it. A probe that fails cannot tell absence from a rate limit,
+        # a 5xx, an expired token or a DNS blip, so it does not try: any
+        # classifier over free-form registry text is a denylist that the next
+        # unseen wording escapes, and the wrong half of that guess is what
+        # sends a reader to re-seed an image that was there all along.
+        echo "::error::the BuildKit builder image probe failed; docker's own output, if it produced any, is above. This does NOT establish that the image is absent: a rate limit, a 5xx, an expired token, a DNS failure and a genuinely missing manifest all end up here. Re-run first. If docker reported specifically that the manifest does not exist, then the image needs seeding — it comes from the upstream-monitor workflow (Seed buildkit image to GHCR), so trigger that (workflow_dispatch) and re-run. (Egress is fail-closed: there is no Docker Hub fallback for the builder image.)"
