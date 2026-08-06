@@ -1652,6 +1652,7 @@ EOF
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/gha.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$fake_root/helpers/"
@@ -1692,6 +1693,7 @@ STUB
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/gha.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$fake_root/helpers/"
@@ -3713,6 +3715,7 @@ STUBEOF
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/gha.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$fake_root/helpers/"
@@ -3787,6 +3790,7 @@ EOF
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/gha.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$fake_root/helpers/"
@@ -4120,6 +4124,7 @@ php" \
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$TEST_TEMP_DIR/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$TEST_TEMP_DIR/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$TEST_TEMP_DIR/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/gha.sh" "$TEST_TEMP_DIR/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$TEST_TEMP_DIR/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$TEST_TEMP_DIR/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$TEST_TEMP_DIR/helpers/"
@@ -4317,6 +4322,37 @@ STUB_EOF
 
     # Non-matching filter -> no entries -> empty array
     [ "$result" = "[]" ]
+}
+
+# This checks two things it can, and deliberately stops there.
+#
+# It does NOT verify that a format's arguments are bound in the right order:
+# swapping two `%s` values passes every assertion here, and the only honest way
+# to catch that is to read the call. Per-call assertions would be a second copy
+# of the source, wrong the moment the source changes.
+#
+# The raw-emission check finds the literal spelling and nothing else.
+# `printf '::%s::...' error` passes it. That escape is not closable here: shell
+# is not a structured format, and a check over its text always has one more
+# spelling. The repository-wide policy check lands after the last call site
+# migrates and will carry the same bound, stated rather than implied.
+@test "detect-base-digest-drift.sh emits no literal workflow command and sources the emitter" {
+    # The script sources the settled emitter API directly rather than relying on
+    # logging.sh's transitional copy of the escaper.
+    grep -q 'source "${PROJECT_ROOT}/helpers/gha.sh"' "$DETECTOR_SCRIPT"
+
+    # The command NAME followed by its closing delimiter or the space that starts
+    # its parameters, and the legacy `##[` spelling the runner also accepts. An
+    # earlier version matched `::error::` alone, which `::error file=x::y` walks
+    # straight past — the same escape found in the retry-run guard this morning,
+    # and the same shape of fix. `tests/unit/retry-run-annotations.bats` carries
+    # the repository-wide version of this pattern.
+    #
+    # A comment mentioning one of these fails the test too: a false positive
+    # costs a word, the reverse costs a regression.
+    local raw_annotations
+    raw_annotations=$(grep -cE '(::|##\[)(error|warning|notice)(::|\]|[[:space:]])' "$DETECTOR_SCRIPT" || true)
+    [ "$raw_annotations" -eq 0 ]
 }
 
 # MG6 field-vs-filename: filtering uses the .container JSON field, NOT the

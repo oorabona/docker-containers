@@ -62,6 +62,8 @@ source "${PROJECT_ROOT}/helpers/lineage-utils.sh"
 source "${PROJECT_ROOT}/helpers/dependency-graph.sh"
 # shellcheck source=../helpers/logging.sh
 source "${PROJECT_ROOT}/helpers/logging.sh"
+# shellcheck source=../helpers/gha.sh
+source "${PROJECT_ROOT}/helpers/gha.sh"
 # shellcheck source=../helpers/retry.sh
 source "${PROJECT_ROOT}/helpers/retry.sh"
 # shellcheck source=../helpers/base-cache-utils.sh
@@ -82,14 +84,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --container)
             if [[ -z "${2:-}" ]]; then
-                echo "::error::--container requires a value" >&2
+                gha_error '--container requires a value' >&2
                 exit 1
             fi
             CONTAINER_FILTER="$2"
             shift 2
             ;;
         -*)
-            echo "::error::Unknown flag: $1" >&2
+            gha_error 'Unknown flag: %s' "$1" >&2
             exit 1
             ;;
         *)
@@ -172,8 +174,6 @@ _probe_digest() {
     local raw
     local probe_stderr
     local probe_exit=0
-    local safe_ref
-    safe_ref=$(_escape_gha_command "$image_ref")
     _PROBE_DIGEST_ERROR=""
     _PROBE_DIGEST_OUT=""
     # Unlike imagetools create, this is a manifest metadata read. Thirty
@@ -201,11 +201,11 @@ _probe_digest() {
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
             if _timeout_exit_is_timeout "$probe_exit"; then
                 _PROBE_DIGEST_ERROR="registry did not answer within ${digest_probe_timeout}s"
-                printf '::error::%s for %s\n' "$_PROBE_DIGEST_ERROR" "$safe_ref" >&2
+                gha_error '%s for %s' "$_PROBE_DIGEST_ERROR" "$image_ref" >&2
             elif [[ -n "$err_detail" ]]; then
                 _PROBE_DIGEST_ERROR="${err_detail##*$'\n'}"
             fi
-            [[ -n "$err_detail" ]] && printf '::error::probe-cmd-error for %s: %s\n' "$safe_ref" "$(_escape_gha_command "$err_detail")" >&2
+            [[ -n "$err_detail" ]] && gha_error 'probe-cmd-error for %s: %s' "$image_ref" "$err_detail" >&2
             rm -f "$probe_stderr"
             return 1
         fi
@@ -222,18 +222,18 @@ _probe_digest() {
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
             if _timeout_exit_is_timeout "$probe_exit"; then
                 _PROBE_DIGEST_ERROR="registry did not answer within ${digest_probe_timeout}s"
-                printf '::error::%s for %s\n' "$_PROBE_DIGEST_ERROR" "$safe_ref" >&2
+                gha_error '%s for %s' "$_PROBE_DIGEST_ERROR" "$image_ref" >&2
             elif [[ -n "$err_detail" ]]; then
                 _PROBE_DIGEST_ERROR="${err_detail##*$'\n'}"
             fi
-            printf '::error::imagetools inspect failed for %s: %s\n' "$safe_ref" "$(_escape_gha_command "$err_detail")" >&2
+            gha_error 'imagetools inspect failed for %s: %s' "$image_ref" "$err_detail" >&2
             rm -f "$probe_stderr"
             return 1
         fi
     fi
 
     if [[ -z "$raw" ]]; then
-        printf '::error::imagetools inspect returned empty output for %s\n' "$safe_ref" >&2
+        gha_error 'imagetools inspect returned empty output for %s' "$image_ref" >&2
         rm -f "$probe_stderr"
         return 1
     fi
@@ -243,7 +243,7 @@ _probe_digest() {
     digest=$(printf '%s' "$raw" | jq -r '.digest // empty' 2>/dev/null || true)
 
     if [[ -z "$digest" ]]; then
-        printf '::error::could not extract digest from manifest for %s\n' "$safe_ref" >&2
+        gha_error 'could not extract digest from manifest for %s' "$image_ref" >&2
         rm -f "$probe_stderr"
         return 1
     fi
@@ -445,7 +445,7 @@ _validate_image_ref() {
 # Walk lineage directory
 # ---------------------------------------------------------------------------
 if [[ ! -d "$LINEAGE_DIR" ]]; then
-    echo "::warning::Lineage directory '$LINEAGE_DIR' does not exist — nothing to check" >&2
+    gha_warning "Lineage directory '%s' does not exist — nothing to check" "$LINEAGE_DIR" >&2
     printf '[]'
     exit 0
 fi
@@ -454,7 +454,7 @@ fi
 mapfile -t lineage_files < <(find "$LINEAGE_DIR" -maxdepth 1 -name '*.json' -type f 2>/dev/null | sort)
 
 if [[ ${#lineage_files[@]} -eq 0 ]]; then
-    echo "::warning::Lineage cache empty — no .json files in '$LINEAGE_DIR'; skipping drift check" >&2
+    gha_warning "Lineage cache empty — no .json files in '%s'; skipping drift check" "$LINEAGE_DIR" >&2
     printf '[]'
     exit 0
 fi
@@ -479,7 +479,7 @@ for lineage_file in "${lineage_files[@]}"; do
     # Parse required fields
     container=$(jq -re '.container // empty' "$lineage_file" 2>/dev/null || true)
     if [[ -z "$container" ]]; then
-        printf '::warning::Skipping %s: missing '\''container'\'' field\n' "$(_escape_gha_command "$basename_file")" >&2
+        gha_warning "Skipping %s: missing 'container' field" "$basename_file" >&2
         continue
     fi
 
@@ -488,8 +488,8 @@ for lineage_file in "${lineage_files[@]}"; do
     # as TWO patterns, so "ansible" matches and "malicious" passes validation silently.
     # Explicit cntrl-char rejection at entry point closes that bypass entirely.
     if [[ "$container" =~ [[:cntrl:]] ]]; then
-        printf '::warning::Rejecting lineage entry %s: container name contains control chars: %s\n' \
-            "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$container")" >&2
+        gha_warning 'Rejecting lineage entry %s: container name contains control chars: %s' \
+            "$basename_file" "$container" >&2
         continue
     fi
 
@@ -499,8 +499,8 @@ for lineage_file in "${lineage_files[@]}"; do
     # pass grep -xF while containing shell metacharacters.  Rejecting here ensures
     # NO container reaching the emitted drift matrices can contain metacharacters.
     if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
-        printf '::warning::Rejecting lineage entry %s: container name contains invalid characters: %s\n' \
-            "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$container")" >&2
+        gha_warning 'Rejecting lineage entry %s: container name contains invalid characters: %s' \
+            "$basename_file" "$container" >&2
         continue
     fi
 
@@ -524,20 +524,20 @@ for lineage_file in "${lineage_files[@]}"; do
         else
             _valid_containers=$(cd "$PROJECT_ROOT" && ./make list) || _valid_containers=""
             if [[ -z "$_valid_containers" ]]; then
-                printf '::error::./make list returned empty — canonical container list unavailable\n' >&2
+                gha_error './make list returned empty — canonical container list unavailable' >&2
                 exit 2
             fi
         fi
     fi
     if ! grep -qxF -- "$container" <<<"$_valid_containers"; then
-        printf '::warning::Skipping %s: invalid container name '\''%s'\'' (not in ./make list)\n' \
-            "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$container")" >&2
+        gha_warning "Skipping %s: invalid container name '%s' (not in ./make list)" \
+            "$basename_file" "$container" >&2
         continue
     fi
 
     variant_tag=$(jq -re '.tag // empty' "$lineage_file" 2>/dev/null || true)
     if [[ -z "$variant_tag" ]]; then
-        printf '::warning::Skipping %s: missing '\''tag'\'' field\n' "$(_escape_gha_command "$basename_file")" >&2
+        gha_warning "Skipping %s: missing 'tag' field" "$basename_file" >&2
         continue
     fi
 
@@ -545,14 +545,10 @@ for lineage_file in "${lineage_files[@]}"; do
     # A tag like "active\npayload" would pass grep -xF (multiple patterns) and
     # reach markdown with incomplete escaping. Validate early to close bypass.
     if [[ "$variant_tag" =~ [[:cntrl:]] ]]; then
-        printf '::warning::Rejecting lineage entry %s: tag contains control chars: %s\n' \
-            "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$variant_tag")" >&2
+        gha_warning 'Rejecting lineage entry %s: tag contains control chars: %s' \
+            "$basename_file" "$variant_tag" >&2
         continue
     fi
-
-    # Sanitize tag for safe embedding in GHA commands / markdown.
-    # Applied here so every downstream use of $variant_tag_safe is already clean.
-    variant_tag_safe=$(_escape_gha_command "$variant_tag")
 
     # Filter to active build-matrix tags only (NORMAL MODE ONLY).
     # In --baseline-only mode, we intentionally emit ALL pre-v2 entries including
@@ -594,17 +590,17 @@ for lineage_file in "${lineage_files[@]}"; do
                 # drift on the live container is silently undetected until the version PR merges.
                 # When `current` resolves to empty (new container, never built), get_build_version
                 # returns "unknown", list_container_builds emits empty output, and the existing
-                # fail-closed path below handles it with a ::warning:: (no new code needed).
+                # fail-closed path below handles it with a warning annotation (no new code needed).
                 _lb_rc=0
                 _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" current 2>/dev/null) || _lb_rc=$?
                 if [[ "$_lb_rc" -ne 0 ]]; then
-                    printf '::warning::./make list-builds %s failed (rc=%s) — skipping entire container (fail-closed; retry next cron run)\n' "$container" "$_lb_rc" >&2
+                    gha_warning './make list-builds %s failed (rc=%s) — skipping entire container (fail-closed; retry next cron run)' "$container" "$_lb_rc" >&2
                     # Mark container as fully skipped so the outer loop continues to the next container
                     printf -v "$_active_tags_var" '%s' "__CONTAINER_SKIP__"
                 else
                     _fetched=$(printf '%s' "$_fetched" | jq -r '.[].tag // empty' 2>/dev/null | sort -u || echo "")
                     if [[ -z "$_fetched" ]]; then
-                        printf '::warning::./make list-builds %s returned no tags — skipping entire container (fail-closed; retry next cron run)\n' "$container" >&2
+                        gha_warning './make list-builds %s returned no tags — skipping entire container (fail-closed; retry next cron run)' "$container" >&2
                         printf -v "$_active_tags_var" '%s' "__CONTAINER_SKIP__"
                     else
                         printf -v "$_active_tags_var" '%s' "$_fetched"
@@ -640,8 +636,8 @@ for lineage_file in "${lineage_files[@]}"; do
         # Skip filtering if: test-mode no-filter (__TEST_NO_FILTER__),
         # empty override (backward compat), or tag matches active set
         if [[ "$_active_tags" != "__TEST_NO_FILTER__" && -n "$_active_tags" ]] && ! grep -qxF -- "$variant_tag" <<<"$_active_tags"; then
-            printf '::notice::Skipping stale lineage entry: %s:%s (no longer in active build matrix)\n' \
-                "$(_escape_gha_command "$container")" "$variant_tag_safe" >&2
+            gha_notice 'Skipping stale lineage entry: %s:%s (no longer in active build matrix)' \
+                "$container" "$variant_tag" >&2
             continue
         fi
     fi
@@ -683,8 +679,8 @@ for lineage_file in "${lineage_files[@]}"; do
 
         # Skip if base_image_ref is a placeholder (non-legacy entry with unresolved ref)
         if [[ "$base_image_ref" =~ \$ ]]; then
-            printf '::warning::Skipping %s: base_image_ref contains unresolved placeholder: %s\n' \
-                "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$base_image_ref")" >&2
+            gha_warning 'Skipping %s: base_image_ref contains unresolved placeholder: %s' \
+                "$basename_file" "$base_image_ref" >&2
             continue
         fi
 
@@ -694,15 +690,15 @@ for lineage_file in "${lineage_files[@]}"; do
 
     # Normal mode: placeholder-skip runs before legacy check to prevent mis-classification
     if [[ "$base_image_ref" =~ \$ ]]; then
-        printf '::warning::Skipping %s: base_image_ref contains unresolved placeholder: %s\n' \
-            "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$base_image_ref")" >&2
+        gha_warning 'Skipping %s: base_image_ref contains unresolved placeholder: %s' \
+            "$basename_file" "$base_image_ref" >&2
         continue
     fi
 
     # Skip if base_image_ref is unknown or missing (must run BEFORE legacy check
     # which would otherwise emit a legacy record for a corrupt/unknown entry).
     if [[ -z "$base_image_ref" || "$base_image_ref" == "unknown" ]]; then
-        printf '::warning::Skipping %s: base_image_ref is unknown or missing\n' "$(_escape_gha_command "$basename_file")" >&2
+        gha_warning 'Skipping %s: base_image_ref is unknown or missing' "$basename_file" >&2
         continue
     fi
 
@@ -726,9 +722,8 @@ for lineage_file in "${lineage_files[@]}"; do
     if [[ ! "$recorded_digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
         safe_ref=$(_sanitize_for_json "$base_image_ref")
         safe_recorded=$(_sanitize_for_json "$recorded_digest")
-        printf '::warning::Malformed recorded_digest for %s:%s ('\''%s'\''); treating as corrupt lineage\n' \
-            "$(_escape_gha_command "$container")" "$(_escape_gha_command "$variant_tag")" \
-            "$(_escape_gha_command "$recorded_digest")" >&2
+        gha_warning "Malformed recorded_digest for %s:%s ('%s'); treating as corrupt lineage" \
+            "$container" "$variant_tag" "$recorded_digest" >&2
         variant_json=$(jq -cn \
             --arg variant_tag       "$variant_tag" \
             --arg base_ref          "$safe_ref" \
@@ -744,11 +739,10 @@ for lineage_file in "${lineage_files[@]}"; do
     # Poisoned lineage with an attacker-controlled ref could cause the workflow
     # to probe an untrusted registry with Docker credentials.
     if ! _validate_image_ref "$base_image_ref"; then
-        printf '::warning::Refusing to probe untrusted base_image_ref for %s:%s: %s\n' \
-            "$(_escape_gha_command "$container")" "$variant_tag_safe" \
-            "$(_escape_gha_command "$base_image_ref")" >&2
+        gha_warning 'Refusing to probe untrusted base_image_ref for %s:%s: %s' \
+            "$container" "$variant_tag" "$base_image_ref" >&2
         # r29 Finding 3: emit an explicit error record so error_count surfaces the
-        # rejection in workflow output.  The ::warning:: above is kept for the audit
+        # rejection in workflow output. The warning annotation above is kept for the audit
         # trail on stderr; the record here is the machine-readable signal.
         safe_ref=$(_sanitize_for_json "$base_image_ref")
         safe_recorded=$(_sanitize_for_json "$recorded_digest")
@@ -823,7 +817,7 @@ for lineage_file in "${lineage_files[@]}"; do
         if [[ -z "$error_reason" ]]; then
             error_reason="registry probe failed for ${base_image_ref} (container=${container} tag=${variant_tag})"
         fi
-        printf '::error::probe-error: %s\n' "$(_escape_gha_command "$error_reason")" >&2
+        gha_error 'probe-error: %s' "$error_reason" >&2
         safe_ref=$(_sanitize_for_json "$base_image_ref")
         safe_recorded=$(_sanitize_for_json "$recorded_digest")
         safe_error=$(_sanitize_for_json "$error_reason")
@@ -840,8 +834,8 @@ for lineage_file in "${lineage_files[@]}"; do
 
     # Validate digest shape (injection prevention)
     if ! _validate_digest_shape "$current_digest"; then
-        printf '::error::Registry returned malformed digest for %s: '\''%s'\'' — refusing to emit record\n' \
-            "$(_escape_gha_command "$base_image_ref")" "$(_escape_gha_command "$current_digest")" >&2
+        gha_error "Registry returned malformed digest for %s: '%s' — refusing to emit record" \
+            "$base_image_ref" "$current_digest" >&2
         exit 1
     fi
 
@@ -900,8 +894,8 @@ for container in "${_container_order[@]}"; do
 
     # Validate the variants array is valid JSON
     if ! printf '%s' "$variants_array" | jq '.' >/dev/null 2>&1; then
-        printf '::warning::Skipping container '\''%s'\'': could not build valid variants JSON\n' \
-            "$(_escape_gha_command "$container")" >&2
+        gha_warning "Skipping container '%s': could not build valid variants JSON" \
+            "$container" >&2
         continue
     fi
 
@@ -935,11 +929,11 @@ for container in "${_container_order[@]}"; do
         _depgraph_err_msg=$(cat "$_depgraph_err_tmp" 2>/dev/null || true)
         rm -f "$_depgraph_err_tmp"
         if [[ -n "$_depgraph_err_msg" ]]; then
-            printf '::error::dep-graph failed for %s: %s\n' \
-                "$(_escape_gha_command "$container")" "$(_escape_gha_command "$_depgraph_err_msg")" >&2
+            gha_error 'dep-graph failed for %s: %s' \
+                "$container" "$_depgraph_err_msg" >&2
         else
-            printf '::error::Failed to compute internal_deps for %s; cannot make cascade decision\n' \
-                "$(_escape_gha_command "$container")" >&2
+            gha_error 'Failed to compute internal_deps for %s; cannot make cascade decision' \
+                "$container" >&2
         fi
         # Emit the container as an error-only record, discarding any already-assembled
         # variant fragments for this run.  Rationale: internal_deps is unavailable, so
@@ -993,7 +987,7 @@ output+="]"
 
 # Final validation — output must be valid JSON
 if ! printf '%s' "$output" | jq '.' >/dev/null 2>&1; then
-    echo "::error::Internal error: output is not valid JSON" >&2
+    gha_error 'Internal error: output is not valid JSON' >&2
     exit 1
 fi
 
