@@ -15,7 +15,20 @@ _direct_yq_read_count() {
     # Count only yq invocations, not comments, command-existence checks, or
     # log messages. Continuation lines belong to the yq command that begins on
     # the previous line, so counting its start is sufficient.
-    rg '\byq -[A-Za-z]' "$file" | wc -l | tr -d '[:space:]'
+    #
+    # grep, not rg: the runner has no ripgrep, and a guard that cannot run must
+    # fail rather than pass — which is what it did, at the cost of a CI round.
+    # -E for the word boundary, which BRE spells differently across greps.
+    #
+    # grep -c exits 1 on no match and 2 on a real error. Only the first is a
+    # count of zero; the second must not be reported as one, so it propagates.
+    local count status=0
+    count=$(grep -cE '\byq -[A-Za-z]' "$file") || status=$?
+    if (( status > 1 )); then
+        echo "grep failed reading $file (status $status)" >&3
+        return "$status"
+    fi
+    printf '%s' "${count//[[:space:]]/}"
 }
 
 @test "extension config has no new direct yq readers outside the sanctioned 16 plus 3" {
@@ -30,6 +43,6 @@ _direct_yq_read_count() {
         false
     fi
 
-    run rg -n 'validate_extensions_schema "\$config_file"' "$PROJECT_ROOT/helpers/extension-utils.sh"
+    run grep -n 'validate_extensions_schema "\$config_file"' "$PROJECT_ROOT/helpers/extension-utils.sh"
     [ "$status" -eq 0 ]
 }
