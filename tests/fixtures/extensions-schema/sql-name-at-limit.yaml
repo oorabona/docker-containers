@@ -1,0 +1,16 @@
+# Exactly 63 bytes: the longest name PostgreSQL stores whole. The boundary is
+# asserted from both sides so the rule cannot drift into off-by-one and go
+# unnoticed — a limit tested only from the rejecting side passes just as well
+# when it rejects everything.
+extensions:
+  atlimit:
+    version: "1.0.0"
+    repo: "example/atlimit"
+    initdb:
+      mode: create
+      sql_name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+flavors:
+  base: []
+  long:
+    - atlimit
