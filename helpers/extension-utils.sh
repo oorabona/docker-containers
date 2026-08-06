@@ -619,6 +619,10 @@ _generate_flavor_initdb_block() {
     local ext_name
     local mode
     local sql_name
+    # Keep the declaration key and its resolved SQL name together. The
+    # generated assertion and CREATE statement are deliberately rendered from
+    # this one list, so a CREATE cannot be added without its control-file
+    # assertion.
     local -a create_sql_names=()
     local initdb_block=""
 
@@ -630,7 +634,7 @@ _generate_flavor_initdb_block() {
 
         sql_name=$(ext="$ext_name" yq -r '.extensions[strenv(ext)].initdb.sql_name // ""' "$config_file") || return 1
         [[ -z "$sql_name" ]] && sql_name="$ext_name"
-        create_sql_names+=("$sql_name")
+        create_sql_names+=("${ext_name}"$'\t'"${sql_name}")
     done <<< "$extensions"
 
     if [[ ${#create_sql_names[@]} -eq 0 ]]; then
@@ -638,11 +642,53 @@ _generate_flavor_initdb_block() {
     fi
 
     initdb_block+="RUN set -eux; \\"$'\n'
+    initdb_block+="    sharedir=\"\$(pg_config --sharedir)\"; \\"$'\n'
+    # A zero exit says pg_config ran, not that it answered. An empty result makes
+    # every test below read /extension/<name>.control, where an unrelated match
+    # is a false pass; a relative one resolves against whatever the build stage's
+    # working directory happens to be. Neither is a directory this image installs
+    # extensions into, so refuse rather than search one.
+    # `${sharedir#/}` removes one leading slash; unchanged means there was none,
+    # which also catches the empty answer. Written as `if … fi;` like every other
+    # test in this block rather than a `case`: a `;;` inside a Dockerfile line
+    # continuation is not something the surrounding tooling reads back reliably.
+    initdb_block+="    if test \"\${sharedir#/}\" = \"\$sharedir\"; then \\"$'\n'
+    initdb_block+="        echo \"ERROR: pg_config --sharedir returned '\$sharedir', which is not an absolute path; refusing to look for extension control files there.\" >&2; \\"$'\n'
+    initdb_block+="        exit 1; \\"$'\n'
+    initdb_block+="    fi; \\"$'\n'
+    # The build runs as root and PostgreSQL does not, so `test -f` as root is the
+    # wrong question. Measured on the shipped image: a control file at 0600
+    # root:root passes both `test -f` and `test -r` for root and fails
+    # `gosu postgres test -r`, which is the read the server actually performs at
+    # first startup. `cp -av` preserves mode from the staging tree, and this
+    # repository has already shipped a 0700 onto a PostgreSQL system directory
+    # that way, so the mode is not hypothetical.
+    #
+    # gosu is required rather than optional: without it the check would silently
+    # become the root test it is replacing, which is a guard that reports success
+    # for the case it exists to catch.
+    initdb_block+="    command -v gosu >/dev/null || { echo \"ERROR: gosu is required to verify extension control files as the postgres user, and was not found.\" >&2; exit 1; }; \\"$'\n'
+    local create_entry
+    local create_ext_name
+    local create_sql_lines=""
+    for create_entry in "${create_sql_names[@]}"; do
+        create_ext_name="${create_entry%%$'\t'*}"
+        sql_name="${create_entry#*$'\t'}"
+        initdb_block+="    if ! gosu postgres test -r \"\${sharedir}/extension/${sql_name}.control\"; then \\"$'\n'
+        initdb_block+="        echo \"ERROR: extension key '${create_ext_name}' resolves to SQL name '${sql_name}', but the postgres user cannot read a control file at \${sharedir}/extension/${sql_name}.control. Either it was never installed, or its mode or a parent directory keeps the server out. The SQL name comes from initdb.sql_name in postgres/extensions/config.yaml (or the extension key when initdb.sql_name is omitted).\" >&2; \\"$'\n'
+        initdb_block+="        exit 1; \\"$'\n'
+        initdb_block+="    fi; \\"$'\n'
+        # Quoted, as the built-in block already quotes "uuid-ossp". Measured on
+        # PostgreSQL 18: `CREATE EXTENSION IF NOT EXISTS select;` is a syntax
+        # error while the quoted form parses, and for a name the schema already
+        # admits — folded lowercase — the two are indistinguishable. So quoting
+        # removes the reserved-keyword class outright instead of asking the
+        # validator to carry a keyword list that grows with each release.
+        create_sql_lines+="        'CREATE EXTENSION IF NOT EXISTS \"${sql_name}\";' \\"$'\n'
+    done
     initdb_block+="    printf '%s\\n' \\"$'\n'
     initdb_block+="        '-- ${flavor} flavor: compiled extensions' \\"$'\n'
-    for sql_name in "${create_sql_names[@]}"; do
-        initdb_block+="        'CREATE EXTENSION IF NOT EXISTS ${sql_name};' \\"$'\n'
-    done
+    initdb_block+="${create_sql_lines}"
     initdb_block+="        > /docker-entrypoint-initdb.d/01-init-flavor.sql"$'\n'
     printf '%s' "$initdb_block"
 }

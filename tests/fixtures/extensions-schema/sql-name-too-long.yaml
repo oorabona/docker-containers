@@ -1,0 +1,17 @@
+# A 64-byte SQL name: one over PostgreSQL's limit, measured as 63 by
+# `SHOW max_identifier_length` on the image this repository ships. PostgreSQL
+# TRUNCATES rather than rejects, and it truncates the quoted form too — so the
+# build would check a 64-character control filename while the server opens the
+# 63-character one, and the check would vouch for a file nothing ever reads.
+extensions:
+  overlong:
+    version: "1.0.0"
+    repo: "example/overlong"
+    initdb:
+      mode: create
+      sql_name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+flavors:
+  base: []
+  long:
+    - overlong

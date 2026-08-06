@@ -55,6 +55,21 @@ assert_rejected_fixture() {
     assert_rejected_fixture "implicit-sql-name.yaml" "invalid SQL name"
 }
 
+# PostgreSQL stores 63 bytes of an identifier and TRUNCATES the rest — measured
+# with `SHOW max_identifier_length` on the image this repository ships, and it
+# truncates the quoted form as readily as the bare one. A 64-byte name would have
+# the build check a control filename the server never opens. The boundary is
+# asserted from both sides: a limit tested only where it rejects passes equally
+# well when it rejects everything.
+@test "R4 rejects a SQL name longer than PostgreSQL's 63 bytes" {
+    assert_rejected_fixture "sql-name-too-long.yaml" "invalid SQL name"
+}
+
+@test "R4 accepts a SQL name of exactly 63 bytes" {
+    run validate_extensions_schema "$FIXTURES_DIR/sql-name-at-limit.yaml"
+    [ "$status" -eq 0 ]
+}
+
 @test "R5 rejects manual policies without a non-empty reason" {
     assert_rejected_fixture "manual-reason-empty.yaml" "R5 extension"
 }

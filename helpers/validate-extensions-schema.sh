@@ -106,7 +106,17 @@ validate_extensions_schema() {
         # newline — so validation sees two distinct names where the build sees
         # one, and a collision check comparing them finds nothing to report.
         def name_shaped: type == "string" and test("\\A[A-Za-z0-9_-]+\\z");
-        def sql_identifier: type == "string" and test("\\A[a-z_][a-z0-9_]*\\z");
+        # 63 is the PostgreSQL limit, measured: `SHOW max_identifier_length`
+        # returns 63, and a 64-character name is TRUNCATED rather than rejected —
+        # for the quoted form as much as the bare one. So the build would check
+        # <64-char>.control while the server looks up the 63-character name, and
+        # the check would vouch for a file the server never opens. utf8bytelength
+        # because the limit is in bytes, not characters.
+        # (No apostrophes in this program: it is a single-quoted shell string.)
+        def sql_identifier:
+          type == "string"
+          and test("\\A[a-z_][a-z0-9_]*\\z")
+          and (utf8bytelength <= 63);
         def valid_flavor_members: type == "array" and all(.[]; name_shaped);
         def valid_extension_entry:
           type == "object"
@@ -177,7 +187,7 @@ validate_extensions_schema() {
                            then $extension.value.initdb.sql_name
                            else $extension.key end) | sql_identifier) | not)) then
                   "R4 extension " + ($extension.key | @json)
-                  + " resolves to an invalid SQL name (expected ^[a-z_][a-z0-9_]*$)"
+                  + " resolves to an invalid SQL name (expected ^[a-z_][a-z0-9_]*$, at most 63 bytes)"
                 else empty end,
                 if (($extension.value | valid_extension_entry)
                     and $extension.value.initdb.mode == "manual"
