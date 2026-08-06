@@ -74,6 +74,20 @@ _escape_gha_command() {
     # stripping afterwards reassembles it in the output — the escaped value then
     # carries the very command this is here to neutralize.
     s="${s//[[:cntrl:]]/}"
+    # These bidi controls are not C0 controls, but can reorder text in a log
+    # renderer and thereby change what a reader sees.
+    s="${s//$'\xD8\x9C'/}"
+    s="${s//$'\xE2\x80\xAA'/}"
+    s="${s//$'\xE2\x80\xAB'/}"
+    s="${s//$'\xE2\x80\xAC'/}"
+    s="${s//$'\xE2\x80\xAD'/}"
+    s="${s//$'\xE2\x80\xAE'/}"
+    s="${s//$'\xE2\x81\xA6'/}"
+    s="${s//$'\xE2\x81\xA7'/}"
+    s="${s//$'\xE2\x81\xA8'/}"
+    s="${s//$'\xE2\x81\xA9'/}"
+    s="${s//$'\xE2\x80\x8E'/}"
+    s="${s//$'\xE2\x80\x8F'/}"
     s="${s//##\[/##%5B}"
     printf '%s' "$s"
 }
