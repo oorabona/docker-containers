@@ -473,6 +473,41 @@ FAIL_EOF
 # web-shell produces at least 2 tags (versioned + :latest), so the counter
 # will have succeeded≥1 and attempted≥2.
 # ---------------------------------------------------------------------------
+@test "MIRROR_STRICT=true DRY_RUN=true returns 0 after planning every tag" {
+    # A dry run plans tags and attempts none, and `dockerhub-reconcile.yaml`
+    # combines its dry-run input with MIRROR_STRICT=true. The mutation this
+    # catches is pointing the enumeration-produced-nothing guard at `_attempted`
+    # instead of `_planned`, which fails every strict dry run while claiming the
+    # enumeration produced nothing.
+    export MIRROR_STRICT="true"
+    export DRY_RUN="true"
+
+    # Injected rather than generated: the real generator needs lineage data, and
+    # without it this falls through to the no-cells path and proves nothing.
+    local generator="${TEST_LOG_DIR}/dry-run-generator.sh"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"container":"web-shell","tag":"1.0.0","flavor":"","variant":"","is_default":true,"is_latest_version":true,"intermediate_ref":"ghcr.io/oorabona/web-shell:1.0.0"}]'
+EOF
+    chmod +x "$generator"
+    export _MDH_GENERATOR_OVERRIDE="$generator"
+
+    run _run_mirror "web-shell"
+
+    [ "$status" -eq 0 ] || \
+        (echo "Expected rc=0 for a strict dry run but got $status" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+
+    grep -q 'DRY-RUN: docker buildx imagetools create' "${TEST_LOG_DIR}/run.log" || \
+        (echo "Expected the dry run to plan at least one tag:" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+
+    # Planned, not executed.
+    [ ! -s "$DOCKER_LOG" ]
+}
+
 @test "MIRROR_STRICT=true cells requested but no suffix produced returns non-zero" {
     # Distinct from the no-cells case: cells EXIST and the suffix enumeration
     # comes back successfully empty, so nothing is attempted. The mutation this
@@ -505,7 +540,7 @@ EOF
          echo "$output" >&2
          false)
 
-    grep -q "no tag was attempted" <<< "$output" || \
+    grep -q "no tag was planned" <<< "$output" || \
         (echo "Expected the enumeration-produced-nothing annotation:" >&2
          echo "$output" >&2
          false)

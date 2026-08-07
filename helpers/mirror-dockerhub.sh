@@ -181,6 +181,7 @@ mirror_to_dockerhub() {
     fi
 
     # Counters for strict-mode observability: track across all cells/tags.
+    local _planned=0
     local _attempted=0
     local _succeeded=0
 
@@ -234,6 +235,12 @@ mirror_to_dockerhub() {
 
             # Dry-run: explicit branch prints the command and skips execution.
             # Real path: "$DOCKER" (quoted) runs the actual binary or bats mock.
+            # Counted in both branches: this measures what the enumeration
+            # produced, which is a different question from what was attempted.
+            # A dry run plans every tag and attempts none, so testing _attempted
+            # for "the enumeration produced nothing" fails every strict dry run —
+            # and `dockerhub-reconcile.yaml` combines the two.
+            (( _planned++ )) || true
             if [[ "${DRY_RUN:-false}" == "true" ]]; then
                 printf 'DRY-RUN: docker buildx imagetools create -t %s %s\n' \
                     "$dh_dst" "$ghcr_src" >&2
@@ -256,8 +263,8 @@ mirror_to_dockerhub() {
         # enumeration produced nothing for every cell. That is a producer
         # regression, and reporting `0/0 tags mirrored` as a successful strict
         # reconciliation is the fail-open this whole change exists to remove.
-        if [[ "$ncells" -gt 0 && "$_attempted" -eq 0 ]]; then
-            printf '::error::mirror-dockerhub: %d cells requested and no tag was attempted — enumeration produced nothing, reconciliation not performed\n' \
+        if [[ "$ncells" -gt 0 && "$_planned" -eq 0 ]]; then
+            printf '::error::mirror-dockerhub: %d cells requested and no tag was planned — enumeration produced nothing, reconciliation not performed\n' \
                 "$ncells" >&2
             return 1
         fi
