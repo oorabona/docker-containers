@@ -6,12 +6,13 @@ setup() {
     setup_temp_dir
     TEST_REPO="$TEST_TEMP_DIR/repo"
     FAKE_GIT_STATE="$TEST_TEMP_DIR/git-state"
-    mkdir -p "$TEST_REPO/scripts" "$TEST_REPO/stats" "$TEST_REPO/bin" "$FAKE_GIT_STATE"
+    mkdir -p "$TEST_REPO/scripts" "$TEST_REPO/stats" "$TEST_REPO/bin" "$TEST_REPO/helpers" "$FAKE_GIT_STATE"
     mkdir -p "$TEST_REPO/alpha" "$TEST_REPO/gamma"
     printf 'FROM scratch\n' > "$TEST_REPO/alpha/Dockerfile"
     printf 'FROM scratch\n' > "$TEST_REPO/gamma/Dockerfile"
 
     ln -s "$SCRIPTS_DIR/commit-stats-snapshot.sh" "$TEST_REPO/scripts/commit-stats-snapshot.sh"
+    cp "${SCRIPTS_DIR}/../helpers/gha.sh" "$TEST_REPO/helpers/"
     # Simulates what the (separate, already-run) collect step left behind.
     printf '{"ts":"2026-07-12T07:00:00Z","date":"2026-07-12","container":"alpha","pull_count":42,"star_count":1,"source":"dockerhub"}\n' \
         > "$TEST_REPO/stats/dockerhub-pull-history.jsonl"
@@ -513,11 +514,6 @@ EOF
 
 teardown() {
     teardown_temp_dir
-}
-
-get_output() {
-    local key="$1"
-    grep "^${key}=" "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-
 }
 
 @test "commit-stats-snapshot refuses to run outside GitHub Actions before touching git state" {
