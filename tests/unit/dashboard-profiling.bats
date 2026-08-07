@@ -247,6 +247,27 @@ teardown() {
 # @test 5: profiling data is NOT written into yml (no PROFILE in data file)
 # ===================================================================
 
+@test "the generation timestamp is pinned once, not read at each emission" {
+    # The byte-comparison above proves this only when two runs happen to straddle
+    # a minute boundary, which is how it failed intermittently and looked like a
+    # real behaviour difference. This asserts the property directly: both
+    # emission sites render the pinned value, so restoring a `$(date …)` call at
+    # either one fails here every time rather than once in a while.
+    DASHBOARD_BUILD_TIMESTAMP="1999-01-01 00:00 UTC"
+    export DASHBOARD_BUILD_TIMESTAMP
+
+    generate_data 2>/dev/null
+
+    grep -q '^# Generated: 1999-01-01 00:00 UTC$' "$DATA_FILE" || \
+        (echo "Expected the pinned timestamp in the container data:" >&2
+         head -3 "$DATA_FILE" >&2
+         false)
+
+    # Nothing may render a second, differently-clocked timestamp.
+    [ "$(grep -c '^# Generated: ' "$DATA_FILE")" -eq 1 ]
+    ! grep -qE '^# Generated: 20[0-9]{2}-' "$DATA_FILE"
+}
+
 @test "profiling-ON: PROFILE telemetry does not appear in containers.yml" {
     # Mutation caught: any code that writes profiling output to stdout (DATA_FILE)
     # instead of stderr makes the `*"PROFILE "* ` check fail.
