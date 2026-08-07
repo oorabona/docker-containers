@@ -469,6 +469,15 @@ build_container() {
     fi
     mapfile -t _cell_refs < "$_cell_refs_file"
     rm -f "$_cell_refs_file"
+    # A successful producer emitting nothing is legal for the collector and is
+    # never legal here: the versioned reference is mandatory, so an empty set is
+    # a producer regression rather than a cell with no tags. Without this the
+    # refusal above is a claim the code does not hold — docker would be invoked
+    # with no -t at all.
+    if (( ${#_cell_refs[@]} == 0 )); then
+        log_error "Tag enumeration returned no references for ${tag}; refusing to invoke docker build without tags"
+        return 1
+    fi
     local tag_args=""
     for _ref in "${_cell_refs[@]}"; do
         tag_args="$tag_args -t $_ref"

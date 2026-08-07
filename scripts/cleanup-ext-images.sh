@@ -404,6 +404,20 @@ main() {
         local pruned_count=0
         local delete_failures=0
         local record_json
+        local records_file
+
+        # The record enumeration authorises every deletion below, exactly as the
+        # per-record tag enumeration does. Reading it through a process
+        # substitution would let a `jq` that emits some records and then fails
+        # end the loop successfully — the records it did emit already deleted,
+        # the ones it did not never examined, and the summary reporting success.
+        # Produce the whole list first, or delete nothing.
+        records_file=$(mktemp "${TMPDIR:-/tmp}/cleanup-ext-records.XXXXXX") || return 1
+        if ! collect_lines "$records_file" -- jq -c '.[]' <<< "$version_records_json"; then
+            rm -f "$records_file"
+            log_error "    Version-record enumeration unknown for ${ext_name}; deleting nothing for this extension"
+            return 1
+        fi
 
         while IFS= read -r record_json; do
             [[ -n "$record_json" ]] || continue
@@ -474,7 +488,8 @@ main() {
                 log_info "    ✓ KEEP  version_id=${version_id} (tags: ${tags_csv}) — ${keep_reason}"
                 kept_count=$((kept_count + 1))
             fi
-        done < <(jq -c '.[]' <<< "$version_records_json")
+        done < "$records_file"
+        rm -f "$records_file"
 
         log_info "    Summary: kept=${kept_count}, pruned=${pruned_count}, failed=${delete_failures}"
         total_kept=$((total_kept + kept_count))
