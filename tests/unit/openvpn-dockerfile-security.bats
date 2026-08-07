@@ -1,0 +1,99 @@
+#!/usr/bin/env bats
+
+load "../test_helper"
+
+setup() {
+    export DOCKERFILE="$PROJECT_ROOT/openvpn/Dockerfile"
+    export CONFIG="$PROJECT_ROOT/openvpn/config.yaml"
+}
+
+@test "replacing the OpenVPN release asset with the unsigned codeload snapshot is rejected" {
+    grep -Fq 'https://github.com/OpenVPN/openvpn/releases/download/v${RELEASE_VERSION}/openvpn-${RELEASE_VERSION}.tar.gz' "$DOCKERFILE"
+    grep -Fq 'https://github.com/OpenVPN/openvpn/releases/download/v${RELEASE_VERSION}/openvpn-${RELEASE_VERSION}.tar.gz.asc' "$DOCKERFILE"
+    # grep, not ripgrep: rg is absent on the runner, and a test that shells out
+    # to it fails there while passing locally. That cost a CI round in #1092.
+    #
+    # Counted rather than `! grep`, for the same reason as in the next test: a
+    # non-final `! cmd` is inert under bats, and this one is only load-bearing
+    # today because it happens to be last.
+    [ "$(grep -ci 'github\.com/openvpn/openvpn/archive/' "$DOCKERFILE" || true)" -eq 0 ]
+}
+
+@test "the release asset URL uses the version with its leading v stripped" {
+    # The two archive forms disagree about the v and the move between them
+    # inverts the rule: the codeload path wants the tag (`archive/v2.7.6.tar.gz`,
+    # HTTP 200 — `archive/2.7.6.tar.gz` is 404), while the release assets want it
+    # gone (`download/v2.7.6/openvpn-2.7.6.tar.gz`). `version.sh --upstream`
+    # returns the tag form, measured, so the Dockerfile must strip it.
+    #
+    # The mutation this catches is reusing DOWNLOAD_VERSION for the asset name or
+    # the extracted directory, which requests `openvpn-v2.7.6.tar.gz` and 404s
+    # every build.
+    grep -Fq 'RELEASE_VERSION="${DOWNLOAD_VERSION#v}"' "$DOCKERFILE"
+
+    # No release-asset path, and no assertion about the extracted directory, may
+    # name the unstripped variable.
+    #
+    # Counted rather than `! grep`: measured inside bats, a NON-FINAL `! cmd` is
+    # inert — bats suppresses errexit for a negated command, so the test reports
+    # ok however the grep goes. Only the last line of a body would carry it, and
+    # a form that stops asserting when someone appends a line is not an assertion.
+    [ "$(grep -cE 'releases/download/.*\$\{DOWNLOAD_VERSION\}' "$DOCKERFILE" || true)" -eq 0 ]
+    [ "$(grep -cF 'openvpn-${DOWNLOAD_VERSION}' "$DOCKERFILE" || true)" -eq 0 ]
+}
+
+@test "moving OpenVPN signature verification after source extraction or configuration is rejected" {
+    local verify_line extract_line configure_line make_line
+    verify_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "gpg --batch --verify openvpn.tgz.asc openvpn.tgz") {print $1; exit}')"
+    extract_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "tar zxvf openvpn.tgz") {print $1; exit}')"
+    configure_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "./configure --disable-lzo") {print $1; exit}')"
+    make_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "make -j${NPROC}") {print $1; exit}')"
+
+    [ -n "$verify_line" ]
+    [ -n "$extract_line" ]
+    [ -n "$configure_line" ]
+    [ -n "$make_line" ]
+    [ "$verify_line" -lt "$extract_line" ]
+    [ "$verify_line" -lt "$configure_line" ]
+    [ "$verify_line" -lt "$make_line" ]
+}
+
+@test "removing the exactly-one-primary-key assertion or OpenVPN primary fingerprint pin is rejected" {
+    local key_count_line fingerprint_line verify_line expected_fpr="F554A3687412CFFEBDEFE0A312F5F7B42F2B01E7"
+    key_count_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "grep -c") && index($0, "^pub:") {print $1; exit}')"
+    fingerprint_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "${OPENVPN_KEY_FPR}") {print $1; exit}')"
+    verify_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "gpg --batch --verify openvpn.tgz.asc openvpn.tgz") {print $1; exit}')"
+
+    grep -Fq 'COPY openvpn-signing-key.asc /usr/local/share/openvpn/openvpn-signing-key.asc' "$DOCKERFILE"
+    [ -n "$key_count_line" ]
+    [ -n "$fingerprint_line" ]
+    [ "$key_count_line" -lt "$fingerprint_line" ]
+    [ "$fingerprint_line" -lt "$verify_line" ]
+    [ "$(yq -r '.build_args.OPENVPN_KEY_FPR' "$CONFIG")" = "$expected_fpr" ]
+    [ "$(yq -r '.dependency_sources.UPSTREAM_VERSION.gpg_key.fingerprint_arg' "$CONFIG")" = "OPENVPN_KEY_FPR" ]
+    [ "$(yq -r '.dependency_sources.UPSTREAM_VERSION.gpg_key.signature_suffix' "$CONFIG")" = ".asc" ]
+}
+
+@test "removing the signed archive's versioned top-level-directory replay check is rejected" {
+    grep -Fq 'tar tzf openvpn.tgz' "$DOCKERFILE"
+    grep -Fq '= "openvpn-${RELEASE_VERSION}/"' "$DOCKERFILE"
+}
+
+@test "moving the ovpn checksum after chmod or dropping its configured digest is rejected" {
+    local checksum_line chmod_line
+    checksum_line="$(nl -ba "$DOCKERFILE" | awk '/sha256sum -c -/ {print $1; exit}')"
+    chmod_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "chmod +x ovpn") {print $1; exit}')"
+
+    [ -n "$checksum_line" ]
+    [ -n "$chmod_line" ]
+    [ "$checksum_line" -lt "$chmod_line" ]
+    grep -Fq '"${OVPN_SHA256}" ovpn | sha256sum -c -' "$DOCKERFILE"
+    [ "$(yq -r '.build_args.OVPN_SHA256' "$CONFIG")" = "a1cfb43755aeb0e56d06cdb60be6e6bbf831468414ccbea8cb860729bd8ed451" ]
+}
+
+@test "removing OpenVPN verification args from the required build-arg assertion is rejected" {
+    grep -Fq 'ARG OPENVPN_KEY_FPR' "$DOCKERFILE"
+    grep -Fq 'ARG OVPN_SHA256' "$DOCKERFILE"
+    grep -Fq '"${OPENVPN_KEY_FPR:?required}"' "$DOCKERFILE"
+    grep -Fq '"${OVPN_SHA256:?required}"' "$DOCKERFILE"
+}
