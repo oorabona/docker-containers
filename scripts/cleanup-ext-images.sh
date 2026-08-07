@@ -40,6 +40,9 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=helpers/logging.sh
 source "${ROOT_DIR}/helpers/logging.sh"
 
+# shellcheck source=../helpers/collect-lines.sh
+source "${ROOT_DIR}/helpers/collect-lines.sh"
+
 # shellcheck source=helpers/version-set-resolver.sh
 source "${ROOT_DIR}/helpers/version-set-resolver.sh"
 
@@ -246,7 +249,10 @@ main() {
     if [[ ${#ext_filter[@]} -gt 0 ]]; then
         extensions=("${ext_filter[@]}")
     else
-        mapfile -t extensions < <(_discover_resolver_extensions "$ext_config")
+        if ! collect_lines extensions -- _discover_resolver_extensions "$ext_config"; then
+            log_error "Could not enumerate resolver extensions; refusing to make pruning decisions"
+            return 1
+        fi
     fi
 
     if [[ ${#extensions[@]} -eq 0 ]]; then
@@ -262,7 +268,10 @@ main() {
         # shellcheck disable=SC2206
         configured_pg_majors=($PG_VERSIONS)
     else
-        mapfile -t configured_pg_majors < <(_discover_pg_versions "$ext_config")
+        if ! collect_lines configured_pg_majors -- _discover_pg_versions "$ext_config"; then
+            log_error "Could not enumerate configured PostgreSQL majors; refusing to make pruning decisions"
+            return 1
+        fi
     fi
 
     local total_kept=0
@@ -302,7 +311,10 @@ main() {
         fi
 
         local -a registry_pg_majors=()
-        mapfile -t registry_pg_majors < <(_discover_registry_pg_majors "$version_records_json")
+        if ! collect_lines registry_pg_majors -- _discover_registry_pg_majors "$version_records_json"; then
+            log_error "Could not enumerate registry PostgreSQL majors; refusing to make pruning decisions"
+            return 1
+        fi
 
         local -A pg_major_seen=()
         local -a pg_majors=()

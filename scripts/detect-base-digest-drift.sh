@@ -62,6 +62,8 @@ source "${PROJECT_ROOT}/helpers/lineage-utils.sh"
 source "${PROJECT_ROOT}/helpers/dependency-graph.sh"
 # shellcheck source=../helpers/logging.sh
 source "${PROJECT_ROOT}/helpers/logging.sh"
+# shellcheck source=../helpers/collect-lines.sh
+source "${PROJECT_ROOT}/helpers/collect-lines.sh"
 # shellcheck source=../helpers/gha.sh
 source "${PROJECT_ROOT}/helpers/gha.sh"
 # shellcheck source=../helpers/retry.sh
@@ -450,8 +452,16 @@ if [[ ! -d "$LINEAGE_DIR" ]]; then
     exit 0
 fi
 
-# Collect all *.json files; sort for deterministic output
-mapfile -t lineage_files < <(find "$LINEAGE_DIR" -maxdepth 1 -name '*.json' -type f 2>/dev/null | sort)
+# Collect all *.json files; sort for deterministic output.
+declare -a lineage_files
+discover_lineage_files() {
+    find "$1" -maxdepth 1 -name '*.json' -type f | sort
+}
+
+if ! collect_lines lineage_files -- discover_lineage_files "$LINEAGE_DIR"; then
+    gha_warning "Could not enumerate lineage files in '%s'; drift result is unknown" "$LINEAGE_DIR" >&2
+    exit 1
+fi
 
 if [[ ${#lineage_files[@]} -eq 0 ]]; then
     gha_warning "Lineage cache empty — no .json files in '%s'; skipping drift check" "$LINEAGE_DIR" >&2

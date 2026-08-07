@@ -27,6 +27,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=../helpers/logging.sh
 # shellcheck disable=SC1091
 source "$PROJECT_ROOT/helpers/logging.sh"
+# shellcheck source=../helpers/collect-lines.sh
+source "$PROJECT_ROOT/helpers/collect-lines.sh"
 
 # Named constant: days before supported_until to emit a ::warning:: countdown
 # Configurable via env; named so it is never a magic number.
@@ -649,7 +651,10 @@ main() {
     # Determine containers to check
     local containers=()
     if [[ "$check_all" == "true" ]]; then
-        mapfile -t containers < <(discover_containers)
+        if ! collect_lines containers -- discover_containers; then
+            log_error "Could not enumerate containers; dependency check result is unknown"
+            exit 1
+        fi
     elif [[ -n "$target" ]]; then
         containers=("$target")
     else

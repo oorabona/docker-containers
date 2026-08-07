@@ -32,6 +32,7 @@ teardown() {
 
 write_project_files() {
     cp "$HELPERS_DIR/logging.sh" "$TEST_PROJECT_ROOT/helpers/logging.sh"
+    cp "$HELPERS_DIR/collect-lines.sh" "$TEST_PROJECT_ROOT/helpers/collect-lines.sh"
     touch "$TEST_PROJECT_ROOT/openvpn/easyrsa-signing-key.asc"
     cat > "$TEST_PROJECT_ROOT/openvpn/config.yaml" <<'EOF'
 build_args:
