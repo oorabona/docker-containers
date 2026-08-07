@@ -195,5 +195,53 @@ get_mock_call_count() {
     fi
 }
 
+# Read one value out of a $GITHUB_OUTPUT file, decoding either form the
+# protocol defines: `NAME=value` on one line, or `NAME<<DELIM` followed by the
+# value's lines and a line holding DELIM alone. `helpers/gha.sh` always writes
+# the second form, so a reader that greps `^NAME=` finds nothing at all once a
+# script has been migrated onto it — which is how three tests went red without
+# their subject changing behaviour.
+#
+# Last assignment wins, because that is what the runner does: it reads the file
+# top to bottom and a later record overwrites an earlier one.
+get_output() {
+    local key="$1"
+    local line delimiter value result="" found=0 first
+
+    while IFS= read -r line; do
+        case "$line" in
+            "${key}="*)
+                result="${line#*=}"
+                found=1
+                ;;
+            "${key}"'<<'*)
+                delimiter="${line#*<<}"
+                value=""
+                # Count lines rather than test the accumulator for emptiness: a
+                # value whose first line is blank is legal, and testing `-n`
+                # would swallow its separator.
+                first=1
+                while IFS= read -r line; do
+                    if [[ "$line" == "$delimiter" ]]; then
+                        result="$value"
+                        found=1
+                        break
+                    fi
+                    if [[ "$first" -eq 0 ]]; then
+                        value+=$'\n'
+                    fi
+                    first=0
+                    value+="$line"
+                done
+                # An unterminated block leaves `found` as it was, so a truncated
+                # file reads as absent rather than as a silently short value.
+                ;;
+        esac
+    done < "$GITHUB_OUTPUT"
+
+    [[ "$found" -eq 1 ]] || return 1
+    printf '%s\n' "$result"
+}
+
 # Export variables
 export PROJECT_ROOT SCRIPTS_DIR HELPERS_DIR TESTS_DIR FIXTURES_DIR

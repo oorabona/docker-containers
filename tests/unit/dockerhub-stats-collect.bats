@@ -6,7 +6,11 @@ setup() {
     setup_temp_dir
     TEST_REPO="$TEST_TEMP_DIR/repo"
     FAKE_STATE="$TEST_TEMP_DIR/state"
-    mkdir -p "$TEST_REPO/scripts" "$TEST_REPO/stats" "$TEST_REPO/bin" "$FAKE_STATE"
+    mkdir -p "$TEST_REPO/scripts" "$TEST_REPO/stats" "$TEST_REPO/bin" "$TEST_REPO/helpers" "$FAKE_STATE"
+    # The script is mounted below by symlink, and Bash does not resolve a
+    # symlink in BASH_SOURCE — so the helper it sources resolves inside this
+    # fixture, not in the repository it came from.
+    cp "${SCRIPTS_DIR}/../helpers/gha.sh" "$TEST_REPO/helpers/"
 
     ln -s "$SCRIPTS_DIR/collect-stats-snapshot.sh" "$TEST_REPO/scripts/collect-stats-snapshot.sh"
 
@@ -26,11 +30,6 @@ EOF
 
 teardown() {
     teardown_temp_dir
-}
-
-get_output() {
-    local key="$1"
-    grep "^${key}=" "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-
 }
 
 @test "collect-stats-snapshot refuses to run outside GitHub Actions" {
