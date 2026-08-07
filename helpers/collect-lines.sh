@@ -51,3 +51,8 @@ collect_lines() {
     rm -f "$_collect_lines_tmp"
     return "$_collect_lines_status"
 }
+
+# Exported because `compute_cell_tags` and `sync_base_images_to_ghcr` are, and
+# they call this. Without it a fresh child imports the public function and dies
+# on `collect_lines: command not found`.
+export -f collect_lines
