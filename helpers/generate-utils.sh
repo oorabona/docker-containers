@@ -72,13 +72,19 @@ list_distros() {
     local exclude_windows=false
     [[ "${2:-}" == "--exclude-windows" ]] && exclude_windows=true
 
+    # Explicit returns rather than relying on errexit. A caller reaching this
+    # through `collect_lines` runs it inside an `if` condition, and Bash
+    # suppresses errexit throughout a function invoked that way — measured, and
+    # a subshell with its own `set -e` does not restore it. Without these, a
+    # failing `yq` leaves an empty variable, the final `echo` succeeds, and the
+    # function reports a complete distro list that is empty.
     local distros
-    distros=$(yq e '.distros | keys | .[]' "$config")
+    distros=$(yq e '.distros | keys | .[]' "$config") || return 1
 
     if [[ "$exclude_windows" == "true" ]]; then
         while IFS= read -r distro; do
             local pm
-            pm=$(yq e ".distros.${distro}.pkg_manager" "$config")
+            pm=$(yq e ".distros.${distro}.pkg_manager" "$config") || return 1
             [[ "$pm" == "none" ]] && continue
             echo "$distro"
         done <<< "$distros"

@@ -1138,6 +1138,33 @@ setup_fallback_test() {
 #   (c) flavor non-empty + is_default="false" → versioned + :latest-<flavor> (both registries)
 #   (d) tag == "latest"                       → only versioned refs, no rolling latest
 
+@test "compute_cell_tags: an emission that fails is not reported as a full tag set" {
+    # The mutation this catches: dropping `return "$_emit_status"`, or the
+    # `|| _emit_status=$?` on either printf. Without them the cleanup `rm` is the
+    # last command and its success becomes the return value — measured rc=0 with
+    # every reference lost.
+    #
+    # /dev/full accepts writes and fails them with ENOSPC, which is what a full
+    # filesystem does to printf. The caller reaches this function through
+    # `collect_lines`, whose `if "$@"` suppresses errexit, so the return value is
+    # the only channel left.
+    run bash -c '
+        set +e
+        source "$1/helpers/collect-lines.sh"
+        source "$1/helpers/variant-utils.sh"
+        set +e
+        compute_cell_tags "2.3.1" "" "false" "docker.io/o/p" "ghcr.io/o/p" > /dev/full 2>/dev/null
+        printf "%s" "$?"
+    ' _ "$ORIG_DIR"
+    [ "$output" != "0" ]
+
+    # Control: the same call with a writable stdout still succeeds with all four
+    # references, so the test above cannot pass by breaking the happy path.
+    run compute_cell_tags "2.3.1" "" "false" "docker.io/o/p" "ghcr.io/o/p"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | wc -l)" -eq 4 ]
+}
+
 @test "compute_cell_tags: (a) no-flavor → versioned + :latest on both registries" {
     # No variants.yaml needed — function is now pure (no yq lookup)
     run compute_cell_tags "2.3.1" "" "false" "docker.io/owner/plain" "ghcr.io/owner/plain"
@@ -1217,6 +1244,21 @@ setup_fallback_test() {
     local bare_latest_count
     bare_latest_count=$(echo "$output" | grep -cxF "docker.io/owner/github-runner:latest" || true)
     [ "$bare_latest_count" -eq 0 ]
+}
+
+@test "compute_cell_tags: a short suffix enumeration returns failure and emits no partial refs [catches process-substitution partial publish]" {
+    # Mutation caught: restoring `done < <(compute_cell_tag_suffixes ...)`
+    # emits refs for "partial" and returns success despite this producer failure.
+    compute_cell_tag_suffixes() {
+        printf 'partial\n'
+        return 1
+    }
+
+    run compute_cell_tags "1.0.0" "" "true" "docker.io/owner/app" "ghcr.io/owner/app"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"docker.io/owner/app:partial"* ]]
+    [[ "$output" != *"ghcr.io/owner/app:partial"* ]]
 }
 
 # --- compute_cell_tag_suffixes ---

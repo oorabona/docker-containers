@@ -48,6 +48,8 @@ source "${PROJECT_ROOT}/helpers/logging.sh"
 source "${PROJECT_ROOT}/helpers/retry.sh"
 # shellcheck source=../helpers/variant-utils.sh
 source "${PROJECT_ROOT}/helpers/variant-utils.sh"
+# shellcheck source=../helpers/collect-lines.sh
+source "${PROJECT_ROOT}/helpers/collect-lines.sh"
 
 # Force config-only dep resolution (no lineage dir needed for merge)
 export _DEPGRAPH_LINEAGE_DIR=/nonexistent
@@ -109,6 +111,14 @@ _merge_cell() {
     # ------------------------------------------------------------------
     local -a ghcr_refs=()
     local sfx
+    local suffixes_file
+    suffixes_file=$(mktemp "${TMPDIR:-/tmp}/bake-merge-cell-suffixes.XXXXXX") || return 1
+    if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$variant" "$is_default"; then
+        rm -f "$suffixes_file"
+        printf '::error::Could not enumerate all GHCR refs for %s:%s — skipping cell\n' \
+            "$container" "$tag" >&2
+        return 1
+    fi
     while IFS= read -r sfx; do
         [[ -n "$sfx" ]] || continue
         # F2 gate: for retained non-latest cells, publish only the versioned
@@ -117,7 +127,8 @@ _merge_cell() {
             continue
         fi
         ghcr_refs+=("${ghcr_image}:${sfx}")
-    done < <(compute_cell_tag_suffixes "$tag" "$variant" "$is_default")
+    done < "$suffixes_file"
+    rm -f "$suffixes_file"
 
     if [[ ${#ghcr_refs[@]} -eq 0 ]]; then
         printf '::error::No GHCR refs computed for %s:%s — skipping cell\n' \
@@ -230,6 +241,13 @@ main() {
         # Use the same routing logic as _merge_cell (variant for rolling suffix)
         local _routing_suffix="${_chk_variant:-$_chk_flavor}"
         local _sfx
+        local _suffixes_file
+        _suffixes_file=$(mktemp "${TMPDIR:-/tmp}/bake-merge-duplicate-suffixes.XXXXXX") || exit 1
+        if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$_chk_tag" "$_routing_suffix" "$_chk_default"; then
+            rm -f "$_suffixes_file"
+            printf '::error::Could not enumerate all final refs for duplicate detection — aborting\n' >&2
+            exit 1
+        fi
         while IFS= read -r _sfx; do
             [[ -n "$_sfx" ]] || continue
             if [[ "$_chk_latest" != "true" && "$_sfx" != "$_chk_tag" ]]; then
@@ -240,10 +258,12 @@ main() {
             if [[ -n "${_seen_refs[$_fref]+set}" ]]; then
                 printf '::error::Duplicate final ref detected: %s would be published by both %s and %s — aborting\n' \
                     "$_fref" "${_seen_refs[$_fref]}" "$_cell_id" >&2
+                rm -f "$_suffixes_file"
                 exit 1
             fi
             _seen_refs["$_fref"]="$_cell_id"
-        done < <(compute_cell_tag_suffixes "$_chk_tag" "$_routing_suffix" "$_chk_default")
+        done < "$_suffixes_file"
+        rm -f "$_suffixes_file"
     done
 
     # ------------------------------------------------------------------

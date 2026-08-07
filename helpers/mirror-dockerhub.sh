@@ -53,6 +53,8 @@ fi
 source "${_MDH_SCRIPT_DIR}/logging.sh"
 # shellcheck disable=SC1091
 source "${_MDH_SCRIPT_DIR}/variant-utils.sh"
+# shellcheck disable=SC1091
+source "${_MDH_SCRIPT_DIR}/collect-lines.sh"
 
 # DOCKER is already set by logging.sh (honours DRY_RUN); provide a fallback
 # only when the caller sourced this file before logging.sh.
@@ -179,6 +181,7 @@ mirror_to_dockerhub() {
     fi
 
     # Counters for strict-mode observability: track across all cells/tags.
+    local _planned=0
     local _attempted=0
     local _succeeded=0
 
@@ -210,6 +213,17 @@ mirror_to_dockerhub() {
         # Enumerate tags using the same routing as compute_cell_tag_suffixes.
         # For retained non-latest cells, publish ONLY the versioned tag.
         local sfx
+        local suffixes_file
+        suffixes_file=$(mktemp "${TMPDIR:-/tmp}/mirror-dockerhub-suffixes.XXXXXX") || return 1
+        if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$routing_suffix" "$is_default"; then
+            rm -f "$suffixes_file"
+            printf '::warning::mirror-dockerhub: could not enumerate all tags for %s:%s; mirroring none for this cell\n' \
+                "$container" "$tag" >&2
+            if [[ "$_strict" == "true" ]]; then
+                return 1
+            fi
+            continue
+        fi
         while IFS= read -r sfx; do
             [[ -n "$sfx" ]] || continue
             # F2 gate: retained non-latest → versioned tag only
@@ -221,6 +235,12 @@ mirror_to_dockerhub() {
 
             # Dry-run: explicit branch prints the command and skips execution.
             # Real path: "$DOCKER" (quoted) runs the actual binary or bats mock.
+            # Counted in both branches: this measures what the enumeration
+            # produced, which is a different question from what was attempted.
+            # A dry run plans every tag and attempts none, so testing _attempted
+            # for "the enumeration produced nothing" fails every strict dry run —
+            # and `dockerhub-reconcile.yaml` combines the two.
+            (( _planned++ )) || true
             if [[ "${DRY_RUN:-false}" == "true" ]]; then
                 printf 'DRY-RUN: docker buildx imagetools create -t %s %s\n' \
                     "$dh_dst" "$ghcr_src" >&2
@@ -233,11 +253,31 @@ mirror_to_dockerhub() {
                         "$dh_dst" >&2
                 fi
             fi
-        done < <(compute_cell_tag_suffixes "$tag" "$routing_suffix" "$is_default")
+        done < "$suffixes_file"
+        rm -f "$suffixes_file"
     done
 
     # Strict-mode: emit summary and return non-zero on total failure.
     if [[ "$_strict" == "true" ]]; then
+        # Cells were requested and not one tag was even attempted: the suffix
+        # enumeration produced nothing for every cell. That is a producer
+        # regression, and reporting `0/0 tags mirrored` as a successful strict
+        # reconciliation is the fail-open this whole change exists to remove.
+        if [[ "$ncells" -gt 0 && "$_planned" -eq 0 ]]; then
+            printf '::error::mirror-dockerhub: %d cells requested and no tag was planned — enumeration produced nothing, reconciliation not performed\n' \
+                "$ncells" >&2
+            return 1
+        fi
+        # A dry run copies nothing, so strict mode has nothing to assert about.
+        # Saying `0/0 tags mirrored` here reads as a successful reconciliation in
+        # the workflow's history, which is false: `dockerhub-reconcile.yaml`
+        # hardcodes MIRROR_STRICT and takes dry-run from its dispatch input, so
+        # this combination is one click away and its summary must name itself.
+        if [[ "${DRY_RUN:-false}" == "true" ]]; then
+            printf '::notice::mirror-dockerhub: %d tags planned across %d cells — dry run, nothing was mirrored and no reconciliation was performed\n' \
+                "$_planned" "$ncells" >&2
+            return 0
+        fi
         if [[ "$_attempted" -gt 0 && "$_succeeded" -eq 0 ]]; then
             printf '::error::mirror-dockerhub: 0/%d tags mirrored — reconciliation failed\n' \
                 "$_attempted" >&2

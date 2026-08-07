@@ -7,6 +7,10 @@
 
 set -euo pipefail
 
+# shellcheck source=./collect-lines.sh
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/collect-lines.sh"
+
 # Resolve a full version string to a variants.yaml tag
 # Usage: resolve_major_version <container_dir> <full_version>
 # Example: resolve_major_version ./postgres "18.1-alpine" → "18"
@@ -357,10 +361,26 @@ compute_cell_tags() {
     local ghcr_image="$5"
 
     local _sfx
+    local _suffixes_file
+    _suffixes_file=$(mktemp "${TMPDIR:-/tmp}/compute-cell-tags-suffixes.XXXXXX") || return 1
+    if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$tag" "$flavor" "$is_default"; then
+        rm -f "$_suffixes_file"
+        printf 'compute_cell_tags: could not enumerate tag suffixes\n' >&2
+        return 1
+    fi
+    # Keep the emission status across the cleanup. `rm` is the last command
+    # otherwise, so its success becomes this function's return value and a
+    # `printf` that failed — a full filesystem is the ordinary way — reports a
+    # complete tag set to the caller. The caller reaches this through
+    # `collect_lines`, whose `if "$@"` suppresses errexit, so nothing else is
+    # watching.
+    local _emit_status=0
     while IFS= read -r _sfx; do
-        printf '%s:%s\n' "$dockerhub_image" "$_sfx"
-        printf '%s:%s\n' "$ghcr_image"      "$_sfx"
-    done < <(compute_cell_tag_suffixes "$tag" "$flavor" "$is_default")
+        printf '%s:%s\n' "$dockerhub_image" "$_sfx" || _emit_status=$?
+        printf '%s:%s\n' "$ghcr_image"      "$_sfx" || _emit_status=$?
+    done < "$_suffixes_file"
+    rm -f "$_suffixes_file"
+    return "$_emit_status"
 }
 
 # Check if a container always builds all retained versions (not just the latest)

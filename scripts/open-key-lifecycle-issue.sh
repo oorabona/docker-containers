@@ -11,6 +11,9 @@ source "$ROOT_DIR/helpers/logging.sh"
 # shellcheck source=../helpers/retry.sh
 # shellcheck disable=SC1091
 source "$ROOT_DIR/helpers/retry.sh"
+# shellcheck source=../helpers/collect-lines.sh
+# shellcheck disable=SC1091
+source "$ROOT_DIR/helpers/collect-lines.sh"
 
 usage() {
     cat >&2 <<'USAGE'
@@ -341,6 +344,13 @@ process_findings() {
     fi
 
     local row
+    local findings_file
+    findings_file=$(mktemp "${TMPDIR:-/tmp}/open-key-lifecycle-findings.XXXXXX") || return 1
+    if ! collect_lines "$findings_file" -- jq -c '.[]' <<< "$findings"; then
+        rm -f "$findings_file"
+        printf 'open-key-lifecycle-issue: could not enumerate all findings; opening no issues\n' >&2
+        return 1
+    fi
     while IFS= read -r row; do
         [[ -z "$row" ]] && continue
         local expiry_severity expiry_reason rotation_status rotation_reason rotation_runtime key_reason config_reason
@@ -397,7 +407,8 @@ process_findings() {
                 issue_failures=$((issue_failures + 1))
             fi
         fi
-    done < <(jq -c '.[]' <<< "$findings")
+    done < "$findings_file"
+    rm -f "$findings_file"
 
     if (( issue_failures > 0 )); then
         printf 'open-key-lifecycle-issue: %d issue operation(s) failed\n' "$issue_failures" >&2

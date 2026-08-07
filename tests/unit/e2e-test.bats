@@ -20,6 +20,9 @@ setup() {
     cp "$PROJECT_ROOT/tests/e2e-test.sh" "$FIXTURE_REPO/tests/e2e-test.sh"
     cp "$PROJECT_ROOT/helpers/logging.sh" "$FIXTURE_REPO/helpers/logging.sh"
     cp "$PROJECT_ROOT/helpers/variant-utils.sh" "$FIXTURE_REPO/helpers/variant-utils.sh"
+    # variant-utils.sh sources it, so an isolated root without it fails at the
+    # source line rather than in the test's subject.
+    cp "$PROJECT_ROOT/helpers/collect-lines.sh" "$FIXTURE_REPO/helpers/collect-lines.sh"
     mkdir -p "$FIXTURE_REPO/test-harness"
     cp "$PROJECT_ROOT/test-harness/image-identity.sh" "$FIXTURE_REPO/test-harness/image-identity.sh"
     chmod +x "$FIXTURE_REPO/tests/e2e-test.sh"

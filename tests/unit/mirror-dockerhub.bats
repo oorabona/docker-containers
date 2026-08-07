@@ -139,6 +139,27 @@ _run_mirror() {
          false)
 }
 
+@test "short suffix enumeration mirrors no Docker Hub tags [catches partial imagetools publish]" {
+    local generator="${TEST_LOG_DIR}/short-enumeration-generator.sh"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"container":"web-shell","tag":"1.0.0","flavor":"","variant":"","is_default":true,"is_latest_version":true,"intermediate_ref":"ghcr.io/oorabona/web-shell:1.0.0"}]'
+EOF
+    chmod +x "$generator"
+    export _MDH_GENERATOR_OVERRIDE="$generator"
+
+    run bash -c '
+        source "$1"
+        compute_cell_tag_suffixes() { printf "partial\\n"; return 1; }
+        mirror_to_dockerhub web-shell
+    ' bash "$MDH"
+
+    # Best-effort mode remains non-gating, but it must not publish the partial tag.
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"could not enumerate all tags"* ]]
+    [ ! -s "$DOCKER_LOG" ]
+}
+
 # ---------------------------------------------------------------------------
 # Retained non-latest cell mirrors ONLY the versioned tag.
 # Catches: MD3
@@ -452,6 +473,87 @@ FAIL_EOF
 # web-shell produces at least 2 tags (versioned + :latest), so the counter
 # will have succeeded≥1 and attempted≥2.
 # ---------------------------------------------------------------------------
+@test "MIRROR_STRICT=true DRY_RUN=true returns 0 after planning every tag" {
+    # A dry run plans tags and attempts none, and `dockerhub-reconcile.yaml`
+    # combines its dry-run input with MIRROR_STRICT=true. The mutation this
+    # catches is pointing the enumeration-produced-nothing guard at `_attempted`
+    # instead of `_planned`, which fails every strict dry run while claiming the
+    # enumeration produced nothing.
+    export MIRROR_STRICT="true"
+    export DRY_RUN="true"
+
+    # Injected rather than generated: the real generator needs lineage data, and
+    # without it this falls through to the no-cells path and proves nothing.
+    local generator="${TEST_LOG_DIR}/dry-run-generator.sh"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"container":"web-shell","tag":"1.0.0","flavor":"","variant":"","is_default":true,"is_latest_version":true,"intermediate_ref":"ghcr.io/oorabona/web-shell:1.0.0"}]'
+EOF
+    chmod +x "$generator"
+    export _MDH_GENERATOR_OVERRIDE="$generator"
+
+    run _run_mirror "web-shell"
+
+    [ "$status" -eq 0 ] || \
+        (echo "Expected rc=0 for a strict dry run but got $status" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+
+    grep -q 'DRY-RUN: docker buildx imagetools create' "${TEST_LOG_DIR}/run.log" || \
+        (echo "Expected the dry run to plan at least one tag:" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+
+    # Planned, not executed.
+    [ ! -s "$DOCKER_LOG" ]
+
+    # And the summary names itself, instead of reading as a reconciliation that
+    # mirrored nothing successfully.
+    grep -q 'dry run, nothing was mirrored' "${TEST_LOG_DIR}/run.log" || \
+        (echo "Expected the dry run summary to name itself:" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+    ! grep -q '0/0 tags mirrored' "${TEST_LOG_DIR}/run.log"
+}
+
+@test "MIRROR_STRICT=true cells requested but no suffix produced returns non-zero" {
+    # Distinct from the no-cells case: cells EXIST and the suffix enumeration
+    # comes back successfully empty, so nothing is attempted. The mutation this
+    # catches is removing the `ncells > 0 && _attempted -eq 0` guard, which
+    # leaves `_attempted -gt 0 && _succeeded -eq 0` false and prints
+    # `0/0 tags mirrored` as a successful strict reconciliation.
+    export MIRROR_STRICT="true"
+
+    # The cell list is injected rather than generated, so the test does not
+    # depend on lineage data being present: without this it falls through to the
+    # pre-existing "generator produced no cells" path and proves nothing about
+    # the guard it is here for.
+    local generator="${TEST_LOG_DIR}/empty-enumeration-generator.sh"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"container":"web-shell","tag":"1.0.0","flavor":"","variant":"","is_default":true,"is_latest_version":true}]'
+EOF
+    chmod +x "$generator"
+    export _MDH_GENERATOR_OVERRIDE="$generator"
+
+    run bash -c '
+        source "$1"
+        # Successfully empty, defined after the source so nothing overwrites it.
+        compute_cell_tag_suffixes() { return 0; }
+        mirror_to_dockerhub web-shell
+    ' bash "$MDH"
+
+    [ "$status" -ne 0 ] || \
+        (echo "Expected non-zero rc (strict, cells but no suffixes) but got 0" >&2
+         echo "$output" >&2
+         false)
+
+    grep -q "no tag was planned" <<< "$output" || \
+        (echo "Expected the enumeration-produced-nothing annotation:" >&2
+         echo "$output" >&2
+         false)
+}
+
 @test "MIRROR_STRICT=true partial-success returns 0" {
     export MIRROR_STRICT="true"
 
