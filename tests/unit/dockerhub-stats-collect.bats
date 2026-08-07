@@ -45,7 +45,10 @@ teardown() {
 
     run bash -c 'cd "$1" && ./scripts/collect-stats-snapshot.sh' _ "$TEST_REPO"
     [ "$status" -eq 2 ]
-    [[ "$output" == *"scripts/collect-stats-snapshot.sh cannot run: required helper is not readable: $TEST_REPO/scripts/../helpers/gha.sh"* ]]
+    [[ "$output" == *"scripts/collect-stats-snapshot.sh cannot run: required helper helpers/gha.sh is not readable"* ]]
+    # The message carries no interpolation, so a hostile directory name cannot
+    # reach the log through it.
+    [[ "$output" != *"$TEST_REPO"* ]]
 }
 
 @test "collect-stats-snapshot stops early on a fully successful first attempt" {
