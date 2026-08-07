@@ -31,6 +31,12 @@ DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
 CONTAINERS_DIR="$SCRIPT_DIR/docs/site/_containers"
 DASHBOARD_BUILD_DATE="$(date -u +"%Y-%m-%d")"
+# Pinned once, and overridable, because two runs of this script are compared
+# byte-for-byte to prove a change alters nothing. Reading the clock at each
+# emission made that comparison fail whenever the two runs straddled a minute
+# boundary, which looks exactly like the real behaviour difference the
+# comparison exists to catch.
+DASHBOARD_BUILD_TIMESTAMP="${DASHBOARD_BUILD_TIMESTAMP:-$(date -u +"%Y-%m-%d %H:%M UTC")}"
 
 # --- Lineage resolution helpers ---
 
@@ -1451,7 +1457,7 @@ write_stats_file() {
 
     cat > "$STATS_FILE" << EOF
 # Auto-generated dashboard statistics
-# Generated: $(date -u +"%Y-%m-%d %H:%M UTC")
+# Generated: ${DASHBOARD_BUILD_TIMESTAMP}
 
 total_containers: $total
 up_to_date: $up_to_date
@@ -1875,7 +1881,7 @@ generate_data() {
     # Write containers.yml from accumulated JSON
     {
         echo "# Auto-generated container data"
-        echo "# Generated: $(date -u +"%Y-%m-%d %H:%M UTC")"
+        echo "# Generated: ${DASHBOARD_BUILD_TIMESTAMP}"
         echo ""
         echo "$all_containers_json" | yq -P
     } > "$DATA_FILE"
