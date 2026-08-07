@@ -368,11 +368,19 @@ compute_cell_tags() {
         printf 'compute_cell_tags: could not enumerate tag suffixes\n' >&2
         return 1
     fi
+    # Keep the emission status across the cleanup. `rm` is the last command
+    # otherwise, so its success becomes this function's return value and a
+    # `printf` that failed — a full filesystem is the ordinary way — reports a
+    # complete tag set to the caller. The caller reaches this through
+    # `collect_lines`, whose `if "$@"` suppresses errexit, so nothing else is
+    # watching.
+    local _emit_status=0
     while IFS= read -r _sfx; do
-        printf '%s:%s\n' "$dockerhub_image" "$_sfx"
-        printf '%s:%s\n' "$ghcr_image"      "$_sfx"
+        printf '%s:%s\n' "$dockerhub_image" "$_sfx" || _emit_status=$?
+        printf '%s:%s\n' "$ghcr_image"      "$_sfx" || _emit_status=$?
     done < "$_suffixes_file"
     rm -f "$_suffixes_file"
+    return "$_emit_status"
 }
 
 # Check if a container always builds all retained versions (not just the latest)

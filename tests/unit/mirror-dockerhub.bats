@@ -473,6 +473,44 @@ FAIL_EOF
 # web-shell produces at least 2 tags (versioned + :latest), so the counter
 # will have succeeded≥1 and attempted≥2.
 # ---------------------------------------------------------------------------
+@test "MIRROR_STRICT=true cells requested but no suffix produced returns non-zero" {
+    # Distinct from the no-cells case: cells EXIST and the suffix enumeration
+    # comes back successfully empty, so nothing is attempted. The mutation this
+    # catches is removing the `ncells > 0 && _attempted -eq 0` guard, which
+    # leaves `_attempted -gt 0 && _succeeded -eq 0` false and prints
+    # `0/0 tags mirrored` as a successful strict reconciliation.
+    export MIRROR_STRICT="true"
+
+    # The cell list is injected rather than generated, so the test does not
+    # depend on lineage data being present: without this it falls through to the
+    # pre-existing "generator produced no cells" path and proves nothing about
+    # the guard it is here for.
+    local generator="${TEST_LOG_DIR}/empty-enumeration-generator.sh"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"container":"web-shell","tag":"1.0.0","flavor":"","variant":"","is_default":true,"is_latest_version":true}]'
+EOF
+    chmod +x "$generator"
+    export _MDH_GENERATOR_OVERRIDE="$generator"
+
+    run bash -c '
+        source "$1"
+        # Successfully empty, defined after the source so nothing overwrites it.
+        compute_cell_tag_suffixes() { return 0; }
+        mirror_to_dockerhub web-shell
+    ' bash "$MDH"
+
+    [ "$status" -ne 0 ] || \
+        (echo "Expected non-zero rc (strict, cells but no suffixes) but got 0" >&2
+         echo "$output" >&2
+         false)
+
+    grep -q "no tag was attempted" <<< "$output" || \
+        (echo "Expected the enumeration-produced-nothing annotation:" >&2
+         echo "$output" >&2
+         false)
+}
+
 @test "MIRROR_STRICT=true partial-success returns 0" {
     export MIRROR_STRICT="true"
 

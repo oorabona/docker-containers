@@ -1138,6 +1138,33 @@ setup_fallback_test() {
 #   (c) flavor non-empty + is_default="false" → versioned + :latest-<flavor> (both registries)
 #   (d) tag == "latest"                       → only versioned refs, no rolling latest
 
+@test "compute_cell_tags: an emission that fails is not reported as a full tag set" {
+    # The mutation this catches: dropping `return "$_emit_status"`, or the
+    # `|| _emit_status=$?` on either printf. Without them the cleanup `rm` is the
+    # last command and its success becomes the return value — measured rc=0 with
+    # every reference lost.
+    #
+    # /dev/full accepts writes and fails them with ENOSPC, which is what a full
+    # filesystem does to printf. The caller reaches this function through
+    # `collect_lines`, whose `if "$@"` suppresses errexit, so the return value is
+    # the only channel left.
+    run bash -c '
+        set +e
+        source "$1/helpers/collect-lines.sh"
+        source "$1/helpers/variant-utils.sh"
+        set +e
+        compute_cell_tags "2.3.1" "" "false" "docker.io/o/p" "ghcr.io/o/p" > /dev/full 2>/dev/null
+        printf "%s" "$?"
+    ' _ "$ORIG_DIR"
+    [ "$output" != "0" ]
+
+    # Control: the same call with a writable stdout still succeeds with all four
+    # references, so the test above cannot pass by breaking the happy path.
+    run compute_cell_tags "2.3.1" "" "false" "docker.io/o/p" "ghcr.io/o/p"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | wc -l)" -eq 4 ]
+}
+
 @test "compute_cell_tags: (a) no-flavor → versioned + :latest on both registries" {
     # No variants.yaml needed — function is now pure (no yq lookup)
     run compute_cell_tags "2.3.1" "" "false" "docker.io/owner/plain" "ghcr.io/owner/plain"

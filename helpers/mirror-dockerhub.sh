@@ -252,6 +252,15 @@ mirror_to_dockerhub() {
 
     # Strict-mode: emit summary and return non-zero on total failure.
     if [[ "$_strict" == "true" ]]; then
+        # Cells were requested and not one tag was even attempted: the suffix
+        # enumeration produced nothing for every cell. That is a producer
+        # regression, and reporting `0/0 tags mirrored` as a successful strict
+        # reconciliation is the fail-open this whole change exists to remove.
+        if [[ "$ncells" -gt 0 && "$_attempted" -eq 0 ]]; then
+            printf '::error::mirror-dockerhub: %d cells requested and no tag was attempted — enumeration produced nothing, reconciliation not performed\n' \
+                "$ncells" >&2
+            return 1
+        fi
         if [[ "$_attempted" -gt 0 && "$_succeeded" -eq 0 ]]; then
             printf '::error::mirror-dockerhub: 0/%d tags mirrored — reconciliation failed\n' \
                 "$_attempted" >&2
