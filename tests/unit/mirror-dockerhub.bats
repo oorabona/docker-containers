@@ -139,6 +139,27 @@ _run_mirror() {
          false)
 }
 
+@test "short suffix enumeration mirrors no Docker Hub tags [catches partial imagetools publish]" {
+    local generator="${TEST_LOG_DIR}/short-enumeration-generator.sh"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"container":"web-shell","tag":"1.0.0","flavor":"","variant":"","is_default":true,"is_latest_version":true,"intermediate_ref":"ghcr.io/oorabona/web-shell:1.0.0"}]'
+EOF
+    chmod +x "$generator"
+    export _MDH_GENERATOR_OVERRIDE="$generator"
+
+    run bash -c '
+        source "$1"
+        compute_cell_tag_suffixes() { printf "partial\\n"; return 1; }
+        mirror_to_dockerhub web-shell
+    ' bash "$MDH"
+
+    # Best-effort mode remains non-gating, but it must not publish the partial tag.
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"could not enumerate all tags"* ]]
+    [ ! -s "$DOCKER_LOG" ]
+}
+
 # ---------------------------------------------------------------------------
 # Retained non-latest cell mirrors ONLY the versioned tag.
 # Catches: MD3

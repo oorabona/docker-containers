@@ -328,6 +328,66 @@ CALLER
     [[ "$output" == *"Duplicate final ref"* ]]
 }
 
+@test "short suffix enumeration refuses a cell before any manifest publish [catches partial GHCR publish]" {
+    local caller_script="${TEST_TEMP_DIR}/_short_cell_caller.sh"
+    cat > "$caller_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
+compute_cell_tag_suffixes() { printf 'partial\n'; return 1; }
+_merge_cell debian trixie '' true ghcr.io/oorabona/debian:trixie true
+EOF
+    chmod +x "$caller_script"
+
+    run bash "$caller_script"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Could not enumerate all GHCR refs"* ]]
+    [ ! -s "$DOCKER_LOG" ]
+}
+
+@test "short suffix enumeration makes duplicate detection fail rather than report clean [catches incomplete detector]" {
+    local mock_gen="${TEST_TEMP_DIR}/bin/generate-bake-hcl.sh"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        'printf '\''[{"container":"debian","tag":"trixie","flavor":"","variant":"","is_default":true,"intermediate_ref":"ghcr.io/oorabona/debian:trixie"}]\n'\''' > "$mock_gen"
+    chmod +x "$mock_gen"
+
+    local caller_script="${TEST_TEMP_DIR}/_short_duplicate_caller.sh"
+    cat > "$caller_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
+compute_cell_tag_suffixes() { printf 'partial\n'; return 1; }
+SCRIPT_DIR="${TEST_TEMP_DIR}/bin"
+main
+EOF
+    chmod +x "$caller_script"
+
+    run bash "$caller_script"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Could not enumerate all final refs for duplicate detection"* ]]
+    [ ! -s "$DOCKER_LOG" ]
+}
+
+@test "empty successful suffix enumeration still triggers the no-GHCR-refs guard" {
+    local caller_script="${TEST_TEMP_DIR}/_empty_cell_caller.sh"
+    cat > "$caller_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
+compute_cell_tag_suffixes() { return 0; }
+_merge_cell debian trixie '' true ghcr.io/oorabona/debian:trixie true
+EOF
+    chmod +x "$caller_script"
+
+    run bash "$caller_script"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"No GHCR refs computed"* ]]
+    [ ! -s "$DOCKER_LOG" ]
+}
+
 # ---------------------------------------------------------------------------
 # FIX H / MM11: DRY_RUN=true emits command to stdout and does NOT execute.
 # Catches MM11: if the dry-run branch is removed, the command is captured

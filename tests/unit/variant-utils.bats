@@ -1219,6 +1219,21 @@ setup_fallback_test() {
     [ "$bare_latest_count" -eq 0 ]
 }
 
+@test "compute_cell_tags: a short suffix enumeration returns failure and emits no partial refs [catches process-substitution partial publish]" {
+    # Mutation caught: restoring `done < <(compute_cell_tag_suffixes ...)`
+    # emits refs for "partial" and returns success despite this producer failure.
+    compute_cell_tag_suffixes() {
+        printf 'partial\n'
+        return 1
+    }
+
+    run compute_cell_tags "1.0.0" "" "true" "docker.io/owner/app" "ghcr.io/owner/app"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"docker.io/owner/app:partial"* ]]
+    [[ "$output" != *"ghcr.io/owner/app:partial"* ]]
+}
+
 # --- compute_cell_tag_suffixes ---
 #
 # Unit tests for the registry-independent suffix helper. Four cases:

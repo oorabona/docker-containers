@@ -49,6 +49,8 @@ fi
 
 # Source variant utils for tags_from_versions resolution
 source "$SCRIPT_DIR/variant-utils.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/collect-lines.sh"
 
 # Registry commands below must have a real kill-after timeout. A plain timeout
 # only sends SIGTERM, then can wait forever for a stuck docker child; check the
@@ -835,6 +837,13 @@ sync_base_images_to_ghcr() {
     echo "📦 Syncing ${safe_count} unique base images to GHCR (source: ${safe_source_registry})"
 
     local synced=0 skipped=0 failed=0
+    local images_file
+    images_file=$(mktemp "${TMPDIR:-/tmp}/sync-base-images-entries.XXXXXX") || return 1
+    if ! collect_lines "$images_file" -- jq -c '.[]' <<< "$images_json"; then
+        rm -f "$images_file"
+        log_error "sync_base_images_to_ghcr: could not enumerate all base images; syncing none"
+        return 1
+    fi
     while IFS= read -r img; do
         local source_img tag sync_image source_ref output
         source_img=$(echo "$img" | jq -r '.source')
@@ -942,7 +951,8 @@ sync_base_images_to_ghcr() {
             _append_base_sync_manifest_record "$source_ref" "$sync_image" "" "failed"
             failed=$((failed + 1))
         fi
-    done < <(echo "$images_json" | jq -c '.[]')
+    done < "$images_file"
+    rm -f "$images_file"
 
     echo ""
     echo "📊 Sync summary: $synced synced, $skipped skipped (already in GHCR), $failed failed"

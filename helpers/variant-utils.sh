@@ -7,6 +7,10 @@
 
 set -euo pipefail
 
+# shellcheck source=./collect-lines.sh
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/collect-lines.sh"
+
 # Resolve a full version string to a variants.yaml tag
 # Usage: resolve_major_version <container_dir> <full_version>
 # Example: resolve_major_version ./postgres "18.1-alpine" → "18"
@@ -357,10 +361,18 @@ compute_cell_tags() {
     local ghcr_image="$5"
 
     local _sfx
+    local _suffixes_file
+    _suffixes_file=$(mktemp "${TMPDIR:-/tmp}/compute-cell-tags-suffixes.XXXXXX") || return 1
+    if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$tag" "$flavor" "$is_default"; then
+        rm -f "$_suffixes_file"
+        printf 'compute_cell_tags: could not enumerate tag suffixes\n' >&2
+        return 1
+    fi
     while IFS= read -r _sfx; do
         printf '%s:%s\n' "$dockerhub_image" "$_sfx"
         printf '%s:%s\n' "$ghcr_image"      "$_sfx"
-    done < <(compute_cell_tag_suffixes "$tag" "$flavor" "$is_default")
+    done < "$_suffixes_file"
+    rm -f "$_suffixes_file"
 }
 
 # Check if a container always builds all retained versions (not just the latest)

@@ -792,6 +792,27 @@ EOF
     [[ "$output" == *"sync_base_images_to_ghcr: images_json is not a JSON array"* ]]
 }
 
+@test "sync_base_images_to_ghcr: a short image enumeration syncs nothing [catches partial GHCR sync]" {
+    # Mutation caught: restoring the jq process substitution would sync the
+    # first row even though the producer reported that the full set is unknown.
+    local docker_log="$TEST_DIR/short-enumeration-docker.log"
+    collect_lines() {
+        printf '%s\n' '{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"}' > "$1"
+        return 1
+    }
+    docker() {
+        printf '%s\n' "$*" >> "$docker_log"
+        return 0
+    }
+    export -f docker
+
+    run sync_base_images_to_ghcr '[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"}]'
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"could not enumerate all base images; syncing none"* ]]
+    [ ! -s "$docker_log" ]
+}
+
 @test "sync_base_images_to_ghcr: single library/X image uses explicit library/ prefix" {
     # Mock docker to capture the source_ref argument
     docker() {

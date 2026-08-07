@@ -24,6 +24,21 @@ teardown() {
     unset FAKE_ISSUE_LIST_MODE FAKE_ISSUE_CREATE_MODE FAKE_ISSUE_EDIT_MODE REQUIRE_LABEL_FORCE FAKE_LABEL_CREATE_MODE GH_CREATE_COUNT_FILE GH_SERVER_CREATED_FILE GH_LABEL_COUNT_FILE
 }
 
+@test "short findings enumeration opens no issues [catches partial lifecycle reporting]" {
+    export GH_LOG="$TEST_TEMP_DIR/gh.log"
+    local findings='[{"container":"openvpn","dependency":"EASYRSA_VERSION","expiry":{"severity":"warn","reason":"expiring"}}]'
+
+    run bash -c '
+        source "$1"
+        collect_lines() { printf "%s\\n" "$3" > "$1"; return 1; }
+        process_findings "$2"
+    ' bash "$SCRIPT" "$findings"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"could not enumerate all findings; opening no issues"* ]]
+    [ ! -s "$GH_LOG" ]
+}
+
 write_fake_gh() {
 cat > "$TEST_TEMP_DIR/bin/gh" <<'EOF'
 #!/usr/bin/env bash

@@ -506,3 +506,41 @@ EOF
 
     unset GITHUB_REPOSITORY_OWNER
 }
+
+@test "build_container refuses the build when compute_cell_tags sees a short suffix enumeration [catches untagged partial build]" {
+    export MULTIPLATFORM_SUPPORTED="false"
+    export GITHUB_REPOSITORY_OWNER="myowner"
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" <<'EOF'
+#!/bin/bash
+echo "ARGS: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    create_mock_container "testcontainer" "1.0.0"
+    source_build_script
+
+    # Mutation caught: the old process substitution made compute_cell_tags
+    # report success after emitting this one suffix, so docker built it anyway.
+    compute_cell_tag_suffixes() {
+        printf 'partial\n'
+        return 1
+    }
+    export -f compute_cell_tag_suffixes
+
+    cd "$TEST_TEMP_DIR"
+    run build_container "testcontainer" "1.0.0" "1.0.0"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Could not enumerate image tags"* ]]
+    if grep -Eq '(^| )build( |$)|buildx build' "$TEST_TEMP_DIR/docker_calls.log"; then
+        echo "A partial tag set reached the build invocation:" >&2
+        cat "$TEST_TEMP_DIR/docker_calls.log" >&2
+        return 1
+    fi
+
+    unset GITHUB_REPOSITORY_OWNER
+}

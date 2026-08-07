@@ -22,6 +22,7 @@ HELPERS_DIR="$(cd "$SCRIPT_DIR/../helpers" && pwd)"
 source "$HELPERS_DIR/logging.sh"
 source "$HELPERS_DIR/template-utils.sh"
 source "$HELPERS_DIR/generate-utils.sh"
+source "$HELPERS_DIR/collect-lines.sh"
 
 CONFIG="$SCRIPT_DIR/config.yaml"
 TEMPLATE="$SCRIPT_DIR/Dockerfile.linux"
@@ -186,6 +187,13 @@ generate_one() {
 if [[ $# -eq 0 ]]; then
     # Generate all Linux distros × all flavors
     all_flavors=$(list_flavors "$CONFIG")
+    distros_file=$(mktemp "${TMPDIR:-/tmp}/generate-dockerfile-distros.XXXXXX") || exit 1
+    trap 'rm -f "$distros_file"' EXIT
+    if ! collect_lines "$distros_file" -- list_distros "$CONFIG" --exclude-windows; then
+        rm -f "$distros_file"
+        log_error "Could not enumerate all Linux distros; writing no Dockerfiles"
+        exit 1
+    fi
 
     while IFS= read -r distro; do
         while IFS= read -r flv; do
@@ -193,7 +201,9 @@ if [[ $# -eq 0 ]]; then
             log_info "Writing $out_file" >&2
             generate_one "$distro" "$flv" > "$out_file"
         done <<< "$all_flavors"
-    done < <(list_distros "$CONFIG" --exclude-windows)
+    done < "$distros_file"
+    rm -f "$distros_file"
+    trap - EXIT
 elif parse_generator_args "$@"; then
     generate_one "$GEN_DISTRO" "$GEN_FLAVOR"
 else

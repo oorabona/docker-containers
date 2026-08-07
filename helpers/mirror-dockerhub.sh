@@ -53,6 +53,8 @@ fi
 source "${_MDH_SCRIPT_DIR}/logging.sh"
 # shellcheck disable=SC1091
 source "${_MDH_SCRIPT_DIR}/variant-utils.sh"
+# shellcheck disable=SC1091
+source "${_MDH_SCRIPT_DIR}/collect-lines.sh"
 
 # DOCKER is already set by logging.sh (honours DRY_RUN); provide a fallback
 # only when the caller sourced this file before logging.sh.
@@ -210,6 +212,17 @@ mirror_to_dockerhub() {
         # Enumerate tags using the same routing as compute_cell_tag_suffixes.
         # For retained non-latest cells, publish ONLY the versioned tag.
         local sfx
+        local suffixes_file
+        suffixes_file=$(mktemp "${TMPDIR:-/tmp}/mirror-dockerhub-suffixes.XXXXXX") || return 1
+        if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$routing_suffix" "$is_default"; then
+            rm -f "$suffixes_file"
+            printf '::warning::mirror-dockerhub: could not enumerate all tags for %s:%s; mirroring none for this cell\n' \
+                "$container" "$tag" >&2
+            if [[ "$_strict" == "true" ]]; then
+                return 1
+            fi
+            continue
+        fi
         while IFS= read -r sfx; do
             [[ -n "$sfx" ]] || continue
             # F2 gate: retained non-latest → versioned tag only
@@ -233,7 +246,8 @@ mirror_to_dockerhub() {
                         "$dh_dst" >&2
                 fi
             fi
-        done < <(compute_cell_tag_suffixes "$tag" "$routing_suffix" "$is_default")
+        done < "$suffixes_file"
+        rm -f "$suffixes_file"
     done
 
     # Strict-mode: emit summary and return non-zero on total failure.

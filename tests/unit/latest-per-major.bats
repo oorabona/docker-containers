@@ -14,6 +14,9 @@ setup() {
     mkdir -p helpers scripts bin wordpress
 
     cp "$ORIG_DIR/helpers/variant-utils.sh" helpers/
+    # variant-utils.sh sources it, so an isolated root without it fails at the
+    # source line rather than in the test's subject.
+    cp "$ORIG_DIR/helpers/collect-lines.sh" helpers/
     cp "$ORIG_DIR/scripts/rotate-versions.sh" scripts/
     chmod +x scripts/rotate-versions.sh
 
@@ -468,6 +471,9 @@ EOF
 EOF
 
     cp "$ORIG_DIR/helpers/variant-utils.sh" helpers/
+    # variant-utils.sh sources it, so an isolated root without it fails at the
+    # source line rather than in the test's subject.
+    cp "$ORIG_DIR/helpers/collect-lines.sh" helpers/
     cp "$ORIG_DIR/helpers/version-utils.sh" helpers/
 
     # Copy make to $TEST_DIR so `./make check-updates` runs with TEST_DIR as $(dirname $0).
