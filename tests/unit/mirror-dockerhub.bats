@@ -506,6 +506,14 @@ EOF
 
     # Planned, not executed.
     [ ! -s "$DOCKER_LOG" ]
+
+    # And the summary names itself, instead of reading as a reconciliation that
+    # mirrored nothing successfully.
+    grep -q 'dry run, nothing was mirrored' "${TEST_LOG_DIR}/run.log" || \
+        (echo "Expected the dry run summary to name itself:" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+    ! grep -q '0/0 tags mirrored' "${TEST_LOG_DIR}/run.log"
 }
 
 @test "MIRROR_STRICT=true cells requested but no suffix produced returns non-zero" {

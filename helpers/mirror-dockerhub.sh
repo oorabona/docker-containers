@@ -268,6 +268,16 @@ mirror_to_dockerhub() {
                 "$ncells" >&2
             return 1
         fi
+        # A dry run copies nothing, so strict mode has nothing to assert about.
+        # Saying `0/0 tags mirrored` here reads as a successful reconciliation in
+        # the workflow's history, which is false: `dockerhub-reconcile.yaml`
+        # hardcodes MIRROR_STRICT and takes dry-run from its dispatch input, so
+        # this combination is one click away and its summary must name itself.
+        if [[ "${DRY_RUN:-false}" == "true" ]]; then
+            printf '::notice::mirror-dockerhub: %d tags planned across %d cells — dry run, nothing was mirrored and no reconciliation was performed\n' \
+                "$_planned" "$ncells" >&2
+            return 0
+        fi
         if [[ "$_attempted" -gt 0 && "$_succeeded" -eq 0 ]]; then
             printf '::error::mirror-dockerhub: 0/%d tags mirrored — reconciliation failed\n' \
                 "$_attempted" >&2
