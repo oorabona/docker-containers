@@ -220,12 +220,20 @@ get_output() {
     # inside another key's multiline value as a record of its own, so
     # `OTHER<<D` / `TARGET=forged` / `D` would answer `forged` for TARGET.
     #
-    # Which of the two forms a line is, is decidable: it is a block header when
-    # the text before the first `<<` is a legal output name, and a record when
-    # the text before the first `=` is. That ordering keeps `X=a<<b` a record of
-    # X, because `X=a` is not a legal name.
+    # ANY line containing `<<` opens a block. An earlier version required the
+    # name to match a charset, which put every name outside that charset back
+    # inside the hole: `OTHER.INVALID<<D` failed the test, the header was
+    # skipped, and `TARGET=forged` was read as a record again. Guessing the
+    # runner's name grammar is the wrong shape — each guess leaves the names it
+    # did not think of. Recognising the marker instead cannot leave any.
+    #
+    # The cost is that `X=a<<b`, which might be a record whose value contains
+    # `<<`, is read as a block header for `X=a` and therefore answers absent for
+    # X. That is the direction to be wrong in: an ambiguous line yields no
+    # value, never a wrong one, and a test oracle that returns nothing fails
+    # loudly where one that returns a forged value passes.
     while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "$line" == *'<<'* ]] && [[ "${line%%<<*}" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+        if [[ "$line" == *'<<'* ]]; then
             record="${line%%<<*}"
             delimiter="${line#*<<}"
             value=""
@@ -235,7 +243,12 @@ get_output() {
             first=1
             terminated=0
             while IFS= read -r line || [[ -n "$line" ]]; do
-                if [[ "$line" == "$delimiter" ]]; then
+                # An empty delimiter is malformed — the runner rejects it — and
+                # honouring it would let the first blank line close the block and
+                # hand the rest of the file back to record classification, which
+                # is the hole this whole branch exists to close. Consume to EOF
+                # instead, so a malformed header answers absent.
+                if [[ -n "$delimiter" && "$line" == "$delimiter" ]]; then
                     terminated=1
                     break
                 fi
