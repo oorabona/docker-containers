@@ -333,6 +333,7 @@ EOF
     mkdir -p "$TEST_TEMP_DIR/scripts" "$TEST_TEMP_DIR/helpers" "$TEST_TEMP_DIR/tor"
     cp "$SCRIPTS_DIR/check-dependency-versions.sh" "$TEST_TEMP_DIR/scripts/check-dependency-versions.sh"
     cp "$HELPERS_DIR/logging.sh" "$TEST_TEMP_DIR/helpers/logging.sh"
+    cp "$HELPERS_DIR/collect-lines.sh" "$TEST_TEMP_DIR/helpers/collect-lines.sh"
 
     cat > "$TEST_TEMP_DIR/helpers/latest-gitlab-tag" <<EOF
 #!/usr/bin/env bash
@@ -373,6 +374,7 @@ EOF
     mkdir -p "$TEST_TEMP_DIR/scripts" "$TEST_TEMP_DIR/helpers" "$TEST_TEMP_DIR/tor"
     cp "$SCRIPTS_DIR/check-dependency-versions.sh" "$TEST_TEMP_DIR/scripts/check-dependency-versions.sh"
     cp "$HELPERS_DIR/logging.sh" "$TEST_TEMP_DIR/helpers/logging.sh"
+    cp "$HELPERS_DIR/collect-lines.sh" "$TEST_TEMP_DIR/helpers/collect-lines.sh"
 
     cat > "$TEST_TEMP_DIR/helpers/latest-gitlab-tag" <<'EOF'
 #!/usr/bin/env bash

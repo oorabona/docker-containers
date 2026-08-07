@@ -41,6 +41,7 @@ setup() {
     # for direct sourcing we stub manually).
     mkdir -p helpers
     cp "$ORIG_DIR/helpers/logging.sh" helpers/logging.sh
+    cp "$ORIG_DIR/helpers/collect-lines.sh" helpers/collect-lines.sh
 
     # Source the script; the main block is guarded by BASH_SOURCE==0.
     # AUDIT_ROOT is set so the script's cd lands in our test dir.

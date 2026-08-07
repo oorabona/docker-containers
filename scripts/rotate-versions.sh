@@ -26,7 +26,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 source "$ROOT_DIR/helpers/variant-utils.sh"
@@ -95,7 +95,15 @@ rotate_base_image_cache_tags() {
         [[ "$tag_count" =~ ^[0-9]+$ && "$tag_count" -gt 0 ]] || continue
 
         local cache_tags=()
-        mapfile -t cache_tags < <(yq -r ".base_image_cache[$i].tags[]" "$config_file")
+        local cache_tags_file
+        cache_tags_file=$(mktemp "${TMPDIR:-/tmp}/rotate-versions-cache-tags.XXXXXX") || return 1
+        if ! collect_lines "$cache_tags_file" -- yq -r ".base_image_cache[$i].tags[]" "$config_file"; then
+            rm -f "$cache_tags_file"
+            echo "Could not enumerate base_image_cache tags in $config_file; refusing to rewrite retention data" >&2
+            return 1
+        fi
+        mapfile -t cache_tags < "$cache_tags_file"
+        rm -f "$cache_tags_file"
 
         local cache_tag
         local component
@@ -244,13 +252,23 @@ if [[ "$strategy" == "latest_per_major" ]]; then
 fi
 
 # Step 1: Check version_retention
+# shellcheck source=../helpers/collect-lines.sh
+source "$ROOT_DIR/helpers/collect-lines.sh"
 retention=$(version_retention "$container_dir")
 if [[ "$retention" -eq 0 ]]; then
     echo "No version_retention configured for $container_dir — skipping" >&2
     exit 2
 fi
 
-mapfile -t old_version_tags < <(yq -r '.versions[].tag' "$variants_file" 2>/dev/null)
+declare -a old_version_tags
+old_version_tags_file=$(mktemp "${TMPDIR:-/tmp}/rotate-versions-old-version-tags.XXXXXX") || exit 1
+if ! collect_lines "$old_version_tags_file" -- yq -r '.versions[].tag' "$variants_file"; then
+    rm -f "$old_version_tags_file"
+    echo "Could not enumerate existing versions in $variants_file; refusing to rotate" >&2
+    exit 1
+fi
+mapfile -t old_version_tags < "$old_version_tags_file"
+rm -f "$old_version_tags_file"
 
 # Step 2: Check idempotence — does new_version already exist?
 for tag in "${old_version_tags[@]}"; do
@@ -284,7 +302,15 @@ if [[ "$current_count" -gt "$retention" ]]; then
     yq -i ".versions |= .[:$retention]" "$variants_file"
 fi
 
-mapfile -t new_version_tags < <(yq -r '.versions[].tag' "$variants_file" 2>/dev/null)
+declare -a new_version_tags
+new_version_tags_file=$(mktemp "${TMPDIR:-/tmp}/rotate-versions-new-version-tags.XXXXXX") || exit 1
+if ! collect_lines "$new_version_tags_file" -- yq -r '.versions[].tag' "$variants_file"; then
+    rm -f "$new_version_tags_file"
+    echo "Could not enumerate retained versions in $variants_file; refusing to update base-image cache tags" >&2
+    exit 1
+fi
+mapfile -t new_version_tags < "$new_version_tags_file"
+rm -f "$new_version_tags_file"
 version_window_tags=("${old_version_tags[@]}" "${new_version_tags[@]}")
 rotate_base_image_cache_tags
 

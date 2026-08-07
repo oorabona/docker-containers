@@ -8,6 +8,8 @@ PROJECT_ROOT="${GPG_KEYS_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 # shellcheck source=../helpers/logging.sh
 # shellcheck disable=SC1091
 source "$PROJECT_ROOT/helpers/logging.sh"
+# shellcheck source=../helpers/collect-lines.sh
+source "$PROJECT_ROOT/helpers/collect-lines.sh"
 
 DEFAULT_WARN_DAYS=60
 MAX_WARN_DAYS=3650
@@ -681,7 +683,15 @@ main() {
 
     local containers=()
     if [[ "$target" == "__all__" ]]; then
-        mapfile -t containers < <(discover_containers)
+        local containers_file
+        containers_file=$(mktemp "${TMPDIR:-/tmp}/check-gpg-keys-containers.XXXXXX") || return 1
+        if ! collect_lines "$containers_file" -- discover_containers; then
+            rm -f "$containers_file"
+            echo "check-gpg-keys: could not enumerate containers; key-check result is unknown" >&2
+            return 1
+        fi
+        mapfile -t containers < "$containers_file"
+        rm -f "$containers_file"
     else
         containers=("$target")
     fi

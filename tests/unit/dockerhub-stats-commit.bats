@@ -13,6 +13,7 @@ setup() {
 
     ln -s "$SCRIPTS_DIR/commit-stats-snapshot.sh" "$TEST_REPO/scripts/commit-stats-snapshot.sh"
     cp "${SCRIPTS_DIR}/../helpers/gha.sh" "$TEST_REPO/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/collect-lines.sh" "$TEST_REPO/helpers/"
     # Simulates what the (separate, already-run) collect step left behind.
     printf '{"ts":"2026-07-12T07:00:00Z","date":"2026-07-12","container":"alpha","pull_count":42,"star_count":1,"source":"dockerhub"}\n' \
         > "$TEST_REPO/stats/dockerhub-pull-history.jsonl"

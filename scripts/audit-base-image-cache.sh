@@ -2,7 +2,9 @@
 # Non-blocking audit: report which FROM images in container Dockerfiles
 # are covered by their config.yaml base_image_cache declarations.
 #
-# Designed as a debugging/diagnostic aid. Always exits 0.
+# Designed as a debugging/diagnostic aid. A completed audit exits 0, including
+# real cache gaps; an enumeration failure exits non-zero because there is no
+# incomplete-result contract for this report.
 # Run manually or as a CI step that writes to $GITHUB_STEP_SUMMARY.
 #
 # Usage: ./scripts/audit-base-image-cache.sh [--summary] [container...]
@@ -20,6 +22,8 @@ ROOT_DIR="${AUDIT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 cd "$ROOT_DIR" || exit 1
 # shellcheck source=../helpers/logging.sh
 source helpers/logging.sh
+# shellcheck source=../helpers/collect-lines.sh
+source helpers/collect-lines.sh
 
 # Intentional uncached images (legal/DRY).
 # Add new entries here when adopting a new pattern.
@@ -141,8 +145,18 @@ is_cached() {
   local img_source="${norm_first%%:*}"
 
   # Compute the full set of normalized candidates (includes library/ alias).
+  local candidates_file
+  candidates_file=$(mktemp "${TMPDIR:-/tmp}/audit-base-image-cache-candidates.XXXXXX") || return 2
   local -a candidates
-  mapfile -t candidates < <(normalize_image_source "$img_source")
+  if ! collect_lines "$candidates_file" -- normalize_image_source "$img_source"; then
+    rm -f "$candidates_file"
+    # This predicate has no incomplete-result state.  Treating an unknown
+    # candidate set as "not cached" would report a gap that may not exist.
+    log_error "Base-image cache audit could not normalize ${img_source}; audit result is unknown"
+    return 2
+  fi
+  mapfile -t candidates < "$candidates_file"
+  rm -f "$candidates_file"
 
   local count
   count=$(yq -r '.base_image_cache | length // 0' "$config" 2>/dev/null || echo 0)
@@ -168,12 +182,28 @@ is_cached() {
 audit_one() {
   local container=$1
   local config="./$container/config.yaml"
-  local dockerfiles
-  dockerfiles=$(find "./$container" -maxdepth 1 \( -name "Dockerfile" -o -name "Dockerfile.*" \) 2>/dev/null)
-  [[ -z "$dockerfiles" ]] && return 0
+  local dockerfiles_file
+  dockerfiles_file=$(mktemp "${TMPDIR:-/tmp}/audit-base-image-cache-dockerfiles.XXXXXX") || return 1
+  if ! collect_lines "$dockerfiles_file" -- find "./$container" -maxdepth 1 \( -name "Dockerfile" -o -name "Dockerfile.*" \); then
+    rm -f "$dockerfiles_file"
+    return 1
+  fi
+  [[ -s "$dockerfiles_file" ]] || {
+    rm -f "$dockerfiles_file"
+    return 0
+  }
 
   local df raw resolved
   while IFS= read -r df; do
+    local froms_file
+    froms_file=$(mktemp "${TMPDIR:-/tmp}/audit-base-image-cache-froms.XXXXXX") || {
+      rm -f "$dockerfiles_file"
+      return 1
+    }
+    if ! collect_lines "$froms_file" -- extract_froms "$df"; then
+      rm -f "$froms_file" "$dockerfiles_file"
+      return 1
+    fi
     while IFS= read -r raw; do
       [[ -z "$raw" ]] && continue
       resolved=$(resolve_image_ref "$raw" "$config")
@@ -181,15 +211,23 @@ audit_one() {
       if is_cached "$resolved" "$config"; then
         covered=$((covered + 1))
         printf '%s\t%s\t%s\t%s\n' "$container" "$resolved" "cached" ""
-      elif is_expected_uncached "$resolved"; then
+      else
+        local cache_status=$?
+        if [[ "$cache_status" -ne 1 ]]; then
+          return "$cache_status"
+        fi
+      if is_expected_uncached "$resolved"; then
         expected_gap=$((expected_gap + 1))
         printf '%s\t%s\t%s\t%s\n' "$container" "$resolved" "uncached-expected" "legal/DRY exception"
       else
         gap=$((gap + 1))
         printf '%s\t%s\t%s\t%s\n' "$container" "$resolved" "GAP" "not declared in base_image_cache"
       fi
-    done < <(extract_froms "$df")
-  done <<< "$dockerfiles"
+      fi
+    done < "$froms_file"
+    rm -f "$froms_file"
+  done < "$dockerfiles_file"
+  rm -f "$dockerfiles_file"
 }
 
 # Guard: allow sourcing for unit tests without executing the main block.
@@ -211,7 +249,14 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
   # Capture rows; counters incremented in audit_one would be lost across the
   # subshell, so tally from the captured output instead.
-  rows=$(
+  containers_file=$(mktemp "${TMPDIR:-/tmp}/audit-base-image-cache-containers.XXXXXX") || exit 1
+  if ! collect_lines "$containers_file" -- list_containers; then
+    rm -f "$containers_file"
+    echo "Base-image cache audit could not enumerate containers; audit result is unknown" >&2
+    exit 1
+  fi
+
+  if ! rows=$(
     while IFS= read -r container; do
       [[ -z "$container" ]] && continue
       if (( ${#only_containers[@]} > 0 )); then
@@ -221,9 +266,18 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         done
         $keep || continue
       fi
-      audit_one "$container"
-    done < <(list_containers)
-  )
+      if ! audit_one "$container"; then
+        # A failed candidate enumeration is not an uncached image or a
+        # complete audit.  This audit deliberately has no partial-result mode.
+        exit 1
+      fi
+    done < "$containers_file"
+  ); then
+    rm -f "$containers_file"
+    echo "Base-image cache audit could not complete; audit result is unknown" >&2
+    exit 1
+  fi
+  rm -f "$containers_file"
   total=$(awk -F'\t' 'NF{c++} END{print c+0}' <<< "$rows")
   covered=$(awk -F'\t' '$3=="cached"{c++} END{print c+0}' <<< "$rows")
   expected_gap=$(awk -F'\t' '$3=="uncached-expected"{c++} END{print c+0}' <<< "$rows")

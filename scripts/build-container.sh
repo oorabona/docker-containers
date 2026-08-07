@@ -9,6 +9,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$PROJECT_ROOT/helpers/logging.sh"
+# shellcheck source=../helpers/collect-lines.sh
+source "$PROJECT_ROOT/helpers/collect-lines.sh"
 source "$PROJECT_ROOT/helpers/variant-utils.sh"
 source "$PROJECT_ROOT/helpers/build-cache-utils.sh"
 source "$PROJECT_ROOT/helpers/build-args-utils.sh"
@@ -458,8 +460,24 @@ build_container() {
     # Prepare tags — versioned tag always included, plus rolling latest tags.
     # compute_cell_tags (helpers/variant-utils.sh) is the single source of truth;
     # see that function for the full rule-set.
-    local _cell_refs _ref
-    mapfile -t _cell_refs < <(compute_cell_tags "$tag" "$flavor" "$is_default" "$dockerhub_image" "$ghcr_image")
+    local _cell_refs_file _cell_refs _ref
+    _cell_refs_file=$(mktemp "${TMPDIR:-/tmp}/build-container-cell-refs.XXXXXX") || return 1
+    if ! collect_lines "$_cell_refs_file" -- compute_cell_tags "$tag" "$flavor" "$is_default" "$dockerhub_image" "$ghcr_image"; then
+        rm -f "$_cell_refs_file"
+        log_error "Could not enumerate image tags; refusing to invoke docker build without tags"
+        return 1
+    fi
+    mapfile -t _cell_refs < "$_cell_refs_file"
+    rm -f "$_cell_refs_file"
+    # A successful producer emitting nothing is legal for the collector and is
+    # never legal here: the versioned reference is mandatory, so an empty set is
+    # a producer regression rather than a cell with no tags. Without this the
+    # refusal above is a claim the code does not hold — docker would be invoked
+    # with no -t at all.
+    if (( ${#_cell_refs[@]} == 0 )); then
+        log_error "Tag enumeration returned no references for ${tag}; refusing to invoke docker build without tags"
+        return 1
+    fi
     local tag_args=""
     for _ref in "${_cell_refs[@]}"; do
         tag_args="$tag_args -t $_ref"

@@ -40,6 +40,9 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=helpers/logging.sh
 source "${ROOT_DIR}/helpers/logging.sh"
 
+# shellcheck source=../helpers/collect-lines.sh
+source "${ROOT_DIR}/helpers/collect-lines.sh"
+
 # shellcheck source=helpers/version-set-resolver.sh
 source "${ROOT_DIR}/helpers/version-set-resolver.sh"
 
@@ -194,6 +197,15 @@ _version_record_tags_csv() {
     ' <<< "$record_json"
 }
 
+# Emit all tags from one GHCR version record.  The caller collects this output
+# before making any delete/keep decision: a partial tag list is unknown, not an
+# empty list.
+_list_version_record_tags() {
+    local record_json="$1"
+
+    jq -r '.tags[]?' <<< "$record_json"
+}
+
 # ── Main entry point ─────────────────────────────────────────────────────────
 
 main() {
@@ -246,7 +258,15 @@ main() {
     if [[ ${#ext_filter[@]} -gt 0 ]]; then
         extensions=("${ext_filter[@]}")
     else
-        mapfile -t extensions < <(_discover_resolver_extensions "$ext_config")
+        local extensions_file
+        extensions_file=$(mktemp "${TMPDIR:-/tmp}/cleanup-ext-images-extensions.XXXXXX") || return 1
+        if ! collect_lines "$extensions_file" -- _discover_resolver_extensions "$ext_config"; then
+            rm -f "$extensions_file"
+            log_error "Could not enumerate resolver extensions; refusing to make pruning decisions"
+            return 1
+        fi
+        mapfile -t extensions < "$extensions_file"
+        rm -f "$extensions_file"
     fi
 
     if [[ ${#extensions[@]} -eq 0 ]]; then
@@ -262,7 +282,15 @@ main() {
         # shellcheck disable=SC2206
         configured_pg_majors=($PG_VERSIONS)
     else
-        mapfile -t configured_pg_majors < <(_discover_pg_versions "$ext_config")
+        local configured_pg_majors_file
+        configured_pg_majors_file=$(mktemp "${TMPDIR:-/tmp}/cleanup-ext-images-configured-pg-majors.XXXXXX") || return 1
+        if ! collect_lines "$configured_pg_majors_file" -- _discover_pg_versions "$ext_config"; then
+            rm -f "$configured_pg_majors_file"
+            log_error "Could not enumerate configured PostgreSQL majors; refusing to make pruning decisions"
+            return 1
+        fi
+        mapfile -t configured_pg_majors < "$configured_pg_majors_file"
+        rm -f "$configured_pg_majors_file"
     fi
 
     local total_kept=0
@@ -302,7 +330,15 @@ main() {
         fi
 
         local -a registry_pg_majors=()
-        mapfile -t registry_pg_majors < <(_discover_registry_pg_majors "$version_records_json")
+        local registry_pg_majors_file
+        registry_pg_majors_file=$(mktemp "${TMPDIR:-/tmp}/cleanup-ext-images-registry-pg-majors.XXXXXX") || return 1
+        if ! collect_lines "$registry_pg_majors_file" -- _discover_registry_pg_majors "$version_records_json"; then
+            rm -f "$registry_pg_majors_file"
+            log_error "Could not enumerate registry PostgreSQL majors; refusing to make pruning decisions"
+            return 1
+        fi
+        mapfile -t registry_pg_majors < "$registry_pg_majors_file"
+        rm -f "$registry_pg_majors_file"
 
         local -A pg_major_seen=()
         local -a pg_majors=()
@@ -368,6 +404,20 @@ main() {
         local pruned_count=0
         local delete_failures=0
         local record_json
+        local records_file
+
+        # The record enumeration authorises every deletion below, exactly as the
+        # per-record tag enumeration does. Reading it through a process
+        # substitution would let a `jq` that emits some records and then fails
+        # end the loop successfully — the records it did emit already deleted,
+        # the ones it did not never examined, and the summary reporting success.
+        # Produce the whole list first, or delete nothing.
+        records_file=$(mktemp "${TMPDIR:-/tmp}/cleanup-ext-records.XXXXXX") || return 1
+        if ! collect_lines "$records_file" -- jq -c '.[]' <<< "$version_records_json"; then
+            rm -f "$records_file"
+            log_error "    Version-record enumeration unknown for ${ext_name}; deleting nothing for this extension"
+            return 1
+        fi
 
         while IFS= read -r record_json; do
             [[ -n "$record_json" ]] || continue
@@ -387,32 +437,40 @@ main() {
                 keep_reason="no tags on version record; fail-closed"
             fi
 
-            local tag
-            while [[ "$should_delete" == "true" ]] && IFS= read -r tag; do
-                [[ -n "$tag" ]] || continue
+            local tags_file
+            tags_file=$(mktemp "${TMPDIR:-/tmp}/cleanup-ext-images-record-tags.XXXXXX") || return 1
+            if ! collect_lines "$tags_file" -- _list_version_record_tags "$record_json"; then
+                should_delete="false"
+                keep_reason="tag enumeration unknown; keeping record fail-closed"
+            else
+                local tag
+                while [[ "$should_delete" == "true" ]] && IFS= read -r tag; do
+                    [[ -n "$tag" ]] || continue
 
-                local parsed
-                local tag_major
-                local tag_version
-                if ! parsed=$(_parse_ext_managed_tag "$tag"); then
-                    should_delete="false"
-                    keep_reason="contains unmanaged/unparseable tag: ${tag}"
-                    break
-                fi
+                    local parsed
+                    local tag_major
+                    local tag_version
+                    if ! parsed=$(_parse_ext_managed_tag "$tag"); then
+                        should_delete="false"
+                        keep_reason="contains unmanaged/unparseable tag: ${tag}"
+                        break
+                    fi
 
-                IFS='|' read -r tag_major tag_version <<< "$parsed"
-                if [[ "${window_known_by_major[$tag_major]:-false}" != "true" ]]; then
-                    should_delete="false"
-                    keep_reason="window unknown for pg${tag_major}: ${tag}"
-                    break
-                fi
+                    IFS='|' read -r tag_major tag_version <<< "$parsed"
+                    if [[ "${window_known_by_major[$tag_major]:-false}" != "true" ]]; then
+                        should_delete="false"
+                        keep_reason="window unknown for pg${tag_major}: ${tag}"
+                        break
+                    fi
 
-                if _version_in_window "$tag_version" "${window_by_major[$tag_major]}"; then
-                    should_delete="false"
-                    keep_reason="contains retained tag: ${tag}"
-                    break
-                fi
-            done < <(jq -r '.tags[]?' <<< "$record_json")
+                    if _version_in_window "$tag_version" "${window_by_major[$tag_major]}"; then
+                        should_delete="false"
+                        keep_reason="contains retained tag: ${tag}"
+                        break
+                    fi
+                done < "$tags_file"
+            fi
+            rm -f "$tags_file"
 
             if [[ "$should_delete" == "true" ]]; then
                 log_warning "    ✗ PRUNE version_id=${version_id} (tags: ${tags_csv}) — all managed tags outside window"
@@ -430,7 +488,8 @@ main() {
                 log_info "    ✓ KEEP  version_id=${version_id} (tags: ${tags_csv}) — ${keep_reason}"
                 kept_count=$((kept_count + 1))
             fi
-        done < <(jq -c '.[]' <<< "$version_records_json")
+        done < "$records_file"
+        rm -f "$records_file"
 
         log_info "    Summary: kept=${kept_count}, pruned=${pruned_count}, failed=${delete_failures}"
         total_kept=$((total_kept + kept_count))

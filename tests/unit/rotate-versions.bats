@@ -13,6 +13,7 @@ setup() {
     # Create helpers directory structure so rotate-versions.sh can source variant-utils.sh
     mkdir -p helpers scripts
     cp "$ORIG_DIR/helpers/variant-utils.sh" helpers/
+    cp "$ORIG_DIR/helpers/collect-lines.sh" helpers/
     cp "$ORIG_DIR/scripts/rotate-versions.sh" scripts/
     chmod +x scripts/rotate-versions.sh
 }
