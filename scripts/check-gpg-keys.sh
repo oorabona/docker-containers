@@ -683,10 +683,15 @@ main() {
 
     local containers=()
     if [[ "$target" == "__all__" ]]; then
-        if ! collect_lines containers -- discover_containers; then
+        local containers_file
+        containers_file=$(mktemp "${TMPDIR:-/tmp}/check-gpg-keys-containers.XXXXXX") || return 1
+        if ! collect_lines "$containers_file" -- discover_containers; then
+            rm -f "$containers_file"
             echo "check-gpg-keys: could not enumerate containers; key-check result is unknown" >&2
             return 1
         fi
+        mapfile -t containers < "$containers_file"
+        rm -f "$containers_file"
     else
         containers=("$target")
     fi

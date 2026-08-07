@@ -84,6 +84,7 @@ fi
 
 CANDIDATE_SOURCE_FILE="${CANDIDATE_SOURCE_FILE:-}"
 CANDIDATE_FILE=$(mktemp)
+CONTAINER_ALLOWLIST_FILE=$(mktemp)
 STATS_DATE_CEILING=""
 CONTAINER_ALLOWLIST=""
 
@@ -96,10 +97,11 @@ load_stats_validation_context() {
 
   # Mirrors helpers/logging.sh:list_containers exactly: top-level directories
   # containing Dockerfile or Dockerfile.* are the only valid stats containers.
-  if ! collect_lines container_allowlist -- discover_stats_containers; then
+  if ! collect_lines "$CONTAINER_ALLOWLIST_FILE" -- discover_stats_containers; then
     gha_error 'Could not enumerate Docker stats containers; refusing to persist an incomplete snapshot' >&2
     return 1
   fi
+  mapfile -t container_allowlist < "$CONTAINER_ALLOWLIST_FILE"
 
   if ((${#container_allowlist[@]} > 0)); then
     CONTAINER_ALLOWLIST=$(printf '%s\n' "${container_allowlist[@]}")
@@ -197,6 +199,7 @@ cleanup() {
     fi
   fi
   rm -f "$CANDIDATE_FILE"
+  rm -f "$CONTAINER_ALLOWLIST_FILE"
   return 0
 }
 trap cleanup EXIT

@@ -460,11 +460,15 @@ build_container() {
     # Prepare tags — versioned tag always included, plus rolling latest tags.
     # compute_cell_tags (helpers/variant-utils.sh) is the single source of truth;
     # see that function for the full rule-set.
-    local _cell_refs _ref
-    if ! collect_lines _cell_refs -- compute_cell_tags "$tag" "$flavor" "$is_default" "$dockerhub_image" "$ghcr_image"; then
+    local _cell_refs_file _cell_refs _ref
+    _cell_refs_file=$(mktemp "${TMPDIR:-/tmp}/build-container-cell-refs.XXXXXX") || return 1
+    if ! collect_lines "$_cell_refs_file" -- compute_cell_tags "$tag" "$flavor" "$is_default" "$dockerhub_image" "$ghcr_image"; then
+        rm -f "$_cell_refs_file"
         log_error "Could not enumerate image tags; refusing to invoke docker build without tags"
         return 1
     fi
+    mapfile -t _cell_refs < "$_cell_refs_file"
+    rm -f "$_cell_refs_file"
     local tag_args=""
     for _ref in "${_cell_refs[@]}"; do
         tag_args="$tag_args -t $_ref"

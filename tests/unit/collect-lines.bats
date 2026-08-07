@@ -2,11 +2,11 @@
 
 # Unit and structural guards for helpers/collect-lines.sh.
 #
-# Process-substitution guard bound: scripts/ and helpers/ only. The same raw
-# construct remains in github-runner/cleanup-offline-runners.sh and
-# test-all-containers.sh; those files are deliberately outside this guard.
-# helpers/collect-lines.sh is the sole allowed implementation site if one is
-# ever needed inside the guarded directories.
+# This guard covers array collection through mapfile/readarray from process
+# substitution in scripts/ and helpers/. It does not cover while-read
+# process-substitution consumers: 61 non-test sites remain and are tracked
+# separately in #1117. The existing bound excludes
+# github-runner/cleanup-offline-runners.sh and test-all-containers.sh.
 
 load "../test_helper"
 
@@ -31,61 +31,79 @@ emit_then_fail() {
     return 37
 }
 
-@test "collect_lines stores every line from a successful producer" {
-    local -a actual=()
+@test "collect_lines atomically replaces its output after a successful producer" {
+    local output_file
+    output_file=$(mktemp)
 
-    collect_lines actual -- emit_lines
+    collect_lines "$output_file" -- emit_lines
+    mapfile -t actual < "$output_file"
+    rm -f "$output_file"
 
     [ "${#actual[@]}" -eq 2 ]
     [ "${actual[0]}" = first ]
     [ "${actual[1]}" = second ]
 }
 
-@test "collect_lines preserves successful empty output as an empty array" {
-    local -a actual=(old)
+@test "collect_lines preserves successful empty output" {
+    local output_file
+    output_file=$(mktemp)
 
-    collect_lines actual -- emit_nothing
+    collect_lines "$output_file" -- emit_nothing
 
-    [ "${#actual[@]}" -eq 0 ]
+    [ ! -s "$output_file" ]
+    rm -f "$output_file"
 }
 
-@test "collect_lines preserves one blank output line as one empty element" {
-    local -a actual=()
+@test "collect_lines preserves one blank output line" {
+    local output_file
+    output_file=$(mktemp)
 
-    collect_lines actual -- emit_blank_line
+    collect_lines "$output_file" -- emit_blank_line
+    mapfile -t actual < "$output_file"
+    rm -f "$output_file"
 
     [ "${#actual[@]}" -eq 1 ]
     [ -z "${actual[0]}" ]
 }
 
-@test "collect_lines leaves its destination unchanged when a producer fails after output" {
-    local -a actual=(before one)
+@test "collect_lines leaves its output unchanged when a producer fails after output" {
+    local output_file
+    output_file=$(mktemp)
+    printf '%s\n' before one > "$output_file"
     local status
 
-    if collect_lines actual -- emit_then_fail; then
+    if collect_lines "$output_file" -- emit_then_fail; then
         false
     else
         status=$?
     fi
 
     [ "$status" -eq 37 ]
+    mapfile -t actual < "$output_file"
+    rm -f "$output_file"
     [ "${#actual[@]}" -eq 2 ]
     [ "${actual[0]}" = before ]
     [ "${actual[1]}" = one ]
 }
 
-@test "collect_lines rejects destination names that would collide with its nameref" {
-    local -a _collect_lines_destination=(before)
+@test "collect_lines rejects invalid output destinations" {
     local status
 
-    if collect_lines _collect_lines_destination -- emit_lines; then
+    if collect_lines "$BATS_TEST_TMPDIR/missing/output" -- emit_lines; then
         false
     else
         status=$?
     fi
 
     [ "$status" -eq 2 ]
-    [ "${_collect_lines_destination[0]}" = before ]
+
+    if collect_lines "$BATS_TEST_TMPDIR" -- emit_lines; then
+        false
+    else
+        status=$?
+    fi
+
+    [ "$status" -eq 2 ]
 }
 
 @test "real callers propagate collection failure from if, bang, and or contexts" {
@@ -93,9 +111,10 @@ emit_then_fail() {
         set -euo pipefail
         source "$1"
         producer() { printf "partial\\n"; return 37; }
-        from_if() { if collect_lines values -- producer; then :; else return "$?"; fi; }
-        from_bang() { if ! collect_lines values -- producer; then return 37; fi; }
-        from_or() { collect_lines values -- producer || return "$?"; }
+        output=$(mktemp)
+        from_if() { if collect_lines "$output" -- producer; then :; else return "$?"; fi; }
+        from_bang() { if ! collect_lines "$output" -- producer; then return 37; fi; }
+        from_or() { collect_lines "$output" -- producer || return "$?"; }
         for caller in from_if from_bang from_or; do
             if "$caller"; then
                 exit 1

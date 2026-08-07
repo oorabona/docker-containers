@@ -651,10 +651,15 @@ main() {
     # Determine containers to check
     local containers=()
     if [[ "$check_all" == "true" ]]; then
-        if ! collect_lines containers -- discover_containers; then
+        local containers_file
+        containers_file=$(mktemp "${TMPDIR:-/tmp}/check-dependency-versions-containers.XXXXXX") || exit 1
+        if ! collect_lines "$containers_file" -- discover_containers; then
+            rm -f "$containers_file"
             log_error "Could not enumerate containers; dependency check result is unknown"
             exit 1
         fi
+        mapfile -t containers < "$containers_file"
+        rm -f "$containers_file"
     elif [[ -n "$target" ]]; then
         containers=("$target")
     else

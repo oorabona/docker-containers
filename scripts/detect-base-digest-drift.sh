@@ -458,10 +458,14 @@ discover_lineage_files() {
     find "$1" -maxdepth 1 -name '*.json' -type f | sort
 }
 
-if ! collect_lines lineage_files -- discover_lineage_files "$LINEAGE_DIR"; then
+lineage_files_file=$(mktemp "${TMPDIR:-/tmp}/detect-base-digest-drift-lineage-files.XXXXXX") || exit 1
+if ! collect_lines "$lineage_files_file" -- discover_lineage_files "$LINEAGE_DIR"; then
+    rm -f "$lineage_files_file"
     gha_warning "Could not enumerate lineage files in '%s'; drift result is unknown" "$LINEAGE_DIR" >&2
     exit 1
 fi
+mapfile -t lineage_files < "$lineage_files_file"
+rm -f "$lineage_files_file"
 
 if [[ ${#lineage_files[@]} -eq 0 ]]; then
     gha_warning "Lineage cache empty — no .json files in '%s'; skipping drift check" "$LINEAGE_DIR" >&2
