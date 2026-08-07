@@ -195,5 +195,101 @@ get_mock_call_count() {
     fi
 }
 
+# Read one value out of a $GITHUB_OUTPUT file, decoding either form the
+# protocol defines: `NAME=value` on one line, or `NAME<<DELIM` followed by the
+# value's lines and a line holding DELIM alone. `helpers/gha.sh` always writes
+# the second form, even for a one-line value, so a reader that greps `^NAME=`
+# finds nothing at all once a script has been migrated onto it. The value a
+# runner decodes is the same either way; the raw file text is not, and that text
+# is what a grep-shaped reader was reading.
+#
+# Last assignment wins, because that is what the runner does: it reads the file
+# top to bottom and a later record overwrites an earlier one.
+#
+# One bound this cannot hold: callers use `$(get_output NAME)`, and command
+# substitution strips trailing newlines, so a value ending in one arrives one
+# short. Nothing the function does can prevent that — a caller needing such a
+# value must read it without a subshell.
+get_output() {
+    local key="$1"
+    local line record delimiter value result="" found=0 first terminated
+
+    # Every line is classified at the top level before anything is read as a
+    # record, and a block is consumed whole no matter whose it is. Matching
+    # `${key}=` anywhere in the file instead would read a line that is DATA
+    # inside another key's multiline value as a record of its own, so
+    # `OTHER<<D` / `TARGET=forged` / `D` would answer `forged` for TARGET.
+    #
+    # ANY line containing `<<` opens a block. An earlier version required the
+    # name to match a charset, which put every name outside that charset back
+    # inside the hole: `OTHER.INVALID<<D` failed the test, the header was
+    # skipped, and `TARGET=forged` was read as a record again. Guessing the
+    # runner's name grammar is the wrong shape — each guess leaves the names it
+    # did not think of. Recognising the marker instead cannot leave any.
+    #
+    # The cost is that `X=a<<b`, which might be a record whose value contains
+    # `<<`, is read as a block header for `X=a` and therefore answers absent for
+    # X. That is the direction to be wrong in: an ambiguous line yields no
+    # value, never a wrong one, and a test oracle that returns nothing fails
+    # loudly where one that returns a forged value passes.
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == *'<<'* ]]; then
+            record="${line%%<<*}"
+            delimiter="${line#*<<}"
+            value=""
+            # Count lines rather than test the accumulator for emptiness: a
+            # value whose first line is blank is legal, and testing `-n` would
+            # swallow its separator.
+            first=1
+            terminated=0
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                # An empty delimiter is malformed — the runner rejects it — and
+                # honouring it would let the first blank line close the block and
+                # hand the rest of the file back to record classification, which
+                # is the hole this whole branch exists to close. Consume to EOF
+                # instead, so a malformed header answers absent.
+                if [[ -n "$delimiter" && "$line" == "$delimiter" ]]; then
+                    terminated=1
+                    break
+                fi
+                if [[ "$first" -eq 0 ]]; then
+                    value+=$'\n'
+                fi
+                first=0
+                value+="$line"
+            done
+            if [[ "$record" == "$key" ]]; then
+                if [[ "$terminated" -eq 1 ]]; then
+                    # One trailing CR is the record's line terminator, not part
+                    # of the value. `gha_output` duplicates a CR the value
+                    # genuinely ends with precisely so this strip leaves it, so
+                    # removing exactly one inverts what the writer did — and it
+                    # is also right for a producer whose file simply uses CRLF.
+                    result="${value%$'\r'}"
+                    found=1
+                else
+                    # A block for our key that no delimiter closed: what we
+                    # would report is not what the writer meant to write, and a
+                    # later truncated record must not leave an earlier value
+                    # standing. Absent is the only honest answer.
+                    result=""
+                    found=0
+                fi
+            fi
+        elif [[ "$line" == *=* ]] && [[ "${line%%=*}" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+            if [[ "${line%%=*}" == "$key" ]]; then
+                result="${line#*=}"
+                # A CR here terminates the record on a Windows runner; it is not
+                # part of the value.
+                result="${result%$'\r'}"
+                found=1
+            fi
+        fi
+    done < "$GITHUB_OUTPUT"
+
+    [[ "$found" -eq 1 ]] || return 1
+    printf '%s\n' "$result"
+}
+
 # Export variables
 export PROJECT_ROOT SCRIPTS_DIR HELPERS_DIR TESTS_DIR FIXTURES_DIR

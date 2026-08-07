@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GHA_HELPER="${SCRIPT_DIR}/../helpers/gha.sh"
+if [[ ! -r "$GHA_HELPER" ]]; then
+  # Static text. This runs before the helper that escapes workflow commands is
+  # loaded, so an interpolated path — which a symlinked invocation takes from
+  # its own directory name — would be the one place in this script where a
+  # newline in that name could open a workflow command. The path is a constant
+  # relative to this file, so naming it literally loses no diagnosis.
+  printf '%s\n' 'scripts/commit-stats-snapshot.sh cannot run: required helper helpers/gha.sh is not readable' >&2
+  exit 2
+fi
+# shellcheck source=../helpers/gha.sh
+source "$GHA_HELPER"
+
 if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
-  echo "::error::scripts/commit-stats-snapshot.sh is CI-only; refusing to run outside GitHub Actions because it opens and auto-merges stats PRs" >&2
+  gha_error 'scripts/commit-stats-snapshot.sh is CI-only; refusing to run outside GitHub Actions because it opens and auto-merges stats PRs' >&2
   exit 2
 fi
 
@@ -87,7 +101,7 @@ load_stats_validation_context() {
   fi
 
   if ! STATS_DATE_CEILING=$(date -u -d '+1 day' +%Y-%m-%d); then
-    echo "::error::Could not compute Docker stats date validation ceiling" >&2
+    gha_error 'Could not compute Docker stats date validation ceiling' >&2
     return 1
   fi
 }
@@ -142,7 +156,14 @@ emit_persisted_output() {
   local persisted_value="$1"
 
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    echo "persisted=$persisted_value" >> "$GITHUB_OUTPUT"
+    if ! gha_output persisted "$persisted_value"; then
+      if [[ "$persisted_value" == "true" ]]; then
+        gha_warning 'Stats snapshot was persisted, but its workflow output could not be delivered'
+      else
+        gha_warning 'Stats snapshot was not persisted, and its workflow output could not be delivered'
+      fi
+      return 1
+    fi
   fi
 }
 
@@ -150,7 +171,14 @@ emit_still_missing_after_reconcile_output() {
   local still_missing_value="$1"
 
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    echo "still_missing_after_reconcile=$still_missing_value" >> "$GITHUB_OUTPUT"
+    if ! gha_output still_missing_after_reconcile "$still_missing_value"; then
+      if [[ "$still_missing_value" == "true" ]]; then
+        gha_warning 'Stats snapshot reconciliation completed with containers still missing, but its workflow output could not be delivered'
+      else
+        gha_warning 'Stats snapshot reconciliation completed with no containers missing, but its workflow output could not be delivered'
+      fi
+      return 1
+    fi
   fi
 }
 
@@ -158,7 +186,7 @@ emit_still_missing_after_reconcile_output() {
 cleanup() {
   if [[ "$origin_restore_needed" == "true" && -n "$safe_origin_url" ]]; then
     if ! git remote set-url origin "$safe_origin_url" >/dev/null 2>&1; then
-      echo "::warning::Could not restore unauthenticated origin remote after stats snapshot"
+      gha_warning 'Could not restore unauthenticated origin remote after stats snapshot'
     fi
   fi
   rm -f "$CANDIDATE_FILE"
@@ -173,7 +201,7 @@ fi
 
 if [[ -n "$CANDIDATE_SOURCE_FILE" ]]; then
   if [[ ! -f "$CANDIDATE_SOURCE_FILE" ]]; then
-    echo "::error::CANDIDATE_SOURCE_FILE is set but does not exist: $CANDIDATE_SOURCE_FILE"
+    gha_error 'CANDIDATE_SOURCE_FILE is set but does not exist: %s' "$CANDIDATE_SOURCE_FILE"
     emit_persisted_output false
     exit 1
   fi
@@ -198,25 +226,25 @@ merge_candidate_into_worktree() {
   # manual deletion/correction of a row racing a stale collect artifact with the
   # same (date, container) key. Tombstones or base-SHA deltas would be a larger
   # design for a narrow, non-security edge case in an append-only dashboard log.
-  local merged_tmp merge_stderr_tmp
+  local merged_tmp merge_stderr_tmp merge_diagnostic
 
   if ! mkdir -p "$(dirname "$STATS_FILE")"; then
-    echo "::warning::Could not prepare stats directory before stats candidate merge"
+    gha_warning 'Could not prepare stats directory before stats candidate merge'
     return 1
   fi
   if [[ ! -f "$STATS_FILE" ]]; then
     : > "$STATS_FILE" || {
-      echo "::warning::Could not create missing stats file before stats candidate merge"
+      gha_warning 'Could not create missing stats file before stats candidate merge'
       return 1
     }
   fi
 
   if ! merged_tmp=$(mktemp); then
-    echo "::warning::Could not create temporary file for stats candidate merge"
+    gha_warning 'Could not create temporary file for stats candidate merge'
     return 1
   fi
   if ! merge_stderr_tmp=$(mktemp); then
-    echo "::warning::Could not create temporary stderr file for stats candidate merge"
+    gha_warning 'Could not create temporary stderr file for stats candidate merge'
     rm -f "$merged_tmp"
     return 1
   fi
@@ -279,7 +307,7 @@ merge_candidate_into_worktree() {
               | if .candidate_raw_counts[$line] > (.stats_raw_counts[$line] // 0) then
                   . as $state
                   | (
-                      "::warning::Dropping nonconforming candidate-only stats line before signed PR"
+                      "Dropping nonconforming candidate-only stats line before signed PR"
                       | stderr
                     )
                   | $state
@@ -304,18 +332,20 @@ merge_candidate_into_worktree() {
       end
   ' "$STATS_FILE" "$CANDIDATE_FILE" > "$merged_tmp" 2> "$merge_stderr_tmp"; then
     if [[ -s "$merge_stderr_tmp" ]]; then
-      cat "$merge_stderr_tmp" >&2
+      while IFS= read -r merge_diagnostic || [[ -n "$merge_diagnostic" ]]; do
+        gha_warning '%s' "$merge_diagnostic" >&2
+      done < "$merge_stderr_tmp"
     fi
     if mv "$merged_tmp" "$STATS_FILE"; then
       rm -f "$merge_stderr_tmp"
       return 0
     fi
-    echo "::warning::Could not replace stats file after stats candidate merge"
+    gha_warning 'Could not replace stats file after stats candidate merge'
     rm -f "$merged_tmp" "$merge_stderr_tmp"
     return 1
   fi
 
-  echo "::warning::Could not merge collected stats candidate into the worktree"
+  gha_warning 'Could not merge collected stats candidate into the worktree'
   rm -f "$merged_tmp" "$merge_stderr_tmp"
   return 1
 }
@@ -343,12 +373,12 @@ validate_stats_file_jsonl() {
     | select(.invalid_line_number != null)
     | .invalid_line_number
   ' "$STATS_FILE"); then
-    echo "::warning::Could not validate stats snapshot JSONL before commit"
+    gha_warning 'Could not validate stats snapshot JSONL before commit'
     return 1
   fi
 
   if [[ -n "$invalid_line" ]]; then
-    echo "::warning::Refusing to commit stats snapshot because $STATS_FILE has invalid JSON at line $invalid_line"
+    gha_warning 'Refusing to commit stats snapshot because %s has invalid JSON at line %s' "$STATS_FILE" "$invalid_line"
     return 1
   fi
 
@@ -360,7 +390,7 @@ compute_still_missing_after_reconcile() {
   local still_missing
 
   if ! today_utc=$(date -u +%Y-%m-%d); then
-    echo "::warning::Could not compute Docker stats completion date" >&2
+    gha_warning 'Could not compute Docker stats completion date' >&2
     return 1
   fi
 
@@ -392,7 +422,7 @@ compute_still_missing_after_reconcile() {
     | ($container_allowlist | split("\n") | map(select(. != ""))) as $containers
     | ([$containers[] | select(($state.seen[.] // false) | not)] | length > 0)
   ' "$STATS_FILE"); then
-    echo "::warning::Could not reconcile stats snapshot completion state" >&2
+    gha_warning 'Could not reconcile stats snapshot completion state' >&2
     return 1
   fi
 
@@ -401,7 +431,7 @@ compute_still_missing_after_reconcile() {
       printf '%s\n' "$still_missing"
       ;;
     *)
-      echo "::warning::Unexpected stats snapshot completion state: $still_missing" >&2
+      gha_warning 'Unexpected stats snapshot completion state: %s' "$still_missing" >&2
       return 1
       ;;
   esac
@@ -415,7 +445,7 @@ delete_remote_pr_branch() {
   fi
 
   if ! git push origin --delete "$branch" >/dev/null 2>&1; then
-    echo "::warning::Could not delete stale stats snapshot branch $branch after failure"
+    gha_warning 'Could not delete stale stats snapshot branch %s after failure' "$branch"
     return 1
   fi
 
@@ -429,7 +459,7 @@ cleanup_failed_pr() {
 
   if [[ -n "$pr_number" ]]; then
     if ! gh pr close "$pr_number" --delete-branch 2>&1; then
-      echo "::warning::Could not close stale stats snapshot PR #$pr_number or delete branch $pr_branch after failure"
+      gha_warning 'Could not close stale stats snapshot PR #%s or delete branch %s after failure' "$pr_number" "$pr_branch"
       if [[ "$remote_branch_maybe_pushed" == "true" ]]; then
         delete_remote_pr_branch "$pr_branch" || true
       fi
@@ -458,7 +488,7 @@ parse_created_pr_number() {
     return 0
   fi
 
-  echo "::warning::Could not determine stats snapshot PR number after creation" >&2
+  gha_warning 'Could not determine stats snapshot PR number after creation' >&2
   return 1
 }
 
@@ -472,12 +502,12 @@ wait_for_pr_merge() {
 
   while true; do
     if ! now_epoch=$(date +%s); then
-      echo "::warning::Could not read wall-clock time while waiting for stats snapshot PR #$pr_number"
+      gha_warning 'Could not read wall-clock time while waiting for stats snapshot PR #%s' "$pr_number"
       return 1
     fi
     remaining_seconds=$((deadline_epoch - now_epoch))
     if ((remaining_seconds <= 0)); then
-      echo "::warning::Timed out waiting for stats snapshot PR #$pr_number to merge"
+      gha_warning 'Timed out waiting for stats snapshot PR #%s to merge' "$pr_number"
       return 1
     fi
 
@@ -485,32 +515,32 @@ wait_for_pr_merge() {
       consecutive_query_failures=$((consecutive_query_failures + 1))
       printf '%s\n' "$pr_view" >&2
       if ((consecutive_query_failures >= max_query_failures)); then
-        echo "::warning::Could not inspect stats snapshot PR #$pr_number merge state after $consecutive_query_failures consecutive attempt(s)"
+        gha_warning 'Could not inspect stats snapshot PR #%s merge state after %s consecutive attempt(s)' "$pr_number" "$consecutive_query_failures"
         return 1
       fi
-      echo "::warning::Could not inspect stats snapshot PR #$pr_number merge state (attempt $consecutive_query_failures/$max_query_failures); continuing within the remaining wait budget"
+      gha_warning 'Could not inspect stats snapshot PR #%s merge state (attempt %s/%s); continuing within the remaining wait budget' "$pr_number" "$consecutive_query_failures" "$max_query_failures"
     else
       consecutive_query_failures=0
 
       IFS=$'\t' read -r state merged_at <<< "$pr_view"
       if [[ "$state" == "MERGED" || -n "${merged_at:-}" ]]; then
-        echo "::notice::Stats snapshot PR #$pr_number merged"
+        gha_notice 'Stats snapshot PR #%s merged' "$pr_number"
         return 0
       fi
 
       if [[ "$state" == "CLOSED" ]]; then
-        echo "::warning::Stats snapshot PR #$pr_number closed without merging"
+        gha_warning 'Stats snapshot PR #%s closed without merging' "$pr_number"
         return 1
       fi
     fi
 
     if ! now_epoch=$(date +%s); then
-      echo "::warning::Could not read wall-clock time while waiting for stats snapshot PR #$pr_number"
+      gha_warning 'Could not read wall-clock time while waiting for stats snapshot PR #%s' "$pr_number"
       return 1
     fi
     remaining_seconds=$((deadline_epoch - now_epoch))
     if ((remaining_seconds <= 0)); then
-      echo "::warning::Timed out waiting for stats snapshot PR #$pr_number to merge"
+      gha_warning 'Timed out waiting for stats snapshot PR #%s to merge' "$pr_number"
       return 1
     fi
 
@@ -519,7 +549,7 @@ wait_for_pr_merge() {
       sleep_seconds="$remaining_seconds"
     fi
     if ! sleep "$sleep_seconds"; then
-      echo "::warning::Stats snapshot PR merge polling sleep failed"
+      gha_warning 'Stats snapshot PR merge polling sleep failed'
       return 1
     fi
   done
@@ -537,7 +567,7 @@ validate_pr_budget_config() {
       ! [[ "$max_query_failures" =~ ^[0-9]+$ ]] ||
       [[ "$poll_seconds" -eq 0 ]] ||
       [[ "$max_query_failures" -eq 0 ]]; then
-    echo "::warning::Invalid stats PR merge polling configuration"
+    gha_warning 'Invalid stats PR merge polling configuration'
     return 1
   fi
 }
@@ -547,7 +577,7 @@ remaining_pr_budget_seconds() {
   local now_epoch
 
   if ! now_epoch=$(date +%s); then
-    echo "::warning::Could not read wall-clock time for stats snapshot PR budget" >&2
+    gha_warning 'Could not read wall-clock time for stats snapshot PR budget' >&2
     printf '0\n'
     return 1
   fi
@@ -578,7 +608,7 @@ sleep_before_retry() {
     fi
 
     if ! sleep "$sleep_seconds"; then
-      echo "::warning::Stats snapshot retry sleep failed after attempt $attempt"
+      gha_warning 'Stats snapshot retry sleep failed after attempt %s' "$attempt"
     fi
   fi
 }
@@ -587,12 +617,12 @@ reset_worktree_to_fresh_master() {
   local attempt="$1"
 
   if ! git fetch --force origin refs/heads/master:refs/remotes/origin/master; then
-    echo "::warning::Could not fetch origin/master before stats snapshot attempt $attempt"
+    gha_warning 'Could not fetch origin/master before stats snapshot attempt %s' "$attempt"
     return 1
   fi
 
   if ! git reset --hard origin/master; then
-    echo "::warning::Could not reset stats snapshot worktree before attempt $attempt"
+    gha_warning 'Could not reset stats snapshot worktree before attempt %s' "$attempt"
     return 1
   fi
 }
@@ -608,9 +638,9 @@ ensure_stats_snapshot_pr() {
       --title "chore(stats): daily Docker Hub pull-count snapshot" \
       --body "Automated Docker Hub pull-count snapshot for this workflow run." 2>&1); then
     printf '%s\n' "$pr_create_output" >&2
-    echo "::warning::Could not create stats snapshot PR from $pr_branch" >&2
+    gha_warning 'Could not create stats snapshot PR from %s' "$pr_branch" >&2
     if pr_number=$(parse_created_pr_number "$pr_branch" "$pr_create_output"); then
-      echo "::notice::Using existing stats snapshot PR #$pr_number for $pr_branch" >&2
+      gha_notice 'Using existing stats snapshot PR #%s for %s' "$pr_number" "$pr_branch" >&2
       printf '%s\n' "$pr_number"
       return 0
     fi
@@ -638,7 +668,7 @@ persist_stats_snapshot_via_pr() {
   local attempts_remaining attempt_wait_epoch now_epoch_for_attempt_cap
 
   if [[ -z "$stats_pr_branch" ]]; then
-    echo "::warning::GITHUB_RUN_ID or STATS_PR_BRANCH is required to name the stats snapshot PR branch"
+    gha_warning 'GITHUB_RUN_ID or STATS_PR_BRANCH is required to name the stats snapshot PR branch'
     return 1
   fi
 
@@ -647,7 +677,7 @@ persist_stats_snapshot_via_pr() {
   fi
 
   if ! start_epoch=$(date +%s); then
-    echo "::warning::Could not read wall-clock time before stats snapshot PR attempts"
+    gha_warning 'Could not read wall-clock time before stats snapshot PR attempts'
     return 1
   fi
   deadline_epoch=$((start_epoch + total_budget_seconds))
@@ -657,7 +687,7 @@ persist_stats_snapshot_via_pr() {
       remaining_seconds=0
     fi
     if ((remaining_seconds < min_wait_seconds)); then
-      echo "::warning::Not enough stats PR budget remains before attempt $attempt (${remaining_seconds}s left, need at least ${min_wait_seconds}s)"
+      gha_warning 'Not enough stats PR budget remains before attempt %s (%ss left, need at least %ss)' "$attempt" "$remaining_seconds" "$min_wait_seconds"
       return 1
     fi
 
@@ -680,7 +710,7 @@ persist_stats_snapshot_via_pr() {
     else
       diff_status=$?
       if [[ "$diff_status" -gt 1 ]]; then
-        echo "::warning::Could not inspect stats snapshot diff on attempt $attempt"
+        gha_warning 'Could not inspect stats snapshot diff on attempt %s' "$attempt"
         sleep_before_retry "$attempt" "$deadline_epoch"
         continue
       fi
@@ -692,31 +722,31 @@ persist_stats_snapshot_via_pr() {
     fi
 
     if ! git checkout -B "$attempt_pr_branch"; then
-      echo "::warning::Could not create or reset stats snapshot branch $attempt_pr_branch on attempt $attempt"
+      gha_warning 'Could not create or reset stats snapshot branch %s on attempt %s' "$attempt_pr_branch" "$attempt"
       sleep_before_retry "$attempt" "$deadline_epoch"
       continue
     fi
 
     if ! git add "$STATS_FILE"; then
-      echo "::warning::Could not stage stats snapshot on attempt $attempt"
+      gha_warning 'Could not stage stats snapshot on attempt %s' "$attempt"
       sleep_before_retry "$attempt" "$deadline_epoch"
       continue
     fi
 
     if ! git commit -m "chore(stats): daily Docker Hub pull-count snapshot" -- "$STATS_FILE"; then
-      echo "::warning::Could not commit stats snapshot on attempt $attempt"
+      gha_warning 'Could not commit stats snapshot on attempt %s' "$attempt"
       sleep_before_retry "$attempt" "$deadline_epoch"
       continue
     fi
 
     if ! head_commit=$(git rev-parse HEAD); then
-      echo "::warning::Could not resolve stats snapshot head commit on attempt $attempt"
+      gha_warning 'Could not resolve stats snapshot head commit on attempt %s' "$attempt"
       sleep_before_retry "$attempt" "$deadline_epoch"
       continue
     fi
 
     if ! git push --force origin "HEAD:${attempt_pr_branch}"; then
-      echo "::warning::Could not push stats snapshot branch $attempt_pr_branch on attempt $attempt"
+      gha_warning 'Could not push stats snapshot branch %s on attempt %s' "$attempt_pr_branch" "$attempt"
       cleanup_failed_pr "" "$attempt_pr_branch" true
       sleep_before_retry "$attempt" "$deadline_epoch"
       continue
@@ -730,15 +760,15 @@ persist_stats_snapshot_via_pr() {
     fi
 
     if ! sleep 2; then
-      echo "::warning::Stats snapshot PR label delay failed on attempt $attempt"
+      gha_warning 'Stats snapshot PR label delay failed on attempt %s' "$attempt"
     elif ! gh pr edit "$attempt_pr_number" --add-label "automation" 2>&1; then
-      echo "::warning::Failed to apply automation label to stats snapshot PR #${attempt_pr_number}; PR created successfully — continuing"
+      gha_warning 'Failed to apply automation label to stats snapshot PR #%s; PR created successfully — continuing' "$attempt_pr_number"
     fi
 
     if gh pr merge "$attempt_pr_number" --squash --auto --delete-branch --match-head-commit "$head_commit" 2>&1; then
-      echo "::notice::Auto-merge enabled for stats snapshot PR #$attempt_pr_number"
+      gha_notice 'Auto-merge enabled for stats snapshot PR #%s' "$attempt_pr_number"
     else
-      echo "::warning::Failed to enable auto-merge for stats snapshot PR #$attempt_pr_number on attempt $attempt"
+      gha_warning 'Failed to enable auto-merge for stats snapshot PR #%s on attempt %s' "$attempt_pr_number" "$attempt"
       cleanup_failed_pr "$attempt_pr_number" "$attempt_pr_branch" "$attempt_remote_branch_maybe_pushed"
       sleep_before_retry "$attempt" "$deadline_epoch"
       continue
@@ -785,10 +815,10 @@ if [[ -n "$push_token" && -n "$github_repository" ]]; then
   export GH_TOKEN="$push_token"
   origin_restore_needed=true
   if ! git remote set-url origin "https://x-access-token:${push_token}@github.com/${github_repository}.git"; then
-    echo "::warning::Could not configure authenticated origin remote for stats snapshot"
+    gha_warning 'Could not configure authenticated origin remote for stats snapshot'
   fi
 else
-  echo "::warning::Missing push token or repository; stats snapshot push may not be authenticated"
+  gha_warning 'Missing push token or repository; stats snapshot push may not be authenticated'
 fi
 
 persisted=false
@@ -807,7 +837,7 @@ fi
 emit_still_missing_after_reconcile_output "$still_missing_after_reconcile"
 
 if [[ "$persisted" != "true" ]]; then
-  echo "::error::Could not persist stats snapshot this run — another same-day trigger may still cover it"
+  gha_error 'Could not persist stats snapshot this run — another same-day trigger may still cover it'
   exit 1
 fi
 

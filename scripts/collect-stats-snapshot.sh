@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GHA_HELPER="${SCRIPT_DIR}/../helpers/gha.sh"
+if [[ ! -r "$GHA_HELPER" ]]; then
+  # Static text. This runs before the helper that escapes workflow commands is
+  # loaded, so an interpolated path — which a symlinked invocation takes from
+  # its own directory name — would be the one place in this script where a
+  # newline in that name could open a workflow command. The path is a constant
+  # relative to this file, so naming it literally loses no diagnosis.
+  printf '%s\n' 'scripts/collect-stats-snapshot.sh cannot run: required helper helpers/gha.sh is not readable' >&2
+  exit 2
+fi
+# shellcheck source=../helpers/gha.sh
+source "$GHA_HELPER"
+
 if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
-  echo "::error::scripts/collect-stats-snapshot.sh is CI-only" >&2
+  gha_error 'scripts/collect-stats-snapshot.sh is CI-only' >&2
   exit 2
 fi
 
@@ -26,20 +40,23 @@ for attempt in 1 2 3; do
     still_missing=false
     break
   fi
-  echo "::warning::Stats snapshot collection failed on attempt $attempt; some containers failed, but valid rows from successful containers are still kept"
+  gha_warning 'Stats snapshot collection failed on attempt %s; some containers failed, but valid rows from successful containers are still kept' "$attempt"
   if [[ "$attempt" -lt 3 ]]; then
     if ! sleep $((attempt * 5)); then
-      echo "::warning::Stats snapshot collection retry sleep failed after attempt $attempt"
+      gha_warning 'Stats snapshot collection retry sleep failed after attempt %s' "$attempt"
     fi
   fi
 done
 
 if [[ "$still_missing" == "true" ]]; then
-  echo "::warning::Stats snapshot collection ended with some containers still missing after 3 attempts"
+  gha_warning 'Stats snapshot collection ended with some containers still missing after 3 attempts'
 fi
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-  echo "still_missing=$still_missing" >> "$GITHUB_OUTPUT"
+  if ! gha_output still_missing "$still_missing"; then
+    gha_warning 'Stats snapshot artifact was collected, but its workflow output could not be delivered'
+    exit 1
+  fi
 fi
 
 exit 0

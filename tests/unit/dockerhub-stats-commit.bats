@@ -6,12 +6,13 @@ setup() {
     setup_temp_dir
     TEST_REPO="$TEST_TEMP_DIR/repo"
     FAKE_GIT_STATE="$TEST_TEMP_DIR/git-state"
-    mkdir -p "$TEST_REPO/scripts" "$TEST_REPO/stats" "$TEST_REPO/bin" "$FAKE_GIT_STATE"
+    mkdir -p "$TEST_REPO/scripts" "$TEST_REPO/stats" "$TEST_REPO/bin" "$TEST_REPO/helpers" "$FAKE_GIT_STATE"
     mkdir -p "$TEST_REPO/alpha" "$TEST_REPO/gamma"
     printf 'FROM scratch\n' > "$TEST_REPO/alpha/Dockerfile"
     printf 'FROM scratch\n' > "$TEST_REPO/gamma/Dockerfile"
 
     ln -s "$SCRIPTS_DIR/commit-stats-snapshot.sh" "$TEST_REPO/scripts/commit-stats-snapshot.sh"
+    cp "${SCRIPTS_DIR}/../helpers/gha.sh" "$TEST_REPO/helpers/"
     # Simulates what the (separate, already-run) collect step left behind.
     printf '{"ts":"2026-07-12T07:00:00Z","date":"2026-07-12","container":"alpha","pull_count":42,"star_count":1,"source":"dockerhub"}\n' \
         > "$TEST_REPO/stats/dockerhub-pull-history.jsonl"
@@ -515,18 +516,25 @@ teardown() {
     teardown_temp_dir
 }
 
-get_output() {
-    local key="$1"
-    grep "^${key}=" "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-
-}
-
 @test "commit-stats-snapshot refuses to run outside GitHub Actions before touching git state" {
     unset GITHUB_ACTIONS
 
     run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 2 ]
     [[ "$output" == *"::error::scripts/commit-stats-snapshot.sh is CI-only"* ]]
 
+    [ ! -e "$FAKE_GIT_STATE/git.log" ]
+}
+
+@test "commit-stats-snapshot reports an unreadable helper before its CI-only guard" {
+    rm -f "$TEST_REPO/helpers/gha.sh"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"scripts/commit-stats-snapshot.sh cannot run: required helper helpers/gha.sh is not readable"* ]]
+    # The message carries no interpolation, so a hostile directory name cannot
+    # reach the log through it.
+    [[ "$output" != *"$TEST_REPO"* ]]
     [ ! -e "$FAKE_GIT_STATE/git.log" ]
 }
 

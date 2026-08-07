@@ -6,7 +6,11 @@ setup() {
     setup_temp_dir
     TEST_REPO="$TEST_TEMP_DIR/repo"
     FAKE_STATE="$TEST_TEMP_DIR/state"
-    mkdir -p "$TEST_REPO/scripts" "$TEST_REPO/stats" "$TEST_REPO/bin" "$FAKE_STATE"
+    mkdir -p "$TEST_REPO/scripts" "$TEST_REPO/stats" "$TEST_REPO/bin" "$TEST_REPO/helpers" "$FAKE_STATE"
+    # The script is mounted below by symlink, and Bash does not resolve a
+    # symlink in BASH_SOURCE — so the helper it sources resolves inside this
+    # fixture, not in the repository it came from.
+    cp "${SCRIPTS_DIR}/../helpers/gha.sh" "$TEST_REPO/helpers/"
 
     ln -s "$SCRIPTS_DIR/collect-stats-snapshot.sh" "$TEST_REPO/scripts/collect-stats-snapshot.sh"
 
@@ -28,17 +32,23 @@ teardown() {
     teardown_temp_dir
 }
 
-get_output() {
-    local key="$1"
-    grep "^${key}=" "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-
-}
-
 @test "collect-stats-snapshot refuses to run outside GitHub Actions" {
     unset GITHUB_ACTIONS
 
     run bash -c 'cd "$1" && ./scripts/collect-stats-snapshot.sh' _ "$TEST_REPO"
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 2 ]
     [[ "$output" == *"::error::scripts/collect-stats-snapshot.sh is CI-only"* ]]
+}
+
+@test "collect-stats-snapshot reports an unreadable helper before its CI-only guard" {
+    rm -f "$TEST_REPO/helpers/gha.sh"
+
+    run bash -c 'cd "$1" && ./scripts/collect-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"scripts/collect-stats-snapshot.sh cannot run: required helper helpers/gha.sh is not readable"* ]]
+    # The message carries no interpolation, so a hostile directory name cannot
+    # reach the log through it.
+    [[ "$output" != *"$TEST_REPO"* ]]
 }
 
 @test "collect-stats-snapshot stops early on a fully successful first attempt" {
