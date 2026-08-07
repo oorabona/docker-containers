@@ -92,7 +92,7 @@ extensions:
     # EXPERIMENTAL: Alpine/musl build with RUSTFLAGS="-C target-feature=-crt-static"
     # If build fails, re-add disabled: true and fall back to Debian-based build
   citus:
-    version: "14.1.0"
+    version: "14.2.0"
     description: "Distributed PostgreSQL for horizontal scaling"
     repo: "citusdata/citus"
     license: "AGPL-3.0"
