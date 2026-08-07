@@ -36,8 +36,16 @@ teardown() {
     unset GITHUB_ACTIONS
 
     run bash -c 'cd "$1" && ./scripts/collect-stats-snapshot.sh' _ "$TEST_REPO"
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 2 ]
     [[ "$output" == *"::error::scripts/collect-stats-snapshot.sh is CI-only"* ]]
+}
+
+@test "collect-stats-snapshot reports an unreadable helper before its CI-only guard" {
+    rm -f "$TEST_REPO/helpers/gha.sh"
+
+    run bash -c 'cd "$1" && ./scripts/collect-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"scripts/collect-stats-snapshot.sh cannot run: required helper is not readable: $TEST_REPO/scripts/../helpers/gha.sh"* ]]
 }
 
 @test "collect-stats-snapshot stops early on a fully successful first attempt" {

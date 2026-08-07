@@ -198,45 +198,70 @@ get_mock_call_count() {
 # Read one value out of a $GITHUB_OUTPUT file, decoding either form the
 # protocol defines: `NAME=value` on one line, or `NAME<<DELIM` followed by the
 # value's lines and a line holding DELIM alone. `helpers/gha.sh` always writes
-# the second form, so a reader that greps `^NAME=` finds nothing at all once a
-# script has been migrated onto it — which is how three tests went red without
-# their subject changing behaviour.
+# the second form, even for a one-line value, so a reader that greps `^NAME=`
+# finds nothing at all once a script has been migrated onto it. The value a
+# runner decodes is the same either way; the raw file text is not, and that text
+# is what a grep-shaped reader was reading.
 #
 # Last assignment wins, because that is what the runner does: it reads the file
 # top to bottom and a later record overwrites an earlier one.
 get_output() {
     local key="$1"
-    local line delimiter value result="" found=0 first
+    local line record delimiter value result="" found=0 first terminated
 
-    while IFS= read -r line; do
-        case "$line" in
-            "${key}="*)
+    # Every line is classified at the top level before anything is read as a
+    # record, and a block is consumed whole no matter whose it is. Matching
+    # `${key}=` anywhere in the file instead would read a line that is DATA
+    # inside another key's multiline value as a record of its own, so
+    # `OTHER<<D` / `TARGET=forged` / `D` would answer `forged` for TARGET.
+    #
+    # Which of the two forms a line is, is decidable: it is a block header when
+    # the text before the first `<<` is a legal output name, and a record when
+    # the text before the first `=` is. That ordering keeps `X=a<<b` a record of
+    # X, because `X=a` is not a legal name.
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == *'<<'* ]] && [[ "${line%%<<*}" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+            record="${line%%<<*}"
+            delimiter="${line#*<<}"
+            value=""
+            # Count lines rather than test the accumulator for emptiness: a
+            # value whose first line is blank is legal, and testing `-n` would
+            # swallow its separator.
+            first=1
+            terminated=0
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                if [[ "$line" == "$delimiter" ]]; then
+                    terminated=1
+                    break
+                fi
+                if [[ "$first" -eq 0 ]]; then
+                    value+=$'\n'
+                fi
+                first=0
+                value+="$line"
+            done
+            if [[ "$record" == "$key" ]]; then
+                if [[ "$terminated" -eq 1 ]]; then
+                    result="$value"
+                    found=1
+                else
+                    # A block for our key that no delimiter closed: what we
+                    # would report is not what the writer meant to write, and a
+                    # later truncated record must not leave an earlier value
+                    # standing. Absent is the only honest answer.
+                    result=""
+                    found=0
+                fi
+            fi
+        elif [[ "$line" == *=* ]] && [[ "${line%%=*}" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+            if [[ "${line%%=*}" == "$key" ]]; then
                 result="${line#*=}"
+                # A CR here terminates the record on a Windows runner; it is not
+                # part of the value.
+                result="${result%$'\r'}"
                 found=1
-                ;;
-            "${key}"'<<'*)
-                delimiter="${line#*<<}"
-                value=""
-                # Count lines rather than test the accumulator for emptiness: a
-                # value whose first line is blank is legal, and testing `-n`
-                # would swallow its separator.
-                first=1
-                while IFS= read -r line; do
-                    if [[ "$line" == "$delimiter" ]]; then
-                        result="$value"
-                        found=1
-                        break
-                    fi
-                    if [[ "$first" -eq 0 ]]; then
-                        value+=$'\n'
-                    fi
-                    first=0
-                    value+="$line"
-                done
-                # An unterminated block leaves `found` as it was, so a truncated
-                # file reads as absent rather than as a silently short value.
-                ;;
-        esac
+            fi
+        fi
     done < "$GITHUB_OUTPUT"
 
     [[ "$found" -eq 1 ]] || return 1
