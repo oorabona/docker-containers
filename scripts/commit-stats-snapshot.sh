@@ -4,7 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GHA_HELPER="${SCRIPT_DIR}/../helpers/gha.sh"
 if [[ ! -r "$GHA_HELPER" ]]; then
-  printf '%s\n' "scripts/commit-stats-snapshot.sh cannot run: required helper is not readable: $GHA_HELPER" >&2
+  # Static text. This runs before the helper that escapes workflow commands is
+  # loaded, so an interpolated path — which a symlinked invocation takes from
+  # its own directory name — would be the one place in this script where a
+  # newline in that name could open a workflow command. The path is a constant
+  # relative to this file, so naming it literally loses no diagnosis.
+  printf '%s\n' 'scripts/commit-stats-snapshot.sh cannot run: required helper helpers/gha.sh is not readable' >&2
   exit 2
 fi
 # shellcheck source=../helpers/gha.sh

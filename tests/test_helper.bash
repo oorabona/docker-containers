@@ -205,6 +205,11 @@ get_mock_call_count() {
 #
 # Last assignment wins, because that is what the runner does: it reads the file
 # top to bottom and a later record overwrites an earlier one.
+#
+# One bound this cannot hold: callers use `$(get_output NAME)`, and command
+# substitution strips trailing newlines, so a value ending in one arrives one
+# short. Nothing the function does can prevent that — a caller needing such a
+# value must read it without a subshell.
 get_output() {
     local key="$1"
     local line record delimiter value result="" found=0 first terminated
@@ -242,7 +247,12 @@ get_output() {
             done
             if [[ "$record" == "$key" ]]; then
                 if [[ "$terminated" -eq 1 ]]; then
-                    result="$value"
+                    # One trailing CR is the record's line terminator, not part
+                    # of the value. `gha_output` duplicates a CR the value
+                    # genuinely ends with precisely so this strip leaves it, so
+                    # removing exactly one inverts what the writer did — and it
+                    # is also right for a producer whose file simply uses CRLF.
+                    result="${value%$'\r'}"
                     found=1
                 else
                     # A block for our key that no delimiter closed: what we
