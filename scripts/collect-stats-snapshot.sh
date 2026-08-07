@@ -2,8 +2,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GHA_HELPER="${SCRIPT_DIR}/../helpers/gha.sh"
+if [[ ! -r "$GHA_HELPER" ]]; then
+  printf '%s\n' "scripts/collect-stats-snapshot.sh cannot run: required helper is not readable: $GHA_HELPER" >&2
+  exit 2
+fi
 # shellcheck source=../helpers/gha.sh
-source "${SCRIPT_DIR}/../helpers/gha.sh"
+source "$GHA_HELPER"
 
 if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
   gha_error 'scripts/collect-stats-snapshot.sh is CI-only' >&2
@@ -43,7 +48,10 @@ if [[ "$still_missing" == "true" ]]; then
 fi
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-  gha_output still_missing "$still_missing"
+  if ! gha_output still_missing "$still_missing"; then
+    gha_warning 'Stats snapshot artifact was collected, but its workflow output could not be delivered'
+    exit 1
+  fi
 fi
 
 exit 0

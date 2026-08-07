@@ -34,6 +34,7 @@ on:
       - "scripts/snapshot-stats.sh"
       - "scripts/collect-stats-snapshot.sh"
       - "scripts/commit-stats-snapshot.sh"
+      - "helpers/gha.sh"
       # Bot stats commits are authenticated with a GitHub App token (needed
       # to satisfy master's branch protection), which — unlike GITHUB_TOKEN —
       # DOES retrigger workflow push events, so this path naturally covers

@@ -2,8 +2,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GHA_HELPER="${SCRIPT_DIR}/../helpers/gha.sh"
+if [[ ! -r "$GHA_HELPER" ]]; then
+  printf '%s\n' "scripts/commit-stats-snapshot.sh cannot run: required helper is not readable: $GHA_HELPER" >&2
+  exit 2
+fi
 # shellcheck source=../helpers/gha.sh
-source "${SCRIPT_DIR}/../helpers/gha.sh"
+source "$GHA_HELPER"
 
 if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
   gha_error 'scripts/commit-stats-snapshot.sh is CI-only; refusing to run outside GitHub Actions because it opens and auto-merges stats PRs' >&2
@@ -146,7 +151,14 @@ emit_persisted_output() {
   local persisted_value="$1"
 
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    gha_output persisted "$persisted_value"
+    if ! gha_output persisted "$persisted_value"; then
+      if [[ "$persisted_value" == "true" ]]; then
+        gha_warning 'Stats snapshot was persisted, but its workflow output could not be delivered'
+      else
+        gha_warning 'Stats snapshot was not persisted, and its workflow output could not be delivered'
+      fi
+      return 1
+    fi
   fi
 }
 
@@ -154,7 +166,14 @@ emit_still_missing_after_reconcile_output() {
   local still_missing_value="$1"
 
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    gha_output still_missing_after_reconcile "$still_missing_value"
+    if ! gha_output still_missing_after_reconcile "$still_missing_value"; then
+      if [[ "$still_missing_value" == "true" ]]; then
+        gha_warning 'Stats snapshot reconciliation completed with containers still missing, but its workflow output could not be delivered'
+      else
+        gha_warning 'Stats snapshot reconciliation completed with no containers missing, but its workflow output could not be delivered'
+      fi
+      return 1
+    fi
   fi
 }
 
