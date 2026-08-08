@@ -605,6 +605,103 @@ get_flavor_extensions() {
     ' "$config_file"
 }
 
+# _generate_builtin_initdb_block <config_file>
+#
+# Render built-in CREATE EXTENSION statements from builtin_extensions.  The
+# generated Dockerfile is shared by all supported PostgreSQL majors, so a
+# max_major declaration deliberately remains a test of MAJOR_VERSION in the
+# emitted RUN block instead of being resolved while this file is generated.
+#
+# A built-in may be a scalar name or a mapping with name and optional
+# max_major.  Keep validation here: this is the only reader allowed to turn
+# those declarations into executable Dockerfile content, and unknown mapping
+# keys must fail closed rather than silently changing the resulting image.
+_generate_builtin_initdb_block() {
+    local config_file="$1"
+    local builtin_entries
+
+    if ! builtin_entries=$(yq eval -o=json '.builtin_extensions // []' "$config_file" | jq -r '
+        def entry_error($index; $message):
+          error("builtin_extensions entry " + ($index | tostring) + " " + $message);
+        if type != "array" then
+          error("builtin_extensions must be a list")
+        else . end
+        | . as $declared
+        | [ to_entries[]
+            | .key as $index
+            | .value as $entry
+            | if ($entry | type) == "string" then
+                {name: $entry, max_major: null}
+              elif ($entry | type) == "object" then
+                ([$entry | keys[] | select(. != "name" and . != "max_major")]) as $unknown_keys
+                | if ($unknown_keys | length) != 0 then
+                    entry_error($index; "contains unrecognised key(s): " + ($unknown_keys | join(", ")))
+                  elif ($entry | has("name") | not) then
+                    entry_error($index; "must declare name")
+                  elif ($entry.name | type) != "string" then
+                    entry_error($index; "name must be a string")
+                  elif ($entry | has("max_major"))
+                       and ((($entry.max_major | type) != "number")
+                            or ($entry.max_major != ($entry.max_major | floor))
+                            or ($entry.max_major < 1)) then
+                    entry_error($index; "max_major must be a positive integer")
+                  else
+                    {name: $entry.name, max_major: ($entry.max_major // null)}
+                  end
+              else
+                entry_error($index; "must be a name string or mapping")
+              end
+            | if (.name | test("\\A[A-Za-z0-9_-]+\\z")) then .
+              else entry_error($index; "name must be name-shaped")
+              end ] as $normalized
+        | ($declared | '"$(builtin_extension_names_jq)"') as $names
+        | $normalized | to_entries[]
+        | [$names[.key], (.value.max_major // "")] | @tsv
+    ' 2>&1); then
+        log_error "_generate_builtin_initdb_block: invalid builtin_extensions in ${config_file}: $(_sanitize_for_log "$builtin_entries")"
+        return 1
+    fi
+
+    local builtin_name
+    local max_major
+    local sql_identifier
+    local create_line
+    local initdb_block="RUN set -eux; \\"$'\n'
+
+    initdb_block+="    { \\"$'\n'
+    # Terminated, not continued: every entry below emits its own complete
+    # `printf`, so a trailing backslash here would make the header swallow the
+    # next one — `printf` and `%s\n` reach the SQL file as bare lines and
+    # PostgreSQL rejects the script at first start. It also means an empty list,
+    # or a bounded entry first, still produces a valid command.
+    initdb_block+="    printf '%s\\n' '-- Built-in PostgreSQL extensions (available in all flavors)'; \\"$'\n'
+
+    while IFS=$'\t' read -r builtin_name max_major; do
+        [[ -z "$builtin_name" ]] && continue
+
+        # PostgreSQL accepts this identifier shape without quotes.  Quote every
+        # other declared name rather than carrying a list of exceptions, so the
+        # next hyphenated built-in cannot become invalid SQL by omission.
+        if [[ "$builtin_name" =~ ^[a-z_][a-z0-9_]*$ ]]; then
+            sql_identifier="$builtin_name"
+        else
+            sql_identifier="\"${builtin_name}\""
+        fi
+        create_line="CREATE EXTENSION IF NOT EXISTS ${sql_identifier};"
+
+        if [[ -n "$max_major" ]]; then
+            initdb_block+="    if [ \"\${MAJOR_VERSION}\" -le ${max_major} ] 2>/dev/null; then \\"$'\n'
+            initdb_block+="        printf '%s\\n' '${create_line}'; \\"$'\n'
+            initdb_block+="    fi; \\"$'\n'
+        else
+            initdb_block+="    printf '%s\\n' '${create_line}'; \\"$'\n'
+        fi
+    done <<< "$builtin_entries"
+
+    initdb_block+="    } > /docker-entrypoint-initdb.d/00-init-extensions.sql"$'\n'
+    printf '%s' "$initdb_block"
+}
+
 # _generate_flavor_initdb_block <config_file> <flavor> <extensions>
 #
 # Render the one flavor-specific compiled-extension initdb block from the same
@@ -783,6 +880,11 @@ generate_dockerfile() {
     local extensions
     if ! extensions=$(get_flavor_extensions "$config_file" "$flavor" "$pg_major"); then
         log_error "generate_dockerfile: cannot determine extensions for flavor '${flavor}'"
+        return 1
+    fi
+
+    local builtin_initdb_block
+    if ! builtin_initdb_block=$(_generate_builtin_initdb_block "$config_file"); then
         return 1
     fi
 
@@ -1258,13 +1360,28 @@ generate_dockerfile() {
     # expand_template returns 0 on success, non-zero on genuine errors
     # (missing template file, no markers provided). Let the exit status
     # propagate so callers see real failures instead of always succeeding.
-    expand_template "$template" \
-        "FLAVOR_ARG" "$flavor_arg_block" \
-        "EXTENSION_STAGES" "$stages_block" \
-        "EXTENSION_COPIES" "$copies_block" \
-        "EXTENSION_INSTALLS" "$install_block" \
-        "FLAVOR_INITDB" "$flavor_initdb_block" \
+    # Some focused generator tests use reduced templates that exercise only
+    # extension stages and COPYs.  The real PostgreSQL Dockerfile owns the
+    # built-in marker and must receive it; reduced templates predate initdb
+    # blocks and deliberately do not model either initdb output.
+    local -a template_args=(
+        "FLAVOR_ARG" "$flavor_arg_block"
+        "EXTENSION_STAGES" "$stages_block"
+        "EXTENSION_COPIES" "$copies_block"
+        "EXTENSION_INSTALLS" "$install_block"
+    )
+    # A template without the marker silently ships an image with none of the
+    # declared built-ins — see #1136. Refusing here is the right shape and is not
+    # done yet: three test fixtures build minimal templates without the marker,
+    # so the guard has to arrive with them.
+    if grep -qF '@@BUILTIN_INITDB@@' "$template"; then
+        template_args+=("BUILTIN_INITDB" "$builtin_initdb_block")
+    fi
+    template_args+=(
+        "FLAVOR_INITDB" "$flavor_initdb_block"
         "RUNTIME_DEPS" "$runtime_deps_block"
+    )
+    expand_template "$template" "${template_args[@]}"
 }
 
 # Compute which flavors are affected by a set of changed extensions
