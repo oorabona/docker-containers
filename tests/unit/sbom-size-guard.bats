@@ -39,62 +39,64 @@ bats_require_minimum_version 1.5.0
 # ---------------------------------------------------------------------------
 _create_large_valid_sbom() {
     local path="$1"
-    # Build a valid SPDX JSON with a large padding field so the file > 26MB.
-    # 8192 packages × ~220 bytes each ≈ 1.8MB base; pad with a 25MB-sized
-    # "filler" field on the root to guarantee we exceed the guard.
+    # Streamed rather than built in memory: the document is written package by
+    # package and the padding in chunks, so peak RSS stays near one package
+    # instead of holding 50002 dicts plus a 16 MiB string and serializing the
+    # whole thing twice. Measured on this code, each version in its own process:
+    # 92.2 MiB peak before, 12.4 MiB after. The bytes differ — the size is now a
+    # deterministic 27000001 rather than the result of a dump-measure-pad-redump
+    # loop — while what the tests assert does not: 2 deb + 50000 apk packages,
+    # valid JSON, over the 25 MiB guard. That pressure is what produced the
+    # AttributeError from inside json.dump under full-suite load, in #1079.
     python3 - "$path" <<'PYEOF'
-import json, sys, os
+import json, os, sys
 
 path = sys.argv[1]
+TARGET = 27000001
 
-# Build 2 real packages (deb type) that the guard tests won't reach
-packages = []
-for i in range(2):
-    packages.append({
+def real(i):
+    return {
         "SPDXID": f"SPDXRef-pkg-real-{i}",
         "name": f"real-pkg-{i}",
         "versionInfo": f"1.{i}.0",
-        "externalRefs": [
-            {
-                "referenceCategory": "PACKAGE-MANAGER",
-                "referenceType": "purl",
-                "referenceLocator": f"pkg:deb/debian/real-pkg-{i}@1.{i}.0",
-            }
-        ],
-    })
+        "externalRefs": [{
+            "referenceCategory": "PACKAGE-MANAGER",
+            "referenceType": "purl",
+            "referenceLocator": f"pkg:deb/debian/real-pkg-{i}@1.{i}.0",
+        }],
+    }
 
-# Add 50000 more packages to bulk up the file
-for i in range(50000):
-    packages.append({
+def bulk(i):
+    return {
         "SPDXID": f"SPDXRef-pkg-{i}",
         "name": f"pkg-{i}",
         "versionInfo": f"1.{i % 100}.{i % 10}",
-        "externalRefs": [
-            {
-                "referenceCategory": "PACKAGE-MANAGER",
-                "referenceType": "purl",
-                "referenceLocator": f"pkg:apk/alpine/pkg-{i}@1.{i % 100}.{i % 10}",
-            }
-        ],
-    })
-
-doc = {
-    "SPDXID": "SPDXRef-DOCUMENT",
-    "spdxVersion": "SPDX-2.3",
-    "name": "large-test-sbom",
-    "packages": packages,
-}
+        "externalRefs": [{
+            "referenceCategory": "PACKAGE-MANAGER",
+            "referenceType": "purl",
+            "referenceLocator": f"pkg:apk/alpine/pkg-{i}@1.{i % 100}.{i % 10}",
+        }],
+    }
 
 with open(path, "w") as f:
-    json.dump(doc, f)
-
-size = os.path.getsize(path)
-# Pad the document with a large string field to ensure > 26214400 bytes
-if size < 27000000:
-    pad_needed = 27000001 - size
-    doc["_padding"] = "P" * pad_needed
-    with open(path, "w") as f:
-        json.dump(doc, f)
+    f.write('{"SPDXID":"SPDXRef-DOCUMENT","spdxVersion":"SPDX-2.3",'
+            '"name":"large-test-sbom","packages":[')
+    f.write(json.dumps(real(0)))
+    f.write(",")
+    f.write(json.dumps(real(1)))
+    for i in range(50000):
+        f.write(",")
+        f.write(json.dumps(bulk(i)))
+    f.write('],"_padding":"')
+    f.flush()
+    # Size the padding against what is already on disk, so the file clears the
+    # 25 MiB guard whatever the package encoding costs.
+    remaining = TARGET - (os.fstat(f.fileno()).st_size + len('"}'))
+    chunk = "P" * 65536
+    while remaining > 0:
+        f.write(chunk[:remaining])
+        remaining -= len(chunk)
+    f.write('"}')
 PYEOF
 }
 
