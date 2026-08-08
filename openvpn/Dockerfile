@@ -84,11 +84,17 @@ RUN set -ex \
     # signing subkeys hanging off this one, of which eight are expired and two
     # revoked. So read the machine-readable status instead of the exit code.
     #
-    # EXPKEYSIG is accepted deliberately: a release signed while its subkey was
-    # valid stays legitimately signed, and the retained window still builds
-    # v2.7.4. REVKEYSIG never is. What this cannot see is a revocation published
-    # after the vendored snapshot was taken — that is what the key-lifecycle
-    # monitor (#921) watches, and why the snapshot is refreshed by a commit.
+    # REVKEYSIG is never accepted. EXPKEYSIG is, and that is a bounded residual
+    # rather than a proof of anything: a signature's timestamp is chosen by
+    # whoever made it, so this does not establish that the signature predates the
+    # subkey's expiry. Refusing EXPKEYSIG is not available either — v2.7.4 is in
+    # the retained window and is signed by a now-expired subkey, and the EasyRSA
+    # block below has the same shape, its single signing subkey being expired too.
+    #
+    # And nothing here sees a revocation published after this vendored snapshot.
+    # The key-lifecycle monitor verifies with this same file, so it cannot learn
+    # of one either; refreshing the snapshot is a commit somebody makes. Tracked
+    # as the residual it is, not covered by this check.
     && gpg --batch --status-fd 3 --verify openvpn.tgz.asc openvpn.tgz 3>/tmp/ovpn-gpg.status \
     && grep -qE '^\[GNUPG:\] (GOODSIG|EXPKEYSIG) ' /tmp/ovpn-gpg.status \
     && ! grep -qE '^\[GNUPG:\] (REVKEYSIG|BADSIG|ERRSIG|NO_PUBKEY) ' /tmp/ovpn-gpg.status \
@@ -102,7 +108,13 @@ RUN set -ex \
     # archive shares that prefix. An archive with a conforming first entry and
     # divergent later ones would need OpenVPN's signing key to be accepted at
     # all, and an actor holding that key has no reason to bother.
-    && [ "$(tar tzf openvpn.tgz 2>/dev/null | head -1)" = "openvpn-${RELEASE_VERSION}/" ] \
+    # `tar | head -1` alone reports success when tar later hits a truncated
+    # archive, because head exits 0 having read its line. Listing to a file first
+    # lets tar's own status decide, so a corrupt archive stops here rather than
+    # after pkcs11-helper has been compiled.
+    && tar tzf openvpn.tgz > /tmp/ovpn-members.txt \
+    && [ "$(head -1 /tmp/ovpn-members.txt)" = "openvpn-${RELEASE_VERSION}/" ] \
+    && rm -f /tmp/ovpn-members.txt \
     # Download pinned version of OpenSC pkcs11-helper
     && curl -sSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://github.com/opensc/pkcs11-helper/archive/pkcs11-helper-${PKCS11_HELPER_VERSION}.tar.gz --output pkcs11-helper.tgz \
     && tar zxvf pkcs11-helper.tgz \
@@ -161,7 +173,12 @@ RUN set -ex \
     # authenticated: require it to equal the requested version (blocks a replayed
     # older signed release served from this version's URL). Then extract the way the
     # installer will (--strip-components=1) and require an executable easyrsa.
-    && [ "$(tar tzf "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz" 2>/dev/null | head -1)" = "EasyRSA-${EASYRSA_VERSION}/" ] \
+    # Same shape as the OpenVPN preflight above, and the same reason: tar's status
+    # has to survive the pipe. Pre-existing; fixed here because it is the twin of
+    # the line this change already had to correct.
+    && tar tzf "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz" > /tmp/er-members.txt \
+    && [ "$(head -1 /tmp/er-members.txt)" = "EasyRSA-${EASYRSA_VERSION}/" ] \
+    && rm -f /tmp/er-members.txt \
     && rm -rf /tmp/erverify && mkdir -p /tmp/erverify \
     && tar xzf "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz" --strip-components=1 -C /tmp/erverify \
     && test -x /tmp/erverify/easyrsa \

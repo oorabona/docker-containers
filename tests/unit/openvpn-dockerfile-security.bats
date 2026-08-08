@@ -117,6 +117,39 @@ setup() {
     [ "$(yq -r '.dependency_sources.UPSTREAM_VERSION.gpg_key.signature_suffix' "$CONFIG")" = ".asc" ]
 }
 
+@test "the verification decides on gpg's status, not its exit code" {
+    # `gpg --verify` exits 0 for a signature made by a revoked or an expired key
+    # — measured, v2.7.4 returns 0 with "Note: This key has expired!" — and the
+    # exactly-one-primary assertion bounds primaries, not the ten signing subkeys
+    # under this one. Deleting these two greps leaves the verification looking
+    # present while a revoked key's signature is accepted, and every other test
+    # in this file stays green.
+    grep -Fq -- '--status-fd 3 --verify openvpn.tgz.asc openvpn.tgz' "$DOCKERFILE"
+
+    # The allowlist and the denylist are both load-bearing: without the first,
+    # an absent signature passes; without the second, a revoked one does.
+    grep -q "GOODSIG|EXPKEYSIG" "$DOCKERFILE"
+    grep -q "REVKEYSIG|BADSIG|ERRSIG|NO_PUBKEY" "$DOCKERFILE"
+
+    # And the status must be consulted before the archive is extracted.
+    local status_line extract_line
+    # Anchor on the check, not on the comment above it that names the same
+    # statuses — the first REVKEYSIG in this file is prose.
+    status_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "REVKEYSIG|BADSIG|ERRSIG|NO_PUBKEY") {print $1; exit}')"
+    extract_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "tar zxvf openvpn.tgz") {print $1; exit}')"
+    [ -n "$status_line" ]
+    [ -n "$extract_line" ]
+    [ "$status_line" -lt "$extract_line" ]
+}
+
+@test "the archive preflight lets tar's own status decide" {
+    # `tar tzf … | head -1` reports success on a truncated archive whose first
+    # member is right, because head exits 0 having read its line. Both preflights
+    # list to a file so tar's status is the one that counts.
+    [ "$(grep -cE 'tar tzf [^|]*\| *head' "$DOCKERFILE" || true)" -eq 0 ]
+    grep -Fq 'tar tzf openvpn.tgz > /tmp/ovpn-members.txt' "$DOCKERFILE"
+}
+
 @test "removing the signed archive's versioned top-level-directory replay check is rejected" {
     grep -Fq 'tar tzf openvpn.tgz' "$DOCKERFILE"
     grep -Fq '= "openvpn-${RELEASE_VERSION}/"' "$DOCKERFILE"
