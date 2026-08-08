@@ -5,15 +5,24 @@ FROM ${REMOTE_CR}/library/alpine:${OS_VERSION}
 
 ARG VERSION
 ARG UPSTREAM_VERSION
-ARG PKCS11_HELPER_VERSION
 ARG EASYRSA_VERSION
 ARG EASYRSA_KEY_FPR
 ARG OPENVPN_KEY_FPR
 ARG OVPN_SHA256
 ARG NPROC
+# Declared only to refuse it. pkcs11-helper now comes from the Alpine repository
+# (#957), so a caller who still pins a version here would get a different library
+# than the one they asked for. BuildKit does warn that the argument was not
+# consumed, and a warning in a build log is easy to miss, so stop instead.
+ARG PKCS11_HELPER_VERSION
 
 # Validate required build args
-RUN : "${VERSION:?required}" "${PKCS11_HELPER_VERSION:?required}" "${EASYRSA_VERSION:?required}" "${EASYRSA_KEY_FPR:?required}" "${OPENVPN_KEY_FPR:?required}" "${OVPN_SHA256:?required}" "${NPROC:?required}"
+RUN : "${VERSION:?required}" "${EASYRSA_VERSION:?required}" "${EASYRSA_KEY_FPR:?required}" "${OPENVPN_KEY_FPR:?required}" "${OVPN_SHA256:?required}" "${NPROC:?required}" \
+    && [ -z "${PKCS11_HELPER_VERSION:-}" ] || { \
+        echo "PKCS11_HELPER_VERSION is no longer honoured: pkcs11-helper comes from the Alpine repository (#957)." >&2; \
+        echo "Remove the build argument. Its version now follows OS_VERSION, and Alpine carries it from 3.24 only." >&2; \
+        exit 1; \
+    }
 
 # EasyRSA release signing key (Eric F Crist, the EasyRSA maintainer; fingerprint
 # 6F40 5682 1152 F03B 6B24 F2FC F848 9F83 9D73 67F3). Vendored as the trust
@@ -46,7 +55,7 @@ RUN set -ex \
     # `strip_v: true` in config.yaml governs the version monitor's comparison,
     # not this build argument.
     && RELEASE_VERSION="${DOWNLOAD_VERSION#v}" \
-    && apk add --update iptables bash ca-certificates curl linux-pam libselinux openssl nss gnutls gzip \
+    && apk add --update iptables bash ca-certificates curl linux-pam libselinux openssl nss gnutls gzip pkcs11-helper \
         google-authenticator libqrencode libcap-ng \
     && apk add --no-cache --virtual .build-deps \
         gcc \
@@ -55,17 +64,15 @@ RUN set -ex \
         coreutils \
         libconfig-dev \
         linux-headers \
-        autoconf \
-        libtool \
         openssl-dev \
         linux-pam-dev \
         libselinux-dev \
         nss-dev \
         gnutls-dev \
-        automake \
         make \
         libcap-ng-dev \
         libcap-dev \
+        pkcs11-helper-dev \
         gnupg \
     && cd /tmp \
     # Fetch the OpenVPN release artifact and its detached signature. The
@@ -111,20 +118,10 @@ RUN set -ex \
     # `tar | head -1` alone reports success when tar later hits a truncated
     # archive, because head exits 0 having read its line. Listing to a file first
     # lets tar's own status decide, so a corrupt archive stops here rather than
-    # after pkcs11-helper has been compiled.
+    # after the archive has been extracted.
     && tar tzf openvpn.tgz > /tmp/ovpn-members.txt \
     && [ "$(head -1 /tmp/ovpn-members.txt)" = "openvpn-${RELEASE_VERSION}/" ] \
     && rm -f /tmp/ovpn-members.txt \
-    # Download pinned version of OpenSC pkcs11-helper
-    && curl -sSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://github.com/opensc/pkcs11-helper/archive/pkcs11-helper-${PKCS11_HELPER_VERSION}.tar.gz --output pkcs11-helper.tgz \
-    && tar zxvf pkcs11-helper.tgz \
-    && cd pkcs11-helper-pkcs11-helper-${PKCS11_HELPER_VERSION} \
-    && autoreconf -ivf \
-    # Note: --enable-pedantic removed - modern NSS headers use C++ comments incompatible with strict C90
-    && ./configure --enable-strict \
-    && make -j$NPROC \
-    && make install \
-    && cd /tmp \
     && tar zxvf openvpn.tgz && cd "openvpn-${RELEASE_VERSION}" \
     # Opinionated but lzo and lz4 are not required for OpenVPN to work
     # and subject to security issues.
