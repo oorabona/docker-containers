@@ -13,6 +13,12 @@ build_args:
   # consumed as a --build-arg by the Dockerfile bake (exactly-one-key + fingerprint
   # assertion) AND read by the GPG key-lifecycle monitor (scripts/check-gpg-keys.sh).
   EASYRSA_KEY_FPR: "6F4056821152F03B6B24F2FCF8489F839D7367F3"
+  # Pinned OpenVPN release-signing key fingerprint (primary). It is consumed by
+  # the Dockerfile's exactly-one-key assertion and by the GPG key-lifecycle monitor.
+  OPENVPN_KEY_FPR: "F554A3687412CFFEBDEFE0A312F5F7B42F2B01E7"
+  # Pinned content of the commit-addressed ovpn installer. A commit identifies
+  # the requested revision; this digest verifies the bytes served at build time.
+  OVPN_SHA256: "a1cfb43755aeb0e56d06cdb60be6e6bbf831468414ccbea8cb860729bd8ed451"
 dependency_sources:
   OS_VERSION:
     monitor: false
@@ -22,6 +28,35 @@ dependency_sources:
     monitor: false
     lifecycle: untracked
     reason: "Pinned EasyRSA signing-key fingerprint (see EASYRSA_VERSION.gpg_key); a constant, not a tracked version"
+  OPENVPN_KEY_FPR:
+    monitor: false
+    lifecycle: untracked
+    reason: "Pinned OpenVPN signing-key fingerprint (see UPSTREAM_VERSION.gpg_key); a constant, not a tracked version"
+  OVPN_SHA256:
+    monitor: false
+    lifecycle: untracked
+    reason: "Pinned content digest for the commit-addressed ovpn installer; update deliberately with its source revision"
+  UPSTREAM_VERSION:
+    # Not tracked here. The OpenVPN version is driven by variants.yaml and
+    # version.sh, so it has no build_args pin for the dependency monitor to
+    # compare against — and that monitor reads the current version exclusively
+    # from build_args, so declaring this tracked makes it report "no current
+    # version in build_args" on every run, for ever.
+    #
+    # The gpg_key block below is still picked up: the key-lifecycle monitor
+    # enumerates sources by has("gpg_key") and never reads lifecycle.
+    lifecycle: untracked
+    reason: "Version comes from variants.yaml/version.sh, not a build_args pin; this entry exists to register the release signing key for lifecycle monitoring."
+    type: github-release
+    repo: OpenVPN/openvpn
+    strip_v: true
+    gpg_key:
+      file: openvpn-signing-key.asc
+      expiry_warn_days: 60
+      fingerprint_arg: OPENVPN_KEY_FPR
+      release_asset_template: "openvpn-{version}.tar.gz"
+      release_tag_template: "v{version}"
+      signature_suffix: ".asc"
   PKCS11_HELPER_VERSION:
     lifecycle: tracked
     type: github-release
