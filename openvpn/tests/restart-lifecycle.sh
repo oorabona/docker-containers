@@ -20,8 +20,10 @@ suffix="${GITHUB_RUN_ID:-local}-$$-${RANDOM}"
 volume="openvpn-restart-lifecycle-${suffix}"
 bootstrap_container="openvpn-restart-bootstrap-${suffix}"
 restart_container="openvpn-restart-existing-${suffix}"
+client_container="openvpn-restart-client-${suffix}"
 root_baseline=""
 root_listing=""
+saved_profile_dir=""
 inventory_stat_format='%i|%y|%z|%a|%u|%g|%h|%F|%s|%n|%N'
 # Named here rather than left to the installer default, so the client-config
 # assertions can demand this exact profile instead of accepting any .ovpn.
@@ -33,13 +35,16 @@ endpoint="127.0.0.1"
 cleanup() {
     local status=$?
     set +e
-    docker rm -f "$bootstrap_container" "$restart_container" >/dev/null 2>&1
+    docker rm -f "$bootstrap_container" "$restart_container" "$client_container" >/dev/null 2>&1
     docker volume rm -f "$volume" >/dev/null 2>&1
     if [ -n "$root_baseline" ]; then
         rm -f -- "$root_baseline"
     fi
     if [ -n "$root_listing" ]; then
         rm -f -- "$root_listing"
+    fi
+    if [ -n "$saved_profile_dir" ]; then
+        rm -rf -- "$saved_profile_dir"
     fi
     return "$status"
 }
@@ -71,6 +76,182 @@ show_logs_tail() {
     local container="$1"
 
     docker logs "$container" 2>&1 | tail -80 >&2 || true
+}
+
+show_client_logs_tail() {
+    docker logs "$client_container" 2>&1 | tail -80 >&2 || true
+}
+
+client_logs() {
+    # A reader that cannot read refuses. Returning empty on a failed `docker logs`
+    # would feed the evidence checks below an absence they cannot tell from a
+    # genuine one, and a backend that emits partial output before failing would
+    # feed them a fragment they would treat as a whole.
+    local out
+    if ! out="$(docker logs "$client_container" 2>&1)"; then
+        fail "could not read the client container logs"
+    fi
+    printf '%s\n' "$out"
+}
+
+server_logs_since() {
+    local start="$1" out
+    if ! out="$(docker logs "$restart_container" 2>&1)"; then
+        fail "could not read the server container logs"
+    fi
+    printf '%s\n' "$out" | tail -n "+$start"
+}
+
+start_profile_client() {
+    local phase="$1"
+
+    # The generated profile is mounted from the copy made below, never from the
+    # live server volume: revocation can remove its source there, while the
+    # negative phase must retry exactly the profile a client already received.
+    # Sharing the server namespace makes its 127.0.0.1 endpoint reachable. A
+    # pushed redirect-gateway would otherwise rewrite the SERVER's default route,
+    # so --route-nopull is deliberately part of this control-channel-only test.
+    docker rm -f "$client_container" >/dev/null 2>&1 || true
+    if ! docker run -d \
+        --name "$client_container" \
+        --network "container:$restart_container" \
+        --cap-drop ALL \
+        --cap-add NET_ADMIN \
+        --cap-add SETUID \
+        --cap-add SETGID \
+        --security-opt no-new-privileges \
+        --device /dev/net/tun:/dev/net/tun \
+        -v "$saved_profile_dir:/profile:ro" \
+        "$image" openvpn --config "/profile/$client_name.ovpn" --route-nopull >/dev/null; then
+        show_logs_tail "$restart_container"
+        fail "$phase could not start an OpenVPN client with the saved profile"
+    fi
+}
+
+wait_for_profile_handshake() {
+    local phase="$1"
+    local deadline logs status
+
+    deadline=$((SECONDS + 90))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        logs="$(client_logs)"
+        if grep -Fq 'Initialization Sequence Completed' <<<"$logs" &&
+            grep -Fq 'VERIFY OK: depth=0' <<<"$logs" &&
+            grep -Fq 'VERIFY X509NAME OK' <<<"$logs"; then
+            # A deliberately wrong verify-x509-name makes this phase fail: depth
+            # one can verify while depth zero never does, which is #959's bug.
+            # Keep all three assertions; successful initialization alone would
+            # not prove that the name pin was exercised.
+            while IFS= read -r line; do
+                [ -n "$line" ] && printf 'openvpn restart lifecycle: %s client: %s\n' "$phase" "$line"
+            done < <(printf '%s\n' "$logs" | grep -E 'Initialization Sequence Completed|VERIFY OK: depth=0|VERIFY X509NAME OK')
+            return 0
+        fi
+
+        status="$(docker inspect -f '{{.State.Status}}' "$client_container" 2>/dev/null || true)"
+        if [ "$status" != "running" ]; then
+            show_client_logs_tail
+            show_logs_tail "$restart_container"
+            fail "$phase client stopped before completing and verifying the tunnel (state: ${status:-missing})"
+        fi
+        sleep 1
+    done
+
+    show_client_logs_tail
+    show_logs_tail "$restart_container"
+    fail "$phase client did not complete and verify the tunnel within 90s"
+}
+
+server_log_line_count() {
+    local lines
+
+    if ! lines="$(docker logs "$restart_container" 2>&1 | wc -l)"; then
+        fail "could not read server logs before the revocation handshake"
+    fi
+    printf '%s\n' "$lines"
+}
+
+wait_for_revoked_profile_refusal() {
+    local server_log_start="$1"
+    local deadline client_output server_output status client_ca_lines server_crl_lines revoked_lines
+
+    deadline=$((SECONDS + 90))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        client_output="$(client_logs)"
+        server_output="$(server_logs_since "$server_log_start")"
+
+        # Skipping the revoke command must fail here: an initialized client is
+        # evidence that the certificate was accepted, not a harmless retry.
+        if grep -Fq 'Initialization Sequence Completed' <<<"$client_output"; then
+            show_client_logs_tail
+            printf '%s\n' "$server_output" | tail -80 >&2
+            fail "revoked client completed initialization; the server did not enforce its CRL"
+        fi
+
+        client_ca_lines="$(printf '%s\n' "$client_output" | grep -F 'VERIFY OK: depth=1' || true)"
+        # Not the server's own "VERIFY OK: depth=1": on a connection it refuses at
+        # depth 0 it never emits one — measured against a real refusal, which logs
+        # only the CRL load and the rejection. The load line is the stronger
+        # evidence anyway, because it says the running server read crl.pem for
+        # this connection, which is the whole of "without a restart".
+        server_crl_lines="$(printf '%s\n' "$server_output" | grep -F 'CRL: loaded' || true)"
+        revoked_lines="$(printf '%s\n' "$server_output" | grep -E 'VERIFY ERROR: depth=0, error=certificate revoked' || true)"
+        if [ -n "$client_ca_lines" ] && [ -n "$server_crl_lines" ] && [ -n "$revoked_lines" ]; then
+            # A mistyped profile path must not pass on silence. Three things
+            # together: the client verified the CA, so the refusal is about this
+            # certificate rather than a broken chain; the server read crl.pem for
+            # this connection; and it named the rejection as revocation.
+            while IFS= read -r line; do
+                [ -n "$line" ] && printf 'openvpn restart lifecycle: revoked client: %s\n' "$line"
+            done <<<"$client_ca_lines"
+            while IFS= read -r line; do
+                [ -n "$line" ] && printf 'openvpn restart lifecycle: revoked server: %s\n' "$line"
+            done <<<"$revoked_lines"
+            return 0
+        fi
+
+        status="$(docker inspect -f '{{.State.Status}}' "$client_container" 2>/dev/null || true)"
+        if [ "$status" != "running" ]; then
+            show_client_logs_tail
+            printf '%s\n' "$server_output" | tail -80 >&2
+            fail "revoked client stopped without CA-verification, CRL-load and revocation evidence (state: ${status:-missing})"
+        fi
+        sleep 1
+    done
+
+    show_client_logs_tail
+    docker logs "$restart_container" 2>&1 | tail -80 >&2 || true
+    fail "revoked client did not produce CA-verification, CRL-load and revocation evidence within 90s"
+}
+
+revoke_client_certificate() {
+    # Invoke easy-rsa directly rather than the installer's interactive menu: the
+    # revocation contract is PKI material and CRL installation, not menu numbering.
+    if ! docker exec -e REVOKED_CLIENT="$client_name" "$restart_container" sh -c '
+set -eu
+# Install into the path server.conf actually names, resolved the same way the
+# static checks resolve it. Writing a hardcoded /etc/openvpn/crl.pem would make
+# this phase reject a working installer that configured the CRL elsewhere.
+crl_configured=$(sed -n "s/^[[:space:]]*crl-verify[[:space:]][[:space:]]*\([^[:space:]]*\)[[:space:]]*$/\1/p" /etc/openvpn/server.conf | head -1)
+[ -n "$crl_configured" ] || { echo "server.conf names no crl-verify path" >&2; exit 1; }
+case "$crl_configured" in
+    /*) crl_target="$crl_configured" ;;
+    *) crl_target="/etc/openvpn/$crl_configured" ;;
+esac
+cd /etc/openvpn/easy-rsa
+./easyrsa --batch revoke "$REVOKED_CLIENT"
+EASYRSA_CRL_DAYS=3650 ./easyrsa gen-crl
+# Installed by rename rather than by removing and copying into the live path.
+# The server reads the CRL per connection, so a delete-then-copy leaves a window
+# in which a connection sees no CRL at all and is accepted — the opposite of what
+# this phase is about to assert. (The image ships the delete-then-copy form.)
+cp /etc/openvpn/easy-rsa/pki/crl.pem "$crl_target.new"
+chmod 644 "$crl_target.new"
+mv -f "$crl_target.new" "$crl_target"
+'; then
+        show_logs_tail "$restart_container"
+        fail "could not revoke $client_name and install the updated CRL"
+    fi
 }
 
 openvpn_server_pids() {
@@ -134,7 +315,7 @@ assert_no_interactive_prompt() {
     local logs
 
     logs="$(docker logs "$container" 2>&1 || true)"
-    if printf '%s\n' "$logs" | grep -Eq 'Select an option|Welcome to the OpenVPN installer'; then
+    if grep -Eq 'Select an option|Welcome to the OpenVPN installer' <<<"$logs"; then
         printf '%s\n' "openvpn restart lifecycle: ERROR: restart logs show installer/menu prompt" >&2
         printf '%s\n' "$logs" | tail -80 >&2
         exit 1
@@ -146,7 +327,14 @@ assert_nat_masquerade() {
 
     # The restart path must regenerate and apply the iptables rules, else OpenVPN
     # runs but client traffic is not NATed. Assert the MASQUERADE rule is present.
-    if ! docker exec "$container" iptables -t nat -S POSTROUTING 2>/dev/null | grep -q MASQUERADE; then
+    local nat_rules
+    # Same reason as the log readers: "iptables says there is no rule" and "we
+    # could not ask iptables" are different facts and must not share a message.
+    if ! nat_rules="$(docker exec "$container" iptables -t nat -S POSTROUTING 2>/dev/null)"; then
+        show_logs_tail "$container"
+        fail "could not read the NAT POSTROUTING chain"
+    fi
+    if ! grep -q MASQUERADE <<<"$nat_rules"; then
         show_logs_tail "$container"
         fail "restart did not apply the NAT MASQUERADE rule (client traffic would not route)"
     fi
@@ -819,5 +1007,50 @@ if [ "$clients_before" != "$clients_stable" ]; then
     fail "restart-stable did not leave the client configs untouched"
 fi
 log "PASS: restart-stable left the client configs untouched, not dropped and rebuilt"
+
+handshake_started=$SECONDS
+saved_profile_dir="$(mktemp -d "${TMPDIR:-/tmp}/openvpn-saved-profile.XXXXXX")"
+if ! docker cp "$restart_container:/etc/openvpn/clients/$client_name.ovpn" \
+    "$saved_profile_dir/$client_name.ovpn"; then
+    show_logs_tail "$restart_container"
+    fail "could not save the generated client profile before revocation"
+fi
+# The client container runs with --cap-drop ALL, so its root has no
+# CAP_DAC_OVERRIDE and cannot read this mount by privilege — the permissions have
+# to allow it outright. `mktemp -d` gives 0700 owned by the invoking user, which
+# a rootless runtime hides by mapping that user to container root, and a real
+# Docker daemon does not: there the client fails to open its own config.
+chmod 755 "$saved_profile_dir"
+chmod 644 "$saved_profile_dir/$client_name.ovpn"
+if [ ! -f "$saved_profile_dir/$client_name.ovpn" ]; then
+    fail "saved generated client profile is not a regular file"
+fi
+
+log "profile handshake: connect the saved generated profile in the server network namespace"
+start_profile_client "profile handshake"
+wait_for_profile_handshake "profile handshake"
+docker rm -f "$client_container" >/dev/null
+log "PASS: generated profile completed a name-verified handshake"
+
+# Run this last: the revoke path can remove client configuration from the live
+# volume, while the saved copy above is intentionally still usable for this test.
+log "profile revocation: revoke $client_name without restarting the server"
+# The claim about to be made is "without a restart", so record what the server
+# process was before revoking. A CRL honoured only after a restart would satisfy
+# every log assertion below while making the headline false.
+server_pids_before_revoke="$(openvpn_server_pids "$restart_container")"
+[ -n "$server_pids_before_revoke" ] || fail "no openvpn server process before revocation"
+revoke_client_certificate
+server_log_start="$(( $(server_log_line_count) + 1 ))"
+start_profile_client "revoked profile handshake"
+wait_for_revoked_profile_refusal "$server_log_start"
+server_pids_after_revoke="$(openvpn_server_pids "$restart_container")"
+if [ "$server_pids_before_revoke" != "$server_pids_after_revoke" ]; then
+    printf 'openvpn restart lifecycle: before: %s\nafter: %s\n' \
+        "$server_pids_before_revoke" "$server_pids_after_revoke" >&2
+    fail "the server process changed across the revocation, so the refusal does not show a live CRL reload"
+fi
+docker rm -f "$client_container" >/dev/null
+log "PASS: revoked generated profile was refused without a server restart ($((SECONDS - handshake_started))s for handshake and revocation phases)"
 
 log "PASS: existing /etc/openvpn volume restarts non-interactively with START_EXISTING=y"
