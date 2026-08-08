@@ -37,7 +37,16 @@ dependency_sources:
     lifecycle: untracked
     reason: "Pinned content digest for the commit-addressed ovpn installer; update deliberately with its source revision"
   UPSTREAM_VERSION:
-    lifecycle: tracked
+    # Not tracked here. The OpenVPN version is driven by variants.yaml and
+    # version.sh, so it has no build_args pin for the dependency monitor to
+    # compare against — and that monitor reads the current version exclusively
+    # from build_args, so declaring this tracked makes it report "no current
+    # version in build_args" on every run, for ever.
+    #
+    # The gpg_key block below is still picked up: the key-lifecycle monitor
+    # enumerates sources by has("gpg_key") and never reads lifecycle.
+    lifecycle: untracked
+    reason: "Version comes from variants.yaml/version.sh, not a build_args pin; this entry exists to register the release signing key for lifecycle monitoring."
     type: github-release
     repo: OpenVPN/openvpn
     strip_v: true

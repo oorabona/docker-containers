@@ -70,7 +70,21 @@ RUN set -ex \
     # A second primary key in the vendored key file must not widen trust.
     && [ "$(gpg --batch --list-keys --with-colons | grep -c '^pub:')" = "1" ] \
     && [ "$(gpg --batch --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')" = "${OPENVPN_KEY_FPR}" ] \
-    && gpg --batch --verify openvpn.tgz.asc openvpn.tgz \
+    # `gpg --verify` exits 0 for a signature made by a REVOKED or EXPIRED key —
+    # measured, v2.7.4's signature returns 0 with "Note: This key has expired!".
+    # The exactly-one-primary assertion above bounds primaries, not the ten
+    # signing subkeys hanging off this one, of which eight are expired and two
+    # revoked. So read the machine-readable status instead of the exit code.
+    #
+    # EXPKEYSIG is accepted deliberately: a release signed while its subkey was
+    # valid stays legitimately signed, and the retained window still builds
+    # v2.7.4. REVKEYSIG never is. What this cannot see is a revocation published
+    # after the vendored snapshot was taken — that is what the key-lifecycle
+    # monitor (#921) watches, and why the snapshot is refreshed by a commit.
+    && gpg --batch --status-fd 3 --verify openvpn.tgz.asc openvpn.tgz 3>/tmp/ovpn-gpg.status \
+    && grep -qE '^\[GNUPG:\] (GOODSIG|EXPKEYSIG) ' /tmp/ovpn-gpg.status \
+    && ! grep -qE '^\[GNUPG:\] (REVKEYSIG|BADSIG|ERRSIG|NO_PUBKEY) ' /tmp/ovpn-gpg.status \
+    && rm -f /tmp/ovpn-gpg.status \
     && rm -rf "$GNUPGHOME" openvpn.tgz.asc \
     && unset GNUPGHOME \
     # The signed release archive must be the requested version, which blocks an

@@ -1,10 +1,42 @@
 #!/usr/bin/env bats
+#
+# What these tests can and cannot see.
+#
+# They read the Dockerfile as TEXT: a literal is present, a literal is absent,
+# one line precedes another. That catches a deletion, a reordering, or a swap
+# back to the unsigned source — the mutations a maintainer makes by accident.
+#
+# It does not decide execution. Someone who leaves the expected URLs and the
+# verify command in a comment or an unreachable branch, and fetches the source
+# some other way, satisfies every assertion here. No reading of Dockerfile text
+# can decide that; only building the image and inspecting what it did could, and
+# these tests deliberately build nothing.
+#
+# So the actor they stop is a careless edit, not a determined one. The e2e and
+# the build are what exercise the verification for real.
 
 load "../test_helper"
 
 setup() {
     export DOCKERFILE="$PROJECT_ROOT/openvpn/Dockerfile"
     export CONFIG="$PROJECT_ROOT/openvpn/config.yaml"
+}
+
+@test "the vendored key is the one config.yaml pins, read from the file itself" {
+    # The fingerprint assertions elsewhere compare the YAML to a constant
+    # repeated in this file, so both could be edited together while the vendored
+    # key became something else. This reads the key.
+    local from_key from_config
+    from_key="$(gpg --show-keys --with-colons "$PROJECT_ROOT/openvpn/openvpn-signing-key.asc" 2>/dev/null \
+                | awk -F: '/^fpr:/{print $10; exit}')"
+    from_config="$(yq -r '.build_args.OPENVPN_KEY_FPR' "$CONFIG")"
+
+    [ -n "$from_key" ]
+    [ "$from_key" = "$from_config" ]
+
+    # And exactly one primary, which is what the Dockerfile's count asserts.
+    [ "$(gpg --show-keys --with-colons "$PROJECT_ROOT/openvpn/openvpn-signing-key.asc" 2>/dev/null \
+         | grep -c '^pub:')" -eq 1 ]
 }
 
 @test "replacing the OpenVPN release asset with the unsigned codeload snapshot is rejected" {
@@ -17,6 +49,9 @@ setup() {
     # non-final `! cmd` is inert under bats, and this one is only load-bearing
     # today because it happens to be last.
     [ "$(grep -ci 'github\.com/openvpn/openvpn/archive/' "$DOCKERFILE" || true)" -eq 0 ]
+    # codeload.github.com serves the same unsigned snapshot under a different
+    # host, so rejecting only the github.com spelling leaves the swap available.
+    [ "$(grep -ci 'codeload\.github\.com' "$DOCKERFILE" || true)" -eq 0 ]
 }
 
 @test "the release asset URL uses the version with its leading v stripped" {
@@ -44,7 +79,7 @@ setup() {
 
 @test "moving OpenVPN signature verification after source extraction or configuration is rejected" {
     local verify_line extract_line configure_line make_line
-    verify_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "gpg --batch --verify openvpn.tgz.asc openvpn.tgz") {print $1; exit}')"
+    verify_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "--verify openvpn.tgz.asc openvpn.tgz") {print $1; exit}')"
     extract_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "tar zxvf openvpn.tgz") {print $1; exit}')"
     configure_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "./configure --disable-lzo") {print $1; exit}')"
     make_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "make -j${NPROC}") {print $1; exit}')"
@@ -62,7 +97,7 @@ setup() {
     local key_count_line fingerprint_line verify_line expected_fpr="F554A3687412CFFEBDEFE0A312F5F7B42F2B01E7"
     key_count_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "grep -c") && index($0, "^pub:") {print $1; exit}')"
     fingerprint_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "${OPENVPN_KEY_FPR}") {print $1; exit}')"
-    verify_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "gpg --batch --verify openvpn.tgz.asc openvpn.tgz") {print $1; exit}')"
+    verify_line="$(nl -ba "$DOCKERFILE" | awk 'index($0, "--verify openvpn.tgz.asc openvpn.tgz") {print $1; exit}')"
 
     grep -Fq 'COPY openvpn-signing-key.asc /usr/local/share/openvpn/openvpn-signing-key.asc' "$DOCKERFILE"
     [ -n "$key_count_line" ]
