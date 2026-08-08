@@ -30,6 +30,13 @@
 # Note: intentionally does NOT set -euo pipefail — this file is sourced into
 # callers which manage their own error-handling mode.
 
+# The one interpretation of mixed builtin_extensions declarations shared by
+# the generator and R7. Keep this as a jq expression rather than a shell-side
+# reader: both consumers already operate on the document passed to jq.
+builtin_extension_names_jq() {
+    printf '%s' 'map(if type == "string" then . else .name end)'
+}
+
 # ---------------------------------------------------------------------------
 # validate_extensions_schema <extensions_config_file>
 #
@@ -41,6 +48,9 @@ validate_extensions_schema() {
     local document
     local errors
     local error
+    local builtin_extension_names
+
+    builtin_extension_names=$(builtin_extension_names_jq)
 
     command -v yq >/dev/null 2>&1 || {
         printf 'ERROR [extensions schema]: yq is required but was not found in PATH.\n' >&2
@@ -215,7 +225,8 @@ validate_extensions_schema() {
                   # one major still collides in another.
                   | select($root.extensions[$member].disabled != true)
                   | ($root.extensions[$member].initdb.sql_name // $member) ] as $sql_names
-              | (($root.builtin_extensions // []) | if type == "array" then . else [] end) as $builtins
+              | (($root.builtin_extensions // []) | if type == "array" then . else [] end
+                 | '"$builtin_extension_names"') as $builtins
               | (
                   $sql_names | group_by(.) | map(select(length > 1) | .[0])[]
                   | "R6 flavor " + ($flavor.key | @json)

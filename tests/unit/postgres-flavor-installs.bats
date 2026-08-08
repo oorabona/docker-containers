@@ -35,12 +35,67 @@ _generate() {
         > "$generated_file"
 }
 
+_generate_from_config() {
+    local config_file="$1"
+    local flavor="$2"
+    local generated_file="$3"
+
+    generate_dockerfile \
+        "$config_file" \
+        "$PROJECT_ROOT/postgres/Dockerfile" \
+        "$flavor" \
+        18 \
+        ghcr.io \
+        testowner \
+        > "$generated_file"
+}
+
 _initdb_sql_block() {
     local generated_file="$1"
 
     sed -n \
         '/-- .* flavor: compiled extensions/,/01-init-flavor.sql/p' \
         "$generated_file"
+}
+
+_builtin_initdb_block() {
+    local generated_file="$1"
+
+    awk '
+        /^RUN set -eux; \\$/ {
+            candidate = $0 ORS
+            collecting = 1
+            next
+        }
+        collecting {
+            candidate = candidate $0 ORS
+        }
+        collecting && /-- Built-in PostgreSQL extensions/ {
+            printf "%s", candidate
+            collecting = 0
+            emitting = 1
+            next
+        }
+        emitting {
+            print
+            if (/00-init-extensions\.sql/) {
+                exit
+            }
+        }
+    ' "$generated_file"
+}
+
+_extract_builtin_initdb_shell() {
+    local generated_file="$1"
+    local shell_file="$2"
+    local sql_file="$3"
+
+    printf '%s\n' '#!/bin/sh' > "$shell_file"
+    _builtin_initdb_block "$generated_file" \
+        | sed -e '1s/^RUN //' -e 's/; \\$//' \
+            -e "s|/docker-entrypoint-initdb.d/00-init-extensions.sql|$sql_file|g" \
+        >> "$shell_file"
+    chmod +x "$shell_file"
 }
 
 _flavor_initdb_block() {
@@ -126,6 +181,28 @@ _generated_install_calls() {
         | sed -n 's/^    install_ext \([^;]*\); \\$/\1/p'
 }
 
+_assert_builtin_create_line() {
+    local builtin_name="$1"
+    local sql_file="$2"
+    local sql_identifier="$builtin_name"
+
+    if [[ ! "$builtin_name" =~ ^[a-z_][a-z0-9_]*$ ]]; then
+        sql_identifier="\"${builtin_name}\""
+    fi
+    grep -Fqx "CREATE EXTENSION IF NOT EXISTS ${sql_identifier};" "$sql_file"
+}
+
+_builtin_names_for_major() {
+    local major="$1"
+
+    pgver="$major" yq -r '
+        .builtin_extensions[]
+        | if type == "string" then .
+          else select((.max_major // 999) >= (strenv(pgver) | tonumber)) | .name
+          end
+    ' "$CONFIG_FILE"
+}
+
 _extract_generated_flavor_guard() {
     local generated_file="$1"
     local guard_file="$2"
@@ -174,6 +251,140 @@ teardown() {
 
     [ "$status" -eq 0 ]
     ! grep -q '^    install_ext ' "$generated_file"
+}
+
+@test "built-in initdb keeps adminpack for PostgreSQL 16 instead of resolving its bound during generation" {
+    local generated_file="$TEST_TEMP_DIR/Dockerfile.base"
+    local shell_file="$TEST_TEMP_DIR/builtin-initdb.sh"
+    local sql_file="$TEST_TEMP_DIR/00-init-extensions.sql"
+    local builtin_name
+
+    run _generate base "$generated_file"
+    [ "$status" -eq 0 ]
+    _extract_builtin_initdb_shell "$generated_file" "$shell_file" "$sql_file"
+
+    run env MAJOR_VERSION=16 sh "$shell_file"
+    [ "$status" -eq 0 ]
+
+    while IFS= read -r builtin_name; do
+        _assert_builtin_create_line "$builtin_name" "$sql_file"
+    done < <(yq -r '.builtin_extensions[] | if type == "string" then . else .name end' "$CONFIG_FILE")
+    [ "$(grep -c '^CREATE EXTENSION IF NOT EXISTS ' "$sql_file")" -eq 11 ]
+    grep -Fqx 'CREATE EXTENSION IF NOT EXISTS adminpack;' "$sql_file"
+}
+
+@test "built-in initdb emits nothing but comments and CREATE EXTENSION statements" {
+    # Counting the statements that must be present cannot see the ones that must
+    # not: a header `printf` left continuing into the next one makes the shell
+    # pass `printf` and `%s\n` as further arguments, and printf recycles its
+    # format, so all 11 statements still land — with two bare words beside them
+    # that PostgreSQL rejects at first start. The suite was green with exactly
+    # that defect.
+    local generated_file="$TEST_TEMP_DIR/Dockerfile.base"
+    local shell_file="$TEST_TEMP_DIR/builtin-initdb.sh"
+    local sql_file="$TEST_TEMP_DIR/00-init-extensions.sql"
+    local major
+
+    run _generate base "$generated_file"
+    [ "$status" -eq 0 ]
+    _extract_builtin_initdb_shell "$generated_file" "$shell_file" "$sql_file"
+
+    for major in 16 17 18; do
+        run env MAJOR_VERSION="$major" sh "$shell_file"
+        [ "$status" -eq 0 ]
+        run grep -cvE '^(--|CREATE EXTENSION IF NOT EXISTS .+;|$)' "$sql_file"
+        [ "$output" = "0" ]
+    done
+}
+
+@test "built-in names that are strict prefixes are emitted on independent whole SQL lines" {
+    local builtin_config="$TEST_TEMP_DIR/builtin-prefixes.yaml"
+    local generated_file="$TEST_TEMP_DIR/Dockerfile.base"
+    local shell_file="$TEST_TEMP_DIR/builtin-initdb.sh"
+    local sql_file="$TEST_TEMP_DIR/00-init-extensions.sql"
+
+    cp "$CONFIG_FILE" "$builtin_config"
+    yq -i '.builtin_extensions += ["foo", "foobar"]' "$builtin_config"
+
+    run _generate_from_config "$builtin_config" base "$generated_file"
+    [ "$status" -eq 0 ]
+    _extract_builtin_initdb_shell "$generated_file" "$shell_file" "$sql_file"
+
+    run env MAJOR_VERSION=16 sh "$shell_file"
+    [ "$status" -eq 0 ]
+    _assert_builtin_create_line foo "$sql_file"
+    _assert_builtin_create_line foobar "$sql_file"
+}
+
+@test "built-in initdb excludes adminpack for PostgreSQL 17 and 18 instead of dropping its build-time bound" {
+    local generated_file="$TEST_TEMP_DIR/Dockerfile.base"
+    local shell_file="$TEST_TEMP_DIR/builtin-initdb.sh"
+    local sql_file="$TEST_TEMP_DIR/00-init-extensions.sql"
+    local major
+
+    run _generate base "$generated_file"
+    [ "$status" -eq 0 ]
+    _extract_builtin_initdb_shell "$generated_file" "$shell_file" "$sql_file"
+
+    for major in 17 18; do
+        rm -f "$sql_file"
+        run env MAJOR_VERSION="$major" sh "$shell_file"
+        [ "$status" -eq 0 ]
+        [ "$(grep -c '^CREATE EXTENSION IF NOT EXISTS ' "$sql_file")" -eq 10 ]
+        while IFS= read -r builtin_name; do
+            _assert_builtin_create_line "$builtin_name" "$sql_file"
+        done < <(_builtin_names_for_major "$major")
+        ! grep -Fq 'adminpack' "$sql_file"
+    done
+}
+
+@test "built-in initdb quotes hyphenated identifiers without quoting safe names" {
+    local generated_file="$TEST_TEMP_DIR/Dockerfile.base"
+    local builtin_block
+
+    run _generate base "$generated_file"
+    [ "$status" -eq 0 ]
+    builtin_block=$(_builtin_initdb_block "$generated_file")
+
+    [[ "$builtin_block" == *'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'* ]]
+    [[ "$builtin_block" == *'CREATE EXTENSION IF NOT EXISTS pgcrypto;'* ]]
+    [[ "$builtin_block" != *'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'* ]]
+}
+
+@test "an unrecognised built-in extension property fails generation instead of being ignored" {
+    local invalid_config="$TEST_TEMP_DIR/unknown-builtin-key.yaml"
+
+    cp "$CONFIG_FILE" "$invalid_config"
+    yq -i '.builtin_extensions += [{"name": "test_builtin", "max_majro": 16}]' "$invalid_config"
+
+    run generate_dockerfile "$invalid_config" "$PROJECT_ROOT/postgres/Dockerfile" base 18 ghcr.io testowner
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'contains unrecognised key(s): max_majro'* ]]
+}
+
+@test "every configured built-in reaches initdb for at least one supported major" {
+    local generated_file="$TEST_TEMP_DIR/Dockerfile.base"
+    local shell_file="$TEST_TEMP_DIR/builtin-initdb.sh"
+    local sql_file="$TEST_TEMP_DIR/00-init-extensions.sql"
+    local all_sql="$TEST_TEMP_DIR/all-builtins.sql"
+    local major
+    local builtin_name
+
+    run _generate base "$generated_file"
+    [ "$status" -eq 0 ]
+    _extract_builtin_initdb_shell "$generated_file" "$shell_file" "$sql_file"
+
+    for major in 16 17 18; do
+        rm -f "$sql_file"
+        run env MAJOR_VERSION="$major" sh "$shell_file"
+        [ "$status" -eq 0 ]
+        cat "$sql_file" >> "$all_sql"
+    done
+
+    while IFS= read -r builtin_name; do
+        _assert_builtin_create_line "$builtin_name" "$all_sql"
+    done < <(yq -r '.builtin_extensions[] | if type == "string" then . else .name end' "$CONFIG_FILE")
 }
 
 @test "an undeclared flavor fails generation and names the typo" {

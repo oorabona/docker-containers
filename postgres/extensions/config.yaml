@@ -194,7 +194,8 @@ builtin_extensions:
   - file_fdw
   - postgres_fdw
   # Administration
-  - adminpack
+  - name: adminpack
+    max_major: 16
 # Flavors define which compiled extensions are included per flavor
 # Each flavor maps to a list of extension names from the 'extensions' section above
 # The build system uses this to generate per-flavor Dockerfile FROM/COPY blocks
