@@ -15,7 +15,7 @@ This is a simple `Alpine` based container with `OpenVPN` built from sources.
 ## Features
 
 - 🔐 Built from sources
-- Dependant library `pkcs11-helper` built from sources
+- Dependant library `pkcs11-helper` from the Alpine repository, signature-verified by `apk`
 - Embed `Google Authenticator` support
 
 ## Verify this image
@@ -184,7 +184,6 @@ Three variables control the container's lifecycle:
 ### Google Authenticator
 
 The container is configured to use the `google-authenticator` library to generate the OTP code.
-This library is based on the `pkcs11-helper` library which is built from sources.
 The generated QR code is stored in the container on a per user basis under the `/etc/openvpn/otp` directory.
 The QR code can be retrieved using the following command:
 
@@ -233,10 +232,10 @@ The following build arguments can be passed to customize the container build:
 |----------|---------|-------------|
 | `VERSION` | `latest` | OpenVPN version to build |
 | `UPSTREAM_VERSION` | (empty) | Fallback upstream version if `VERSION` is not specified |
-| `OS_VERSION` | `latest` | Alpine Linux version tag |
-| `PKCS11_HELPER_VERSION` | `1.31.0` | pkcs11-helper library version |
-| `EASYRSA_VERSION` | `3.2.2` | EasyRSA version for certificate management |
+| `OS_VERSION` | `latest` | Alpine Linux version tag — **3.24 or newer**, the releases carrying `pkcs11-helper` |
+| `EASYRSA_VERSION` | `3.2.6` | EasyRSA version for certificate management |
 | `NPROC` | `1` | Number of parallel processes for compilation |
+| `PKCS11_HELPER_VERSION` | — | **Refused.** The build stops if it is set: `pkcs11-helper` now comes from Alpine, so its version follows `OS_VERSION` |
 
 ## Build options
 
@@ -329,8 +328,12 @@ The following third-party dependencies are pinned and monitored for updates:
 
 | Dependency | Version | Source | Monitoring |
 |-----------|---------|--------|-----------|
-| pkcs11-helper | 1.31.0 | GitHub Release (opensc/pkcs11-helper) | Enabled |
-| EasyRSA | 3.2.2 | GitHub Release (OpenVPN/easy-rsa) | Enabled |
+| EasyRSA | 3.2.6 | GitHub Release (OpenVPN/easy-rsa) | Enabled |
+
+`pkcs11-helper` is deliberately absent from that table: it comes from the Alpine
+repository, so its version follows the base image and `apk` verifies its signature.
+Nothing here pins or monitors it. Alpine carries it in `main` from 3.24 onward, so
+`OS_VERSION` has that floor.
 
 ## References
 
