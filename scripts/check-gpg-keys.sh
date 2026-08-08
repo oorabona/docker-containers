@@ -19,6 +19,10 @@ CURL_BIN="${GPG_KEYS_CURL_BIN:-$(command -v curl || true)}"
 YQ_BIN="${GPG_KEYS_YQ_BIN:-$(command -v yq || true)}"
 JQ_BIN="${GPG_KEYS_JQ_BIN:-$(command -v jq || true)}"
 LATEST_GH_RELEASE="${GPG_KEYS_LATEST_GH_RELEASE:-$PROJECT_ROOT/helpers/latest-github-release}"
+GPG_KEYSERVER="${GPG_KEYS_KEYSERVER:-keyserver.ubuntu.com}"
+GPG_KEYS_REFRESH_TIMEOUT_SECONDS="${GPG_KEYS_REFRESH_TIMEOUT_SECONDS:-30}"
+GPG_KEYS_REFRESH_KILL_AFTER_SECONDS="${GPG_KEYS_REFRESH_KILL_AFTER_SECONDS:-5}"
+TIMEOUT_BIN="${GPG_KEYS_TIMEOUT_BIN:-$(command -v timeout || true)}"
 
 _gha_escape() {
     local s="$1"
@@ -30,7 +34,7 @@ _gha_escape() {
 
 usage() {
     cat >&2 <<'USAGE'
-usage: check-gpg-keys.sh [--all | <container>] [--json] [--warn-days N]
+usage: check-gpg-keys.sh [--all | <container>] [--json] [--warn-days N] [--refresh-check] [--refresh-dir DIR]
 USAGE
 }
 
@@ -54,6 +58,10 @@ validate_tools() {
     fi
     if [[ -z "$LATEST_GH_RELEASE" || ! -x "$LATEST_GH_RELEASE" ]]; then
         echo "check-gpg-keys: unable to resolve latest-github-release; set GPG_KEYS_LATEST_GH_RELEASE" >&2
+        missing=1
+    fi
+    if [[ -z "$TIMEOUT_BIN" || ! -x "$TIMEOUT_BIN" ]]; then
+        echo "check-gpg-keys: unable to resolve timeout; set GPG_KEYS_TIMEOUT_BIN" >&2
         missing=1
     fi
     (( missing == 0 ))
@@ -126,6 +134,253 @@ empty_expiry() {
 
 empty_rotation() {
     jq -nc '{status:"error", rotation:false, reason:"rotation-check-unavailable", severity:"warn", latest:null, runtime:false}'
+}
+
+empty_refresh() {
+    jq -nc '{status:"not-checked", proposed:false, reason:"not-checked", severity:"none", primary_fpr:null, pinned_fpr:null, delta:{added:[], removed:[]}}'
+}
+
+key_shape_from_colons() {
+    # A pub/sub record is followed by its full fingerprint record.  Keep the
+    # pair together: a key ID is only a 64-bit selector, whereas the full
+    # fingerprint identifies the material that the build verifies with.
+    awk -F: '
+        $1 == "pub" || $1 == "sub" {
+            if (pending) {
+                invalid = 1
+                exit
+            }
+            pending = 1
+            type = $1
+            validity = $2
+            expiry = $7
+            capabilities = $12
+            next
+        }
+        pending && $1 == "fpr" {
+            if ($10 == "") {
+                invalid = 1
+                exit
+            }
+            print type ":" validity ":" expiry ":" capabilities ":" $10
+            pending = 0
+            rows++
+        }
+        END {
+            if (pending || !rows || invalid) {
+                exit 1
+            }
+        }
+    ' | LC_ALL=C sort
+}
+
+key_shape_from_file() {
+    local keyfile="$1"
+
+    "$GPG_BIN" --batch --with-colons --show-keys "$keyfile" 2>/dev/null \
+        | key_shape_from_colons
+}
+
+key_shape_from_keyring() {
+    local fingerprint="$1"
+
+    "$GPG_BIN" --batch --with-colons --list-keys "$fingerprint" 2>/dev/null \
+        | key_shape_from_colons
+}
+
+shape_lines_json() {
+    jq -Rsc 'split("\n") | map(select(length > 0))'
+}
+
+refresh_result() {
+    local container="$1"
+    local key_rel="$2"
+    local keyfile="$3"
+    local pinned_fpr="$4"
+    local refresh_dir="$5"
+
+    local gnupg_tmp shape_tmp vendored_shape fetched_shape fetched_primary fetched_primary_validity vendored_primary_validity
+    local added removed export_path export_tmp recv_status missing_fingerprints exported_shape exported_primary
+    # This runs inside a command substitution, where Bash clears errexit, so a
+    # failing mktemp would leave GNUPGHOME empty — and an empty GNUPGHOME is not
+    # an isolated one, it is the caller's real keyring, which the fetch would
+    # then import into.  A boundary that cannot be established refuses.
+    if ! gnupg_tmp="$(mktemp -d)" || [[ -z "$gnupg_tmp" ]] \
+        || ! shape_tmp="$(mktemp -d)" || [[ -z "$shape_tmp" ]] \
+        || ! chmod 700 "$gnupg_tmp"; then
+        [[ -n "${gnupg_tmp:-}" ]] && rm -rf "$gnupg_tmp"
+        [[ -n "${shape_tmp:-}" ]] && rm -rf "$shape_tmp"
+        jq -nc --arg pinned_fpr "$pinned_fpr" '
+          {status:"unavailable", proposed:false, reason:"refresh-workspace-unavailable", severity:"warn", primary_fpr:null, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+        return 0
+    fi
+
+    cleanup_refresh_tmp() {
+        rm -rf "$gnupg_tmp" "$shape_tmp"
+    }
+
+    # The fingerprint argument is the trust anchor.  A keyserver can fail or
+    # lie by omission, but it must not be able to turn a refresh into an
+    # unpinned primary key replacement.
+    # dirmngr owns keyserver timeouts in current GnuPG, so bound the entire
+    # receive operation here.  GNU timeout returns 124 for the initial timeout
+    # and 137 if kill-after has to terminate a stubborn child.
+    if GNUPGHOME="$gnupg_tmp" "$TIMEOUT_BIN" \
+        --kill-after="${GPG_KEYS_REFRESH_KILL_AFTER_SECONDS}s" \
+        "${GPG_KEYS_REFRESH_TIMEOUT_SECONDS}s" \
+        "$GPG_BIN" --batch --keyserver "$GPG_KEYSERVER" --recv-keys "$pinned_fpr" >/dev/null 2>&1; then
+        :
+    else
+        recv_status=$?
+        cleanup_refresh_tmp
+        if [[ "$recv_status" == "124" || "$recv_status" == "137" ]]; then
+            jq -nc --arg pinned_fpr "$pinned_fpr" '
+              {status:"unavailable", proposed:false, reason:"keyserver-timeout", severity:"warn", primary_fpr:null, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+            return 0
+        fi
+        jq -nc --arg pinned_fpr "$pinned_fpr" '
+          {status:"unavailable", proposed:false, reason:"keyserver-unavailable", severity:"warn", primary_fpr:null, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+        return 0
+    fi
+
+    if ! fetched_shape="$(GNUPGHOME="$gnupg_tmp" key_shape_from_keyring "$pinned_fpr")"; then
+        cleanup_refresh_tmp
+        jq -nc --arg pinned_fpr "$pinned_fpr" '
+          {status:"unavailable", proposed:false, reason:"key-shape-unavailable", severity:"warn", primary_fpr:null, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+        return 0
+    fi
+
+    fetched_primary="$(awk -F: '$1 == "pub" {print $5; exit}' <<< "$fetched_shape")"
+    fetched_primary_validity="$(awk -F: '$1 == "pub" {print $2; exit}' <<< "$fetched_shape")"
+    if [[ "$fetched_primary" != "$pinned_fpr" ]]; then
+        cleanup_refresh_tmp
+        jq -nc --arg primary_fpr "${fetched_primary:-unknown}" --arg pinned_fpr "$pinned_fpr" '
+          {status:"alarm", proposed:false, reason:"primary-fingerprint-mismatch", severity:"high", primary_fpr:$primary_fpr, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+        return 0
+    fi
+
+    case "$fetched_primary_validity" in
+        r)
+            cleanup_refresh_tmp
+            jq -nc --arg primary_fpr "$fetched_primary" --arg pinned_fpr "$pinned_fpr" '
+              {status:"alarm", proposed:false, reason:"primary-key-revoked", severity:"high", primary_fpr:$primary_fpr, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+            return 0
+            ;;
+        i)
+            cleanup_refresh_tmp
+            jq -nc --arg primary_fpr "$fetched_primary" --arg pinned_fpr "$pinned_fpr" '
+              {status:"alarm", proposed:false, reason:"primary-key-invalid", severity:"high", primary_fpr:$primary_fpr, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+            return 0
+            ;;
+        d)
+            cleanup_refresh_tmp
+            jq -nc --arg primary_fpr "$fetched_primary" --arg pinned_fpr "$pinned_fpr" '
+              {status:"alarm", proposed:false, reason:"primary-key-disabled", severity:"high", primary_fpr:$primary_fpr, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+            return 0
+            ;;
+    esac
+
+    if ! vendored_shape="$(key_shape_from_file "$keyfile")"; then
+        cleanup_refresh_tmp
+        jq -nc --arg primary_fpr "$fetched_primary" --arg pinned_fpr "$pinned_fpr" '
+          {status:"unavailable", proposed:false, reason:"key-shape-unavailable", severity:"warn", primary_fpr:$primary_fpr, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+        return 0
+    fi
+
+    vendored_primary_validity="$(awk -F: '$1 == "pub" {print $2; exit}' <<< "$vendored_shape")"
+    if [[ "$fetched_primary_validity" == "e" && "$vendored_primary_validity" != "e" ]]; then
+        cleanup_refresh_tmp
+        jq -nc --arg primary_fpr "$fetched_primary" --arg pinned_fpr "$pinned_fpr" '
+          {status:"unavailable", proposed:false, reason:"fetched-primary-expired", severity:"warn", primary_fpr:$primary_fpr, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+        return 0
+    fi
+
+    printf '%s\n' "$vendored_shape" > "$shape_tmp/vendored"
+    printf '%s\n' "$fetched_shape" > "$shape_tmp/fetched"
+    awk -F: '{print $5}' "$shape_tmp/vendored" | LC_ALL=C sort -u > "$shape_tmp/vendored-fingerprints"
+    awk -F: '{print $5}' "$shape_tmp/fetched" | LC_ALL=C sort -u > "$shape_tmp/fetched-fingerprints"
+    missing_fingerprints="$(comm -23 "$shape_tmp/vendored-fingerprints" "$shape_tmp/fetched-fingerprints" | paste -sd, -)"
+    if [[ -n "$missing_fingerprints" ]]; then
+        cleanup_refresh_tmp
+        jq -nc --arg primary_fpr "$fetched_primary" --arg pinned_fpr "$pinned_fpr" \
+            --arg missing_fingerprints "$missing_fingerprints" '
+          {status:"alarm", proposed:false, reason:("missing-key-fingerprints: " + $missing_fingerprints), severity:"high", primary_fpr:$primary_fpr, pinned_fpr:$pinned_fpr, missing_fingerprints:($missing_fingerprints | split(",")), delta:{added:[], removed:[]}}'
+        return 0
+    fi
+    added="$(comm -13 "$shape_tmp/vendored" "$shape_tmp/fetched" | shape_lines_json)"
+    removed="$(comm -23 "$shape_tmp/vendored" "$shape_tmp/fetched" | shape_lines_json)"
+
+    if cmp -s "$shape_tmp/vendored" "$shape_tmp/fetched"; then
+        cleanup_refresh_tmp
+        jq -nc --arg primary_fpr "$fetched_primary" --arg pinned_fpr "$pinned_fpr" '
+          {status:"unchanged", proposed:false, reason:"shape-unchanged", severity:"none", primary_fpr:$primary_fpr, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+        return 0
+    fi
+
+    if [[ -n "$refresh_dir" ]]; then
+        export_path="$refresh_dir/$container/$key_rel"
+        mkdir -p "$(dirname "$export_path")"
+        export_tmp="$(mktemp "$(dirname "$export_path")/.${key_rel}.XXXXXX")"
+        # Exported whole, deliberately.  `export-minimal` drops every expired
+        # subkey — on the openvpn key that is 12 of 20, six of them signing
+        # subkeys covering releases from 2019 to mid-2026 — while keeping the
+        # revoked ones, so a retained rebuild of an older release would stop
+        # verifying.  Stripping only third-party signatures is not expressible
+        # here: `keep-expired-subkeys` does not exist in GnuPG 2.4, and
+        # `no-export-clean` cancels the minimisation outright, which is why the
+        # pair it was written with exported byte-for-byte what a plain export
+        # does.  A keyserver cannot exploit the fuller export: binding a subkey
+        # needs the primary's secret key, so it can pad the file but not add
+        # material the build would verify with.
+        if ! GNUPGHOME="$gnupg_tmp" "$GPG_BIN" --batch --armor \
+            --export "$pinned_fpr" > "$export_tmp"; then
+            rm -f "$export_tmp"
+            cleanup_refresh_tmp
+            jq -nc --arg primary_fpr "$fetched_primary" --arg pinned_fpr "$pinned_fpr" '
+              {status:"unavailable", proposed:false, reason:"key-export-unavailable", severity:"warn", primary_fpr:$primary_fpr, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+            return 0
+        fi
+        # The exported file must carry the shape that was compared, not merely a
+        # key with the right primary: the same omission this check refuses from a
+        # keyserver would be just as damaging arriving from the export step.
+        if [[ ! -s "$export_tmp" ]] \
+            || ! exported_shape="$(key_shape_from_file "$export_tmp")" \
+            || ! exported_primary="$(awk -F: '$1 == "pub" {print $5; exit}' <<< "$exported_shape")" \
+            || [[ "$exported_primary" != "$pinned_fpr" ]] \
+            || [[ "$exported_shape" != "$fetched_shape" ]]; then
+            rm -f "$export_tmp"
+            cleanup_refresh_tmp
+            jq -nc --arg primary_fpr "$fetched_primary" --arg pinned_fpr "$pinned_fpr" '
+              {status:"unavailable", proposed:false, reason:"key-export-invalid", severity:"warn", primary_fpr:$primary_fpr, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+            return 0
+        fi
+        if ! mv -f "$export_tmp" "$export_path"; then
+            rm -f "$export_tmp"
+            cleanup_refresh_tmp
+            jq -nc --arg primary_fpr "$fetched_primary" --arg pinned_fpr "$pinned_fpr" '
+              {status:"unavailable", proposed:false, reason:"key-install-unavailable", severity:"warn", primary_fpr:$primary_fpr, pinned_fpr:$pinned_fpr, delta:{added:[], removed:[]}}'
+            return 0
+        fi
+    fi
+
+    cleanup_refresh_tmp
+    jq -nc --arg primary_fpr "$fetched_primary" --arg pinned_fpr "$pinned_fpr" \
+        --argjson added "$added" --argjson removed "$removed" '
+      {status:"changed", proposed:true, reason:"shape-changed", severity:"none", primary_fpr:$primary_fpr, pinned_fpr:$pinned_fpr, delta:{added:$added, removed:$removed}}'
+}
+
+refresh_contract_alarm() {
+    local refresh="$1"
+    local primary_fpr pinned_fpr reason
+    primary_fpr="$(jq -r '.primary_fpr // "unknown"' <<< "$refresh")"
+    pinned_fpr="$(jq -r '.pinned_fpr // "unknown"' <<< "$refresh")"
+    reason="$(jq -r '.reason // "key-contract-mismatch"' <<< "$refresh")"
+
+    # Re-use the existing high-severity contract alarm path for this condition.
+    # It is deliberately not a refresh: its own reason describes why no key
+    # material is written for a PR.
+    jq -nc --arg primary_fpr "$primary_fpr" --arg pinned_fpr "$pinned_fpr" --arg reason "$reason" '
+      {status:"error", reason:$reason, severity:"high", primary_fpr:$primary_fpr, primary_keyid:null, primary_count:1, primary_validity:null, signing_capable:false, signing_usable:false, pinned_fpr:$pinned_fpr}'
 }
 
 rotation_config_unsupported() {
@@ -396,13 +651,15 @@ emit_warning_if_needed() {
     local dep="$2"
     local result="$3"
 
-    local expiry_status rotation_status contract_status expiry_reason rotation_reason contract_reason
+    local expiry_status rotation_status contract_status refresh_status expiry_reason rotation_reason contract_reason refresh_reason
     expiry_status="$(jq -r '.expiry.status' <<< "$result")"
     rotation_status="$(jq -r '.rotation.status' <<< "$result")"
     contract_status="$(jq -r '.contract.status // "ok"' <<< "$result")"
+    refresh_status="$(jq -r '.refresh.status // "not-checked"' <<< "$result")"
     expiry_reason="$(jq -r '.expiry.reason' <<< "$result")"
     rotation_reason="$(jq -r '.rotation.reason' <<< "$result")"
     contract_reason="$(jq -r '.contract.reason // "valid"' <<< "$result")"
+    refresh_reason="$(jq -r '.refresh.reason // "not-checked"' <<< "$result")"
 
     if [[ "$contract_status" != "ok" ]]; then
         printf '::warning::gpg-key-contract: %s\n' \
@@ -415,6 +672,10 @@ emit_warning_if_needed() {
     if [[ "$rotation_status" != "ok" ]]; then
         printf '::warning::gpg-key-rotation: %s\n' \
             "$(_gha_escape "${container}/${dep}: ${rotation_reason}")" >&2
+    fi
+    if [[ "$refresh_status" == "unavailable" ]]; then
+        printf '::warning::gpg-key-refresh: %s\n' \
+            "$(_gha_escape "${container}/${dep}: ${refresh_reason}")" >&2
     fi
     local config_finding config_reason config_value config_detail
     while IFS= read -r config_finding; do
@@ -543,6 +804,8 @@ check_dep() {
     local dep="$2"
     local config="$3"
     local cli_warn_days="$4"
+    local refresh_check="$5"
+    local refresh_dir="$6"
 
     local key_rel repo strip_v cfg_warn_days warn_days dep_type tag_pattern keyfile errors_json config_json fingerprint_arg pinned_fpr
     key_rel="$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].gpg_key.file // ""' "$config")"
@@ -562,7 +825,8 @@ check_dep() {
     errors_json="[]"
     config_json="[]"
 
-    local expiry_json rotation_json contract_json report
+    local expiry_json rotation_json contract_json refresh_json report
+    refresh_json="$(empty_refresh)"
     if [[ -z "$fingerprint_arg" || "$fingerprint_arg" == "null" || -z "$pinned_fpr" || "$pinned_fpr" == "null" ]]; then
         local msg="${dep}: missing pinned gpg_key fingerprint build_arg"
         errors_json="$(jq -nc --arg msg "$msg" '[$msg]')"
@@ -593,6 +857,12 @@ check_dep() {
             contract_json="$(jq -nc --arg pinned_fpr "$pinned_fpr" '{status:"error", reason:"key-parse-error", severity:"high", primary_fpr:null, primary_keyid:null, primary_count:null, primary_validity:null, pinned_fpr:$pinned_fpr}')"
         else
             contract_json="$(contract_result "$report" "$pinned_fpr")"
+            if [[ "$refresh_check" == "true" ]]; then
+                refresh_json="$(refresh_result "$container" "$key_rel" "$keyfile" "$pinned_fpr" "$refresh_dir")"
+                if [[ "$(jq -r '.status' <<< "$refresh_json")" == "alarm" ]]; then
+                    contract_json="$(refresh_contract_alarm "$refresh_json")"
+                fi
+            fi
             if ! valid_warn_days "$warn_days"; then
                 local msg="${dep}: invalid gpg_key.expiry_warn_days: ${warn_days}"
                 errors_json="$(jq -nc --arg msg "$msg" --argjson errors "$errors_json" '$errors + [$msg]')"
@@ -634,16 +904,17 @@ check_dep() {
         --argjson expiry "$expiry_json" \
         --argjson rotation "$rotation_json" \
         --argjson contract "$contract_json" \
+        --argjson refresh "$refresh_json" \
         --argjson config "$config_json" \
         --argjson errors "$errors_json" \
-        '{container:$container, dependency:$dep, key_file:$key_file, expiry:$expiry, rotation:$rotation, contract:$contract, config:$config, errors:$errors}')"
+        '{container:$container, dependency:$dep, key_file:$key_file, expiry:$expiry, rotation:$rotation, contract:$contract, refresh:$refresh, config:$config, errors:$errors}')"
 
     emit_warning_if_needed "$container" "$dep" "$result"
     printf '%s\n' "$result"
 }
 
 main() {
-    local target="" json=false cli_warn_days=""
+    local target="" json=false cli_warn_days="" refresh_dir="" refresh_check=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -661,6 +932,19 @@ main() {
                     return 2
                 fi
                 cli_warn_days="$2"
+                shift 2
+                ;;
+            --refresh-check)
+                refresh_check=true
+                shift
+                ;;
+            --refresh-dir)
+                if [[ $# -lt 2 || -z "$2" ]]; then
+                    usage
+                    return 2
+                fi
+                refresh_dir="$2"
+                refresh_check=true
                 shift 2
                 ;;
             -*)
@@ -732,7 +1016,7 @@ main() {
             if ! gpg_key_shape_valid "$config" "$dep"; then
                 result="$(gpg_key_shape_result "$container" "$dep")"
             else
-                result="$(check_dep "$container" "$dep" "$config" "$cli_warn_days")"
+                result="$(check_dep "$container" "$dep" "$config" "$cli_warn_days" "$refresh_check" "$refresh_dir")"
             fi
             results="$(jq -c --argjson item "$result" '. + [$item]' <<< "$results")"
         done <<< "$deps"
@@ -741,7 +1025,7 @@ main() {
     if [[ "$json" == "true" ]]; then
         jq -c '.' <<< "$results"
     else
-        jq -r '.[] | "\(.container)/\(.dependency): contract=\(.contract.status // "ok") expiry=\(.expiry.status) rotation=\(.rotation.status)"' <<< "$results"
+        jq -r '.[] | "\(.container)/\(.dependency): contract=\(.contract.status // "ok") expiry=\(.expiry.status) rotation=\(.rotation.status) refresh=\(.refresh.status // "not-checked")"' <<< "$results"
     fi
 }
 

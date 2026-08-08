@@ -28,6 +28,9 @@ teardown() {
     unset FAKE_PRIMARY_FPR FAKE_PRIMARY_COUNT FAKE_PRIMARY_VALIDITY FAKE_SIGNING_FPR FAKE_SIGNING_USABLE FAKE_SIGNING_CAPABLE
     unset FAKE_CURL_LOG FAKE_CURL_ARGS_LOG FAKE_LATEST_ARGS_LOG
     unset GPG_KEYS_YQ_BIN GPG_KEYS_JQ_BIN
+    unset FAKE_GPG_REFRESH_MODE FAKE_GPG_REFRESH_LOG FAKE_REFRESH_PRIMARY_FPR FAKE_REFRESH_PRIMARY_VALIDITY
+    unset FAKE_VENDORED_SHAPE FAKE_FETCHED_SHAPE GPG_KEYS_REFRESH_TIMEOUT_SECONDS GPG_KEYS_REFRESH_KILL_AFTER_SECONDS
+    unset RUN_TIMEOUT_BIN FAKE_GPG_EXPORT_MODE FAKE_MV_MODE
 }
 
 write_project_files() {
@@ -140,10 +143,73 @@ esac
 EOF
     chmod +x "$TEST_PROJECT_ROOT/helpers/curl"
 
-    cat > "$TEST_PROJECT_ROOT/helpers/gpg" <<'EOF'
+cat > "$TEST_PROJECT_ROOT/helpers/gpg" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+default_shape() {
+  printf '%s\n' \
+    "pub:${FAKE_REFRESH_PRIMARY_VALIDITY:--}:2048:1:FAKEKEYID:0:0:::::scESC:" \
+    'fpr:::::::::MATCHFPR:' \
+    'sub:-:2048:1:FAKESUBKEY:0:0:::::s:' \
+    'fpr:::::::::FAKESUBFPR:'
+}
+
 for arg in "$@"; do
+  if [[ "$arg" == "--recv-keys" ]]; then
+    if [[ -n "${FAKE_GPG_REFRESH_LOG:-}" ]]; then
+      printf 'recv-keys\n' >> "$FAKE_GPG_REFRESH_LOG"
+    fi
+    case "${FAKE_GPG_REFRESH_MODE:-ok}" in
+      ok) ;;
+      fail) exit 2 ;;
+      hang) exec sleep 3600 ;;
+      hang-kill) trap '' TERM; exec sleep 3600 ;;
+      *) exit 99 ;;
+    esac
+    exit 0
+  fi
+  if [[ "$arg" == "--show-keys" ]]; then
+    # --show-keys is used on two different files: the vendored .asc, and the
+    # staged export, which mktemp names with a leading dot.  Reading the staged
+    # file must yield what was exported — the fetched shape — or the check that
+    # the export preserved that shape can never pass.
+    show_target="${*: -1}"
+    if [[ "$(basename -- "$show_target")" == .* ]]; then
+      if [[ -n "${FAKE_EXPORTED_SHAPE:-}" ]]; then
+        printf '%s\n' "$FAKE_EXPORTED_SHAPE"
+      elif [[ -n "${FAKE_FETCHED_SHAPE:-}" ]]; then
+        printf '%s\n' "$FAKE_FETCHED_SHAPE"
+      else
+        default_shape
+      fi
+    elif [[ -n "${FAKE_VENDORED_SHAPE:-}" ]]; then
+      printf '%s\n' "$FAKE_VENDORED_SHAPE"
+    else
+      default_shape
+    fi
+    exit 0
+  fi
+  if [[ "$arg" == "--list-keys" ]]; then
+    if [[ -n "${FAKE_FETCHED_SHAPE:-}" ]]; then
+      printf '%s\n' "$FAKE_FETCHED_SHAPE"
+    else
+      default_shape | sed "s/fpr:::::::::MATCHFPR:/fpr:::::::::${FAKE_REFRESH_PRIMARY_FPR:-MATCHFPR}:/"
+    fi
+    exit 0
+  fi
+  if [[ "$arg" == "--export" ]]; then
+    # The export is deliberately whole: any --export-options here would be a
+    # regression, so the fake reports which form it was called in.
+    if [[ "${FAKE_GPG_EXPORT_MODE:-ok}" == "empty" ]]; then
+      :
+    elif [[ " $* " == *" --export-options "* ]]; then
+      printf '%s\n' 'minimised export'
+    else
+      printf '%s\n' 'refreshed key material'
+    fi
+    exit 0
+  fi
   if [[ "$arg" == "--import" ]]; then
     exit 0
   fi
@@ -188,10 +254,32 @@ done
 exit 0
 EOF
     chmod +x "$TEST_PROJECT_ROOT/helpers/gpg"
+
+cat > "$TEST_PROJECT_ROOT/helpers/mktemp" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+# A failing mktemp is how the isolation boundary fails to be established.
+if [[ "${FAKE_MKTEMP_MODE:-ok}" == "fail" ]]; then
+    exit 1
+fi
+exec /usr/bin/mktemp "$@"
+EOF
+    chmod +x "$TEST_PROJECT_ROOT/helpers/mktemp"
+
+cat > "$TEST_PROJECT_ROOT/helpers/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${FAKE_MV_MODE:-ok}" == "fail" ]]; then
+  exit 1
+fi
+exec /bin/mv "$@"
+EOF
+    chmod +x "$TEST_PROJECT_ROOT/helpers/mv"
 }
 
 run_check() {
-    env GPG_KEYS_PROJECT_ROOT="$TEST_PROJECT_ROOT" \
+    env PATH="$TEST_PROJECT_ROOT/helpers:$PATH" \
+        GPG_KEYS_PROJECT_ROOT="$TEST_PROJECT_ROOT" \
         GPG_KEYS_GPG_BIN="${RUN_GPG_BIN:-$TEST_PROJECT_ROOT/helpers/gpg}" \
         GPG_KEYS_CURL_BIN="$TEST_PROJECT_ROOT/helpers/curl" \
         GPG_KEYS_LATEST_GH_RELEASE="$TEST_PROJECT_ROOT/helpers/latest-github-release" \
@@ -208,6 +296,18 @@ run_check() {
         FAKE_CURL_MODE="${FAKE_CURL_MODE:-ok}" \
         FAKE_CURL_ARGS_LOG="${FAKE_CURL_ARGS_LOG:-}" \
         FAKE_GPG_VERIFY_STATUS="${FAKE_GPG_VERIFY_STATUS:-validsig}" \
+        FAKE_GPG_REFRESH_MODE="${FAKE_GPG_REFRESH_MODE:-ok}" \
+        FAKE_GPG_REFRESH_LOG="${FAKE_GPG_REFRESH_LOG:-}" \
+        FAKE_REFRESH_PRIMARY_FPR="${FAKE_REFRESH_PRIMARY_FPR:-MATCHFPR}" \
+        FAKE_REFRESH_PRIMARY_VALIDITY="${FAKE_REFRESH_PRIMARY_VALIDITY:--}" \
+        FAKE_VENDORED_SHAPE="${FAKE_VENDORED_SHAPE:-}" \
+        FAKE_FETCHED_SHAPE="${FAKE_FETCHED_SHAPE:-}" \
+        GPG_KEYS_REFRESH_TIMEOUT_SECONDS="${GPG_KEYS_REFRESH_TIMEOUT_SECONDS:-30}" \
+        GPG_KEYS_REFRESH_KILL_AFTER_SECONDS="${GPG_KEYS_REFRESH_KILL_AFTER_SECONDS:-5}" \
+        GPG_KEYS_TIMEOUT_BIN="${RUN_TIMEOUT_BIN:-$(command -v timeout)}" \
+        FAKE_GPG_EXPORT_MODE="${FAKE_GPG_EXPORT_MODE:-ok}" \
+        FAKE_MV_MODE="${FAKE_MV_MODE:-ok}" \
+        FAKE_MKTEMP_MODE="${FAKE_MKTEMP_MODE:-ok}" \
         FAKE_LATEST_VERSION="${FAKE_LATEST_VERSION:-3.2.7}" \
         FAKE_LATEST_ARGS_LOG="${FAKE_LATEST_ARGS_LOG:-}" \
         EXPECT_GPG_KEYS_GPG_BIN="${EXPECT_GPG_KEYS_GPG_BIN:-}" \
@@ -414,6 +514,309 @@ require_live_gpg_keygen() {
     [ "$(jq -r '.[0].contract.signing_usable' <<< "$(json_output)")" = "true" ]
 }
 
+@test "unchanged trust shape with different armored bytes proposes no refresh" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    local refresh_dir="$TEST_TEMP_DIR/refreshed"
+
+    run run_check openvpn --json --refresh-dir "$refresh_dir"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "unchanged" ]
+    [ "$(jq -r '.[0].refresh.proposed' <<< "$(json_output)")" = "false" ]
+    [ ! -e "$refresh_dir/openvpn/easyrsa-signing-key.asc" ]
+}
+
+@test "a changed primary or subkey trust shape proposes a refresh with its delta" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_FETCHED_SHAPE=$'pub:-:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsub:r:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:'
+    local refresh_dir="$TEST_TEMP_DIR/refreshed"
+
+    run run_check openvpn --json --refresh-dir "$refresh_dir"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "changed" ]
+    [ "$(jq -r '.[0].refresh.proposed' <<< "$(json_output)")" = "true" ]
+    [ "$(jq -r '.[0].refresh.delta.added[]' <<< "$(json_output)")" = "sub:r:0:s:FAKESUBFPR" ]
+    [ "$(jq -r '.[0].refresh.delta.removed[]' <<< "$(json_output)")" = "sub:-:0:s:FAKESUBFPR" ]
+    [ "$(cat "$refresh_dir/openvpn/easyrsa-signing-key.asc")" = "refreshed key material" ]
+}
+
+@test "a keyserver fetch failure warns and does not propose a refresh" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_GPG_REFRESH_MODE=fail
+
+    run run_check openvpn --json --refresh-check
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::warning::gpg-key-refresh: openvpn/EASYRSA_VERSION: keyserver-unavailable"* ]]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "unavailable" ]
+    [ "$(jq -r '.[0].refresh.proposed' <<< "$(json_output)")" = "false" ]
+}
+
+@test "a fetched primary fingerprint mismatch raises the anchor alarm and does not propose a refresh" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_REFRESH_PRIMARY_FPR=DIFFERENTFPR
+
+    run run_check openvpn --json --refresh-check
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "alarm" ]
+    [ "$(jq -r '.[0].refresh.proposed' <<< "$(json_output)")" = "false" ]
+    [ "$(jq -r '.[0].contract.status' <<< "$(json_output)")" = "error" ]
+    [ "$(jq -r '.[0].contract.reason' <<< "$(json_output)")" = "primary-fingerprint-mismatch" ]
+    [ "$(jq -r '.[0].contract.severity' <<< "$(json_output)")" = "high" ]
+}
+
+@test "a fetched key missing a vendored subkey raises an omission alarm and stages nothing" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_FETCHED_SHAPE=$'pub:-:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:'
+    local refresh_dir="$TEST_TEMP_DIR/refreshed"
+
+    run run_check openvpn --json --refresh-dir "$refresh_dir"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "alarm" ]
+    [ "$(jq -r '.[0].refresh.reason' <<< "$(json_output)")" = "missing-key-fingerprints: FAKESUBFPR" ]
+    [ "$(jq -r '.[0].contract.reason' <<< "$(json_output)")" = "missing-key-fingerprints: FAKESUBFPR" ]
+    [ "$(jq -r '.[0].refresh.proposed' <<< "$(json_output)")" = "false" ]
+    [ ! -e "$refresh_dir/openvpn/easyrsa-signing-key.asc" ]
+}
+
+@test "the trust shape comparison ignores third-party signatures" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_FETCHED_SHAPE=$'pub:-:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsig:::::::\nsub:-:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:\nsig:::::::'
+
+    run run_check openvpn --json --refresh-check
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "unchanged" ]
+    [ "$(jq -r '.[0].refresh.proposed' <<< "$(json_output)")" = "false" ]
+}
+
+@test "a subkey replacement is an omission alarm even when its metadata is identical" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_FETCHED_SHAPE=$'pub:-:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsub:-:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::REPLACEDSUBFPR:'
+
+    run run_check openvpn --json --refresh-check
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "alarm" ]
+    [ "$(jq -r '.[0].refresh.reason' <<< "$(json_output)")" = "missing-key-fingerprints: FAKESUBFPR" ]
+}
+
+@test "a fetched revoked primary raises an alarm and stages nothing" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_REFRESH_PRIMARY_VALIDITY=r
+    local refresh_dir="$TEST_TEMP_DIR/refreshed"
+
+    run run_check openvpn --json --refresh-dir "$refresh_dir"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "alarm" ]
+    [ "$(jq -r '.[0].refresh.reason' <<< "$(json_output)")" = "primary-key-revoked" ]
+    [ "$(jq -r '.[0].refresh.proposed' <<< "$(json_output)")" = "false" ]
+    [ "$(jq -r '.[0].contract.status' <<< "$(json_output)")" = "error" ]
+    [ "$(jq -r '.[0].contract.reason' <<< "$(json_output)")" = "primary-key-revoked" ]
+    [ ! -e "$refresh_dir/openvpn/easyrsa-signing-key.asc" ]
+}
+
+@test "a fetched expired primary is unavailable while the vendored primary is valid" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_REFRESH_PRIMARY_VALIDITY=e
+    export FAKE_VENDORED_SHAPE=$'pub:-:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsub:-:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:'
+    export FAKE_FETCHED_SHAPE=$'pub:e:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsub:-:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:\nsub:-:2048:1:NEWKEY:0:0:::::s:\nfpr:::::::::REPLACEDSUBFPR:'
+    local refresh_dir="$TEST_TEMP_DIR/refreshed"
+
+    run run_check openvpn --json --refresh-dir "$refresh_dir"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "unavailable" ]
+    [ "$(jq -r '.[0].refresh.reason' <<< "$(json_output)")" = "fetched-primary-expired" ]
+    [ "$(jq -r '.[0].refresh.proposed' <<< "$(json_output)")" = "false" ]
+    [ ! -e "$refresh_dir/openvpn/easyrsa-signing-key.asc" ]
+}
+
+@test "an expired fetched primary still proposes when the vendored primary is also expired" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_REFRESH_PRIMARY_VALIDITY=e
+    export FAKE_VENDORED_SHAPE=$'pub:e:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsub:-:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:'
+    export FAKE_FETCHED_SHAPE=$'pub:e:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsub:-:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:\nsub:-:2048:1:NEWKEY:0:0:::::s:\nfpr:::::::::REPLACEDSUBFPR:'
+    local refresh_dir="$TEST_TEMP_DIR/refreshed"
+
+    run run_check openvpn --json --refresh-dir "$refresh_dir"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "changed" ]
+    [ "$(jq -r '.[0].refresh.proposed' <<< "$(json_output)")" = "true" ]
+    [ -f "$refresh_dir/openvpn/easyrsa-signing-key.asc" ]
+}
+
+@test "a revoked subkey on a live primary is ordinary refresh work, not an alarm" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_FETCHED_SHAPE=$'pub:-:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsub:r:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:'
+
+    run run_check openvpn --json --refresh-check
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "changed" ]
+    [ "$(jq -r '.[0].contract.status' <<< "$(json_output)")" = "ok" ]
+}
+
+@test "a missing timeout binary fails preflight instead of reporting a keyserver outage" {
+    export RUN_TIMEOUT_BIN="$TEST_TEMP_DIR/missing-timeout"
+
+    run run_check openvpn --json --refresh-check
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unable to resolve timeout; set GPG_KEYS_TIMEOUT_BIN"* ]]
+    [[ "$output" != *"keyserver-unavailable"* ]]
+}
+
+@test "a failed final move is unavailable rather than reported as changed" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_FETCHED_SHAPE=$'pub:-:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsub:-:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:\nsub:-:2048:1:NEWKEY:0:0:::::s:\nfpr:::::::::REPLACEDSUBFPR:'
+    export FAKE_MV_MODE=fail
+    local refresh_dir="$TEST_TEMP_DIR/refreshed"
+
+    run run_check openvpn --json --refresh-dir "$refresh_dir"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "unavailable" ]
+    [ "$(jq -r '.[0].refresh.reason' <<< "$(json_output)")" = "key-install-unavailable" ]
+    [ ! -e "$refresh_dir/openvpn/easyrsa-signing-key.asc" ]
+}
+
+@test "a zero-byte export is not installed" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_FETCHED_SHAPE=$'pub:-:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsub:-:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:\nsub:-:2048:1:NEWKEY:0:0:::::s:\nfpr:::::::::REPLACEDSUBFPR:'
+    export FAKE_GPG_EXPORT_MODE=empty
+    local refresh_dir="$TEST_TEMP_DIR/refreshed"
+
+    run run_check openvpn --json --refresh-dir "$refresh_dir"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "unavailable" ]
+    [ "$(jq -r '.[0].refresh.reason' <<< "$(json_output)")" = "key-export-invalid" ]
+    [ ! -e "$refresh_dir/openvpn/easyrsa-signing-key.asc" ]
+}
+
+@test "a hanging keyserver becomes unavailable within the configured bound" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_GPG_REFRESH_MODE=hang
+    export GPG_KEYS_REFRESH_TIMEOUT_SECONDS=1
+    export GPG_KEYS_REFRESH_KILL_AFTER_SECONDS=1
+    local started elapsed
+    started="$(date +%s)"
+
+    run run_check openvpn --json --refresh-check
+    elapsed=$(( $(date +%s) - started ))
+
+    [ "$status" -eq 0 ]
+    [ "$elapsed" -lt 4 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "unavailable" ]
+    [ "$(jq -r '.[0].refresh.reason' <<< "$(json_output)")" = "keyserver-timeout" ]
+    [ "$(jq -r '.[0].refresh.proposed' <<< "$(json_output)")" = "false" ]
+}
+
+@test "a keyserver that ignores termination is killed and remains unavailable" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_GPG_REFRESH_MODE=hang-kill
+    export GPG_KEYS_REFRESH_TIMEOUT_SECONDS=1
+    export GPG_KEYS_REFRESH_KILL_AFTER_SECONDS=1
+
+    run run_check openvpn --json --refresh-check
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "unavailable" ]
+    [ "$(jq -r '.[0].refresh.reason' <<< "$(json_output)")" = "keyserver-timeout" ]
+    [ "$(jq -r '.[0].refresh.proposed' <<< "$(json_output)")" = "false" ]
+}
+
+@test "without refresh work requested, no keyserver call occurs and refresh is not-checked" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_GPG_REFRESH_LOG="$TEST_TEMP_DIR/refresh.log"
+
+    run run_check openvpn --json
+
+    [ "$status" -eq 0 ]
+    [ ! -e "$FAKE_GPG_REFRESH_LOG" ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "not-checked" ]
+}
+
+@test "a human-readable refresh check reports its refresh result" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+
+    run run_check openvpn --refresh-check
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"refresh=unchanged"* ]]
+}
+
+@test "a workspace that cannot be created refuses instead of using the real keyring" {
+    # GNUPGHOME="" is not an isolated keyring, it is the caller's own, so a
+    # failing mktemp would make the fetch import into it.  The boundary that
+    # cannot be established must refuse rather than widen.
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_MKTEMP_MODE=fail
+    local refresh_dir="$TEST_TEMP_DIR/refreshed"
+
+    run run_check openvpn --json --refresh-dir "$refresh_dir"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"refresh-workspace-unavailable"* ]]
+    [[ "$output" != *'"proposed":true'* ]]
+    [ ! -e "$refresh_dir/openvpn/easyrsa-signing-key.asc" ]
+    # The fetch must not have run at all.
+    [ ! -s "$TEST_PROJECT_ROOT/gpg-refresh.log" ] || \
+        ! grep -q 'recv-keys' "$TEST_PROJECT_ROOT/gpg-refresh.log"
+}
+
+@test "an export that lost a fetched subkey is not installed" {
+    # The same omission the fetch step refuses from a keyserver is just as
+    # damaging arriving from the export: a staged key carrying the right primary
+    # but fewer subkeys would replace the vendored file with an amputated one.
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_FETCHED_SHAPE=$'pub:-:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsub:-:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:\nsub:-:2048:1:NEWKEY:0:0:::::s:\nfpr:::::::::NEWSUBFPR:'
+    # The export drops the subkey the fetch had just gained.
+    export FAKE_EXPORTED_SHAPE=$'pub:-:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsub:-:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:'
+    local refresh_dir="$TEST_TEMP_DIR/refreshed"
+
+    run run_check openvpn --json --refresh-dir "$refresh_dir"
+
+    [ "$status" -eq 0 ]
+    [ ! -e "$refresh_dir/openvpn/easyrsa-signing-key.asc" ]
+    [[ "$output" == *"key-export-invalid"* ]]
+    [[ "$output" != *'"proposed":true'* ]]
+}
+
+@test "a refresh exports the whole key rather than a minimised one" {
+    # Measured on the real openvpn key: --export-options export-minimal keeps
+    # 8 subkeys of 20, dropping every expired one — six of them signing
+    # subkeys that signed releases between 2019 and mid-2026 — while keeping
+    # the revoked ones.  A retained rebuild of one of those releases would
+    # stop verifying, so minimisation must not come back.
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_FETCHED_SHAPE=$'pub:-:2048:1:FAKEKEYID:0:0:::::scESC:\nfpr:::::::::MATCHFPR:\nsub:-:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:\nsub:-:2048:1:NEWKEY:0:0:::::s:\nfpr:::::::::REPLACEDSUBFPR:'
+    local refresh_dir="$TEST_TEMP_DIR/refreshed"
+
+    run run_check openvpn --json --refresh-dir "$refresh_dir"
+
+    [ "$status" -eq 0 ]
+    [ "$(cat "$refresh_dir/openvpn/easyrsa-signing-key.asc")" = "refreshed key material" ]
+    [[ "$(cat "$refresh_dir/openvpn/easyrsa-signing-key.asc")" != *"minimised export"* ]]
+}
+
+@test "an unpaired pub/sub record is unavailable instead of comparing equal" {
+    export GPG_KEYS_NOW_TS=$((2000000000 - 100 * 86400))
+    export FAKE_FETCHED_SHAPE=$'pub:-:2048:1:FAKEKEYID:0:0:::::scESC:\nsub:-:2048:1:FAKESUBKEY:0:0:::::s:\nfpr:::::::::FAKESUBFPR:'
+
+    run run_check openvpn --json --refresh-check
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[0].refresh.status' <<< "$(json_output)")" = "unavailable" ]
+    [ "$(jq -r '.[0].refresh.reason' <<< "$(json_output)")" = "key-shape-unavailable" ]
+}
+
 @test "workflow GPG gate treats config-only rows as findings" {
     local findings="$TEST_TEMP_DIR/findings.json"
     cat > "$findings" <<'EOF'
@@ -450,6 +853,30 @@ EOF
     [[ "$token_if" == *"github.ref == 'refs/heads/master'"* ]]
     [[ "$issue_if" == *"steps.gpg.outputs.has_findings == 'true'"* ]]
     [[ "$issue_if" == *"github.ref == 'refs/heads/master'"* ]]
+}
+
+@test "workflow fans changed GPG key shapes into one pinned create-pull-request matrix job" {
+    local wf="$PROJECT_ROOT/.github/workflows/upstream-monitor.yaml"
+    local matrix pr_action add_paths
+    matrix="$(yq -r '.jobs."refresh-vendored-gpg-keys".strategy.matrix.include' "$wf")"
+    pr_action="$(yq -r '.jobs."refresh-vendored-gpg-keys".steps[] | select(.id == "create-pr") | .uses' "$wf")"
+    add_paths="$(yq -r '.jobs."refresh-vendored-gpg-keys".steps[] | select(.id == "create-pr") | .with."add-paths"' "$wf")"
+
+    [[ "$matrix" == *"fromJson(needs.check-gpg-keys.outputs.refresh_candidates)"* ]]
+    [ "$pr_action" = "peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1" ]
+    [ "$add_paths" = '${{ matrix.key_file }}' ]
+}
+
+@test "workflow passes refresh matrix values into shell through environment variables" {
+    local wf="$PROJECT_ROOT/.github/workflows/upstream-monitor.yaml"
+    local env_container env_dependency refresh_run
+    env_container="$(yq -r '.jobs."refresh-vendored-gpg-keys".steps[] | select(.id == "refresh") | .env.CONTAINER' "$wf")"
+    env_dependency="$(yq -r '.jobs."refresh-vendored-gpg-keys".steps[] | select(.id == "refresh") | .env.DEPENDENCY' "$wf")"
+    refresh_run="$(yq -r '.jobs."refresh-vendored-gpg-keys".steps[] | select(.id == "refresh") | .run' "$wf")"
+
+    [ "$env_container" = '${{ matrix.container }}' ]
+    [ "$env_dependency" = '${{ matrix.dependency }}' ]
+    [[ "$refresh_run" != *'${{ matrix.'* ]]
 }
 
 @test "trust contract mismatch is high when no signing-capable key exists" {

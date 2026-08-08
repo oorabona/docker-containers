@@ -257,6 +257,8 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      refresh_candidates: ${{ steps.gpg.outputs.refresh_candidates }}
     concurrency:
       group: gpg-key-lifecycle-${{ github.workflow }}
       cancel-in-progress: false
@@ -293,9 +295,9 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "$SCOPE_CONTAINER" ]]; then
-            scripts/check-gpg-keys.sh "$SCOPE_CONTAINER" --json > findings.json
+            scripts/check-gpg-keys.sh "$SCOPE_CONTAINER" --json --refresh-check > findings.json
           else
-            scripts/check-gpg-keys.sh --all --json > findings.json
+            scripts/check-gpg-keys.sh --all --json --refresh-check > findings.json
           fi
 
           has_findings="$(jq -r '
@@ -315,6 +317,15 @@ jobs:
           else
             echo "has_findings=false" >> "$GITHUB_OUTPUT"
           fi
+
+          # A changed key shape is routine refresh work, deliberately separate
+          # from the expiry/contract issue channel above.  Do not include
+          # unavailable fetches: a keyserver outage must not open a PR.
+          refresh_candidates="$(jq -c '[.[]
+            | select(.refresh.status == "changed")
+            | {container: .container, dependency: .dependency, key_file: .key_file}
+          ]' findings.json)"
+          echo "refresh_candidates=${refresh_candidates}" >> "$GITHUB_OUTPUT"
 
       # workflow_dispatch using branch YAML is a pre-existing repo-wide
       # property for tokened jobs; this guard hardens this new GPG issue path.
@@ -339,6 +350,147 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         shell: bash
         run: scripts/open-key-lifecycle-issue.sh --json-file findings.json
+
+  refresh-vendored-gpg-keys:
+    needs: [check-gpg-keys]
+    if: >-
+      github.ref == 'refs/heads/master' &&
+      needs.check-gpg-keys.outputs.refresh_candidates != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: gpg-key-refresh-${{ matrix.container }}-${{ matrix.dependency }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJson(needs.check-gpg-keys.outputs.refresh_candidates) }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Install yq
+        uses: ./.github/actions/retry-run
+        with:
+          run: |
+            sudo wget -qO /usr/local/bin/yq \
+              https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+            echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+            sudo chmod +x /usr/local/bin/yq
+            yq --version
+          max-attempts: '3'
+          timeout: '60s'
+
+      - name: Fetch and stage the current pinned key
+        id: refresh
+        env:
+          CONTAINER: ${{ matrix.container }}
+          DEPENDENCY: ${{ matrix.dependency }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/check-gpg-keys.sh "$CONTAINER" --json --refresh-dir .gpg-key-refresh > refresh.json
+          refresh_row="$(jq -cer --arg dependency "$DEPENDENCY" '
+            .[] | select(.dependency == $dependency)
+          ' refresh.json)"
+          refresh="$(jq -cer '.refresh' <<< "$refresh_row")"
+          if [[ "$(jq -r '.status' <<< "$refresh")" != "changed" ]]; then
+            echo "::warning::GPG key refresh changed between monitor passes; no PR opened"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          key_file="$(jq -er '.key_file' <<< "$refresh_row")"
+          staged=".gpg-key-refresh/${key_file}"
+          if [[ ! -s "$staged" ]]; then
+            echo "::warning::GPG key refresh did not produce expected staged key: ${staged}"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cp "$staged" "$key_file"
+
+          {
+            echo "delta<<EOF"
+            echo "The monitor compares only \`pub\`/\`sub\` records: validity (field 2), expiry (field 7), and capability flags (field 12)."
+            jq -r '
+              [.delta.added[] | "- Added: `\(.)`"]
+              + [.delta.removed[] | "- Removed: `\(.)`"]
+              | join("\n")
+            ' <<< "$refresh"
+            echo "EOF"
+            echo "ready=true"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate App token
+        if: steps.refresh.outputs.ready == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Import GPG key
+        if: steps.refresh.outputs.ready == 'true'
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_config_global: true
+          git_committer_name: Olivier ORABONA
+          git_committer_email: oorabona@users.noreply.github.com
+
+      - name: Open or update GPG key refresh PR
+        if: steps.refresh.outputs.ready == 'true'
+        id: create-pr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          commit-message: "build(${{ matrix.container }}): refresh vendored GPG signing key"
+          committer: Olivier ORABONA <oorabona@users.noreply.github.com>
+          title: "🔐 build(${{ matrix.container }}): refresh vendored GPG signing key"
+          body: |
+            ## Vendored GPG signing-key refresh
+
+            **Dependency:** `${{ matrix.dependency }}`
+            **Key file:** `${{ matrix.key_file }}`
+
+            The fetched primary still matches the pinned Dockerfile fingerprint.
+            This PR changes no pin or Dockerfile; it refreshes the vendored
+            snapshot because its trust-relevant key shape changed.
+
+            ### Shape delta
+
+            ${{ steps.refresh.outputs.delta }}
+
+            ---
+            *Auto-generated by Upstream Version Monitor*
+          branch: update/gpg-key-${{ matrix.container }}-${{ matrix.dependency }}
+          delete-branch: true
+          add-paths: ${{ matrix.key_file }}
+
+      # Labels applied separately — peter-evans/create-pull-request has a race condition
+      # where addLabels fails with "Could not resolve to a node" (issue #4321).
+      # Failure tolerance: labels are triage metadata; the PR is authoritative.
+      - name: Apply labels
+        if: steps.create-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          sleep 2
+          if ! gh pr edit "$PR_NUMBER" --add-label "automation,gpg-key-lifecycle,container:${CONTAINER}" 2>&1; then
+            echo "::warning::Failed to apply GPG key refresh labels to PR #${PR_NUMBER}; PR created successfully — continuing"
+          fi
 
   create-update-prs:
     # check-source-liveness runs as a parallel sibling job (no needs:
