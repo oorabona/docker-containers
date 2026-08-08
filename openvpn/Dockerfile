@@ -28,9 +28,17 @@ COPY easyrsa-signing-key.asc /usr/local/share/easyrsa/easyrsa-signing-key.asc
 COPY openvpn-signing-key.asc /usr/local/share/openvpn/openvpn-signing-key.asc
 
 # Testing: pamtester is only available in edge, not for now.
-# Use UPSTREAM_VERSION for downloads if provided, otherwise fall back to VERSION
+#
+# UPSTREAM_VERSION is required, and the fallback to VERSION it used to claim is
+# gone because it never worked: VERSION carries the base suffix — `v2.7.6-alpine`
+# — and neither the codeload path nor the release assets have such a ref. Both
+# spellings return 404, measured, on master as much as here. `build-container.sh`
+# always supplies it when a container has a version.sh whose --upstream differs
+# from the tag, which openvpn's does, so the fallback was unreachable as well as
+# broken. Requiring it turns a 404 halfway through a build into a message at the
+# top of it.
 RUN set -ex \
-    && DOWNLOAD_VERSION="${UPSTREAM_VERSION:-$VERSION}" \
+    && DOWNLOAD_VERSION="${UPSTREAM_VERSION:?required — VERSION carries the base suffix and is not a release ref}" \
     # The git tag carries a leading v and the release assets do not:
     # `v2.7.6` tags a release whose files are `openvpn-2.7.6.tar.gz` inside a
     # `openvpn-2.7.6/` directory. `version.sh --upstream` returns the tag form,
@@ -89,6 +97,11 @@ RUN set -ex \
     && unset GNUPGHOME \
     # The signed release archive must be the requested version, which blocks an
     # older signed release replayed from this version's release-asset URL.
+    #
+    # This reads the first member only, so it does not prove every path in the
+    # archive shares that prefix. An archive with a conforming first entry and
+    # divergent later ones would need OpenVPN's signing key to be accepted at
+    # all, and an actor holding that key has no reason to bother.
     && [ "$(tar tzf openvpn.tgz 2>/dev/null | head -1)" = "openvpn-${RELEASE_VERSION}/" ] \
     # Download pinned version of OpenSC pkcs11-helper
     && curl -sSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://github.com/opensc/pkcs11-helper/archive/pkcs11-helper-${PKCS11_HELPER_VERSION}.tar.gz --output pkcs11-helper.tgz \

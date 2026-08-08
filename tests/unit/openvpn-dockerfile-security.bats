@@ -66,6 +66,14 @@ setup() {
     # every build.
     grep -Fq 'RELEASE_VERSION="${DOWNLOAD_VERSION#v}"' "$DOCKERFILE"
 
+    # And UPSTREAM_VERSION is required rather than falling back to VERSION.
+    # VERSION carries the base suffix (`v2.7.6-alpine`), which is not a release
+    # ref under either the codeload or the release-asset spelling — both 404.
+    # The mutation this catches is restoring `${UPSTREAM_VERSION:-$VERSION}`,
+    # which trades a clear failure at the top of the build for a 404 partway in.
+    [ "$(grep -cF 'DOWNLOAD_VERSION="${UPSTREAM_VERSION:-$VERSION}"' "$DOCKERFILE" || true)" -eq 0 ]
+    grep -Fq 'DOWNLOAD_VERSION="${UPSTREAM_VERSION:?' "$DOCKERFILE"
+
     # No release-asset path, and no assertion about the extracted directory, may
     # name the unstripped variable.
     #
