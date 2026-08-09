@@ -613,6 +613,13 @@ get_flavor_extensions() {
 # emitted RUN block instead of being resolved while this file is generated.
 #
 # A built-in may be a scalar name or a mapping with name and optional
+# How many built-ins the last _generate_builtin_initdb_block call emitted.  The
+# rendered block always carries its `RUN` scaffolding, so its size says nothing
+# about whether anything was declared, and a second yq read of the config would
+# be a second reader of the same field — which the reader invariant forbids and
+# this branch exists to avoid.  The function that reads the list reports what it
+# saw instead.
+
 # max_major.  Keep validation here: this is the only reader allowed to turn
 # those declarations into executable Dockerfile content, and unknown mapping
 # keys must fail closed rather than silently changing the resulting image.
@@ -851,6 +858,10 @@ _emit_collector_stage() {
 # Template must contain markers:
 #   # @@EXTENSION_STAGES@@   → replaced by FROM ext-* AS ext-* lines
 #   # @@EXTENSION_COPIES@@   → replaced by COPY --from=ext-* lines
+#   # @@BUILTIN_INITDB@@     → replaced by the built-in CREATE EXTENSION block,
+#                              and required whenever the config declares any
+#                              built-in: without it the image would ship none of
+#                              them, silently (#1136)
 #
 # Usage: generate_dockerfile <config_file> <template> <flavor> <pg_major> [registry] [owner]
 generate_dockerfile() {
@@ -1370,12 +1381,31 @@ generate_dockerfile() {
         "EXTENSION_COPIES" "$copies_block"
         "EXTENSION_INSTALLS" "$install_block"
     )
-    # A template without the marker silently ships an image with none of the
-    # declared built-ins — see #1136. Refusing here is the right shape and is not
-    # done yet: three test fixtures build minimal templates without the marker,
-    # so the guard has to arrive with them.
-    if grep -qF '@@BUILTIN_INITDB@@' "$template"; then
+    # `--` because a template path beginning with a dash would otherwise be read
+    # as options, and status 2 kept apart from 1 because "cannot read the
+    # template" is not "the marker is absent" — reporting the first as the second
+    # would send a reader looking for a marker that is there.
+    local marker_status=0
+    grep -qF -- '@@BUILTIN_INITDB@@' "$template" || marker_status=$?
+    if (( marker_status > 1 )); then
+        log_error "generate_dockerfile: cannot read template ${template} (grep status ${marker_status})"
+        return 1
+    fi
+    if (( marker_status == 0 )); then
         template_args+=("BUILTIN_INITDB" "$builtin_initdb_block")
+    elif [[ "$(grep -c "CREATE EXTENSION IF NOT EXISTS" <<<"$builtin_initdb_block")" -gt 0 ]]; then
+        # Declared built-ins with nowhere to go. Until #1094 they sat in the
+        # template literally and could not be dropped; once generated, a template
+        # that lost the marker would build an image silently missing every one of
+        # them.
+        #
+        # Counting the statements the block emitted, not its size: it carries its
+        # `RUN` scaffolding whatever the list holds — 167 bytes for an empty
+        # one — so a non-empty test would refuse a template that legitimately
+        # wants no built-ins. Reading the block rather than the config also keeps
+        # this off the extension config, which has one sanctioned reader.
+        log_error "generate_dockerfile: ${template} declares no @@BUILTIN_INITDB@@ marker while builtin_extensions are configured"
+        return 1
     fi
     template_args+=(
         "FLAVOR_INITDB" "$flavor_initdb_block"
