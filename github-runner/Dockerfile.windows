@@ -139,8 +139,31 @@ RUN Expand-Archive -Path runner.zip -DestinationPath . -Force; \
 
 COPY entrypoint.ps1 C:\\entrypoint.ps1
 
-# VS Build Tools 2022 + Windows 11 SDK — direct Microsoft installer
-RUN Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile C:\vs_buildtools.exe; \
+# VS Build Tools 2022 + Windows 11 SDK — pinned fixed-version bootstrapper.
+#
+# `aka.ms/vs/17/release/vs_buildtools.exe` floats: it serves whatever 17.x is
+# current, so two builds of the same commit installed different tooling. Measured
+# on 2026-08-09, it redirected to the same product GUID as the pin below but a
+# different build.
+#
+# Microsoft's release-history page publishes a fixed-version bootstrapper per
+# release, and each installs that exact release rather than the latest. The hash
+# segment of the URL is the file's own SHA-256 — verified: the 4459960-byte
+# download hashes to the value already in its path — so the URL carries its
+# integrity check and the assertion below restates it where a reader will see it.
+#
+# Bumping this means taking the next bootstrapper URL from the release history
+# and updating both the URL and the assertion.
+# The digest is a literal rather than an ARG: a Dockerfile ARG reaches the shell
+# through parser substitution, not as $env:, so an ARG here would compare against
+# an empty string and fail every build.
+RUN $expected = 'e0b8ea16494b4a79c68da26773131562aefecc8d87f1923c24d579c7a72e0575'; \
+    Invoke-WebRequest -Uri 'https://download.visualstudio.microsoft.com/download/pr/f7f5ecbc-83ca-4cf0-bdb2-aaf70efb6d97/e0b8ea16494b4a79c68da26773131562aefecc8d87f1923c24d579c7a72e0575/vs_BuildTools.exe' -OutFile C:\vs_buildtools.exe; \
+    $actual = (Get-FileHash -Path C:\vs_buildtools.exe -Algorithm SHA256).Hash.ToLower(); \
+    if ($actual -ne $expected) { \
+      Write-Error ('vs_BuildTools.exe digest mismatch: got ' + $actual + ', expected ' + $expected); \
+      exit 1; \
+    }; \
     Start-Process -Wait -FilePath C:\vs_buildtools.exe -ArgumentList \
       '--quiet', '--wait', '--norestart', \
       '--add', 'Microsoft.VisualStudio.Workload.VCTools', \
@@ -159,7 +182,13 @@ RUN $vsBase = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC
     Write-Host ('MSVC: ' + $msvcBin); \
     Write-Host ('SDK:  ' + $sdkBin); \
     $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
-    [System.Environment]::SetEnvironmentVariable('Path', ($machPath + ';' + $msvcBin + ';' + $sdkBin), 'Machine')
+    [System.Environment]::SetEnvironmentVariable('Path', ($machPath + ';' + $msvcBin + ';' + $sdkBin), 'Machine'); \
+    # Two lines, both true of this image: the toolset directory that was found,
+    # and the bootstrapper digest that produced it. The Windows SDK is not here
+    # because it is pinned by the component id in the install arguments above —
+    # restating it would put an assertion where the rest of the file holds
+    # observations.
+    Set-Content -Path C:\build-versions.txt -Encoding ascii -Value @( ('msvc_toolset=' + $msvcVer), 'vs_buildtools=e0b8ea16494b4a79c68da26773131562aefecc8d87f1923c24d579c7a72e0575' )
 
 LABEL org.opencontainers.image.description="GitHub Actions self-hosted runner (Windows ltsc2022 — dev)"
 LABEL org.opencontainers.image.source="https://github.com/oorabona/docker-containers"
