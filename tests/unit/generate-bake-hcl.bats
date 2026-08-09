@@ -19,6 +19,7 @@
 #   --cells iterates full closure → dep container appears in merge publish-set (FIX D)
 #   --cells uses flavor instead of variant → github-runner cells share rolling alias (FIX F)
 #   bake_latest_only flag ignored → retained github-runner versions enter bake (security bug)
+#   Allow one internal dependency to use multiple resolved base refs → ambiguous graph emitted
 
 load "../test_helper"
 
@@ -28,10 +29,43 @@ setup() {
     export _DEPGRAPH_LINEAGE_DIR=/nonexistent
     # Silence ::notice:: GHA annotations from list_build_matrix during tests
     export GITHUB_ACTIONS=""
+    setup_temp_dir
 }
 
 teardown() {
-    :
+    teardown_temp_dir
+}
+
+# ---------------------------------------------------------------------------
+# Internal dependency base refs are a per-consumer invariant. This synthetic
+# emitted-target fixture models two consumer cells selecting different PHP refs;
+# external-base cells have no contexts and do not participate.
+# ---------------------------------------------------------------------------
+@test "generator refuses two cells that resolve different base refs for one dependency" {
+    local targets dep_targets caller
+    targets=$(jq -cn '
+        {
+          consumer_latest: {context: "consumer", contexts: {"ghcr.io/oorabona/php:latest": "target:php_latest"}},
+          consumer_retained: {context: "consumer", contexts: {"ghcr.io/oorabona/php:8.4": "target:php_latest"}},
+          consumer_external: {context: "consumer"},
+          php_latest: {context: "php"}
+        }')
+    dep_targets=$(jq -cn '{php: "php_latest"}')
+    caller="${TEST_TEMP_DIR}/validate-base-refs.sh"
+    cat > "$caller" <<'CALLER'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh"
+_validate_internal_dependency_base_refs "$1" "$2"
+CALLER
+    chmod +x "$caller"
+
+    run bash "$caller" "$targets" "$dep_targets"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"consumer"* ]]
+    [[ "$output" == *"php"* ]]
+    [[ "$output" == *"ghcr.io/oorabona/php:latest"* ]]
+    [[ "$output" == *"ghcr.io/oorabona/php:8.4"* ]]
 }
 
 # ---------------------------------------------------------------------------

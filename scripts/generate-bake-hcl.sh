@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091
 # generate-bake-hcl.sh — Synthesise a docker buildx bake definition (JSON) to
 # stdout from the repo's canonical metadata, driven by the ADR-013
 # dependency-ordered build.
@@ -666,7 +667,7 @@ _resolve_cell_base_ref() {
 
     # Any remaining "${KEY}" pattern: try reading the ARG default from the
     # master template Dockerfile.
-    if [[ "$resolved" == *'${'* ]]; then
+    if [[ "$resolved" == *"\${"* ]]; then
         local template="${PROJECT_ROOT}/${container}/Dockerfile"
         if [[ -f "$template" ]]; then
             local tline targ_entries=""
@@ -686,7 +687,7 @@ _resolve_cell_base_ref() {
     # the dep container name appears in the ref (e.g. "debian" in
     # "ghcr.io/oorabona/debian:${DEBIAN_TAG}").  If so, resolve the tag
     # portion from the dep container's first entry in its variants.yaml.
-    if [[ "$resolved" == *'${'* ]]; then
+    if [[ "$resolved" == *"\${"* ]]; then
         local dep_containers_space
         if ! dep_containers_space="$(_depgraph_get_deps "$container")"; then
             printf '::error::dependency-graph resolution failed for %s — refusing to emit an incomplete bake graph (would drop required internal base contexts)\n' \
@@ -758,6 +759,50 @@ _contexts_for_cell() {
     done
 
     printf '%s' "$ctx"
+}
+
+# ---------------------------------------------------------------------------
+# _validate_internal_dependency_base_refs <targets_json> <dep_target_ids_json>
+#
+# A dependency has exactly one selected bake target per generated document.
+# Therefore every cell of a consumer that uses that dependency must use the
+# same resolved FROM ref.  Otherwise the single target mapping would make the
+# graph ambiguous.  Validate emitted contexts (not every cell): cells with an
+# external base have no internal context and are deliberately ignored.
+# ---------------------------------------------------------------------------
+_validate_internal_dependency_base_refs() {
+    local targets_json="$1"
+    local dep_target_ids_json="$2"
+    local conflicts
+
+    conflicts=$(jq -r --argjson dep_targets "$dep_target_ids_json" '
+        ($dep_targets | to_entries | map({key: .value, value: .key}) | from_entries) as $dep_for_target
+        | [
+            to_entries[]
+            | .value as $target
+            | ($target.contexts // {})
+            | to_entries[]
+            | select(.value | type == "string" and startswith("target:"))
+            | (.value | sub("^target:"; "")) as $dep_target
+            | $dep_for_target[$dep_target] as $dep
+            | select($dep != null)
+            | {container: $target.context, dependency: $dep, base_ref: .key}
+          ]
+        | group_by([.container, .dependency])[]
+        | (map(.base_ref) | unique) as $refs
+        | select($refs | length > 1)
+        | "\(.[0].container)\t\(.[0].dependency)\t\($refs | join(", "))"
+    ' <<< "$targets_json") || return 1
+
+    if [[ -n "$conflicts" ]]; then
+        local container dependency refs
+        while IFS=$'\t' read -r container dependency refs; do
+            [[ -n "$container" ]] || continue
+            printf '::error::bake: %s references internal dependency %s through conflicting base refs: %s — refusing to emit an ambiguous bake graph\n' \
+                "$container" "$dependency" "$refs" >&2
+        done <<< "$conflicts"
+        return 1
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1249,6 +1294,10 @@ _build_bake_json() {
         return 1
     fi
 
+    if ! _validate_internal_dependency_base_refs "$targets_json" "$dep_target_ids_json"; then
+        return 1
+    fi
+
     # -----------------------------------------------------------------------
     # Group construction
     # -----------------------------------------------------------------------
@@ -1609,4 +1658,6 @@ main() {
     fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
