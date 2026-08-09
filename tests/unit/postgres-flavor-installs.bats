@@ -351,6 +351,43 @@ teardown() {
     [[ "$builtin_block" != *'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'* ]]
 }
 
+@test "a template without the built-in marker fails generation instead of shipping an image without them" {
+    # Until the block was generated, these statements sat in the template and
+    # could not be dropped. A template that loses the marker would otherwise
+    # build an image missing every declared built-in, with nothing said.
+    local nomarker_template="$TEST_TEMP_DIR/Dockerfile.nomarker"
+
+    grep -v '@@BUILTIN_INITDB@@' "$PROJECT_ROOT/postgres/Dockerfile" > "$nomarker_template"
+
+    run generate_dockerfile "$CONFIG_FILE" "$nomarker_template" base 18 ghcr.io oorabona
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'@@BUILTIN_INITDB@@'* ]]
+}
+
+@test "a template without the built-in marker is fine when no built-ins are declared" {
+    # The rendered block carries its RUN scaffolding whatever the list holds, so
+    # a guard reading the block instead of the declaration refuses this case —
+    # a template that legitimately wants no built-ins.
+    local empty_config="$TEST_TEMP_DIR/no-builtins.yaml"
+    local nomarker_template="$TEST_TEMP_DIR/Dockerfile.nomarker-empty"
+
+    cp "$CONFIG_FILE" "$empty_config"
+    yq -i '.builtin_extensions = []' "$empty_config"
+    grep -v '@@BUILTIN_INITDB@@' "$PROJECT_ROOT/postgres/Dockerfile" > "$nomarker_template"
+
+    run generate_dockerfile "$empty_config" "$nomarker_template" base 18 ghcr.io oorabona
+
+    [ "$status" -eq 0 ]
+    # Exit status alone would pass on a generator that succeeded while emitting
+    # built-ins anyway — the case this whole guard exists to distinguish.
+    # Asserted on this run's own stdout, which is where the Dockerfile goes: a
+    # path under TEST_TEMP_DIR would read whatever a neighbouring test left
+    # there. On the block's header, because `CREATE EXTENSION` also appears in
+    # two Dockerfile comments.
+    [[ "$output" != *'Built-in PostgreSQL extensions'* ]]
+}
+
 @test "an unrecognised built-in extension property fails generation instead of being ignored" {
     local invalid_config="$TEST_TEMP_DIR/unknown-builtin-key.yaml"
 

@@ -70,6 +70,9 @@ Extensions are pre-compiled PostgreSQL modules stored as individual container im
 # Template markers in postgres/Dockerfile (replaced at build time):
 # @@EXTENSION_STAGES@@   → FROM ext-image AS ext-name (one per extension)
 # @@EXTENSION_COPIES@@   → COPY --from=ext-name lines (two per extension)
+# @@BUILTIN_INITDB@@     → the built-in CREATE EXTENSION block; required
+#                          whenever config.yaml declares any built-in, since
+#                          without it the image would ship none of them
 
 # Example: generated output for flavor=vector, pg=17
 FROM ghcr.io/oorabona/ext-pgvector:pg17-0.8.1 AS ext-pgvector
