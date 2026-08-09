@@ -9,6 +9,11 @@ load "../test_helper"
 setup() {
     source "$HELPERS_DIR/validate-extensions-schema.sh"
     FIXTURES_DIR="$PROJECT_ROOT/tests/fixtures/extensions-schema"
+    setup_temp_dir
+}
+
+teardown() {
+    teardown_temp_dir
 }
 
 assert_rejected_fixture() {
@@ -78,8 +83,30 @@ assert_rejected_fixture() {
     assert_rejected_fixture "duplicate-sql-name.yaml" "R6 flavor"
 }
 
-@test "R7 rejects SQL names already created by the built-in initdb block" {
-    assert_rejected_fixture "builtin-sql-collision.yaml" "R7 flavor"
+@test "R7 rejects SQL names already created by scalar built-ins" {
+    local config="$TEST_TEMP_DIR/builtin-scalar-sql-collision.yaml"
+
+    cp "$FIXTURES_DIR/builtin-sql-collision.yaml" "$config"
+    yq -i '.builtin_extensions = ["pg_trgm"] | .extensions.alpha.initdb.sql_name = "pg_trgm"' "$config"
+
+    run validate_extensions_schema "$config"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'R7 flavor'* ]]
+    [[ "$output" == *'pg_trgm'* ]]
+}
+
+@test "R7 rejects SQL names already created by bounded mapping built-ins" {
+    local config="$TEST_TEMP_DIR/builtin-mapping-sql-collision.yaml"
+
+    cp "$FIXTURES_DIR/builtin-sql-collision.yaml" "$config"
+    yq -i '.builtin_extensions = [{"name": "adminpack", "max_major": 16}] | .extensions.alpha.initdb.sql_name = "adminpack"' "$config"
+
+    run validate_extensions_schema "$config"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'R7 flavor'* ]]
+    [[ "$output" == *'adminpack'* ]]
 }
 
 @test "yamllint key-duplicates rejects duplicate mapping keys before yq parses them" {
