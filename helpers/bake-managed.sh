@@ -203,7 +203,9 @@ _bake_retained_core_containers() {
 # ---------------------------------------------------------------------------
 # _bake_is_retained_core_container <container>
 #
-# Returns 0 if <container> is in the B1-core retained-bake rollout set.
+# Returns 0 if <container> is in the explicit, enumerated retained-bake rollout
+# set, which includes admitted chained containers and excludes containers pinned
+# to their latest version (bake_latest_only).
 # ---------------------------------------------------------------------------
 _bake_is_retained_core_container() {
     local container="$1"

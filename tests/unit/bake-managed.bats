@@ -79,9 +79,9 @@ _fixture_os_builds() {
     ]'
 }
 
-# Fixture for retained-bake B1-core routing.  It includes latest + retained
-# cells for one eligible container, three non-eligible bake-managed containers,
-# and one non-bake-managed control.
+# Fixture for the explicit, enumerated retained-bake rollout set. It includes
+# admitted chained containers and excludes github-runner retained cells, pinned
+# to their latest version (bake_latest_only).
 _fixture_retained_bake_builds() {
     jq -cn '
     [

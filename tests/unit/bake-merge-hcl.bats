@@ -49,23 +49,83 @@ _write_doc() {
     [[ "$output" == *"shared"* ]]
 }
 
-@test "merge keeps all targets and ordered unique default targets when shared definitions agree" {
+@test "merge keeps every target, variable, and group member when shared definitions agree" {
     local latest retained
     latest="${TEST_TEMP_DIR}/latest.json"
     retained="${TEST_TEMP_DIR}/retained.json"
     _write_doc "$latest" \
         "$(jq -cn '{shared: {context: "same"}, latest_only: {context: "latest"}}')" \
-        "$(jq -cn '["shared", "latest_only"]')"
+        "$(jq -cn '["shared", "latest_only"]')" \
+        "$(jq -cn '{SHARED: {default: "same"}, LATEST_ONLY: {default: "latest"}}')" \
+        "$(jq -cn '{extra: {targets: ["shared", "latest_only"]}}')"
     _write_doc "$retained" \
         "$(jq -cn '{shared: {context: "same"}, retained_only: {context: "retained"}}')" \
-        "$(jq -cn '["shared", "retained_only"]')"
+        "$(jq -cn '["shared", "retained_only"]')" \
+        "$(jq -cn '{SHARED: {default: "same"}, RETAINED_ONLY: {default: "retained"}}')" \
+        "$(jq -cn '{extra: {targets: ["shared", "retained_only"]}}')"
 
     run bash "$MERGE_HCL" "$latest" "$retained"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '
         (.target | keys | sort) == ["latest_only", "retained_only", "shared"]
         and .group.default.targets == ["shared", "latest_only", "retained_only"]
+        and (.variable | keys | sort) == ["LATEST_ONLY", "RETAINED_ONLY", "SHARED"]
+        and .group.extra.targets == ["shared", "latest_only", "retained_only"]
     ' >/dev/null
+}
+
+@test "merge refuses a target in latest that is a group in retained" {
+    local latest retained
+    latest="${TEST_TEMP_DIR}/latest.json"
+    retained="${TEST_TEMP_DIR}/retained.json"
+    _write_doc "$latest" "$(jq -cn '{ambiguous: {context: "latest"}}')" "[]"
+    _write_doc "$retained" "{}" "[]" "{}" \
+        "$(jq -cn '{ambiguous: {targets: []}}')"
+
+    run bash "$MERGE_HCL" "$latest" "$retained"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ambiguous"* ]]
+}
+
+@test "merge refuses a group in latest that is a target in retained" {
+    local latest retained
+    latest="${TEST_TEMP_DIR}/latest.json"
+    retained="${TEST_TEMP_DIR}/retained.json"
+    _write_doc "$latest" "{}" "[]" "{}" \
+        "$(jq -cn '{ambiguous: {targets: []}}')"
+    _write_doc "$retained" "$(jq -cn '{ambiguous: {context: "retained"}}')" "[]"
+
+    run bash "$MERGE_HCL" "$latest" "$retained"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ambiguous"* ]]
+}
+
+@test "merge refuses a name that is both a target and a group in one input" {
+    local latest retained
+    latest="${TEST_TEMP_DIR}/latest.json"
+    retained="${TEST_TEMP_DIR}/retained.json"
+    _write_doc "$latest" "$(jq -cn '{ambiguous: {context: "latest"}}')" "[]" "{}" \
+        "$(jq -cn '{ambiguous: {targets: []}}')"
+    _write_doc "$retained" "{}" "[]"
+
+    run bash "$MERGE_HCL" "$latest" "$retained"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ambiguous"* ]]
+}
+
+@test "merge refuses an unsupported retained-only top-level block" {
+    local latest retained retained_with_extra
+    latest="${TEST_TEMP_DIR}/latest.json"
+    retained="${TEST_TEMP_DIR}/retained.json"
+    retained_with_extra="${TEST_TEMP_DIR}/retained-with-extra.json"
+    _write_doc "$latest" "{}" "[]"
+    _write_doc "$retained" "{}" "[]"
+    jq '.extension = {enabled: true}' "$retained" > "$retained_with_extra"
+
+    run bash "$MERGE_HCL" "$latest" "$retained_with_extra"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"$retained_with_extra"* ]]
+    [[ "$output" == *"extension"* ]]
 }
 
 @test "merge keeps shared and retained-only variables" {

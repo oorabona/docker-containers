@@ -55,13 +55,21 @@ if ! merge_result=$(jq -n \
         ) | not then
             [{kind: "shape", file: $file}]
         else
-            [
+            (
+                [
+                    $documents[0]
+                    | keys[] as $block
+                    | select(["variable", "target", "group"] | index($block) | not)
+                    | {kind: "unsupported-block", file: $file, block: $block}
+                ]
+                + [
                 ["variable", "target", "group"][] as $block
                 | $documents[0][$block]
                 | keys[] as $key
                 | select($key | valid_key | not)
                 | {kind: "invalid-key", file: $file, block: $block, key: $key}
-            ]
+                ]
+            )
         end;
 
     def block_conflicts($latest; $retained; $block):
@@ -80,6 +88,15 @@ if ! merge_result=$(jq -n \
             | {kind: "conflict", block: "group", key: $key}
         ];
 
+    def namespace_conflicts($latest; $retained):
+        [
+            ((($latest.target | keys) + ($retained.target | keys)) | unique) as $target_keys
+            | ((($latest.group | keys) + ($retained.group | keys)) | unique) as $group_keys
+            | $target_keys[] as $key
+            | select($group_keys | index($key))
+            | {kind: "namespace-conflict", key: $key}
+        ];
+
     def unique_in_order:
         reduce .[] as $item ([]; if index($item) then . else . + [$item] end);
 
@@ -90,6 +107,7 @@ if ! merge_result=$(jq -n \
            block_conflicts($latest_document; $retained_document; "variable")
            + block_conflicts($latest_document; $retained_document; "target")
            + group_conflicts($latest_document; $retained_document)
+           + namespace_conflicts($latest_document; $retained_document)
        else
            []
        end) as $conflicts
@@ -132,6 +150,10 @@ if ! jq -e '.status == "ok"' <<< "$merge_result" >/dev/null; then
               "::error::bake HCL merge input has an invalid document shape: \(.file)"
           elif .kind == "invalid-key" then
               "::error::bake HCL merge input has an empty or blank \(.block) key: \(.key | @json) in \(.file)"
+          elif .kind == "unsupported-block" then
+              "::error::bake HCL merge input has an unsupported top-level block \(.block | @json): \(.file)"
+          elif .kind == "namespace-conflict" then
+              "::error::bake HCL merge namespace conflict: \(.key | @json) is both a target and a group in the merged document"
           else
               "::error::bake HCL merge conflict: \(.block) \(.key | @json) differs between latest and retained documents"
           end
