@@ -766,9 +766,12 @@ _contexts_for_cell() {
 #
 # A dependency has exactly one selected bake target per generated document.
 # Therefore every cell of a consumer that uses that dependency must use the
-# same resolved FROM ref.  Otherwise the single target mapping would make the
-# graph ambiguous.  Validate emitted contexts (not every cell): cells with an
-# external base have no internal context and are deliberately ignored.
+# same resolved FROM ref. This is a deliberate conservative policy: contexts
+# can map both refs to the selected target, but the generator cannot tell
+# whether two refs name the same image, so it refuses rather than guess which
+# one the cell meant. Make the refs identical to use the selected target.
+# Validate emitted contexts (not every cell): cells with an external base have
+# no internal context and are deliberately ignored.
 # ---------------------------------------------------------------------------
 _validate_internal_dependency_base_refs() {
     local targets_json="$1"
@@ -798,7 +801,7 @@ _validate_internal_dependency_base_refs() {
         local container dependency refs
         while IFS=$'\t' read -r container dependency refs; do
             [[ -n "$container" ]] || continue
-            printf '::error::bake: %s references internal dependency %s through conflicting base refs: %s — refusing to emit an ambiguous bake graph\n' \
+            printf '::error::bake: %s references internal dependency %s through different base refs: %s — conservative policy refuses to guess whether they name the same image; make the refs identical\n' \
                 "$container" "$dependency" "$refs" >&2
         done <<< "$conflicts"
         return 1
