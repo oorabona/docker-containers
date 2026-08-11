@@ -1798,8 +1798,10 @@ jobs:
   # ---------------------------------------------------------------------------
   # Bake pipeline (ADR-013 production cutover)
   #
-  # Routes the bake-managed containers (the set in helpers/bake-managed.sh)
-  # through `docker buildx bake` while the flat matrix above handles the rest.
+  # Routes eligible cells of bake-managed containers (the set in
+  # helpers/bake-managed.sh) through `docker buildx bake`. Windows cells always
+  # stay on the flat matrix; a retained cell reaches bake when its container is
+  # retained-eligible or declares build.always_all_versions.
   #
   # Architecture:
   #   bake-build-amd64 / bake-build-arm64  — Stage A: per-arch native builds

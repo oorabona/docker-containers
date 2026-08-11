@@ -133,15 +133,35 @@ EOF
 # Enumerate all containers from `./make list`, strictly filtered to container-
 # name characters to drop any diagnostic noise.
 _list_all_containers() {
-    local out stderr_file
-    stderr_file=$(mktemp "${TMPDIR:-/tmp}/generate-bake-hcl-make-list.XXXXXX") || return 1
-    if ! out=$({ cd "${PROJECT_ROOT}" && ./make list; } 2>"$stderr_file"); then
-        gha_error '%s' "$(<"$stderr_file")" >&2
-        rm -f "$stderr_file"
+    local out stderr_file="" stderr_target="/dev/null"
+    # `./make list` writes to stderr on success too, so it is captured rather
+    # than left to the log, and replayed only when the command fails. The replay
+    # is bounded because it is loaded into a variable; gha.sh escapes it so a
+    # forged workflow command in that text cannot start a line.
+    #
+    # Capturing is best-effort: enumeration worked without a temporary file
+    # before the diagnostic existed, so unwritable temporary storage costs the
+    # diagnostic rather than the enumeration.
+    local stderr_replay_bytes=65536
+    if stderr_file=$(mktemp "${TMPDIR:-/tmp}/generate-bake-hcl-make-list.XXXXXX" 2>/dev/null); then
+        stderr_target="$stderr_file"
+    else
+        stderr_file=""
+    fi
+    if ! out=$({ cd "${PROJECT_ROOT}" && ./make list; } 2>"$stderr_target"); then
+        if [[ -n "$stderr_file" ]]; then
+            local replay
+            replay=$(head -c "$stderr_replay_bytes" "$stderr_file")
+            if (( $(wc -c < "$stderr_file") > stderr_replay_bytes )); then
+                replay+=$'\n'"[stderr truncated after ${stderr_replay_bytes} bytes]"
+            fi
+            gha_error '%s' "$replay" >&2
+            rm -f "$stderr_file"
+        fi
         printf 'ERROR: ./make list failed\n' >&2
         return 1
     fi
-    rm -f "$stderr_file"
+    [[ -n "$stderr_file" ]] && rm -f "$stderr_file"
     printf '%s' "$out" | grep -E '^[a-z0-9_-]+$' || true
 }
 
@@ -854,36 +874,19 @@ _enumerate_cells_init() {
         fi
     done
 
-    # Determine containers to process: transitive dep closure of requested.
-    # collect_lines preserves _expand_closure's explicit failure status, which
-    # process substitution would otherwise discard and turn into an empty graph.
-    local closure_file
-    closure_file=$(mktemp "${TMPDIR:-/tmp}/generate-bake-hcl-closure.XXXXXX") || return 1
-    if ! collect_lines "$closure_file" -- _expand_closure "${requested_containers[@]}"; then
-        rm -f "$closure_file"
+    # Determine containers to process: retain the complete closure in this
+    # process. Command substitution preserves an explicit producer failure.
+    local closure_newline
+    if ! closure_newline="$(_expand_closure "${requested_containers[@]}")"; then
         return 1
     fi
 
     _EC_closure_containers=()
-    local -A _closure_set=()
-    while IFS= read -r c; do
+    while IFS= read -r c || [[ -n "$c" ]]; do
         if [[ -n "$c" ]]; then
             _EC_closure_containers+=("$c")
-            _closure_set["$c"]=1
         fi
-    done < "$closure_file"
-    rm -f "$closure_file"
-
-    # Successful closure collection must retain every requested container.
-    # Dependencies may add entries, but absence is a fail-closed invariant:
-    # it covers an unreadable, truncated, removed, or replaced collected file.
-    for c in "${requested_containers[@]}"; do
-        if [[ -z "${_closure_set[$c]+set}" ]]; then
-            printf 'ERROR: collected closure is missing requested container %s — refusing to emit an incomplete bake graph\n' \
-                "$c" >&2
-            return 1
-        fi
-    done
+    done <<< "$closure_newline"
 
     # Matrix enumeration + first-target-per-container for dep-context lookup
     # F4: use the caller-supplied include_all_retained flag (default false = latest-only).
