@@ -1179,65 +1179,60 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# FIX S: fail-closed on dependency-graph errors
-# The generator must exit non-zero and emit ::error:: when _depgraph_get_deps_transitive
-# returns non-zero, rather than silently producing a bake graph with missing contexts.
+# Fail closed when transitive dependency resolution fails. Exercise the bake
+# generator path itself: a failure must not be converted into an empty document.
 # ---------------------------------------------------------------------------
 
-@test "FIX S — generator exits non-zero with ::error:: on depgraph failure" {
-    # Verify the fail-closed depgraph guard via a wrapper script that overrides
-    # _depgraph_get_deps_transitive to return non-zero.
-    # Strategy: write a caller script to $TEST_TEMP_DIR (allocated by setup()) that:
-    #   1. Sources all real generator helpers (variant-utils, dependency-graph, etc.)
-    #   2. Overrides the depgraph functions with stubs that return 1
-    #   3. Sources and re-defines the generator's internal functions by re-parsing the
-    #      generator body (with main() redefined as a no-op to prevent auto-execution)
-    #   4. Calls _expand_closure directly to trigger the fail-closed guard
-    # This avoids file-tree mirroring while still exercising the production code path.
-    local _tmpdir
-    _tmpdir=$(mktemp -d)
-    local wrapper="${_tmpdir}/gbh42_wrapper.sh"
-    printf '#!/usr/bin/env bash\n' > "$wrapper"
-    printf 'set -euo pipefail\n' >> "$wrapper"
-    printf 'export _DEPGRAPH_LINEAGE_DIR=/nonexistent\n' >> "$wrapper"
-    printf 'export GITHUB_ACTIONS=""\n' >> "$wrapper"
-    # Source real helpers
-    printf 'source "%s/helpers/variant-utils.sh"\n' "$PROJECT_ROOT" >> "$wrapper"
-    printf 'source "%s/helpers/dependency-graph.sh"\n' "$PROJECT_ROOT" >> "$wrapper"
-    printf 'source "%s/helpers/logging.sh"\n' "$PROJECT_ROOT" >> "$wrapper"
-    printf 'source "%s/helpers/build-args-utils.sh"\n' "$PROJECT_ROOT" >> "$wrapper"
-    printf 'source "%s/helpers/validate-base-cache-schema.sh"\n' "$PROJECT_ROOT" >> "$wrapper"
-    # Override depgraph functions to simulate failure
-    printf '_depgraph_get_deps_transitive() { return 1; }\n' >> "$wrapper"
-    printf '_depgraph_get_deps() { return 1; }\n' >> "$wrapper"
-    # Set PROJECT_ROOT so generator helpers resolve paths correctly
-    printf 'export PROJECT_ROOT="%s"\n' "$PROJECT_ROOT" >> "$wrapper"
-    # Source the generator internals by executing it in a subshell with a
-    # GENERATE_BAKE_TEST_SOURCING guard so main() is skipped.
-    # We do this by inlining just the functions we need to test.
-    # _expand_closure is the first fail-closed site; call it directly.
-    # Re-define it inline using the production code with the stubbed depgraph.
-    printf '_add_unique() { :; }\n' >> "$wrapper"
-    printf '_is_extension_container() { [[ -f "%s/$1/extensions/config.yaml" ]]; }\n' "$PROJECT_ROOT" >> "$wrapper"
-    printf '_expand_closure() {\n' >> "$wrapper"
-    printf '    local -a requested=("$@")\n' >> "$wrapper"
-    printf '    local c\n' >> "$wrapper"
-    printf '    for c in "${requested[@]}"; do\n' >> "$wrapper"
-    printf '        local deps\n' >> "$wrapper"
-    printf '        if ! deps="$(_depgraph_get_deps_transitive "$c")"; then\n' >> "$wrapper"
-    printf '            printf '"'"'::error::dependency-graph resolution failed for %%s\n'"'"' "$c" >&2\n' >> "$wrapper"
-    printf '            return 1\n' >> "$wrapper"
-    printf '        fi\n' >> "$wrapper"
-    printf '    done\n' >> "$wrapper"
-    printf '}\n' >> "$wrapper"
-    printf '_expand_closure debian || exit 1\n' >> "$wrapper"
-    printf 'exit 0\n' >> "$wrapper"
-    chmod +x "$wrapper"
+@test "generator emits no bake document when transitive dependency resolution fails" {
+    # shellcheck disable=SC1090
+    source "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh"
+    _list_all_containers() { printf '%s\n' web-shell; }
+    _depgraph_get_deps_transitive() { return 2; }
 
-    run bash "$wrapper" 2>&1
-    rm -rf "$_tmpdir"
+    run _build_bake_json web-shell
+
     [ "$status" -ne 0 ]
-    [[ "$output" == *"dependency-graph resolution failed"* ]]
+    [[ "$output" == *"dependency-graph resolution failed for web-shell"* ]]
+    [[ "$output" != *'"target"'* ]]
+}
+
+@test "generator safely annotates captured make list stderr" {
+    local fake_root
+    fake_root="${TEST_TEMP_DIR}/failing-make-list"
+    mkdir -p "$fake_root"
+    printf '#!/usr/bin/env bash\nprintf "untrusted\\n::warning::forged annotation\\n" >&2\nexit 1\n' \
+        > "${fake_root}/make"
+    chmod +x "${fake_root}/make"
+
+    # shellcheck disable=SC1090
+    source "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh"
+    PROJECT_ROOT="$fake_root"
+
+    run _list_all_containers
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'::error::'* ]]
+    [[ "$output" == *'::warning::forged annotation'* ]]
+    [[ "$output" != *$'\n::warning::forged annotation'* ]]
+}
+
+@test "generator bounds and labels oversized make list stderr" {
+    local fake_root
+    fake_root="${TEST_TEMP_DIR}/noisy-make-list"
+    mkdir -p "$fake_root"
+    printf '#!/usr/bin/env bash\nhead -c 65537 /dev/zero | tr "\\0" x >&2\nexit 1\n' \
+        > "${fake_root}/make"
+    chmod +x "${fake_root}/make"
+
+    # shellcheck disable=SC1090
+    source "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh"
+    PROJECT_ROOT="$fake_root"
+
+    run _list_all_containers
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'[stderr truncated after 65536 bytes]'* ]]
+    [ "${#output}" -le 65700 ]
 }
 
 # ---------------------------------------------------------------------------

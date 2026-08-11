@@ -611,10 +611,9 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# PR routing no longer forces matrix.  With force_matrix=false, bake-managed
-#         latest Linux cells route to .bake, while legacy-matrix/windows stay in .matrix
-#         through the normal partition gates.  PR Trivy coverage now runs inline in
-#         bake-build for those bake-managed cells.
+# With force_matrix=false, bake-managed latest Linux cells route to .bake,
+# while legacy-matrix and Windows cells stay in .matrix through the normal
+# partition gates.
 # Catches: PR routing accidentally preserving pull_request in force_matrix
 # ---------------------------------------------------------------------------
 @test "PR routing allows bake-managed Linux cells to bake" {

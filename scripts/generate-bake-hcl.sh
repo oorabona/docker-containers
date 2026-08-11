@@ -65,6 +65,8 @@ source "${PROJECT_ROOT}/helpers/dependency-graph.sh"
 # build-args-utils provides build_args_json (config.yaml build_args as JSON).
 # shellcheck source=../helpers/logging.sh
 source "${PROJECT_ROOT}/helpers/logging.sh"
+# shellcheck source=../helpers/gha.sh
+source "${PROJECT_ROOT}/helpers/gha.sh"
 # shellcheck source=../helpers/build-args-utils.sh
 source "${PROJECT_ROOT}/helpers/build-args-utils.sh"
 # validate-base-cache-schema provides _vbc_validate_build_args_config — the
@@ -131,11 +133,35 @@ EOF
 # Enumerate all containers from `./make list`, strictly filtered to container-
 # name characters to drop any diagnostic noise.
 _list_all_containers() {
-    local out
-    if ! out=$(cd "${PROJECT_ROOT}" && ./make list 2>/dev/null); then
+    local out stderr_file="" stderr_target="/dev/null"
+    # `./make list` writes to stderr on success too, so it is captured rather
+    # than left to the log, and replayed only when the command fails. The replay
+    # is bounded because it is loaded into a variable; gha.sh escapes it so a
+    # forged workflow command in that text cannot start a line.
+    #
+    # Capturing is best-effort: enumeration worked without a temporary file
+    # before the diagnostic existed, so unwritable temporary storage costs the
+    # diagnostic rather than the enumeration.
+    local stderr_replay_bytes=65536
+    if stderr_file=$(mktemp "${TMPDIR:-/tmp}/generate-bake-hcl-make-list.XXXXXX" 2>/dev/null); then
+        stderr_target="$stderr_file"
+    else
+        stderr_file=""
+    fi
+    if ! out=$({ cd "${PROJECT_ROOT}" && ./make list; } 2>"$stderr_target"); then
+        if [[ -n "$stderr_file" ]]; then
+            local replay
+            replay=$(head -c "$stderr_replay_bytes" "$stderr_file")
+            if (( $(wc -c < "$stderr_file") > stderr_replay_bytes )); then
+                replay+=$'\n'"[stderr truncated after ${stderr_replay_bytes} bytes]"
+            fi
+            gha_error '%s' "$replay" >&2
+            rm -f "$stderr_file"
+        fi
         printf 'ERROR: ./make list failed\n' >&2
         return 1
     fi
+    [[ -n "$stderr_file" ]] && rm -f "$stderr_file"
     printf '%s' "$out" | grep -E '^[a-z0-9_-]+$' || true
 }
 
@@ -848,11 +874,19 @@ _enumerate_cells_init() {
         fi
     done
 
-    # Determine containers to process: transitive dep closure of requested
+    # Determine containers to process: retain the complete closure in this
+    # process. Command substitution preserves an explicit producer failure.
+    local closure_newline
+    if ! closure_newline="$(_expand_closure "${requested_containers[@]}")"; then
+        return 1
+    fi
+
     _EC_closure_containers=()
-    while IFS= read -r c; do
-        [[ -n "$c" ]] && _EC_closure_containers+=("$c")
-    done < <(_expand_closure "${requested_containers[@]}")
+    while IFS= read -r c || [[ -n "$c" ]]; do
+        if [[ -n "$c" ]]; then
+            _EC_closure_containers+=("$c")
+        fi
+    done <<< "$closure_newline"
 
     # Matrix enumeration + first-target-per-container for dep-context lookup
     # F4: use the caller-supplied include_all_retained flag (default false = latest-only).
