@@ -19,6 +19,8 @@
 #   --cells iterates full closure → dep container appears in merge publish-set (FIX D)
 #   --cells uses flavor instead of variant → github-runner cells share rolling alias (FIX F)
 #   bake_latest_only flag ignored → retained github-runner versions enter bake (security bug)
+#   Allow one internal dependency to use multiple resolved base refs → ambiguous graph emitted
+#   Remove the base-ref validator call from _build_bake_json → conflicting document is emitted
 
 load "../test_helper"
 
@@ -28,10 +30,82 @@ setup() {
     export _DEPGRAPH_LINEAGE_DIR=/nonexistent
     # Silence ::notice:: GHA annotations from list_build_matrix during tests
     export GITHUB_ACTIONS=""
+    setup_temp_dir
 }
 
 teardown() {
-    :
+    teardown_temp_dir
+}
+
+# ---------------------------------------------------------------------------
+# Internal dependency base refs are a per-consumer invariant. This synthetic
+# emitted-target fixture models two consumer cells selecting different PHP refs;
+# external-base cells have no contexts and do not participate.
+# ---------------------------------------------------------------------------
+@test "generator refuses two cells that resolve different base refs for one dependency" {
+    local targets dep_targets caller
+    targets=$(jq -cn '
+        {
+          consumer_latest: {context: "consumer", contexts: {"ghcr.io/oorabona/php:latest": "target:php_latest"}},
+          consumer_retained: {context: "consumer", contexts: {"ghcr.io/oorabona/php:8.4": "target:php_latest"}},
+          consumer_external: {context: "consumer"},
+          php_latest: {context: "php"}
+        }')
+    dep_targets=$(jq -cn '{php: "php_latest"}')
+    caller="${TEST_TEMP_DIR}/validate-base-refs.sh"
+    cat > "$caller" <<'CALLER'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh"
+_validate_internal_dependency_base_refs "$1" "$2"
+CALLER
+    chmod +x "$caller"
+
+    run bash "$caller" "$targets" "$dep_targets"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"consumer"* ]]
+    [[ "$output" == *"php"* ]]
+    [[ "$output" == *"ghcr.io/oorabona/php:latest"* ]]
+    [[ "$output" == *"ghcr.io/oorabona/php:8.4"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# The direct validator test above establishes its decision. This fixture makes
+# _build_bake_json assemble conflicting web-shell → debian contexts, proving
+# the production generator path reaches that validator.
+# ---------------------------------------------------------------------------
+@test "generator build path refuses conflicting internal dependency base refs" {
+    local fixture_root caller
+    fixture_root="${TEST_TEMP_DIR}/conflicting-base-refs"
+    mkdir -p "$fixture_root"
+    cp -a "${PROJECT_ROOT}/scripts" "${PROJECT_ROOT}/helpers" \
+        "${PROJECT_ROOT}/web-shell" "${PROJECT_ROOT}/debian" "$fixture_root"
+
+    # Give the alpine cell a second, internal debian base while retaining the
+    # normal debian cell's trixie base. The copied fixture keeps production
+    # metadata and code untouched.
+    sed -i 's|FROM \\${REMOTE_CR}/library/alpine:\\${ALPINE_TAG}|FROM ghcr.io/oorabona/debian:bookworm|' \
+        "$fixture_root/web-shell/generate-dockerfile.sh"
+
+    caller="${fixture_root}/build-conflicting-bake.sh"
+    cat > "$caller" <<'CALLER'
+#!/usr/bin/env bash
+set -euo pipefail
+fixture_root="$1"
+source "${fixture_root}/scripts/generate-bake-hcl.sh"
+_list_all_containers() { printf '%s\n' web-shell debian; }
+_build_bake_json web-shell
+CALLER
+    chmod +x "$caller"
+
+    run env GITHUB_REPOSITORY_OWNER=oorabona \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell debian' \
+        bash "$caller" "$fixture_root"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"web-shell"* ]]
+    [[ "$output" == *"debian"* ]]
+    [[ "$output" == *"ghcr.io/oorabona/debian:bookworm"* ]]
+    [[ "$output" == *"ghcr.io/oorabona/debian:trixie"* ]]
 }
 
 # ---------------------------------------------------------------------------

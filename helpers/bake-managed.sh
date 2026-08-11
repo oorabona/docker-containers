@@ -192,18 +192,20 @@ extension_containers_in() {
 # ---------------------------------------------------------------------------
 # _bake_retained_core_containers
 #
-# Echoes the B1-core retained-bake rollout set.  This is intentionally narrower
-# than bake_managed_containers while chained retained rebuilds are deferred.
+# Echoes the explicit retained-bake rollout set.  This is intentionally narrower
+# than bake_managed_containers; php, postgres, and tor are not admitted.
 # Override via BAKE_RETAINED_CORE_CONTAINERS for focused tests only.
 # ---------------------------------------------------------------------------
 _bake_retained_core_containers() {
-    echo "${BAKE_RETAINED_CORE_CONTAINERS:-debian vector jekyll ansible sslh openvpn openresty terraform}"
+    echo "${BAKE_RETAINED_CORE_CONTAINERS:-web-shell wordpress debian vector jekyll ansible sslh openvpn openresty terraform}"
 }
 
 # ---------------------------------------------------------------------------
 # _bake_is_retained_core_container <container>
 #
-# Returns 0 if <container> is in the B1-core retained-bake rollout set.
+# Returns 0 if <container> is in the explicit, enumerated retained-bake rollout
+# set, which includes admitted chained containers and excludes containers pinned
+# to their latest version (bake_latest_only).
 # ---------------------------------------------------------------------------
 _bake_is_retained_core_container() {
     local container="$1"
@@ -219,114 +221,45 @@ _bake_is_retained_core_container() {
 }
 
 # ---------------------------------------------------------------------------
-# _bake_normalize_base_repo <base_image_ref>
+# _bake_retained_metadata_readable <container>
 #
-# Prints the repository path after stripping known project registry prefixes.
-# Examples:
-#   ghcr.io/oorabona/debian:${TAG}  -> debian
-#   ${REMOTE_CR}/php:${TAG}         -> php
-#   ${REMOTE_CR}/library/debian:12  -> library/debian
-#
-# The library/ namespace is deliberately left intact: it denotes an external
-# mirror path, not a project-built bake-managed container.
+# Retained routing is an explicit opt-in, so metadata must be available and
+# parseable before that opt-in can take effect. Keep config.yaml in this gate:
+# it is the source of the base relationship represented by the bake graph.
 # ---------------------------------------------------------------------------
-_bake_normalize_base_repo() {
-    local ref="$1"
-    local repo_path="${ref%%@*}"
-    local leaf="${repo_path##*/}"
-
-    if [[ "$leaf" == *:* ]]; then
-        repo_path="${repo_path%:*}"
-    fi
-
-    repo_path="${repo_path#\$\{REMOTE_CR\}/}"
-    if [[ "$repo_path" == ghcr.io/*/* ]]; then
-        repo_path="${repo_path#ghcr.io/}"
-        repo_path="${repo_path#*/}"
-    fi
-
-    printf '%s\n' "$repo_path"
-}
-
-# ---------------------------------------------------------------------------
-# _bake_container_has_internal_base_dependency <container>
-#
-# Static chained-container detector for retained-bake routing.
-#
-# Returns:
-#   0 when any config.yaml base_image points at another bake-managed container
-#   1 when config.yaml is parseable and no managed base dependency is found
-#   2 when config.yaml is missing, unparsable, or has no base_image entries
-#
-# This uses only <container>/config.yaml.  It never runs ./make, Docker, or any
-# networked probe.  library/* refs are external mirrors and are not considered
-# managed-container dependencies even when the leaf name matches a container.
-# ---------------------------------------------------------------------------
-_bake_container_has_internal_base_dependency() {
+_bake_retained_metadata_readable() {
     local container="$1"
     local repo_root
     repo_root="$(dirname "${_BM_SCRIPT_DIR}")"
-    local config_file="${repo_root}/${container}/config.yaml"
+    local metadata_file
 
-    if [[ ! -f "$config_file" ]]; then
-        return 2
-    fi
-
-    local refs
-    if ! refs=$(yq e '.. | select(has("base_image")) | .base_image | select(. != null)' \
-            "$config_file" 2>/dev/null); then
-        return 2
-    fi
-    if [[ -z "$refs" ]]; then
-        return 2
-    fi
-
-    local ref repo_path first_segment
-    while IFS= read -r ref; do
-        [[ -n "$ref" ]] || continue
-        repo_path=$(_bake_normalize_base_repo "$ref")
-        [[ -n "$repo_path" ]] || continue
-        if [[ "$repo_path" == library/* ]]; then
-            continue
-        fi
-        first_segment="${repo_path%%/*}"
-        if is_bake_managed "$first_segment"; then
-            return 0
-        fi
-    done <<< "$refs"
-
-    return 1
+    for metadata_file in "${repo_root}/${container}/config.yaml" \
+                         "${repo_root}/${container}/variants.yaml"; do
+        [[ -r "$metadata_file" ]] || return 1
+        yq e '.' "$metadata_file" >/dev/null 2>&1 || return 1
+    done
 }
 
 # ---------------------------------------------------------------------------
 # _bake_retained_eligible <container>
 #
 # Returns 0 iff retained (non-latest) Linux cells for <container> may route to
-# bake in B1-core:
+# bake in the explicit rollout set:
 #   - the container is bake-managed,
-#   - it is in the B1-core standalone rollout set,
-#   - it is not build.bake_latest_only,
-#   - its config.yaml base_image entries do not reference a bake-managed
-#     project container.
+#   - it is explicitly listed in the retained rollout set,
+#   - it is not build.bake_latest_only.
 #
-# Missing or unparsable config.yaml fails closed to not eligible.
+# Missing or unreadable metadata fails closed.
 # ---------------------------------------------------------------------------
 _bake_retained_eligible() {
     local container="$1"
-    local chained_status
 
     is_bake_managed "$container" || return 1
+    _bake_retained_metadata_readable "$container" || return 1
     if _bake_container_latest_only "$container"; then
         return 1
     fi
     _bake_is_retained_core_container "$container" || return 1
-
-    if _bake_container_has_internal_base_dependency "$container"; then
-        return 1
-    else
-        chained_status=$?
-        [[ "$chained_status" -eq 1 ]] || return 1
-    fi
 
     return 0
 }
@@ -355,10 +288,8 @@ _bake_retained_eligible() {
 #        container is retained-eligible.
 #   All other cells go to .matrix so the flat matrix handles them faithfully.
 #
-# Design rationale: retained-bake is deliberately limited to B1-core standalone
-# containers.  latest-only and chained containers keep retained cells on the
-# flat matrix so cells are not dropped or rebuilt against the wrong internal
-# base-image target.
+# Design rationale: retained-bake is deliberately limited to an explicit
+# rollout set.  latest-only containers keep retained cells on the flat matrix.
 #
 # Cell order within each partition is preserved.
 #

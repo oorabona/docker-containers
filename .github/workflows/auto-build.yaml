@@ -1964,7 +1964,7 @@ jobs:
           set -euo pipefail
           source helpers/logging.sh
           source helpers/retry.sh
-          chmod +x scripts/generate-bake-hcl.sh
+          chmod +x scripts/generate-bake-hcl.sh scripts/bake-merge-hcl.sh
 
           # Validate each BAKE_CONTAINERS token against the expected name pattern.
           # Tokens come from detect-containers JSON (trusted pipeline), but the check
@@ -1982,8 +1982,10 @@ jobs:
           # with `docker buildx bake -f <(...)` on some buildkit versions).
           # Using the real REMOTE_CR ensures base FROM refs resolve.
           #
-          # Bake defaults to latest-only.  When build_all_retained is true,
-          # partition_builds admits only B1-core retained-eligible cells here.
+          # Bake defaults to latest-only. When build_all_retained is true,
+          # partition_builds admits the explicit, enumerated retained-bake rollout
+          # set, including admitted chained containers, but excludes containers
+          # pinned to their latest version (bake_latest_only).
           bake_file="${RUNNER_TEMP}/bake-amd64.json"
           # BAKE_CACHE_EXPORT gates cache-to emission in the generator:
           #   true  → real publish path (push/dispatch): emit cache-to so master builds
@@ -2018,25 +2020,7 @@ jobs:
             # shellcheck disable=SC2086
             REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=true \
               ./scripts/generate-bake-hcl.sh "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
-            # Merge latest + retained HCL. On a target-key collision (a container's
-            # latest target appears in both passes) the retained pass wins. Safe
-            # ONLY because BAKE_RETAINED_CONTAINERS are retained-eligible, i.e. have
-            # NO internal base dependency (_bake_retained_eligible in
-            # helpers/bake-managed.sh) → their targets carry no `contexts` key, so
-            # both definitions are byte-identical and $extra-wins is a no-op. If a
-            # chained container is ever admitted to retained-bake (B1b), this
-            # object-merge would silently drop the latest target's `contexts` —
-            # revisit the merge then (e.g. emit retained cells only).
-            jq -s '
-              .[0] as $base | .[1] as $extra |
-              ($base.group.default.targets + $extra.group.default.targets) as $default_targets |
-              $base
-              | .target = ($base.target + $extra.target)
-              | .group = ($base.group + $extra.group)
-              | .group.default.targets = (
-                  reduce $default_targets[] as $t ([]; if index($t) then . else . + [$t] end)
-                )
-            ' "$bake_latest_file" "$bake_retained_file" > "$bake_file"
+            ./scripts/bake-merge-hcl.sh "$bake_latest_file" "$bake_retained_file" > "$bake_file"
           fi
 
           # FIX 3: honor DOCKER_NO_CACHE (rebuild=force) → --no-cache
@@ -2167,7 +2151,9 @@ jobs:
 
           # shellcheck disable=SC2086
           cells_json=$(./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" ${BAKE_CONTAINERS})
-          # B1-core: also SBOM the retained cells of eligible containers, else
+          # Also SBOM retained cells in the explicit, enumerated retained-bake
+          # rollout set, including admitted chained containers but excluding
+          # containers pinned to their latest version (bake_latest_only), else
           # bake-attest (which matrices over all bake_builds incl. retained) finds
           # no SBOM and silently skips attestation for retained images. Merge +
           # dedupe by version-keyed cell identity (unique_by reorders, harmless —
@@ -2465,7 +2451,7 @@ jobs:
           set -euo pipefail
           source helpers/logging.sh
           source helpers/retry.sh
-          chmod +x scripts/generate-bake-hcl.sh
+          chmod +x scripts/generate-bake-hcl.sh scripts/bake-merge-hcl.sh
 
           # Validate each BAKE_CONTAINERS token against the expected name pattern.
           set -f
@@ -2479,8 +2465,10 @@ jobs:
 
           # Using the real REMOTE_CR ensures base FROM refs resolve.
           #
-          # Bake defaults to latest-only.  When build_all_retained is true,
-          # partition_builds admits only B1-core retained-eligible cells here.
+          # Bake defaults to latest-only. When build_all_retained is true,
+          # partition_builds admits the explicit, enumerated retained-bake rollout
+          # set, including admitted chained containers, but excludes containers
+          # pinned to their latest version (bake_latest_only).
           bake_file="${RUNNER_TEMP}/bake-arm64.json"
           # BAKE_CACHE_EXPORT gates cache-to emission: true only on the real publish
           # path (not IS_PR, not DRY_RUN).  See amd64 step comment for full rationale.
@@ -2510,25 +2498,7 @@ jobs:
             # shellcheck disable=SC2086
             REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=true \
               ./scripts/generate-bake-hcl.sh "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
-            # Merge latest + retained HCL. On a target-key collision (a container's
-            # latest target appears in both passes) the retained pass wins. Safe
-            # ONLY because BAKE_RETAINED_CONTAINERS are retained-eligible, i.e. have
-            # NO internal base dependency (_bake_retained_eligible in
-            # helpers/bake-managed.sh) → their targets carry no `contexts` key, so
-            # both definitions are byte-identical and $extra-wins is a no-op. If a
-            # chained container is ever admitted to retained-bake (B1b), this
-            # object-merge would silently drop the latest target's `contexts` —
-            # revisit the merge then (e.g. emit retained cells only).
-            jq -s '
-              .[0] as $base | .[1] as $extra |
-              ($base.group.default.targets + $extra.group.default.targets) as $default_targets |
-              $base
-              | .target = ($base.target + $extra.target)
-              | .group = ($base.group + $extra.group)
-              | .group.default.targets = (
-                  reduce $default_targets[] as $t ([]; if index($t) then . else . + [$t] end)
-                )
-            ' "$bake_latest_file" "$bake_retained_file" > "$bake_file"
+            ./scripts/bake-merge-hcl.sh "$bake_latest_file" "$bake_retained_file" > "$bake_file"
           fi
 
           # FIX 3: honor DOCKER_NO_CACHE (rebuild=force) → --no-cache
@@ -2861,10 +2831,10 @@ jobs:
       toJson(fromJson(needs.detect-containers.outputs.bake_builds || '[]')) != '[]' &&
       needs.bake-build-amd64.result == 'success' &&
       needs.bake-build-arm64.result == 'success'
-    # NOTE: No job-level concurrency here — bake-merge writes only the
-    # linux-latest refs for github-runner/web-shell/wordpress; create-manifest
-    # writes retained + windows refs.  The ref sets are disjoint, so no
-    # serialization is needed (same rationale as build-and-push).
+    # NOTE: No job-level concurrency here — a cell admitted to retained-bake
+    # leaves matrix_builds, the only input create-manifest consumes. Therefore
+    # bake-merge and create-manifest write disjoint ref sets, so no serialization
+    # is needed (same rationale as build-and-push).
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:

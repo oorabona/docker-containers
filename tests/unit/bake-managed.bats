@@ -79,9 +79,10 @@ _fixture_os_builds() {
     ]'
 }
 
-# Fixture for retained-bake B1-core routing.  It includes latest + retained
-# cells for one eligible container, three non-eligible bake-managed containers,
-# and one non-bake-managed control.
+# Fixture for the explicit, enumerated retained-bake routing set. Debian,
+# wordpress, and web-shell each include latest and retained cells to exercise
+# admission to bake; github-runner includes both so its retained cell exercises
+# bake_latest_only routing to the matrix, alongside legacy-matrix controls.
 _fixture_retained_bake_builds() {
     jq -cn '
     [
@@ -681,9 +682,9 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# _bake_retained_eligible — direct eligibility checks for B1-core.
+# _bake_retained_eligible — direct eligibility checks for the explicit rollout.
 # ---------------------------------------------------------------------------
-@test "_bake_retained_eligible accepts standalone eligible containers only" {
+@test "_bake_retained_eligible admits wordpress and web-shell but refuses github-runner" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -694,10 +695,10 @@ ubuntu-1.0.0"
     [[ "$status" -eq 1 ]]
 
     run _bake_retained_eligible "wordpress"
-    [[ "$status" -eq 1 ]]
+    [[ "$status" -eq 0 ]]
 
     run _bake_retained_eligible "web-shell"
-    [[ "$status" -eq 1 ]]
+    [[ "$status" -eq 0 ]]
 
     run _bake_retained_eligible "postgres"
     [[ "$status" -eq 1 ]]
@@ -722,8 +723,8 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# include_retained=true — eligible retained cells route to bake; retained
-#         cells for latest-only, chained, and non-bake containers stay matrix.
+# include_retained=true — eligible retained cells route to bake; latest-only
+#         and non-bake containers stay matrix.
 # ---------------------------------------------------------------------------
 @test "include_retained=true routes only eligible retained cells to bake" {
     # shellcheck disable=SC1090
@@ -738,20 +739,16 @@ ubuntu-1.0.0"
     debian_retained_bake=$(echo "$result" | jq '[.bake[] | select(.container == "debian" and .is_latest_version == false)] | length')
     [[ "$debian_retained_bake" -eq 1 ]]
 
-    # Non-eligible retained cells stay in matrix and do not vanish.
+    # github-runner is bake_latest_only, so its retained cell stays in matrix.
     gr_retained_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "github-runner" and .is_latest_version == false)] | length')
     [[ "$gr_retained_matrix" -eq 1 ]]
-    wp_retained_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "wordpress" and .is_latest_version == false)] | length')
-    [[ "$wp_retained_matrix" -eq 1 ]]
-    ws_retained_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "web-shell" and .is_latest_version == false)] | length')
-    [[ "$ws_retained_matrix" -eq 1 ]]
 
     gr_retained_bake=$(echo "$result" | jq '[.bake[] | select(.container == "github-runner" and .is_latest_version == false)] | length')
     [[ "$gr_retained_bake" -eq 0 ]]
     wp_retained_bake=$(echo "$result" | jq '[.bake[] | select(.container == "wordpress" and .is_latest_version == false)] | length')
-    [[ "$wp_retained_bake" -eq 0 ]]
+    [[ "$wp_retained_bake" -eq 1 ]]
     ws_retained_bake=$(echo "$result" | jq '[.bake[] | select(.container == "web-shell" and .is_latest_version == false)] | length')
-    [[ "$ws_retained_bake" -eq 0 ]]
+    [[ "$ws_retained_bake" -eq 1 ]]
 
     # Latest cells for all bake-managed containers still route to bake.
     gr_latest_bake=$(echo "$result" | jq '[.bake[] | select(.container == "github-runner" and .is_latest_version == true)] | length')
