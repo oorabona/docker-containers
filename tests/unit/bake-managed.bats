@@ -79,9 +79,10 @@ _fixture_os_builds() {
     ]'
 }
 
-# Fixture for the explicit, enumerated retained-bake rollout set. It includes
-# admitted chained containers and excludes github-runner retained cells, pinned
-# to their latest version (bake_latest_only).
+# Fixture for the explicit, enumerated retained-bake routing set. Debian,
+# wordpress, and web-shell each include latest and retained cells to exercise
+# admission to bake; github-runner includes both so its retained cell exercises
+# bake_latest_only routing to the matrix, alongside legacy-matrix controls.
 _fixture_retained_bake_builds() {
     jq -cn '
     [

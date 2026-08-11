@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# bake-merge-hcl.sh — strict merge of latest and retained bake documents.
+# bake-merge-hcl.sh — strict merge of this repository generator's latest and
+# retained bake documents. It accepts exactly its three-block (variable,
+# target, group) shape and refuses anything else: a block it does not merge
+# would otherwise be silently dropped or taken from one side.
 #
 # Usage: scripts/bake-merge-hcl.sh <latest.json> <retained.json>
 #
