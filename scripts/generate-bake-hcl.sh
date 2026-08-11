@@ -65,6 +65,8 @@ source "${PROJECT_ROOT}/helpers/dependency-graph.sh"
 # build-args-utils provides build_args_json (config.yaml build_args as JSON).
 # shellcheck source=../helpers/logging.sh
 source "${PROJECT_ROOT}/helpers/logging.sh"
+# shellcheck source=../helpers/gha.sh
+source "${PROJECT_ROOT}/helpers/gha.sh"
 # shellcheck source=../helpers/build-args-utils.sh
 source "${PROJECT_ROOT}/helpers/build-args-utils.sh"
 # validate-base-cache-schema provides _vbc_validate_build_args_config — the
@@ -134,7 +136,7 @@ _list_all_containers() {
     local out stderr_file
     stderr_file=$(mktemp "${TMPDIR:-/tmp}/generate-bake-hcl-make-list.XXXXXX") || return 1
     if ! out=$({ cd "${PROJECT_ROOT}" && ./make list; } 2>"$stderr_file"); then
-        cat "$stderr_file" >&2
+        gha_error '%s' "$(<"$stderr_file")" >&2
         rm -f "$stderr_file"
         printf 'ERROR: ./make list failed\n' >&2
         return 1
@@ -863,10 +865,25 @@ _enumerate_cells_init() {
     fi
 
     _EC_closure_containers=()
+    local -A _closure_set=()
     while IFS= read -r c; do
-        [[ -n "$c" ]] && _EC_closure_containers+=("$c")
+        if [[ -n "$c" ]]; then
+            _EC_closure_containers+=("$c")
+            _closure_set["$c"]=1
+        fi
     done < "$closure_file"
     rm -f "$closure_file"
+
+    # Successful closure collection must retain every requested container.
+    # Dependencies may add entries, but absence is a fail-closed invariant:
+    # it covers an unreadable, truncated, removed, or replaced collected file.
+    for c in "${requested_containers[@]}"; do
+        if [[ -z "${_closure_set[$c]+set}" ]]; then
+            printf 'ERROR: collected closure is missing requested container %s — refusing to emit an incomplete bake graph\n' \
+                "$c" >&2
+            return 1
+        fi
+    done
 
     # Matrix enumeration + first-target-per-container for dep-context lookup
     # F4: use the caller-supplied include_all_retained flag (default false = latest-only).

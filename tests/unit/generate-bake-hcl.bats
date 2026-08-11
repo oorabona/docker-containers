@@ -1197,6 +1197,58 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
+# A successful collection is still only useful if it contains every requested
+# container. Exercise the build path after collection: an empty or replaced
+# file must not turn into an empty, successful bake document.
+# ---------------------------------------------------------------------------
+
+@test "generator emits no bake document when the collected closure is empty" {
+    # shellcheck disable=SC1090
+    source "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh"
+    _list_all_containers() { printf '%s\n' web-shell; }
+    collect_lines() { : > "$1"; }
+
+    run _build_bake_json web-shell
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"collected closure is missing requested container web-shell"* ]]
+    [[ "$output" != *'"target"'* ]]
+}
+
+@test "generator emits no bake document when the collected closure omits a requested container" {
+    # shellcheck disable=SC1090
+    source "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh"
+    _list_all_containers() { printf '%s\n' web-shell wordpress; }
+    collect_lines() { printf '%s\n' web-shell > "$1"; }
+
+    run _build_bake_json web-shell wordpress
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"collected closure is missing requested container wordpress"* ]]
+    [[ "$output" != *'"target"'* ]]
+}
+
+@test "generator safely annotates captured make list stderr" {
+    local fake_root
+    fake_root="${TEST_TEMP_DIR}/failing-make-list"
+    mkdir -p "$fake_root"
+    printf '#!/usr/bin/env bash\nprintf "untrusted\\n::warning::forged annotation\\n" >&2\nexit 1\n' \
+        > "${fake_root}/make"
+    chmod +x "${fake_root}/make"
+
+    # shellcheck disable=SC1090
+    source "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh"
+    PROJECT_ROOT="$fake_root"
+
+    run _list_all_containers
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'::error::'* ]]
+    [[ "$output" == *'::warning::forged annotation'* ]]
+    [[ "$output" != *$'\n::warning::forged annotation'* ]]
+}
+
+# ---------------------------------------------------------------------------
 # #595 — --cells objects include target_id field
 # Catches: omitting target_id from cells output → bake-buildresult cannot
 # correlate --metadata-file keys to cells.
