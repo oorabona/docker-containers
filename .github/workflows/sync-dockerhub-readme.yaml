@@ -12,6 +12,12 @@ on:
         required: false
         type: string
 
+# Both jobs read the checkout and push to Docker Hub with Docker Hub
+# credentials; nothing here uses GITHUB_TOKEN for a write. Declared so the
+# repository default cannot widen it.
+permissions:
+  contents: read
+
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
