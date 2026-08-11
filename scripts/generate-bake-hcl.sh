@@ -131,11 +131,15 @@ EOF
 # Enumerate all containers from `./make list`, strictly filtered to container-
 # name characters to drop any diagnostic noise.
 _list_all_containers() {
-    local out
-    if ! out=$(cd "${PROJECT_ROOT}" && ./make list 2>/dev/null); then
+    local out stderr_file
+    stderr_file=$(mktemp "${TMPDIR:-/tmp}/generate-bake-hcl-make-list.XXXXXX") || return 1
+    if ! out=$({ cd "${PROJECT_ROOT}" && ./make list; } 2>"$stderr_file"); then
+        cat "$stderr_file" >&2
+        rm -f "$stderr_file"
         printf 'ERROR: ./make list failed\n' >&2
         return 1
     fi
+    rm -f "$stderr_file"
     printf '%s' "$out" | grep -E '^[a-z0-9_-]+$' || true
 }
 
@@ -848,11 +852,21 @@ _enumerate_cells_init() {
         fi
     done
 
-    # Determine containers to process: transitive dep closure of requested
+    # Determine containers to process: transitive dep closure of requested.
+    # collect_lines preserves _expand_closure's explicit failure status, which
+    # process substitution would otherwise discard and turn into an empty graph.
+    local closure_file
+    closure_file=$(mktemp "${TMPDIR:-/tmp}/generate-bake-hcl-closure.XXXXXX") || return 1
+    if ! collect_lines "$closure_file" -- _expand_closure "${requested_containers[@]}"; then
+        rm -f "$closure_file"
+        return 1
+    fi
+
     _EC_closure_containers=()
     while IFS= read -r c; do
         [[ -n "$c" ]] && _EC_closure_containers+=("$c")
-    done < <(_expand_closure "${requested_containers[@]}")
+    done < "$closure_file"
+    rm -f "$closure_file"
 
     # Matrix enumeration + first-target-per-container for dep-context lookup
     # F4: use the caller-supplied include_all_retained flag (default false = latest-only).

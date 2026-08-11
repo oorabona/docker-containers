@@ -1798,8 +1798,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # Bake pipeline (ADR-013 production cutover)
   #
-  # Routes github-runner, web-shell, and wordpress through `docker buildx bake`
-  # while the flat matrix above continues to handle all other containers.
+  # Routes the bake-managed containers (the set in helpers/bake-managed.sh)
+  # through `docker buildx bake` while the flat matrix above handles the rest.
   #
   # Architecture:
   #   bake-build-amd64 / bake-build-arm64  — Stage A: per-arch native builds

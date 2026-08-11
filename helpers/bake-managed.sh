@@ -265,20 +265,17 @@ _bake_retained_eligible() {
 }
 
 # ---------------------------------------------------------------------------
-# partition_builds <builds_json> [<scope_active>] [<include_retained>]
+# partition_builds <builds_json> [<force_matrix>] [<include_retained>]
 #
 # Given the `builds` JSON array (cells with a `.container` field), prints a
 # compact JSON object:
 #   {"bake": [...cells routed to the bake engine...],
 #    "matrix": [...all remaining cells...]}
 #
-# When <scope_active> is "true" (second argument), bake is disabled for this
-# run: ALL cells route to .matrix.  This preserves per-cell scan/attest
-# fidelity for scoped dispatches (scope_versions / scope_flavors non-empty),
-# which build only a subset of a container's cells while bake would publish
-# the full container plan.
+# When <force_matrix> is "true" (second argument), ALL cells route to .matrix.
+# This flag disables bake routing for runs that require the flat matrix.
 #
-# When <scope_active> is absent or any value other than "true", per-cell
+# When <force_matrix> is absent or any value other than "true", per-cell
 # routing applies:
 #   A cell lands in .bake only when ALL of the following hold:
 #     1. Its .container is in the bake-managed set.
@@ -298,7 +295,7 @@ _bake_retained_eligible() {
 # ---------------------------------------------------------------------------
 partition_builds() {
     local builds_json="$1"
-    local scope_active="${2:-false}"
+    local force_matrix="${2:-false}"
     local include_retained="${3:-false}"
 
     # Validate: must be a non-empty string
@@ -313,9 +310,8 @@ partition_builds() {
         return 1
     fi
 
-    # Scoped run or forced-matrix: bake disabled — all cells to matrix for full
-    # per-cell fidelity (scope_versions / scope_flavors / test routing).
-    if [[ "$scope_active" == "true" ]]; then
+    # Forced-matrix: bake disabled — all cells route to the flat matrix.
+    if [[ "$force_matrix" == "true" ]]; then
         echo "$builds_json" | jq -c '{bake: [], matrix: [.[]]}'
         return 0
     fi
@@ -414,22 +410,22 @@ main() {
     case "$cmd" in
         partition)
             if [[ $# -lt 2 ]]; then
-                printf 'Usage: %s partition <builds_json_or_@file> [scope_active] [include_retained]\n' \
+                printf 'Usage: %s partition <builds_json_or_@file> [force_matrix] [include_retained]\n' \
                     "$(basename "$0")" >&2
                 return 1
             fi
             local input="$2"
-            local scope_arg="${3:-false}"
+            local force_matrix_arg="${3:-false}"
             local include_retained_arg="${4:-false}"
             # Support @file syntax: @path reads from file
             if [[ "$input" == @* ]]; then
                 local filepath="${input#@}"
                 input="$(cat "$filepath")"
             fi
-            partition_builds "$input" "$scope_arg" "$include_retained_arg"
+            partition_builds "$input" "$force_matrix_arg" "$include_retained_arg"
             ;;
         *)
-            printf 'Usage: %s partition <builds_json_or_@file> [scope_active] [include_retained]\n' \
+            printf 'Usage: %s partition <builds_json_or_@file> [force_matrix] [include_retained]\n' \
                 "$(basename "$0")" >&2
             return 1
             ;;
