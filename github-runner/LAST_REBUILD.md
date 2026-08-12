@@ -39,3 +39,25 @@ Build status will be available in GitHub Actions after merge.
 - Variant: 2.335.1, base ghcr.io/oorabona/library/ubuntu:24.04
   Old digest: sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
   New digest: sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+
+<!-- drift-content-hash: 5b9a5a6d0847f7d9 run:31573053016 -->
+## base-digest-drift (2026-08-12)
+
+- Variant: 2.334.0-windows-ltsc2022-dev, base mcr.microsoft.com/windows/server:ltsc2022
+  Old digest: sha256:854b5f1bcfc96a5981fd10811058f8eddd507f2c9ecf1c799bd263b4465f850b
+  New digest: sha256:d1300b231e7715235ae2c89ec5c18feea2397553747513b49770ad74652a6acd
+- Variant: 2.334.0-windows-ltsc2022, base mcr.microsoft.com/windows/server:ltsc2022
+  Old digest: sha256:854b5f1bcfc96a5981fd10811058f8eddd507f2c9ecf1c799bd263b4465f850b
+  New digest: sha256:d1300b231e7715235ae2c89ec5c18feea2397553747513b49770ad74652a6acd
+- Variant: 2.335.1-windows-ltsc2022-dev, base mcr.microsoft.com/windows/server:ltsc2022
+  Old digest: sha256:854b5f1bcfc96a5981fd10811058f8eddd507f2c9ecf1c799bd263b4465f850b
+  New digest: sha256:d1300b231e7715235ae2c89ec5c18feea2397553747513b49770ad74652a6acd
+- Variant: 2.335.1-windows-ltsc2022, base mcr.microsoft.com/windows/server:ltsc2022
+  Old digest: sha256:854b5f1bcfc96a5981fd10811058f8eddd507f2c9ecf1c799bd263b4465f850b
+  New digest: sha256:d1300b231e7715235ae2c89ec5c18feea2397553747513b49770ad74652a6acd
+- Variant: 2.336.0-windows-ltsc2022-dev, base mcr.microsoft.com/windows/server:ltsc2022
+  Old digest: sha256:854b5f1bcfc96a5981fd10811058f8eddd507f2c9ecf1c799bd263b4465f850b
+  New digest: sha256:d1300b231e7715235ae2c89ec5c18feea2397553747513b49770ad74652a6acd
+- Variant: 2.336.0-windows-ltsc2022, base mcr.microsoft.com/windows/server:ltsc2022
+  Old digest: sha256:854b5f1bcfc96a5981fd10811058f8eddd507f2c9ecf1c799bd263b4465f850b
+  New digest: sha256:d1300b231e7715235ae2c89ec5c18feea2397553747513b49770ad74652a6acd
