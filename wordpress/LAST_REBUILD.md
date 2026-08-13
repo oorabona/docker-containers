@@ -4,12 +4,12 @@
 |-------|-------|
 | **Container** | `wordpress` |
 | **Major Line** | `7.x` |
-| **Version Change** | `7.0.2-alpine` → `7.0.3-alpine` |
+| **Version Change** | `7.0.3-alpine` → `7.0.4-alpine` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-08-12T07:14:28Z |
+| **Rebuild Date** | 2026-08-13T07:16:19Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/31573053016) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/31677010976) |
 
 ## Build Status
 
