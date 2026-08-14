@@ -60,6 +60,48 @@ Reuse: the identity-suffix **threading** through `ext_image_name` / `ext_ref_res
 5. Move `PGRX_VERSION` into config (a hashed input); strip `build_date`/timestamps from the output layer.
 6. The **periodic rebuild backstop** + the existing base-digest-drift cover residual apk drift.
 
+## Precondition: `build_deps` is not yet an authoritative input
+
+Step 1 of the plan hashes "normalized `build_deps`" among its declared inputs. That
+field is not today a faithful statement of what a build installs, in either
+direction:
+
+- no build path consumes or enforces it — it is documentation that generic YAML
+  reads pass over;
+- recipes install packages it does not declare (postgis: `autoconf`, `automake`,
+  `gettext-dev`, `git`, `icu-dev`, `libtool`, `pcre2-dev`, `perl`, plus the
+  PostgreSQL-major-derived `clang<N>`/`llvm<N>-dev`; paradedb: `curl`, `git`,
+  `pkgconf`);
+- it declares packages a recipe does not `apk add` — paradedb lists `rust` and
+  `cargo` while installing the toolchain through rustup;
+- and at least one declared package was absent from its recipe, which is how postgis
+  came to declare `bison` and `flex` under `build_deps` while its build could not
+  generate `lwin_wkt_parse.c`.
+
+This does not block step 1. The record it defines also carries the resolved,
+expanded Dockerfile bytes, so a recipe change moves the hash whether or not
+`build_deps` is faithful. What the mismatch blocks is treating `build_deps` itself
+as a build input: until it is authoritative, including it produces rebuilds that
+track the declaration rather than the build.
+
+**Making it authoritative needs a boundary, not a convention.** "The complete static
+`apk add` list" has to mean the direct arguments of the recipe's own static install,
+explicitly excluding packages derived at build time from the PostgreSQL major, and
+excluding the transitive closure. Migrating ten YAML lists without a validator or a
+generation mechanism that consumes them only creates a second convention free to
+drift again — which is the condition this section documents.
+
+**Ordering.** Take the identity change first: hash the expanded Dockerfile, source
+identity, resolved version, PG major and the build arguments actually consumed, with
+`build_deps` omitted. That alone gives automatic rebuild on any recipe change, which
+the ordinary prefilter does not (it decides on tag presence — `_image_needs_build`
+in `scripts/build-extensions.sh` — against a tag carrying no recipe input:
+`ghcr.io/<owner>/ext-<name>:pg<major>-<version>`, from `ext_image_name`; the
+main-container `compute_build_digest` is never called for extension images). `FORCE`
+and an absent tag or architecture still build, so a maintainer is not without
+recourse today; what is missing is that an edited recipe is picked up on its own.
+Make `build_deps` authoritative and enforced afterwards, and only then hash it.
+
 ## Consequences
 
 - No manual bump, no PR check (its whole problem surface is removed).
