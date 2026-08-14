@@ -2865,3 +2865,46 @@ GH_EOF
     new_message_count=$(grep -cE 'probe error|resolver failure|missing prerequisite' "$DRIFT_YAML" || true)
     [ "$new_message_count" -ge 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# The drift issue must carry a remediation that actually clears the drift.
+# `./make build` publishes nothing, and a plain re-run of the workflow detects
+# no change and skips every build job — both leave the declared version missing
+# from the registry. Only a digest-ignoring dispatch republishes it.
+# ---------------------------------------------------------------------------
+@test "version-drift issue body names the digest-ignoring dispatch, not a local build" {
+    local drift_json='[{"kind":"container","name":"myapp","declared":"2.0.0","published":"","status":"drift"}]'
+
+    run env \
+        GH_TOKEN="fake-token" \
+        GITHUB_REPOSITORY="test/repo" \
+        GITHUB_RUN_ID="12345" \
+        GITHUB_SERVER_URL="https://github.com" \
+        GITHUB_SHA="abcdef01" \
+        GITHUB_EVENT_NAME="schedule" \
+        GITHUB_REF_NAME="master" \
+        COMMIT_SUBJECT="test" \
+        DRY_RUN="true" \
+        bash -c "
+            source '${REPO_ROOT}/helpers/logging.sh'
+            source '${REPO_ROOT}/helpers/retry.sh'
+            source '${REPO_ROOT}/scripts/open-dep-failure-issue.sh'
+            open_version_drift_issue '${drift_json}' 'myapp'
+        "
+
+    [ "$status" -eq 0 ]
+
+    # The dispatch that actually republishes, in its digest-ignoring mode.
+    [[ "$output" == *"gh workflow run auto-build.yaml"* ]]
+    [[ "$output" == *"rebuild=all"* ]]
+
+    # The owner is derived from GITHUB_REPOSITORY, so the verify command stays
+    # correct when GITHUB_REPOSITORY_OWNER is absent from the environment — as
+    # it is here.
+    [[ "$output" == *"ghcr.io/test/<container>:<version>"* ]]
+
+    # `./make build` may appear only as the thing that does NOT clear drift.
+    if [[ "$output" == *"./make build"* ]]; then
+        [[ "$output" == *"publishes nothing"* ]]
+    fi
+}
