@@ -72,6 +72,121 @@ container_scope_field() {
     printf '%s' "$container_scopes" | jq -r --arg c "$container" --arg f "$field" '.[$c][$f] // ""'
 }
 
+# Classify extension build inputs in a changed-files list.  The result is either
+# an empty string (no compilation required), a comma-separated list of known
+# extension names, or the literal "all".  "all" is deliberately fail-closed:
+# callers must compile every extension when the config cannot be safely
+# attributed to individual extension version fields.
+extension_scope_for_changes() {
+    local changed_files="${1:-}"
+    local previous_config="${2:-}"
+    local current_config="${3:-postgres/extensions/config.yaml}"
+    local config_changed=false
+    local shared_input_changed=false
+    local file ext
+    local -a recipe_extensions=()
+
+    while IFS= read -r file; do
+        [[ -z "$file" ]] && continue
+        case "$file" in
+            postgres/extensions/build/*.Dockerfile)
+                ext="${file#postgres/extensions/build/}"
+                ext="${ext%.Dockerfile}"
+                recipe_extensions+=("$ext")
+                ;;
+            postgres/extensions/config.yaml)
+                config_changed=true
+                ;;
+            scripts/resolvers/*|helpers/extension-*.sh)
+                shared_input_changed=true
+                ;;
+        esac
+    done <<< "$changed_files"
+
+    if [[ "$shared_input_changed" == "true" ]]; then
+        printf 'all\n'
+        return 0
+    fi
+
+    if [[ ${#recipe_extensions[@]} -eq 0 && "$config_changed" != "true" ]]; then
+        printf ''
+        return 0
+    fi
+
+    local current_json previous_json known_extensions
+    if ! current_json=$(yq -o=json '.' "$current_config" 2>/dev/null) ||
+       ! jq -e '
+         type == "object" and
+         (.extensions | type == "object") and
+         (.extensions | length > 0) and
+         all(.extensions[];
+           type == "object" and
+           (.version | type == "string") and
+           (.rust_version == null or (.rust_version | type == "string")))
+       ' <<< "$current_json" >/dev/null 2>&1; then
+        printf 'all\n'
+        return 0
+    fi
+
+    known_extensions=$(jq -r '.extensions | keys[]' <<< "$current_json")
+    for ext in "${recipe_extensions[@]}"; do
+        if [[ -z "$ext" ]] || ! grep -Fxq "$ext" <<< "$known_extensions"; then
+            printf 'all\n'
+            return 0
+        fi
+    done
+
+    local -a scoped_extensions=("${recipe_extensions[@]}")
+    if [[ "$config_changed" == "true" ]]; then
+        if [[ -z "$previous_config" ]] ||
+           ! previous_json=$(yq -o=json '.' "$previous_config" 2>/dev/null) ||
+           ! jq -e '
+             type == "object" and
+             (.extensions | type == "object") and
+             (.extensions | length > 0) and
+             all(.extensions[];
+               type == "object" and
+               (.version | type == "string") and
+               (.rust_version == null or (.rust_version | type == "string")))
+           ' <<< "$previous_json" >/dev/null 2>&1; then
+            printf 'all\n'
+            return 0
+        fi
+
+        # Adding/removing/renaming extensions, changing any shared config, or
+        # changing an extension field other than version/rust_version cannot be
+        # attributed safely.  Flavor composition is intentionally excluded: it
+        # changes final images but does not require recompiling extensions.
+        if ! jq -e --argjson previous "$previous_json" '
+          (.extensions | keys) == ($previous.extensions | keys) and
+          del(.extensions, .flavors) == ($previous | del(.extensions, .flavors)) and
+          (.extensions | with_entries(.value |= del(.version, .rust_version))) ==
+            ($previous.extensions | with_entries(.value |= del(.version, .rust_version)))
+        ' <<< "$current_json" >/dev/null 2>&1; then
+            printf 'all\n'
+            return 0
+        fi
+
+        while IFS= read -r ext; do
+            [[ -z "$ext" ]] && continue
+            scoped_extensions+=("$ext")
+        done < <(jq -r --argjson previous "$previous_json" '
+          .extensions | keys[] as $name |
+          select(
+            (.[$name].version // null) != ($previous.extensions[$name].version // null) or
+            (.[$name].rust_version // null) != ($previous.extensions[$name].rust_version // null)
+          ) | $name
+        ' <<< "$current_json")
+    fi
+
+    if [[ ${#scoped_extensions[@]} -eq 0 ]]; then
+        printf ''
+        return 0
+    fi
+
+    printf '%s\n' "${scoped_extensions[@]}" | sort -u | paste -sd, -
+}
+
 filter_builds_by_version_flavor_scope() {
     local container_builds="$1"
     local scope_versions="${2:-}"
@@ -173,4 +288,5 @@ expand_variants_for_containers() {
 }
 
 export -f normalize_container_scopes container_scope_keys validate_container_scope_keys
-export -f container_scope_field filter_builds_by_version_flavor_scope expand_variants_for_containers
+export -f container_scope_field extension_scope_for_changes
+export -f filter_builds_by_version_flavor_scope expand_variants_for_containers
