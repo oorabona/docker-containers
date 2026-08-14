@@ -113,6 +113,9 @@ outputs:
   container_scopes:
     description: 'Normalized JSON map of per-container scopes, or empty for legacy callers'
     value: ${{ steps.find-containers.outputs.container_scopes }}
+  force_extension_builds:
+    description: 'Whether detected extension inputs require compilation instead of image reuse'
+    value: ${{ steps.find-containers.outputs.force_extension_builds }}
   carried_forward:
     description: |
       JSON array of container names that were newly appended to the build list
@@ -277,6 +280,8 @@ runs:
         containers_to_build=()
         containers_to_verify=()
         normalized_container_scopes=""
+        extension_config_base=""
+        force_extension_builds=false
 
         if [[ -n "${CONTAINER_SCOPES_INPUT:-}" ]]; then
           normalized_container_scopes=$(normalize_container_scopes "$CONTAINER_SCOPES_INPUT") || exit 1
@@ -359,6 +364,7 @@ runs:
 
             if [[ "$baseline_valid" == "true" ]]; then
               echo "Coverage checkpoint baseline: $baseline_sha"
+              extension_config_base="$baseline_sha"
               set +e
               changed_files=$(git diff --name-only --no-renames "$baseline_sha" "${{ github.sha }}" 2>/dev/null)
               diff_rc=$?
@@ -381,6 +387,7 @@ runs:
               changed_files=$(git diff --name-only --no-renames 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "${{ github.sha }}" 2>/dev/null)
             else
               changed_files=$(git diff --name-only --no-renames "${{ github.event.before }}" "${{ github.sha }}" 2>/dev/null)
+              extension_config_base="${{ github.event.before }}"
             fi
             diff_rc=$?
             set -e
@@ -398,6 +405,10 @@ runs:
                 "building all containers with retained version expansion"
               coverage_fallback=true
               changed_files=""
+            else
+              extension_config_base=$(git merge-base \
+                "${{ github.event.pull_request.base.sha }}" \
+                "${{ github.event.pull_request.head.sha }}" 2>/dev/null || true)
             fi
           else
             # For manual triggers (workflow_dispatch)
@@ -457,6 +468,44 @@ runs:
             fi
             # TODO: Shared-helper fanout (helpers/*.sh change affecting all images)
             # is a broader policy; tracked as follow-up to avoid over-engineering here.
+          fi
+
+          # Extension artifacts are normally reused by tag.  When their recipe,
+          # declared version, resolver, or helper changed, derive a postgres
+          # extension scope and separately signal that reuse must be bypassed.
+          # This runs for both pull_request and post-merge push diffs.
+          if [[ -n "$changed_files" ]]; then
+            extension_config_base_file=""
+            if grep -Fxq "postgres/extensions/config.yaml" <<< "$changed_files" &&
+               [[ -n "$extension_config_base" ]]; then
+              extension_config_base_file=$(mktemp "${RUNNER_TEMP}/extension-config-base.XXXXXX")
+              if ! git show "${extension_config_base}:postgres/extensions/config.yaml" \
+                  > "$extension_config_base_file" 2>/dev/null; then
+                rm -f "$extension_config_base_file"
+                extension_config_base_file=""
+              fi
+            fi
+
+            extension_scope=$(extension_scope_for_changes \
+              "$changed_files" \
+              "$extension_config_base_file" \
+              "$GITHUB_WORKSPACE/postgres/extensions/config.yaml")
+            [[ -z "$extension_config_base_file" ]] || rm -f "$extension_config_base_file"
+
+            if [[ -n "$extension_scope" ]]; then
+              force_extension_builds=true
+              if [[ "$extension_scope" == "all" ]]; then
+                normalized_container_scopes='{"postgres":{}}'
+              else
+                normalized_container_scopes=$(jq -cn --arg extensions "$extension_scope" \
+                  '{postgres: {extensions: $extensions}}')
+              fi
+              if echo "$valid_containers" | grep -qx "postgres" &&
+                 [[ " ${containers_to_build[*]} " != *" postgres "* ]]; then
+                echo "🔧 Extension build input changed — adding postgres with forced extension scope: $extension_scope"
+                containers_to_build+=("postgres")
+              fi
+            fi
           fi
 
         if [[ -n "$changed_files" ]]; then
@@ -613,6 +662,7 @@ runs:
 
         # Create outputs (CSV first, then JSON for matrix compatibility)
         echo "container_scopes=$normalized_container_scopes" >> $GITHUB_OUTPUT
+        echo "force_extension_builds=$force_extension_builds" >> $GITHUB_OUTPUT
         if [ ${#containers_to_verify_only[@]} -eq 0 ]; then
           echo "containers_to_verify=[]" >> $GITHUB_OUTPUT
         else

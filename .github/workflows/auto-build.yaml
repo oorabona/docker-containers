@@ -251,6 +251,7 @@ jobs:
       bake_final_builds: ${{ steps.detect.outputs.bake_final_builds }}
       postgres_matrix_builds: ${{ steps.detect.outputs.postgres_matrix_builds }}
       container_scopes: ${{ steps.detect.outputs.container_scopes }}
+      force_extension_builds: ${{ steps.detect.outputs.force_extension_builds }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -553,6 +554,7 @@ jobs:
           SCOPE_EXTENSIONS: ${{ github.event.inputs.scope_extensions || inputs.scope_extensions }}
           CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
           REBUILD: ${{ env.REBUILD_MODE }}
+          FORCE_EXTENSION_BUILDS: ${{ needs.detect-containers.outputs.force_extension_builds }}
           VERSIONS_MAP: ${{ steps.ext-versions.outputs.versions_map }}
           # USE_BASE_CACHE mirrors the use_base_cache gate in build-container: true only for
           # non-fork push/dispatch events (where GHCR write access and sync-base-images ran).
@@ -585,7 +587,7 @@ jobs:
           # documented override in scope_extensions actually bypasses the
           # registry-skip path.
           force_arg=()
-          if [[ "$REBUILD" == "force" || "$REBUILD" == "all" ]]; then
+          if [[ "$REBUILD" == "force" || "$REBUILD" == "all" || "$FORCE_EXTENSION_BUILDS" == "true" ]]; then
             force_arg=(--force)
           fi
 
@@ -846,13 +848,14 @@ jobs:
           # thread the same rebuild/force signal as stage A so --finalize-multiarch
           # knows to skip canonical-first reuse and merge from freshly-built PR-scoped tags.
           REBUILD: ${{ env.REBUILD_MODE }}
+          FORCE_EXTENSION_BUILDS: ${{ needs.detect-containers.outputs.force_extension_builds }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
 
           # mirror stage A's --force logic so finalize skips canonical-first
           # reuse for versions that were explicitly rebuilt by stage A this run.
           force_arg=()
-          if [[ "$REBUILD" == "force" || "$REBUILD" == "all" ]]; then
+          if [[ "$REBUILD" == "force" || "$REBUILD" == "all" || "$FORCE_EXTENSION_BUILDS" == "true" ]]; then
             force_arg=(--force)
           fi
 
