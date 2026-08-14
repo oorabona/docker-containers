@@ -2,7 +2,8 @@
 # https://github.com/HypoPG/hypopg
 #
 # HypoPG allows creating hypothetical indexes to test query plans
-# without actually creating the indexes
+# without actually creating the indexes, so a planner change can be assessed
+# before paying for the index.
 
 ARG REMOTE_CR=ghcr.io/oorabona
 ARG MAJOR_VERSION
