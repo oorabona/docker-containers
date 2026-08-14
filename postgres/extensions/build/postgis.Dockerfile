@@ -28,6 +28,12 @@ ARG MAJOR_VERSION
 RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}"
 
 # Install build dependencies.
+# bison (yacc) and flex (lex) generate lwin_wkt_parse.c / lwin_wkt_lex.c. The
+# source below is a git checkout driven by autogen.sh, which does not ship the
+# pre-generated files a release tarball would, so both are required here. Their
+# absence surfaces only on a real compile — a cached extension image hides it —
+# and reads as "No yacc found, cannot build parser".
+#
 # PGXS hardcodes a specific clang-N for JIT bitcode (with_llvm=yes). Derive that
 # major from the postgres base's Makefile.global and install exactly it, so the
 # toolchain tracks the base instead of being re-pinned (the clang19→clang21 drift).
@@ -38,6 +44,8 @@ RUN set -eux \
         automake \
         libtool \
         gettext-dev \
+        bison \
+        flex \
         git \
         icu-dev \
         geos-dev \
