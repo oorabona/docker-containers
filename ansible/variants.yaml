@@ -5,6 +5,6 @@ tests:
   e2e:
     enabled: true
 versions:
+  - tag: 14.3.1-ubuntu
   - tag: 14.3.0-ubuntu
   - tag: 14.2.0-ubuntu
-  - tag: 14.1.0-ubuntu
