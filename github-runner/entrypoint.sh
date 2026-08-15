@@ -19,8 +19,15 @@ log_error()   { echo "[ERROR] $*" >&2; }
 # we fix volume ownership, then re-exec this script as the 'runner' user.
 # This handles any volume mount — no need to hardcode cache paths.
 if [[ "$(id -u)" -eq 0 ]]; then
-  # Fix ownership on /home/runner (covers any volume mounted under it)
-  chown -R runner:runner /home/runner 2>/dev/null || true
+  # Fix ownership ONLY on volumes mounted under /home/runner.
+  # (A plain 'chown -R /home/runner' would traverse the ~11k files of the
+  #  pre-extracted runner agent — already runner:runner in the image — which is
+  #  pathologically slow under rootless podman. We target just the mount points.)
+  # /home/runner itself (top dir) is chowned shallowly; mounted volumes get -R.
+  chown runner:runner /home/runner 2>/dev/null || true
+  while IFS= read -r mp; do
+    [[ -n "$mp" ]] && chown -R runner:runner "$mp" 2>/dev/null || true
+  done < <(awk '$2 ~ "^/home/runner/" {print $2}' /proc/self/mounts)
 
   # Fix tool cache if it exists
   if [[ -d "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}" ]]; then
