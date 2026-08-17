@@ -69,7 +69,7 @@ EOF
 
 teardown() {
     teardown_temp_dir
-    unset FORCE LOCAL_ONLY DRY_RUN CONTAINER ROOT_DIR
+    unset FORCE FORCE_SCOPED_EXTENSION_REFS LOCAL_ONLY DRY_RUN CONTAINER ROOT_DIR
 }
 
 # ---------------------------------------------------------------------------
@@ -174,6 +174,236 @@ _setup_default_mocks() {
 
     # jq: pass through (real jq required)
     # log_* pass-through (already sourced from extension-utils.sh chain)
+}
+
+# ---------------------------------------------------------------------------
+# ext_ref_resolve — run-scoped forced extension refs
+#
+# The resolver, rather than a caller, decides whether a consumer uses canonical
+# or this run's scoped extension image.  These tests stub the underlying
+# three-state registry probe, not ext_ref_resolve itself.
+# ---------------------------------------------------------------------------
+
+@test "run-scoped forced extension refs prefer scoped ref when both refs are present" {
+    local probe_log="$TEST_TEMP_DIR/scoped-present-probes.log"
+    export FORCE=false
+    export FORCE_SCOPED_EXTENSION_REFS='*'
+    export PR_TAG_SUFFIX="-pr42"
+    export probe_log
+
+    _image_present_3state() {
+        printf '%s\n' "$1" >> "$probe_log"
+        return 0
+    }
+    export -f _image_present_3state
+    _image_registry_probe_3state() { _image_present_3state "$@"; }
+    export -f _image_registry_probe_3state
+
+    run ext_ref_resolve timescaledb 2.27.1 18 amd64
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "ghcr.io/test/ext-timescaledb:pg18-2.27.1-amd64-pr42" ]
+    [ "$(wc -l < "$probe_log")" -eq 1 ]
+    [ "$(< "$probe_log")" = "ghcr.io/test/ext-timescaledb:pg18-2.27.1-amd64-pr42" ]
+}
+
+@test "without run-scoped forced extension refs canonical stays preferred when both refs are present" {
+    local probe_log="$TEST_TEMP_DIR/canonical-present-probes.log"
+    export FORCE=false
+    unset FORCE_SCOPED_EXTENSION_REFS
+    export PR_TAG_SUFFIX="-pr42"
+    export probe_log
+
+    _image_present_3state() {
+        printf '%s\n' "$1" >> "$probe_log"
+        return 0
+    }
+    export -f _image_present_3state
+    _image_registry_probe_3state() { _image_present_3state "$@"; }
+    export -f _image_registry_probe_3state
+
+    run ext_ref_resolve timescaledb 2.27.1 18 amd64
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "ghcr.io/test/ext-timescaledb:pg18-2.27.1-amd64" ]
+    [ "$(wc -l < "$probe_log")" -eq 1 ]
+    [ "$(< "$probe_log")" = "ghcr.io/test/ext-timescaledb:pg18-2.27.1-amd64" ]
+}
+
+@test "run-scoped forced extension refs absent means needs build without canonical fallback" {
+    local probe_log="$TEST_TEMP_DIR/scoped-absent-probes.log"
+    export FORCE=false
+    export FORCE_SCOPED_EXTENSION_REFS='*'
+    export PR_TAG_SUFFIX="-pr42"
+    export probe_log
+
+    _image_present_3state() {
+        printf '%s\n' "$1" >> "$probe_log"
+        return 1
+    }
+    export -f _image_present_3state
+    _image_registry_probe_3state() { _image_present_3state "$@"; }
+    export -f _image_registry_probe_3state
+
+    run ext_ref_resolve timescaledb 2.27.1 18 amd64
+
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [ "$(wc -l < "$probe_log")" -eq 1 ]
+    [ "$(< "$probe_log")" = "ghcr.io/test/ext-timescaledb:pg18-2.27.1-amd64-pr42" ]
+}
+
+@test "run-scoped forced extension ref probe error fails closed" {
+    local probe_log="$TEST_TEMP_DIR/scoped-error-probes.log"
+    export FORCE=false
+    export FORCE_SCOPED_EXTENSION_REFS='*'
+    export PR_TAG_SUFFIX="-pr42"
+    export probe_log
+
+    _image_present_3state() {
+        printf '%s\n' "$1" >> "$probe_log"
+        return 2
+    }
+    export -f _image_present_3state
+    _image_registry_probe_3state() { _image_present_3state "$@"; }
+    export -f _image_registry_probe_3state
+
+    run ext_ref_resolve timescaledb 2.27.1 18 amd64
+
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    [ "$(wc -l < "$probe_log")" -eq 1 ]
+    [ "$(< "$probe_log")" = "ghcr.io/test/ext-timescaledb:pg18-2.27.1-amd64-pr42" ]
+}
+
+# No empty-PR_TAG_SUFFIX test: helpers/extension-utils.sh assigns
+# pr_ref="$canonical_ref", so the forced and canonical branches converge. A
+# test for this case would pass whatever the forced-branch condition does.
+
+@test "run-scoped forced extension refs scope only the extension this run rebuilt" {
+    local probe_log="$TEST_TEMP_DIR/scoped-membership-probes.log"
+    export FORCE=false
+    export FORCE_SCOPED_EXTENSION_REFS=hypopg
+    export PR_TAG_SUFFIX="-pr42"
+    export probe_log
+
+    _image_present_3state() {
+        printf '%s\n' "$1" >> "$probe_log"
+        return 0
+    }
+    export -f _image_present_3state
+    _image_registry_probe_3state() { _image_present_3state "$@"; }
+    export -f _image_registry_probe_3state
+
+    run ext_ref_resolve hypopg 1.4.3 18 amd64
+    [ "$status" -eq 0 ]
+    [ "$output" = "ghcr.io/test/ext-hypopg:pg18-1.4.3-amd64-pr42" ]
+
+    run ext_ref_resolve pgvector 0.8.2 18 amd64
+    [ "$status" -eq 0 ]
+    [ "$output" = "ghcr.io/test/ext-pgvector:pg18-0.8.2-amd64" ]
+    [ "$(wc -l < "$probe_log")" -eq 2 ]
+    [ "$(sed -n '1p' "$probe_log")" = "ghcr.io/test/ext-hypopg:pg18-1.4.3-amd64-pr42" ]
+    [ "$(sed -n '2p' "$probe_log")" = "ghcr.io/test/ext-pgvector:pg18-0.8.2-amd64" ]
+}
+
+@test "empty or absent run-scoped extension ref scope forces nothing" {
+    local probe_log="$TEST_TEMP_DIR/empty-scope-probes.log"
+    export FORCE=false
+    export PR_TAG_SUFFIX="-pr42"
+    export probe_log
+
+    _image_present_3state() {
+        printf '%s\n' "$1" >> "$probe_log"
+        return 0
+    }
+    export -f _image_present_3state
+    _image_registry_probe_3state() { _image_present_3state "$@"; }
+    export -f _image_registry_probe_3state
+
+    unset FORCE_SCOPED_EXTENSION_REFS
+    run ext_ref_resolve hypopg 1.4.3 18 amd64
+    [ "$status" -eq 0 ]
+    [ "$output" = "ghcr.io/test/ext-hypopg:pg18-1.4.3-amd64" ]
+
+    export FORCE_SCOPED_EXTENSION_REFS=""
+    run ext_ref_resolve hypopg 1.4.3 18 amd64
+    [ "$status" -eq 0 ]
+    [ "$output" = "ghcr.io/test/ext-hypopg:pg18-1.4.3-amd64" ]
+    [ "$(wc -l < "$probe_log")" -eq 2 ]
+    [ "$(grep -cv -- '-pr42' "$probe_log" || true)" -eq 2 ]
+}
+
+@test "run-scoped forced extension refs match a schema-valid name outside the former matcher grammar" {
+    local probe_log="$TEST_TEMP_DIR/schema-valid-scope-probes.log"
+    export FORCE=false
+    export FORCE_SCOPED_EXTENSION_REFS='-hypopg'
+    export PR_TAG_SUFFIX="-pr42"
+    export probe_log
+
+    _image_present_3state() {
+        printf '%s\n' "$1" >> "$probe_log"
+        return 0
+    }
+    export -f _image_present_3state
+    _image_registry_probe_3state() { _image_present_3state "$@"; }
+    export -f _image_registry_probe_3state
+
+    run ext_ref_resolve -hypopg 1.4.3 18 amd64
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "ghcr.io/test/ext--hypopg:pg18-1.4.3-amd64-pr42" ]
+    [ "$(wc -l < "$probe_log")" -eq 1 ]
+    [ "$(< "$probe_log")" = "ghcr.io/test/ext--hypopg:pg18-1.4.3-amd64-pr42" ]
+}
+
+@test "run-scoped forced extension ref scope true matches only an extension named true" {
+    local probe_log="$TEST_TEMP_DIR/literal-true-scope-probes.log"
+    export FORCE=false
+    export FORCE_SCOPED_EXTENSION_REFS=true
+    export PR_TAG_SUFFIX="-pr42"
+    export probe_log
+
+    _image_present_3state() {
+        printf '%s\n' "$1" >> "$probe_log"
+        return 0
+    }
+    export -f _image_present_3state
+    _image_registry_probe_3state() { _image_present_3state "$@"; }
+    export -f _image_registry_probe_3state
+
+    run ext_ref_resolve true 1.0.0 18 amd64
+    [ "$status" -eq 0 ]
+    [ "$output" = "ghcr.io/test/ext-true:pg18-1.0.0-amd64-pr42" ]
+
+    run ext_ref_resolve hypopg 1.4.3 18 amd64
+    [ "$status" -eq 0 ]
+    [ "$output" = "ghcr.io/test/ext-hypopg:pg18-1.4.3-amd64" ]
+    [ "$(wc -l < "$probe_log")" -eq 2 ]
+    [ "$(sed -n '1p' "$probe_log")" = "ghcr.io/test/ext-true:pg18-1.0.0-amd64-pr42" ]
+    [ "$(sed -n '2p' "$probe_log")" = "ghcr.io/test/ext-hypopg:pg18-1.4.3-amd64" ]
+}
+
+@test "malformed run-scoped extension ref scope fails closed before probing" {
+    local probe_log="$TEST_TEMP_DIR/malformed-scope-probes.log"
+    export FORCE=false
+    export FORCE_SCOPED_EXTENSION_REFS="hypopg,,pgvector"
+    export PR_TAG_SUFFIX="-pr42"
+    export probe_log
+
+    _image_present_3state() {
+        printf '%s\n' "$1" >> "$probe_log"
+        return 0
+    }
+    export -f _image_present_3state
+    _image_registry_probe_3state() { _image_present_3state "$@"; }
+    export -f _image_registry_probe_3state
+
+    run ext_ref_resolve hypopg 1.4.3 18 amd64
+
+    [ "$status" -eq 2 ]
+    [ "$output" = "ERROR [ext_ref_resolve]: invalid FORCE_SCOPED_EXTENSION_REFS scope" ]
+    [ ! -s "$probe_log" ]
 }
 
 # ---------------------------------------------------------------------------
