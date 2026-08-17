@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+# `make` is the entry point. Keep its error semantics independent of the
+# helpers it sources (sourced helpers must not set shell options for callers).
+set -euo pipefail
+
 # Establish a canonical PROJECT_ROOT from $0 BEFORE sourcing any helper.
 # This overrides any inherited/stale/malicious PROJECT_ROOT from the environment.
 # PROJECT_ROOT is a DATA-lookup variable (where .build-lineage / config.yaml live)
@@ -11,7 +15,7 @@ export PROJECT_ROOT
 export DOCKER_CLI_EXPERIMENTAL=enabled
 NPROC=$(nproc)
 export NPROC
-export DOCKERCOMPOSE="docker compose"
+export DOCKERCOMPOSE=""
 export DOCKEROPTS="${DOCKEROPTS:-}"
 
 # Source shared logging utilities
@@ -352,6 +356,7 @@ run() {
   fi
   local target=$1
   local wantedVersion=${2:-latest}
+  ensure_compose_provider || return $?
   pushd ${target}
   log_success "Running ${target} ${wantedVersion}"
   TAG=${wantedVersion} $DOCKERCOMPOSE run $DOCKEROPTS --rm ${target}
@@ -372,19 +377,6 @@ do_it() {
     # Then proceed with buildx (whether or not custom script existed)
     do_buildx "$op" "$registry"
     return $?
-  fi
-
-  # For other operations, check for custom scripts or use docker-compose
-  if [ -x "$op" ]; then
-    # shellcheck disable=SC1090
-    . "$op"
-    return $?
-  elif [ -r "docker-compose.yml" ]; then
-    $DOCKERCOMPOSE $op $DOCKEROPTS
-  elif [ -r "compose.yml" ]; then
-    $DOCKERCOMPOSE -f compose.yml $op $DOCKEROPTS
-  else
-    log_error "No ${op} script found in $PWD, aborting."
   fi
 }
 
@@ -558,7 +550,11 @@ check_updates() {
         local major_pattern
         major_pattern="^${major}\\.[0-9]+\\.[0-9]+-alpine\$"
         local current_version
-        current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "$major_pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+        # No matching published tag is a normal lookup outcome. Keep the
+        # current-version field empty in that case, independently of pipefail.
+        if ! current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "$major_pattern" 2>/dev/null | head -1 | tr -d '\n'); then
+          current_version=""
+        fi
 
         # Latest upstream version for this major line
         local latest_version
@@ -614,10 +610,14 @@ check_updates() {
     # Query GHCR (primary registry) to avoid stale Docker Hub data causing duplicate PRs
     local pattern
     if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-      current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+      if ! current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n'); then
+        current_version=""
+      fi
     else
       # Fallback: try common version pattern
-      current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+      if ! current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null | head -1 | tr -d '\n'); then
+        current_version=""
+      fi
     fi
     latest_version=$(./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "")
 
@@ -783,17 +783,24 @@ show_lineage() {
   fi
 }
 
-# If docker(-)compose is not found, just exit immediately
-if [ ! -x "$(command -v docker-compose)" ]; then
-  docker compose 2>/dev/null 1>&2
-  if [ $? -ne 0 ]; then
-    log_error "docker(-)compose is not installed, aborting."
+# Resolve a compose provider only on paths that will invoke one.  In
+# particular, discovery commands such as `list` must not require Docker.
+ensure_compose_provider() {
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    DOCKERCOMPOSE="docker compose"
+    log_success "Found 'docker compose', continuing."
+    return 0
   fi
-  log_success "Found 'docker compose', continuing."
-  DOCKERCOMPOSE="docker compose"
-else
-  log_success "Found 'docker-compose', continuing."
-fi
+
+  if command -v podman-compose >/dev/null 2>&1 && podman-compose version >/dev/null 2>&1; then
+    DOCKERCOMPOSE="podman-compose"
+    log_success "Found 'podman-compose', continuing."
+    return 0
+  fi
+
+  log_error "No compose provider found (looked for docker compose and podman-compose)."
+  return 1
+}
 
 case "${1:-}" in
   build ) make "$@" ;;

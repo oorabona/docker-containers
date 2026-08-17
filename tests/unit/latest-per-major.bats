@@ -459,6 +459,12 @@ EOF
     cat > helpers/sbom-utils.sh <<'EOF'
 EOF
 
+    # dependency-graph stub: make sources it at startup, but check-updates
+    # does not use its graph API in this isolated fixture.
+    cat > helpers/dependency-graph.sh <<'EOF'
+return 0
+EOF
+
     # check-version stub
     cat > scripts/check-version.sh <<'EOF'
 get_build_version() { echo "${2:-latest}"; return 0; }
@@ -542,6 +548,12 @@ has_dockerfile()  { return 0; }
 EOF
 
     cat > helpers/sbom-utils.sh <<'EOF'
+EOF
+
+    # dependency-graph stub: make sources it at startup, but check-updates
+    # does not use its graph API in this isolated fixture.
+    cat > helpers/dependency-graph.sh <<'EOF'
+return 0
 EOF
 
     cat > scripts/check-version.sh <<'EOF'
@@ -663,6 +675,12 @@ has_dockerfile()  { return 0; }
 EOF
 
     cat > helpers/sbom-utils.sh <<'EOF'
+EOF
+
+    # dependency-graph stub: make sources it at startup, but check-updates
+    # does not use its graph API in this isolated fixture.
+    cat > helpers/dependency-graph.sh <<'EOF'
+return 0
 EOF
 
     cat > scripts/check-version.sh <<'EOF'
