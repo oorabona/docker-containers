@@ -34,6 +34,76 @@ teardown() {
     unset GITHUB_ACTIONS
 }
 
+assert_single_variant_result() {
+    local expected_tag="$1"
+    local expected_status="$2"
+    local result_lines
+    result_lines=$(sed -n '/^\[/p' <<< "$output")
+
+    [ "$(printf '%s\n' "$result_lines" | wc -l | tr -d ' ')" -eq 1 ]
+    jq -e --arg tag "$expected_tag" --arg status "$expected_status" \
+        '. == [{"name":"default","tag":$tag,"flavor":"","status":$status}]' \
+        <<< "$result_lines" >/dev/null
+}
+
+# =============================================================================
+# build_container_variants no-variants status tests
+# =============================================================================
+
+@test "build_container_variants reports failed when a container has no variants and its build fails" {
+    source_build_script
+    export PROJECT_ROOT="$TEST_TEMP_DIR"
+    has_variants() { return 1; }
+    build_container() { return 1; }
+
+    run build_container_variants sample 1.2.3
+
+    [ "$status" -eq 1 ]
+    assert_single_variant_result "1.2.3" "failed"
+}
+
+@test "build_container_variants reports built when a container has no variants and its build succeeds" {
+    source_build_script
+    export PROJECT_ROOT="$TEST_TEMP_DIR"
+    has_variants() { return 1; }
+    build_container() { return 0; }
+
+    run build_container_variants sample 1.2.3
+
+    [ "$status" -eq 0 ]
+    assert_single_variant_result "1.2.3" "built"
+}
+
+@test "build_container_variants reports failed when a version has no variants and its build fails" {
+    source_build_script
+    export PROJECT_ROOT="$TEST_TEMP_DIR"
+    has_variants() { return 0; }
+    base_suffix() { printf '%s' '-alpine'; }
+    version_dockerfile() { printf '%s' 'Dockerfile.version'; }
+    list_variants() { :; }
+    build_container() { return 1; }
+
+    run build_container_variants sample 1.2.3
+
+    [ "$status" -eq 1 ]
+    assert_single_variant_result "1.2.3-alpine" "failed"
+}
+
+@test "build_container_variants reports built when a version has no variants and its build succeeds" {
+    source_build_script
+    export PROJECT_ROOT="$TEST_TEMP_DIR"
+    has_variants() { return 0; }
+    base_suffix() { printf '%s' '-alpine'; }
+    version_dockerfile() { printf '%s' 'Dockerfile.version'; }
+    list_variants() { :; }
+    build_container() { return 0; }
+
+    run build_container_variants sample 1.2.3
+
+    [ "$status" -eq 0 ]
+    assert_single_variant_result "1.2.3-alpine" "built"
+}
+
 # =============================================================================
 # check_multiplatform_support tests
 # =============================================================================

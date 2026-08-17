@@ -682,7 +682,9 @@ build_container_variants() {
         log_info "$container has no variants, building single image..."
         local rc=0
         build_container "$container" "$major_version" "$major_version" || rc=$?
-        echo "[{\"name\":\"default\",\"tag\":\"$major_version\",\"flavor\":\"\",\"status\":\"built\"}]"
+        local status="built"
+        [[ "$rc" -ne 0 ]] && status="failed"
+        echo "[{\"name\":\"default\",\"tag\":\"$major_version\",\"flavor\":\"\",\"status\":\"$status\"}]"
         return $rc
     fi
 
@@ -706,7 +708,9 @@ build_container_variants() {
         local dockerfile="${version_df:-Dockerfile}"
         local rc=0
         build_container "$container" "$base_image_version" "$base_image_version" "" "$dockerfile" || rc=$?
-        echo "[{\"name\":\"default\",\"tag\":\"$base_image_version\",\"flavor\":\"\",\"status\":\"built\"}]"
+        local status="built"
+        [[ "$rc" -ne 0 ]] && status="failed"
+        echo "[{\"name\":\"default\",\"tag\":\"$base_image_version\",\"flavor\":\"\",\"status\":\"$status\"}]"
         return $rc
     fi
 
