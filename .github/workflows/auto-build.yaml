@@ -307,6 +307,10 @@ jobs:
       # same-repository PR, build-extensions and merge-extension-manifests
       # publish the PR-scoped extension images that this e2e build must consume.
       PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
+      # Dedicated resolver contract: extension names published successfully by
+      # this run. '*' preserves the detector's all-extensions scope. Skipped or
+      # failed extension stages publish no usable scoped refs, so force nothing.
+      FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1154,6 +1158,9 @@ jobs:
       # this inlines the same expression that defines the workflow-level
       # REBUILD_MODE (see the top-level `env:`) rather than referencing it.
       REBUILD: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
+      # Resolver contract: only extensions published successfully by this run.
+      # An empty value covers skipped or failed extension stages.
+      FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
     runs-on: ${{ matrix.build.os == 'windows' && 'windows-latest' || matrix.runner }}
     timeout-minutes: ${{ matrix.build.os == 'windows' && 120 || 60 }}
     strategy:
@@ -1836,6 +1843,8 @@ jobs:
     timeout-minutes: 90
     env:
       CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
+      # Resolver contract: only extensions published successfully by this run.
+      FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
     permissions:
       contents: read
       packages: write
@@ -2328,6 +2337,8 @@ jobs:
     timeout-minutes: 90
     env:
       CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
+      # Resolver contract: only extensions published successfully by this run.
+      FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
     permissions:
       contents: read
       packages: write
