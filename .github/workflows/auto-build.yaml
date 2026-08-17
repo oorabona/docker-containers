@@ -2782,7 +2782,7 @@ jobs:
         id: upload_sarif_bake
         if: steps.trivy-scan.outcome != 'skipped'
         continue-on-error: true  # SARIF upload is advisory — never gates the build
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'container-${{ matrix.build.container }}-${{ matrix.build.tag }}-linux/${{ matrix.arch }}'
@@ -2791,7 +2791,7 @@ jobs:
       - name: Upload SARIF to GitHub Security (retry on transient failure)
         if: always() && steps.upload_sarif_bake.outcome == 'failure'
         continue-on-error: true  # SARIF upload is advisory — never gates the build
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'container-${{ matrix.build.container }}-${{ matrix.build.tag }}-linux/${{ matrix.arch }}'
