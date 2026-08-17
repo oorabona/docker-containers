@@ -6,10 +6,10 @@
 
 | **Version Change** | `18.4-alpine` → `18.6-alpine` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-08-16T06:27:14Z |
+| **Rebuild Date** | 2026-08-17T06:38:52Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/31931422600) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/32002451457) |
 
 ## Build Status
 
