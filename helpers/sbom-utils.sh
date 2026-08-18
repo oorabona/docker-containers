@@ -5,13 +5,14 @@
 # Dependencies: jq (required), syft (installed on demand)
 # SBOM format: SPDX JSON (industry standard, supported by GitHub attestations)
 
-set -euo pipefail
-
 _SBOM_UTILS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source logging if available
 if [[ -f "$_SBOM_UTILS_DIR/logging.sh" ]]; then
-    source "$_SBOM_UTILS_DIR/logging.sh"
+    if ! source "$_SBOM_UTILS_DIR/logging.sh"; then
+        echo "ERROR: Failed to load logging utilities" >&2
+        return 1
+    fi
 else
     log_info()    { echo "INFO: $*" >&2; }
     log_success() { echo "OK: $*" >&2; }
@@ -19,7 +20,10 @@ else
     log_warning() { echo "WARN: $*" >&2; }
 fi
 
-source "$_SBOM_UTILS_DIR/retry.sh"
+if ! source "$_SBOM_UTILS_DIR/retry.sh"; then
+    log_error "Failed to load retry utilities"
+    return 1
+fi
 
 # Install syft if not present
 # Downloads the latest release from Anchore's install script
@@ -31,22 +35,31 @@ install_syft() {
 
     local syft_version="v1.42.1"
     log_info "Installing syft ${syft_version}..."
-    if curl -sSfL "https://raw.githubusercontent.com/anchore/syft/${syft_version}/install.sh" | sh -s -- -b /usr/local/bin 2>/dev/null; then
+    if (set -o pipefail; curl -sSfL "https://raw.githubusercontent.com/anchore/syft/${syft_version}/install.sh" | sh -s -- -b /usr/local/bin 2>/dev/null) \
+        && [[ -x /usr/local/bin/syft ]]; then
         log_success "syft ${syft_version} installed successfully"
-    elif curl -sSfL "https://raw.githubusercontent.com/anchore/syft/${syft_version}/install.sh" | sh -s -- -b "$HOME/.local/bin" 2>/dev/null; then
+        return 0
+    elif (set -o pipefail; curl -sSfL "https://raw.githubusercontent.com/anchore/syft/${syft_version}/install.sh" | sh -s -- -b "$HOME/.local/bin" 2>/dev/null); then
         export PATH="$HOME/.local/bin:$PATH"
-        log_success "syft installed to ~/.local/bin"
-    else
-        log_error "Failed to install syft"
-        return 1
+        if command -v syft &>/dev/null; then
+            log_success "syft installed to ~/.local/bin"
+            return 0
+        fi
     fi
+
+    log_error "Failed to install syft"
+    return 1
 }
 
 # Generate SBOM from a registry image
 # Usage: generate_sbom <image_ref> <output_file>
 # image_ref: full image reference (e.g., ghcr.io/owner/repo:tag)
 # output_file: path for the SPDX JSON output
-generate_sbom() {
+# The public SBOM operations retain their historical strict error handling in
+# subshells. This prevents their shell options from leaking into the scripts
+# that source this helper.
+generate_sbom() (
+    set -euo pipefail
     local image_ref="$1"
     local output_file="$2"
 
@@ -74,7 +87,7 @@ generate_sbom() {
         log_error "Failed to generate SBOM for $image_ref"
         return 1
     fi
-}
+)
 
 # Extract sorted package list from SBOM (for diffing)
 # Usage: extract_package_list <sbom_file>
@@ -83,7 +96,8 @@ generate_sbom() {
 # Extract SBOM summary (package counts by type)
 # Usage: extract_sbom_summary <sbom_file>
 # Output: JSON {"total": N, "apk": N, "pip": N, ...}
-extract_sbom_summary() {
+extract_sbom_summary() (
+    set -euo pipefail
     local sbom_file="$1"
 
     if [[ ! -f "$sbom_file" ]]; then
@@ -103,7 +117,7 @@ extract_sbom_summary() {
         from_entries |
         . + {total: $total}
     ' "$sbom_file" 2>/dev/null || echo '{"total": 0}'
-}
+)
 
 # Extract packages grouped by type (for dashboard drill-down)
 # Usage: extract_sbom_packages <sbom_file>
@@ -112,7 +126,8 @@ extract_sbom_summary() {
 # Compare two SBOMs and produce changelog JSON
 # Usage: compare_sboms <new_sbom> <old_sbom> <output_file>
 # Output: JSON with added/removed/updated arrays + summary counts
-compare_sboms() {
+compare_sboms() (
+    set -euo pipefail
     local new_sbom="$1"
     local old_sbom="$2"
     local output_file="$3"
@@ -197,7 +212,7 @@ compare_sboms() {
     removed=$(jq '.summary.removed' "$output_file")
     updated=$(jq '.summary.updated' "$output_file")
     log_info "Changelog: +$added -$removed ~$updated"
-}
+)
 
 _enrich_changelog_latest_results() {
     local queries_json="$1"
@@ -276,7 +291,8 @@ _enrich_changelog_add_enrichment() {
 
 # Enrich compare_sboms output with latest-version and freshness metadata.
 # Usage: enrich_changelog <changelog_file> [current_sbom_file]
-enrich_changelog() {
+enrich_changelog() (
+    set -euo pipefail
     local changelog_file="$1"
     : "${2:-}"
 
@@ -441,7 +457,7 @@ enrich_changelog() {
         log_warning "Dependency freshness enrichment failed; leaving changelog unchanged: $changelog_file"
         return 1
     fi
-}
+)
 
 # Append build metadata to history file (keeps last N entries)
 # Usage: append_build_history <lineage_file> <sbom_summary_json> <history_file> [max_entries] [changelog_file]
@@ -450,7 +466,8 @@ enrich_changelog() {
 # history_file: path to the history JSON file (created if missing)
 # max_entries: max entries to keep (default: 10)
 # changelog_file: path to changelog JSON (default: derived from history_file)
-append_build_history() {
+append_build_history() (
+    set -euo pipefail
     local lineage_file="$1"
     local sbom_summary="$2"
     local history_file="$3"
@@ -537,4 +554,4 @@ append_build_history() {
     ' > "$history_file"
 
     log_info "Build history updated: $history_file ($(jq 'length' "$history_file") entries)"
-}
+)
