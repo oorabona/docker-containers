@@ -25,30 +25,132 @@ if ! source "$_SBOM_UTILS_DIR/retry.sh"; then
     return 1
 fi
 
+# Anchore syft release assets. Keep the version and release-asset digests together
+# so updating this local convenience installer remains auditable.
+SYFT_VERSION="1.42.1"
+SYFT_LINUX_AMD64_SHA256="989ded4e772810f93de6ccdc4512f79a6dabb5fb2dd2a9ffc72a80c955e6125a"
+SYFT_LINUX_ARM64_SHA256="dfc9ac5fffa8fea95b4f84b427e200dbb2bd9bd0bbf2760d1a9369715b60a91d"
+SYFT_DARWIN_AMD64_SHA256="1e52e39d24a4eaec94329e0f3283c448e2ee8f79dc03e5f1e405d324b7ae4e1c"
+SYFT_DARWIN_ARM64_SHA256="b83cdcbd1b4c55505abd359c25c5903d94b99be47e6f98572bf96927b7b47e45"
+
 # Install syft if not present
-# Downloads the latest release from Anchore's install script
 install_syft() {
     if command -v syft &>/dev/null; then
         log_info "syft already installed: $(syft version 2>/dev/null | head -1)"
         return 0
     fi
 
-    local syft_version="v1.42.1"
-    log_info "Installing syft ${syft_version}..."
-    if (set -o pipefail; curl -sSfL "https://raw.githubusercontent.com/anchore/syft/${syft_version}/install.sh" | sh -s -- -b /usr/local/bin 2>/dev/null) \
-        && [[ -x /usr/local/bin/syft ]]; then
-        log_success "syft ${syft_version} installed successfully"
-        return 0
-    elif (set -o pipefail; curl -sSfL "https://raw.githubusercontent.com/anchore/syft/${syft_version}/install.sh" | sh -s -- -b "$HOME/.local/bin" 2>/dev/null); then
-        export PATH="$HOME/.local/bin:$PATH"
-        if command -v syft &>/dev/null; then
-            log_success "syft installed to ~/.local/bin"
-            return 0
+    local syft_asset syft_sha256
+    case "$(uname -s)-$(uname -m)" in
+        Linux-x86_64|Linux-amd64)
+            syft_asset="syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+            syft_sha256="$SYFT_LINUX_AMD64_SHA256"
+            ;;
+        Linux-aarch64|Linux-arm64)
+            syft_asset="syft_${SYFT_VERSION}_linux_arm64.tar.gz"
+            syft_sha256="$SYFT_LINUX_ARM64_SHA256"
+            ;;
+        Darwin-x86_64|Darwin-amd64)
+            syft_asset="syft_${SYFT_VERSION}_darwin_amd64.tar.gz"
+            syft_sha256="$SYFT_DARWIN_AMD64_SHA256"
+            ;;
+        Darwin-arm64)
+            syft_asset="syft_${SYFT_VERSION}_darwin_arm64.tar.gz"
+            syft_sha256="$SYFT_DARWIN_ARM64_SHA256"
+            ;;
+        *)
+            log_error "No verified syft ${SYFT_VERSION} release asset for $(uname -s)/$(uname -m)"
+            return 1
+            ;;
+    esac
+
+    local syft_tmp syft_archive syft_binary syft_destination syft_stage installed_version syft_version_output line syft_actual_sha256
+    syft_tmp=$(mktemp -d) || {
+        log_error "Failed to create temporary directory for syft download"
+        return 1
+    }
+    syft_archive="$syft_tmp/$syft_asset"
+    syft_binary="$syft_tmp/syft"
+
+    log_info "Installing syft ${SYFT_VERSION}..."
+    if ! curl -fsSL --retry 3 --retry-delay 2 \
+        "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/${syft_asset}" \
+        -o "$syft_archive"; then
+        rm -rf "$syft_tmp"
+        log_error "Failed to download syft ${SYFT_VERSION}"
+        return 1
+    fi
+    if command -v sha256sum &>/dev/null; then
+        if ! printf '%s  %s\n' "$syft_sha256" "$syft_archive" | sha256sum -c - >/dev/null; then
+            rm -rf "$syft_tmp"
+            log_error "Downloaded syft ${SYFT_VERSION} failed SHA-256 verification"
+            return 1
         fi
+    elif command -v shasum &>/dev/null; then
+        if ! syft_actual_sha256=$(shasum -a 256 "$syft_archive"); then
+            rm -rf "$syft_tmp"
+            log_error "Downloaded syft ${SYFT_VERSION} failed SHA-256 verification"
+            return 1
+        fi
+        if [[ "${syft_actual_sha256%% *}" != "$syft_sha256" ]]; then
+            rm -rf "$syft_tmp"
+            log_error "Downloaded syft ${SYFT_VERSION} failed SHA-256 verification"
+            return 1
+        fi
+    else
+        rm -rf "$syft_tmp"
+        log_error "No SHA-256 checker available to verify syft ${SYFT_VERSION}"
+        return 1
+    fi
+    if ! tar -xzf "$syft_archive" -C "$syft_tmp" syft || [[ ! -f "$syft_binary" ]]; then
+        rm -rf "$syft_tmp"
+        log_error "Failed to extract verified syft ${SYFT_VERSION} archive"
+        return 1
     fi
 
-    log_error "Failed to install syft"
-    return 1
+    syft_destination="/usr/local/bin/syft"
+    if syft_stage=$(mktemp "${syft_destination}.tmp.XXXXXX") && install -m 0755 "$syft_binary" "$syft_stage"; then
+        :
+    else
+        [[ -n "$syft_stage" ]] && rm -f "$syft_stage"
+        local user_bin="$HOME/.local/bin"
+        syft_destination="$user_bin/syft"
+        if ! mkdir -p "$user_bin" || ! syft_stage=$(mktemp "${syft_destination}.tmp.XXXXXX") || ! install -m 0755 "$syft_binary" "$syft_stage"; then
+            [[ -n "$syft_stage" ]] && rm -f "$syft_stage"
+            rm -rf "$syft_tmp"
+            log_error "Failed to stage verified syft ${SYFT_VERSION}"
+            return 1
+        fi
+        export PATH="$user_bin:$PATH"
+    fi
+    rm -rf "$syft_tmp"
+
+    if ! syft_version_output=$("$syft_stage" version 2>/dev/null); then
+        rm -f "$syft_stage"
+        log_error "Installed syft did not report its version"
+        return 1
+    fi
+    installed_version=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^Version:[[:space:]]*(.+)$ ]]; then
+            installed_version="${BASH_REMATCH[1]}"
+            break
+        fi
+    done <<< "$syft_version_output"
+    if [[ -z "$installed_version" ]]; then
+        rm -f "$syft_stage"
+        log_error "Installed syft did not report its version"
+        return 1
+    fi
+
+    if ! mv -f "$syft_stage" "$syft_destination"; then
+        rm -f "$syft_stage"
+        log_error "Failed to install verified syft ${SYFT_VERSION}"
+        return 1
+    fi
+
+    log_success "syft ${installed_version} installed successfully" || :
+    return 0
 }
 
 # Generate SBOM from a registry image
