@@ -38,10 +38,54 @@ jobs:
       - name: Check duplicate YAML mapping keys
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y yamllint
+          yamllint_dir="$RUNNER_TEMP/yamllint-1.37.1"
+          yamllint_venv="$yamllint_dir/venv"
+          mkdir -p "$yamllint_dir/requirements"
+
+          cat > "$yamllint_dir/requirements/PyYAML.txt" <<'EOF'
+          PyYAML==6.0.2 \
+            --hash=sha256:9056c1ecd25795207ad294bcf39f2db3d845767be0ea6e6a34d856f006006083 \
+            --hash=sha256:3b1fdb9dc17f5a7677423d508ab4f243a726dea51fa5e70992e59a7411c89d19 \
+            --hash=sha256:ec031d5d2feb36d1d1a24380e4db6d43695f3748343d99434e6f5f9156aaa2ed \
+            --hash=sha256:3ad2a3decf9aaba3d29c8f537ac4b243e36bef957511b4766cb0057d32b0be85 \
+            --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 \
+            --hash=sha256:70b189594dbe54f75ab3a1acec5f1e3faa7e8cf2f1e08d9b561cb41b845f69d5
+          EOF
+          cat > "$yamllint_dir/requirements/pathspec.txt" <<'EOF'
+          pathspec==0.12.1 --hash=sha256:a0d503e138a4c123b27490a4f7beda6a01c6f288df0e4a8b79c7eb0dc7b4cc08
+          EOF
+          cat > "$yamllint_dir/requirements/yamllint.txt" <<'EOF'
+          yamllint==1.37.1 --hash=sha256:364f0d79e81409f591e323725e6a9f4504c8699ddf2d7263d8d2b539cd66a583
+          EOF
+
+          if ! python3 -m venv "$yamllint_venv"; then
+            echo "::error::yamllint installation failed: could not create isolated virtual environment at $yamllint_venv"
+            exit 1
+          fi
+
+          install_package() {
+            local package=$1 requirement_file=$2 status
+            timeout --kill-after=5s 60s "$yamllint_venv/bin/python" -m pip install \
+              --disable-pip-version-check --retries 2 --timeout 15 --no-deps --only-binary=:all: \
+              --force-reinstall --require-hashes -r "$requirement_file" || status=$?
+            if [[ -z ${status:-} ]]; then
+              return 0
+            fi
+            if [[ $status -eq 124 || $status -eq 137 ]]; then
+              echo "::error::yamllint installation timed out after 60 seconds while fetching or installing $package from PyPI"
+            else
+              echo "::error::yamllint installation could not fetch or install $package from PyPI (pip exited $status); see pip output above"
+            fi
+            return "$status"
+          }
+
+          install_package 'PyYAML==6.0.2' "$yamllint_dir/requirements/PyYAML.txt"
+          install_package 'pathspec==0.12.1' "$yamllint_dir/requirements/pathspec.txt"
+          install_package 'yamllint==1.37.1' "$yamllint_dir/requirements/yamllint.txt"
+
+          "$yamllint_venv/bin/yamllint" --version
           find . -type f \( -name config.yaml -o -name variants.yaml \) \
-            -not -path './.git/*' -print0 | xargs -0 yamllint -c .yamllint.yml
+            -not -path './.git/*' -print0 | xargs -0 "$yamllint_venv/bin/yamllint" -c .yamllint.yml
 
       - name: Run shellcheck on scripts
         run: |
