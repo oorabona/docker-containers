@@ -1133,10 +1133,10 @@ jobs:
       (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
       (needs.merge-extension-manifests.result == 'success' || needs.merge-extension-manifests.result == 'skipped') &&
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
-    # NOTE: No job-level concurrency here — caused unexpected mid-build cancellations
-    # (observed 2026-04-23). Workflow-level concurrency is already removed so
-    # different-container runs parallelize. Same-container races are rare in practice
-    # (upstream-monitor serializes PR merges via concurrency on its own workflow).
+    # NOTE: Per-ref concurrency is active at the workflow level. No additional
+    # job-level group is used here because it caused unexpected mid-build cancellations
+    # (observed 2026-04-23). The workflow-level boundary prevents conflicting runs,
+    # while different-container jobs within a run still parallelize.
     env:
       # export PR_TAG_SUFFIX so generate_dockerfile (called by ./make build postgres)
       # PR-scopes the non-resolver/single-version extension FROM refs and self-heal
@@ -2014,7 +2014,9 @@ jobs:
           #   true  → real publish path (push/dispatch): emit cache-to so master builds
           #           write to the canonical buildcache refs.
           #   false → PR build-only (IS_PR=true) or DRY_RUN: emit cache-from only;
-          #           the HCL has no cache-to → PR code cannot poison canonical buildcache.
+          #           as written, the HCL has no cache-to and writes no canonical buildcache.
+          #           The PR author controls the scripts running in the job, so this is
+          #           a rollback/audit convenience, not a security boundary.
           # This is the only correct place to set it: the generator reads it at HCL-
           # generation time, before the three-way DRY_RUN/IS_PR/push branch below.
           bake_cache_export="false"

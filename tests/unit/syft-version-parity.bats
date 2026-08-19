@@ -1,8 +1,10 @@
 #!/usr/bin/env bats
 
-# Guarantees that local SBOM generation and every download-syft workflow step
-# use one explicit release. The structural workflow query finds every action use,
-# so moved steps still participate and a new call site cannot be silently skipped.
+# Verifies the on-demand installer's explicit Syft pin matches every download-syft
+# workflow step. The structural workflow query finds every action use, so moved
+# steps still participate and a new call site cannot be silently skipped. This
+# does not cover local SBOM generation: a syft already on PATH is used without a
+# version check (#1209).
 load "../test_helper"
 
 syft_workflow_sites() {
