@@ -448,7 +448,9 @@ jobs:
     # Fork PRs are excluded: they have read-only GITHUB_TOKEN and cannot push
     # to GHCR regardless. TimescaleDB bumps arrive via same-repo auto-update PRs
     # only; same-repo PRs push (packages:write is explicitly granted below) so
-    # the smoke validates end-to-end and master reuses the cache.
+    # the smoke validates end-to-end. A PR imports master's canonical cache but exports
+    # only its PR-scoped cache; master imports only the canonical cache, so newly changed
+    # extension work recompiles at merge before master refreshes the canonical cache.
     if: |
       always() &&
       needs.detect-containers.outputs.count > 0 &&
@@ -568,11 +570,14 @@ jobs:
           # merge-extension-manifests (stage B) fuses them into multi-arch manifests.
           ARCH_SUFFIX: ${{ matrix.arch }}
           BUILD_PLATFORM: ${{ matrix.platform }}
-          # supply-chain: same-repo PRs publish PR-scoped tags only so unreviewed
-          # code never overwrites canonical production-consumed refs.  On push/dispatch
-          # (master) PR_TAG_SUFFIX is empty → canonical refs published.
-          # The shared registry build-cache lets master reuse the PR's compiled layers
-          # (cache hit, no recompile) — safe because forks are excluded by the job if:.
+          # supply-chain: as written, same-repo PRs publish only PR-scoped tags, so they
+          # do not overwrite canonical production-consumed refs by accident. A PR author
+          # who changes the executed script is outside what this suffix constrains.
+          # On push/dispatch (master) PR_TAG_SUFFIX is empty → canonical refs published.
+          # The registry build-cache flow is asymmetric: a same-repo PR imports the
+          # canonical cache and exports only its PR-scoped cache, while master imports
+          # only canonical. Changed extension work therefore recompiles at merge before
+          # the canonical cache is refreshed.
           # BE-1: only set the suffix for same-repo PRs (where the -pr<N> images were
           # actually built).  Fork PRs are excluded by the job if: clause above, so this
           # path is only reached by push/dispatch (empty suffix → canonical) and same-repo

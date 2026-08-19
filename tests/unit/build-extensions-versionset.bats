@@ -12041,22 +12041,76 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# build cache ref must carry PR_TAG_SUFFIX on PR builds,
-# and no suffix on push/dispatch (canonical) builds.
+# build cache exports must carry PR_TAG_SUFFIX on PR builds,
+# while cache imports read both canonical and PR-scoped refs on a PR.
 #
-# Supply-chain policy (operator-confirmed): the build cache is PR-scoped so an
-# unmerged PR cannot influence master's canonical build via a shared cache.
-# Master recompiles the bumped version (the prefilter skips already-canonical
-# versions, so only the new version recompiles — bounded, accepted waste).
-# No shared PR<->master refs.
+# Supply-chain export invariant (pre-existing): PR cache exports are scoped, so
+# this implementation does not write master's canonical cache during a PR run.
+# The PR author controls the scripts running in this job, so the suffix is not a
+# security boundary; it is a rollback/audit convenience. A PR may safely import
+# the canonical cache and its own scoped cache; master imports canonical only
+# and never imports a PR-scoped ref.
 #
-# RED before fix: cache ref is ..:pg18-amd64 regardless of PR_TAG_SUFFIX —
-#   a PR run writes to the same ref as master, enabling cross-scope influence.
+# RED before this fix: a PR imported only its own PR-scoped ref. On that PR's
+# first run, the ref did not exist, so it missed master's canonical cache and
+# rebuilt cold.
 # GREEN after fix:
-#   PR_TAG_SUFFIX=-pr42  → --cache-from/--cache-to ref ends in pg18-amd64-pr42
-#   PR_TAG_SUFFIX empty  → --cache-from/--cache-to ref ends in pg18-amd64 (no suffix)
+#   PR_TAG_SUFFIX=-pr42  → --cache-from has canonical and scoped refs; --cache-to is scoped
+#   PR_TAG_SUFFIX empty  → one canonical --cache-from and canonical --cache-to
 # ---------------------------------------------------------------------------
-@test "PR_TAG_SUFFIX=-pr42 → cache ref is ...buildcache:pg18-amd64-pr42" {
+_cache_refs_from_buildx_args() {
+    local direction="$1"
+    shift
+    local args=("$@")
+    local index cache_option cache_part cache_ref
+    local cache_parts=()
+    CACHE_REFS=()
+
+    for ((index = 0; index < ${#args[@]}; index++)); do
+        [[ "${args[$index]}" == "$direction" ]] || continue
+        cache_option="${args[$((index + 1))]:-}"
+        cache_ref=""
+        IFS=',' read -r -a cache_parts <<< "$cache_option"
+        for cache_part in "${cache_parts[@]}"; do
+            if [[ "$cache_part" == ref=* ]]; then
+                if [[ -n "$cache_ref" ]]; then
+                    echo "$direction cache option has multiple refs: $cache_option" >&2
+                    return 1
+                fi
+                cache_ref="${cache_part#ref=}"
+            fi
+        done
+        if [[ -z "$cache_ref" ]]; then
+            echo "$direction cache option has no ref: $cache_option" >&2
+            return 1
+        fi
+        CACHE_REFS+=("$cache_ref")
+    done
+}
+
+_assert_cache_refs() {
+    local direction="$1"
+    shift
+    local expected=("$@")
+    local expected_ref actual_ref matches
+
+    if [[ ${#CACHE_REFS[@]} -ne ${#expected[@]} ]]; then
+        echo "$direction must name exactly: ${expected[*]}; got: ${CACHE_REFS[*]}" >&2
+        return 1
+    fi
+    for expected_ref in "${expected[@]}"; do
+        matches=0
+        for actual_ref in "${CACHE_REFS[@]}"; do
+            [[ "$actual_ref" == "$expected_ref" ]] && matches=$((matches + 1))
+        done
+        if [[ "$matches" -ne 1 ]]; then
+            echo "$direction must name exactly: ${expected[*]}; got: ${CACHE_REFS[*]}" >&2
+            return 1
+        fi
+    done
+}
+
+@test "PR cache reads canonical and scoped refs but writes only the scoped ref" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/bd1_pr_docker_calls.log"
@@ -12100,7 +12154,9 @@ EOF
         export -f image_exists_in_registry
 
         docker() {
-            echo "DOCKER $*" >> "$docker_calls"
+            printf "DOCKER" >> "$docker_calls"
+            printf "\t%s" "$@" >> "$docker_calls"
+            printf "\n" >> "$docker_calls"
             return 0
         }
         export -f docker
@@ -12129,20 +12185,25 @@ EOF
     [ -f "$docker_calls" ]
 
     local buildx_line
-    buildx_line=$(grep 'buildx build' "$docker_calls" | grep -- '--load' || true)
+    buildx_line=$(grep -F $'\tbuildx\tbuild\t' "$docker_calls" | grep -F $'\t--load\t' || true)
     [ -n "$buildx_line" ]
 
-    # The cache ref (both --cache-from and --cache-to) must carry the PR suffix.
-    # PR_TAG_SUFFIX=-pr42 → ref must end in pg18-amd64-pr42, NOT pg18-amd64.
-    [[ "$buildx_line" == *"ext-timescaledb-buildcache:pg18-amd64-pr42"* ]]
+    local buildx_args
+    IFS=$'\t' read -r -a buildx_args <<< "$buildx_line"
 
-    # The un-scoped (canonical) cache ref must NOT appear.
-    local unscoped_count
-    unscoped_count=$(echo "$buildx_line" | grep -c 'buildcache:pg18-amd64[^-]' || true)
-    [ "$unscoped_count" -eq 0 ]
+    # A PR imports exactly the canonical and its scoped cache refs.
+    _cache_refs_from_buildx_args "--cache-from" "${buildx_args[@]}"
+    _assert_cache_refs "PR cache imports" \
+        "ghcr.io/testowner/ext-timescaledb-buildcache:pg18-amd64" \
+        "ghcr.io/testowner/ext-timescaledb-buildcache:pg18-amd64-pr42"
+
+    # A PR exports exactly its scoped ref; an additional canonical exporter fails.
+    _cache_refs_from_buildx_args "--cache-to" "${buildx_args[@]}"
+    _assert_cache_refs "PR cache exports" \
+        "ghcr.io/testowner/ext-timescaledb-buildcache:pg18-amd64-pr42"
 }
 
-@test "PR_TAG_SUFFIX empty (push) → canonical cache ref (no suffix)" {
+@test "master cache reads the canonical ref exactly once" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/bd1_push_docker_calls.log"
@@ -12186,7 +12247,9 @@ EOF
         export -f image_exists_in_registry
 
         docker() {
-            echo "DOCKER $*" >> "$docker_calls"
+            printf "DOCKER" >> "$docker_calls"
+            printf "\t%s" "$@" >> "$docker_calls"
+            printf "\n" >> "$docker_calls"
             return 0
         }
         export -f docker
@@ -12215,16 +12278,20 @@ EOF
     [ -f "$docker_calls" ]
 
     local buildx_line
-    buildx_line=$(grep 'buildx build' "$docker_calls" | grep -- '--load' || true)
+    buildx_line=$(grep -F $'\tbuildx\tbuild\t' "$docker_calls" | grep -F $'\t--load\t' || true)
     [ -n "$buildx_line" ]
 
-    # Canonical cache ref: ends in pg18-amd64 with no PR suffix.
-    [[ "$buildx_line" == *"ext-timescaledb-buildcache:pg18-amd64"* ]]
+    local buildx_args
+    IFS=$'\t' read -r -a buildx_args <<< "$buildx_line"
 
-    # The ref must NOT contain -pr<N> (no PR suffix on canonical builds).
-    local pr_count
-    pr_count=$(echo "$buildx_line" | grep -c 'buildcache:pg18-amd64-pr' || true)
-    [ "$pr_count" -eq 0 ]
+    # Master imports and exports exactly the canonical ref once.
+    _cache_refs_from_buildx_args "--cache-from" "${buildx_args[@]}"
+    _assert_cache_refs "master cache imports" \
+        "ghcr.io/testowner/ext-timescaledb-buildcache:pg18-amd64"
+
+    _cache_refs_from_buildx_args "--cache-to" "${buildx_args[@]}"
+    _assert_cache_refs "master cache exports" \
+        "ghcr.io/testowner/ext-timescaledb-buildcache:pg18-amd64"
 }
 
 # ---------------------------------------------------------------------------

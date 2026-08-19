@@ -54,15 +54,16 @@ _arch_suffix_tag() {
 # Appends ${PR_TAG_SUFFIX} to <base_ref> when PR_TAG_SUFFIX is non-empty;
 # returns <base_ref> unchanged when PR_TAG_SUFFIX is empty (push/dispatch path).
 #
-# supply-chain policy (operator-confirmed option 2): image tags AND the
-# registry build-cache are both PR-scoped.  On a same-repo pull_request, the
+# supply-chain policy (operator-confirmed option 2): image tags and registry
+# build-cache export refs are PR-scoped. On a same-repo pull_request, the
 # build-extensions leg publishes per-arch images and the stage-B merge publishes
 # multi-arch manifests and the bundle — all carrying the -pr<N> suffix.
-# The build-cache ref also carries the PR suffix (see the supply-chain comment in
-# build_ext_image) so an unmerged PR cannot influence master's canonical build
-# via a shared cache entry.  Master recompiles the bumped version on merge;
-# the prefilter skips already-canonical versions so only the newly bumped
-# version recompiles — bounded, accepted waste.
+# A PR imports both the canonical cache and its own scoped cache, but exports
+# only to its scoped ref (see the supply-chain comment in build_ext_image). This
+# prevents this implementation from writing master's canonical cache during a
+# PR run, while letting it reuse master's work. The PR author controls the
+# scripts running in this job, so the suffix is not a security boundary; it is
+# a rollback/audit convenience. Master never imports a PR-scoped cache ref.
 # Forks are excluded at the job if: clause so only trusted same-repo PRs write
 # to the GHCR namespace.
 #
@@ -82,7 +83,7 @@ _scoped_tag() {
 
 
 # Override build_ext_image from extension-utils.sh for the CI buildx per-arch
-# path: explicit --platform builds, PR-scoped cache refs, separate compile/push
+# path: explicit --platform builds, asymmetric cache refs, separate compile/push
 # handling, and rc=2 for push failures. It also injects REMOTE_CR into extension
 # builder stages. Do not delete this override merely by upstreaming REMOTE_CR;
 # extension-utils.sh would need the whole buildx/cache/push path first.
@@ -112,9 +113,9 @@ build_ext_image() {
         #     ceiling AND non-ceiling, because it is not a compile incompatibility).
         #
         # BA-1: pushing extension images from same-repo PRs is a deliberate
-        # accepted trade-off.  Extensions require native compilation (musl/glibc),
-        # so rebuilding from scratch on the master merge leg would waste minutes of
-        # compile time per version per arch.  A single-maintainer repo with
+        # accepted trade-off. PR-scoped images let the PR's own smoke consume and
+        # validate them; recompiling at merge is the accepted cost of keeping master
+        # independent of PR-scoped cache entries. A single-maintainer repo with
         # serialized auto-update PRs makes this safe: the trust boundary is the PR
         # author, and the push is scoped to extension sub-images only (not the
         # final consumer postgres image).  This diverges from the main-image
@@ -134,14 +135,15 @@ build_ext_image() {
         # Fix: derive owner from REPO_OWNER (env, set by CI) or get_repo_owner()
         # and construct the cache ref as ghcr.io/<owner>/ext-<name>-buildcache:...
         #
-        # supply-chain policy (operator-confirmed): the cache ref is PR-scoped
-        # by appending PR_TAG_SUFFIX so an unmerged PR cannot influence master's
-        # canonical build via a shared cache entry.  On a same-repo PR the ref ends
-        # in pg<N>-<arch>-pr<N>; on push/dispatch (master) PR_TAG_SUFFIX is empty
-        # and the ref ends in pg<N>-<arch>.  There are no shared PR<->master refs.
-        # Master recompiles the bumped version on merge; the prefilter skips
-        # already-canonical versions so only the newly bumped version recompiles —
-        # bounded, accepted waste relative to the supply-chain guarantee.
+        # supply-chain policy (operator-confirmed): PR cache exports append
+        # PR_TAG_SUFFIX, so this implementation does not write master's
+        # canonical cache during a PR run. The PR author controls the scripts
+        # running in this job, so the suffix is not a security boundary; it is
+        # a rollback/audit convenience. A same-repo PR imports both the
+        # canonical pg<N>-<arch> cache and its pg<N>-<arch>-pr<N> cache, but
+        # exports only to the latter. On push/dispatch PR_TAG_SUFFIX is empty,
+        # so both read refs resolve to the same canonical ref and only one
+        # importer is emitted. Master never imports a PR-scoped cache ref.
         local _cache_owner
         _cache_owner="${REPO_OWNER:-$(get_repo_owner)}"
         local _cache_ref
@@ -154,10 +156,11 @@ build_ext_image() {
 
         # Step 1: compile — always use --load (loads image into the local docker
         # store of the native runner).  rc=1 on failure (compile / musl error).
-        # the cache is PR-scoped (see comment above); --cache-from on a PR
-        # reads ONLY that PR's own scoped cache across re-pushes.  On push/dispatch
-        # (master) the ref has no suffix so master reads/writes only its own cache.
-        # --cache-to writes when we have GHCR write access (_do_push_ext=true);
+        # Cache imports are intentionally asymmetric: a PR reads the canonical
+        # cache plus its own scoped cache, while its export remains PR-scoped.
+        # A missing importer is non-fatal to buildx, so extensions with no
+        # canonical cache still build normally. --cache-to writes when we have
+        # GHCR write access (_do_push_ext=true);
         # omitting --cache-to on LOCAL_ONLY/NO_PUSH paths avoids attempting writes
         # to a registry we cannot authenticate to in that context.
         # The cache export must not be able to fail the build: a cache-to write
@@ -166,7 +169,12 @@ build_ext_image() {
         # a retained non-ceiling version. ignore-error=true makes the export
         # best-effort so only a genuine compile failure returns non-zero here;
         # real infra failures are caught by the separate push step (rc=2, fatal).
-        local _cache_flags=("--cache-from" "type=registry,ref=${_cache_ref}")
+        local _canonical_cache_ref
+        _canonical_cache_ref="ghcr.io/${_cache_owner}/ext-${ext_name}-buildcache:pg${pg_major}-${ARCH_SUFFIX:-local}"
+        local _cache_flags=("--cache-from" "type=registry,ref=${_canonical_cache_ref}")
+        if [[ "$_cache_ref" != "$_canonical_cache_ref" ]]; then
+            _cache_flags+=("--cache-from" "type=registry,ref=${_cache_ref}")
+        fi
         if [[ "$_do_push_ext" == "true" ]]; then
             _cache_flags+=("--cache-to" "type=registry,ref=${_cache_ref},mode=max,ignore-error=true")
         fi
