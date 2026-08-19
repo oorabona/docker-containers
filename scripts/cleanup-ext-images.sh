@@ -43,6 +43,9 @@ source "${ROOT_DIR}/helpers/logging.sh"
 # shellcheck source=../helpers/collect-lines.sh
 source "${ROOT_DIR}/helpers/collect-lines.sh"
 
+# shellcheck source=../helpers/ghcr-package-utils.sh
+source "${ROOT_DIR}/helpers/ghcr-package-utils.sh"
+
 # shellcheck source=helpers/version-set-resolver.sh
 source "${ROOT_DIR}/helpers/version-set-resolver.sh"
 
@@ -89,34 +92,6 @@ _discover_resolver_extensions() {
 _discover_pg_versions() {
     local config_file="$1"
     yq -r '.pg_versions[]' "$config_file" 2>/dev/null
-}
-
-# List GHCR package version records for an extension package.
-# Output: compact JSON array of {version_id,name,tags[]} records.
-# Returns 1 on API error so callers can skip fail-closed.
-_list_ghcr_ext_version_records() {
-    local package_name="$1"   # e.g. ext-timescaledb
-    local owner="${OWNER:?OWNER is required}"
-
-    local raw_versions
-    raw_versions=$(gh api \
-        -H "Accept: application/vnd.github+json" \
-        -H "X-GitHub-Api-Version: 2022-11-28" \
-        "/users/${owner}/packages/container/${package_name}/versions" \
-        --paginate 2>/dev/null) || return 1
-
-    if [[ -z "$raw_versions" ]]; then
-        printf '[]\n'
-        return 0
-    fi
-
-    jq -c -s '
-      [.[][] | {
-        version_id: (.id | tostring),
-        name: (.name // ""),
-        tags: (.metadata.container.tags // [])
-      }]
-    ' <<< "$raw_versions"
 }
 
 # Discover every pg<major>- prefix present in GHCR version record tags.
