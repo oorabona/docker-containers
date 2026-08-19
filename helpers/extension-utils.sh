@@ -459,8 +459,8 @@ _scoped_ext_ref() {
 # ext_ref_resolve <ext> <version> <major> <arch>
 #
 # SINGLE SOURCE OF TRUTH for per-version extension image reference resolution.
-# Encapsulates all five axes: canonical-vs-PR-scoped, arch suffix, FORCE,
-# 3-state fail-closed, PR suffix.
+# Encapsulates all six axes: canonical-vs-PR-scoped, arch suffix, FORCE,
+# FORCE_SCOPED_EXTENSION_REFS scope membership, 3-state fail-closed, PR suffix.
 #
 # Parameters:
 #   <ext>     extension name (e.g. timescaledb)
@@ -472,6 +472,12 @@ _scoped_ext_ref() {
 # Reads env:
 #   PR_TAG_SUFFIX  (PR scoping, may be empty)
 #   FORCE          (true|false, defaults false)
+#   FORCE_SCOPED_EXTENSION_REFS
+#                  (comma-separated extension names, "*" for all, or empty;
+#                  a run-scoped contract set only after this run published the
+#                  named extension images. Only a named extension uses its
+#                  freshly-published PR-scoped ref. Empty values force nothing;
+#                  malformed non-empty values fail closed.)
 #
 # Ref construction (registry/owner from get_registry/get_repo_owner):
 #   canonical  = ext_image_name(ext,ver,major)[+"-"<arch>]
@@ -483,7 +489,10 @@ _scoped_ext_ref() {
 #   FORCE=true AND PR_TAG_SUFFIX set:
 #     → prefer PR-scoped (freshly rebuilt this run); do NOT reuse canonical.
 #     Probe PR-scoped only (canonical is stale for this version).
-#   else (not FORCE, or no PR_TAG_SUFFIX):
+#   FORCE_SCOPED_EXTENSION_REFS names ext AND PR_TAG_SUFFIX set:
+#     → prefer PR-scoped (freshly rebuilt this run); do NOT reuse canonical.
+#     Probe PR-scoped only (canonical is stale for this version).
+#   else (neither force signal, or no PR_TAG_SUFFIX):
 #     → prefer canonical when PRESENT (read-only reuse for unchanged versions).
 #     If canonical ABSENT and PR_TAG_SUFFIX set → probe PR-scoped.
 #
@@ -491,14 +500,52 @@ _scoped_ext_ref() {
 #   rc 0  → prints the ref to use (canonical or pr-scoped).
 #   rc 1  → neither ref exists definitively (needs build or exclude).
 #           prints nothing.
-#   rc 2  → a probe returned transient ERROR → fail closed.
+#   rc 2  → a probe returned transient ERROR, or the run scope is malformed
+#           → fail closed.
 #           prints nothing.
 #
 # On push/dispatch (PR_TAG_SUFFIX empty): only canonical is considered;
 # behavior is identical to the current canonical path.
+_force_scoped_extension_ref() {
+    local ext="$1" scope="${FORCE_SCOPED_EXTENSION_REFS:-}" scoped_ext
+    local -a scoped_exts
+
+    # "*" is the explicit all-extensions scope. Every other non-empty value
+    # must be a complete comma-separated extension-name list. This mirrors the
+    # schema validator's name_shaped rule, ^[A-Za-z0-9_-]+$, so a schema-valid
+    # extension name has the same meaning in this run-scoped contract.
+    case "$scope" in
+        '*') return 0 ;;
+        '') return 1 ;;
+    esac
+    [[ "$scope" =~ ^[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+)*$ ]] || return 2
+
+    IFS=',' read -ra scoped_exts <<< "$scope"
+    for scoped_ext in "${scoped_exts[@]}"; do
+        [[ "$ext" == "$scoped_ext" ]] && return 0
+    done
+    return 1
+}
+
 ext_ref_resolve() {
     local ext="$1" version="$2" major="$3" arch="${4:-}"
-    local registry owner canonical_ref pr_ref
+    local registry owner canonical_ref pr_ref scope_rc=0
+
+    # The run scope can only affect a PR-scoped reference.  On push/dispatch,
+    # leave it completely unconsulted so this remains the canonical-only path.
+    if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+        # A corrupt non-empty run scope must not silently select canonical images.
+        # Keep rc 2 for this fail-closed resolution error, matching probe failures.
+        _force_scoped_extension_ref "$ext" || scope_rc=$?
+        case "$scope_rc" in
+            0|1) ;;
+            *)
+                printf 'ERROR [ext_ref_resolve]: invalid FORCE_SCOPED_EXTENSION_REFS scope\n' >&2
+                return 2
+                ;;
+        esac
+    fi
+
     registry=$(get_registry)
     owner=$(get_repo_owner)
 
@@ -517,8 +564,9 @@ ext_ref_resolve() {
     fi
 
     # On push/dispatch (PR_TAG_SUFFIX empty), pr_ref == canonical_ref.
-    # Handle FORCE + PR: prefer pr-scoped (do not reuse canonical stale ref).
-    if [[ "${FORCE:-false}" == "true" ]] && [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+    # A forced rebuild, or a scope that names this extension, must prefer the
+    # PR-scoped ref and never reuse the canonical stale ref.
+    if { [[ "${FORCE:-false}" == "true" ]] || [[ "$scope_rc" -eq 0 ]]; } && [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
         # Probe the PR-scoped ref only.
         local _rc=0
         _image_registry_probe_3state "$pr_ref" || _rc=$?
@@ -529,7 +577,7 @@ ext_ref_resolve() {
         esac
     fi
 
-    # Normal path (not FORCE+PR, or push/dispatch):
+    # Normal path (neither force signal + PR, or push/dispatch):
     # Probe canonical first (read-only reuse for unchanged versions).
     local _can_rc=0
     _image_registry_probe_3state "$canonical_ref" || _can_rc=$?
@@ -880,8 +928,9 @@ generate_dockerfile() {
     # Derive FORCE from REBUILD env so a forced PR run prefers freshly-rebuilt
     # PR-scoped refs over stale canonical refs for non-resolver/single-version
     # extensions.  This mirrors the --force logic in build-extensions.sh and
-    # merge-extension-manifests.  ext_ref_resolve reads FORCE from env; the
-    # build-and-push job exports REBUILD from env.REBUILD_MODE.
+    # merge-extension-manifests.  ext_ref_resolve also reads the separate
+    # FORCE_SCOPED_EXTENSION_REFS run contract.  The build-and-push job exports
+    # REBUILD from env.REBUILD_MODE.
     # Pre-existing FORCE=true is preserved (e.g. LOCAL_ONLY builds).
     if [[ "${REBUILD:-}" == "force" || "${REBUILD:-}" == "all" ]]; then
         export FORCE=true
@@ -1065,7 +1114,8 @@ generate_dockerfile() {
 
                 # Probe registry presence for each resolved version via ext_ref_resolve.
                 # ext_ref_resolve encapsulates canonical-first, PR-scoped fallback,
-                # FORCE, and 3-state fail-closed in one call (arch="" = multi-arch tag).
+                # both force signals, and 3-state fail-closed in one call
+                # (arch="" = multi-arch tag).
                 # rc 0 → PRESENT (ref printed); rc 1 → ABSENT; rc 2 → transient ERROR (fail-closed).
                 local _sh_available=()
                 local -A _sh_emit_ref_map=()  # version → resolved emit ref (for lookup in emit loop)
