@@ -1857,12 +1857,54 @@ _consolidate_version_duration_file() {
     if [[ "$have_dur" == "true" ]] && [[ -n "$dur_source" ]]; then
         local max_dur
         max_dur=$(( dp_amd64 > dp_arm64 ? dp_amd64 : dp_arm64 ))
-        local tmp_dur
-        tmp_dur=$(mktemp)
-        jq --argjson dur "$max_dur" '. + {duration_seconds: $dur}' "$dur_source" \
-            > "$tmp_dur" && mv "$tmp_dur" "$dur_canonical" || rm -f "$tmp_dur"
-        rm -f "$dur_amd64" "$dur_arm64"
-        log_info "Duration consolidated (AX-3): $dur_canonical (amd64=${dp_amd64}s arm64=${dp_arm64}s max=${max_dur}s)"
+        local tmp_dur consolidation_status cleanup_status
+        # GNU mv -T prevents an existing directory from being treated as a
+        # destination directory.  A symlink to a directory needs an explicit
+        # refusal because -T would replace the symlink itself.
+        if [[ -L "$dur_canonical" && -d "$dur_canonical" ]]; then
+            log_error "Duration consolidation failed: canonical destination is a symlink to a directory: $dur_canonical"
+            return 1
+        fi
+
+        if ! tmp_dur=$(mktemp "${dur_canonical}.tmp.XXXXXX"); then
+            log_error "Duration consolidation failed: temporary file creation failed for $dur_canonical"
+            return 1
+        fi
+
+        if jq --argjson dur "$max_dur" '. + {duration_seconds: $dur}' "$dur_source" \
+            > "$tmp_dur"; then
+            :
+        else
+            consolidation_status=$?
+            if rm -f "$tmp_dur"; then
+                log_error "Duration consolidation failed: jq transformation failed for $dur_canonical (rc=$consolidation_status)"
+            else
+                cleanup_status=$?
+                log_error "Duration consolidation failed: jq transformation failed for $dur_canonical (rc=$consolidation_status); temporary file retained: $tmp_dur (cleanup rc=$cleanup_status)"
+            fi
+            return "$consolidation_status"
+        fi
+
+        if mv -fT "$tmp_dur" "$dur_canonical"; then
+            :
+        else
+            consolidation_status=$?
+            if rm -f "$tmp_dur"; then
+                log_error "Duration consolidation failed: canonical rename failed for $dur_canonical (rc=$consolidation_status)"
+            else
+                cleanup_status=$?
+                log_error "Duration consolidation failed: canonical rename failed for $dur_canonical (rc=$consolidation_status); temporary file retained: $tmp_dur (cleanup rc=$cleanup_status)"
+            fi
+            return "$consolidation_status"
+        fi
+
+        if rm -f "$dur_amd64" "$dur_arm64"; then
+            log_info "Duration consolidated (AX-3): $dur_canonical (amd64=${dp_amd64}s arm64=${dp_arm64}s max=${max_dur}s)"
+        else
+            cleanup_status=$?
+            log_error "Duration consolidation failed: source measurement cleanup did not complete for $dur_canonical (rc=$cleanup_status; source state may be partial)"
+            return "$cleanup_status"
+        fi
     fi
 }
 
@@ -2020,7 +2062,10 @@ finalize_multiarch_manifests() {
             fi
             # AX-3: consolidate per-arch duration files so the summer counts the
             # ceiling once (MAX), not once per arch.
-            _consolidate_version_duration_file "$ext" "$major_ver" "$ceiling"
+            if ! _consolidate_version_duration_file "$ext" "$major_ver" "$ceiling"; then
+                log_error "$ext $ceiling pg${major_ver}: duration consolidation failed — see preceding diagnostic"
+                _failed=true
+            fi
             continue
         fi
 
@@ -2049,7 +2094,10 @@ finalize_multiarch_manifests() {
         local _dur_ver_pre
         while IFS= read -r _dur_ver_pre; do
             [[ -z "$_dur_ver_pre" ]] && continue
-            _consolidate_version_duration_file "$ext" "$major_ver" "$_dur_ver_pre"
+            if ! _consolidate_version_duration_file "$ext" "$major_ver" "$_dur_ver_pre"; then
+                log_error "$ext $_dur_ver_pre pg${major_ver}: duration consolidation failed — see preceding diagnostic"
+                _failed=true
+            fi
         done < <(echo "$version_set_json" | jq -r '.[]')
 
         # Step 1: compute AVAILABLE set via ext_ref_resolve (unified resolver).
