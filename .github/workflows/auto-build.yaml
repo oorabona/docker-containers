@@ -1478,6 +1478,8 @@ jobs:
         id: install-syft
         if: matrix.build.os != 'windows' && steps.build.outputs.image_loaded == 'true' && matrix.arch == 'amd64' && github.event_name != 'pull_request'
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          syft-version: v1.51.0
 
       - name: Generate SBOM
         id: sbom
@@ -1695,6 +1697,8 @@ jobs:
         id: install-syft-windows
         if: matrix.build.os == 'windows' && github.event_name != 'pull_request'
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          syft-version: v1.51.0
 
       - name: Generate SBOM (Windows)
         id: sbom-windows
@@ -2127,6 +2131,8 @@ jobs:
         if: steps.bake-build.outcome == 'success' && github.event_name != 'pull_request' && env.DRY_RUN != 'true'
         continue-on-error: true
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          syft-version: v1.51.0
 
       - name: Generate SBOM and emit lineage (bake amd64)
         id: bake-sbom
