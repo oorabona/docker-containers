@@ -10608,6 +10608,290 @@ EOF
     }
 }
 
+@test "duration consolidation fails on jq error without deleting per-arch inputs or reporting success" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local amd64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-amd64.json"
+    local arm64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-arm64.json"
+    local canonical_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1.json"
+
+    mkdir -p "$lineage_dir"
+    printf '{"duration_seconds":100}\n' > "$amd64_dur"
+    printf '{"duration_seconds":140}\n' > "$arm64_dur"
+
+    jq() {
+        if [[ "$1" == "--argjson" ]]; then
+            echo "forced jq failure" >&2
+            return 71
+        fi
+        command jq "$@"
+    }
+
+    run _consolidate_version_duration_file timescaledb 18 2.27.1
+
+    [ "$status" -ne 0 ] || {
+        echo "FAIL: jq consolidation failure returned success"
+        false
+    }
+    [[ "$output" == *"jq transformation failed"* ]] || {
+        echo "FAIL: jq consolidation failure was not named in output: $output"
+        false
+    }
+    [[ "$output" != *"Duration consolidated"* ]] || {
+        echo "FAIL: jq consolidation failure reported success: $output"
+        false
+    }
+    [ -f "$amd64_dur" ] || {
+        echo "FAIL: amd64 input was deleted after jq consolidation failure"
+        false
+    }
+    [ -f "$arm64_dur" ] || {
+        echo "FAIL: arm64 input was deleted after jq consolidation failure"
+        false
+    }
+    [ ! -f "$canonical_dur" ] || {
+        echo "FAIL: canonical duration file was written after jq consolidation failure"
+        false
+    }
+}
+
+@test "duration consolidation fails on rename error without deleting per-arch inputs or reporting success" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local amd64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-amd64.json"
+    local arm64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-arm64.json"
+    local canonical_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1.json"
+
+    mkdir -p "$lineage_dir"
+    printf '{"duration_seconds":100}\n' > "$amd64_dur"
+    printf '{"duration_seconds":140}\n' > "$arm64_dur"
+
+    mv() {
+        if [[ "$3" == "$canonical_dur" ]]; then
+            echo "forced mv failure" >&2
+            return 72
+        fi
+        command mv "$@"
+    }
+
+    run _consolidate_version_duration_file timescaledb 18 2.27.1
+
+    [ "$status" -ne 0 ] || {
+        echo "FAIL: rename consolidation failure returned success"
+        false
+    }
+    [[ "$output" == *"canonical rename failed"* ]] || {
+        echo "FAIL: rename consolidation failure was not named in output: $output"
+        false
+    }
+    [[ "$output" != *"Duration consolidated"* ]] || {
+        echo "FAIL: rename consolidation failure reported success: $output"
+        false
+    }
+    [ -f "$amd64_dur" ] || {
+        echo "FAIL: amd64 input was deleted after rename consolidation failure"
+        false
+    }
+    [ -f "$arm64_dur" ] || {
+        echo "FAIL: arm64 input was deleted after rename consolidation failure"
+        false
+    }
+    [ ! -f "$canonical_dur" ] || {
+        echo "FAIL: canonical duration file was written after rename consolidation failure"
+        false
+    }
+}
+
+@test "duration consolidation refuses a canonical directory without deleting sources or reporting success" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local amd64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-amd64.json"
+    local arm64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-arm64.json"
+    local canonical_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1.json"
+
+    mkdir -p "$canonical_dur"
+    printf '{"duration_seconds":100}\n' > "$amd64_dur"
+    printf '{"duration_seconds":140}\n' > "$arm64_dur"
+
+    run _consolidate_version_duration_file timescaledb 18 2.27.1
+
+    [ "$status" -ne 0 ] || {
+        echo "FAIL: canonical directory destination unexpectedly succeeded"
+        false
+    }
+    [[ "$output" == *"canonical rename failed"* ]] || {
+        echo "FAIL: canonical directory destination was not named in output: $output"
+        false
+    }
+    [[ "$output" != *"Duration consolidated (AX-3)"* ]] || {
+        echo "FAIL: canonical directory destination reported success: $output"
+        false
+    }
+    [ -f "$amd64_dur" ] || {
+        echo "FAIL: amd64 input was deleted after canonical directory refusal"
+        false
+    }
+    [ -f "$arm64_dur" ] || {
+        echo "FAIL: arm64 input was deleted after canonical directory refusal"
+        false
+    }
+}
+
+@test "duration consolidation refuses a canonical symlink to a directory without deleting sources" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local amd64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-amd64.json"
+    local arm64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-arm64.json"
+    local canonical_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1.json"
+    local canonical_target="$lineage_dir/canonical-target"
+
+    mkdir -p "$canonical_target"
+    ln -s "$canonical_target" "$canonical_dur"
+    printf '{"duration_seconds":100}\n' > "$amd64_dur"
+    printf '{"duration_seconds":140}\n' > "$arm64_dur"
+
+    run _consolidate_version_duration_file timescaledb 18 2.27.1
+
+    [ "$status" -ne 0 ] || {
+        echo "FAIL: canonical symlink-to-directory destination unexpectedly succeeded"
+        false
+    }
+    [[ "$output" == *"symlink to a directory"* ]] || {
+        echo "FAIL: canonical symlink-to-directory refusal was not named in output: $output"
+        false
+    }
+    [[ "$output" != *"Duration consolidated (AX-3)"* ]] || {
+        echo "FAIL: canonical symlink-to-directory destination reported success: $output"
+        false
+    }
+    [ -f "$amd64_dur" ] || {
+        echo "FAIL: amd64 input was deleted after canonical symlink-to-directory refusal"
+        false
+    }
+    [ -f "$arm64_dur" ] || {
+        echo "FAIL: arm64 input was deleted after canonical symlink-to-directory refusal"
+        false
+    }
+}
+
+@test "finalize fails when source duration cleanup fails under its if-not caller, without logging consolidation success" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local amd64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-amd64.json"
+    local arm64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-arm64.json"
+    local canonical_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1.json"
+
+    cat > "$CONFIG_FILE" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+EOF
+    mkdir -p "$lineage_dir"
+    printf '{"duration_seconds":100}\n' > "$amd64_dur"
+    printf '{"duration_seconds":140}\n' > "$arm64_dur"
+
+    export FORCE=true
+    list_extensions_by_priority() { echo "timescaledb"; }
+    docker() { return 0; }
+    rm() {
+        if [[ "${1:-}" == "-f" && "${2:-}" == "${amd64_dur:-}" && "${3:-}" == "${arm64_dur:-}" && -n "${amd64_dur:-}" ]]; then
+            echo "forced source cleanup failure" >&2
+            return 73
+        fi
+        command rm "$@"
+    }
+
+    # Exercise the production `if ! _consolidate_version_duration_file` caller in
+    # finalize_multiarch_manifests, where errexit is disabled for the helper body.
+    run finalize_multiarch_manifests "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    [ "$status" -ne 0 ] || {
+        echo "FAIL: finalize reported success after source duration cleanup failed"
+        false
+    }
+    [[ "$output" == *"duration consolidation failed — see preceding diagnostic"* ]] || {
+        echo "FAIL: finalize did not direct readers to the helper diagnostic: $output"
+        false
+    }
+    [[ "$output" != *"Duration consolidated (AX-3)"* ]] || {
+        echo "FAIL: source cleanup failure logged consolidation success: $output"
+        false
+    }
+    [ -f "$canonical_dur" ] || {
+        echo "FAIL: canonical duration file was not written before the source cleanup failure"
+        false
+    }
+    [ -f "$amd64_dur" ] || {
+        echo "FAIL: failing source cleanup unexpectedly removed amd64 measurement"
+        false
+    }
+    [ -f "$arm64_dur" ] || {
+        echo "FAIL: failing source cleanup unexpectedly removed arm64 measurement"
+        false
+    }
+}
+
+@test "jq failure with temporary cleanup failure reports residual path and preserves jq status" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local amd64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-amd64.json"
+    local arm64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-arm64.json"
+    local caller_log="$TEST_TEMP_DIR/duration-caller.log"
+    local tmp_dur
+
+    mkdir -p "$lineage_dir"
+    printf '{"duration_seconds":100}\n' > "$amd64_dur"
+    printf '{"duration_seconds":140}\n' > "$arm64_dur"
+
+    jq() {
+        if [[ "$1" == "--argjson" ]]; then
+            echo "forced jq failure" >&2
+            return 71
+        fi
+        command jq "$@"
+    }
+    rm() {
+        if [[ "${1:-}" == "-f" && "${2:-}" == *".tmp."* ]]; then
+            echo "forced temporary cleanup failure" >&2
+            return 74
+        fi
+        command rm "$@"
+    }
+
+    # The same `if !` shape used by finalize must still receive a failure.
+    local caller_rc=0
+    if ! _consolidate_version_duration_file timescaledb 18 2.27.1 > "$caller_log" 2>&1; then
+        caller_rc=1
+    fi
+    [ "$caller_rc" -eq 1 ] || {
+        echo "FAIL: if-not caller did not see the jq consolidation failure"
+        false
+    }
+
+    tmp_dur=$(compgen -G "$lineage_dir/ext-timescaledb-pg18-2.27.1.json.tmp.*" | head -n 1)
+    [ -f "$tmp_dur" ] || {
+        echo "FAIL: expected residual temporary file was not left behind"
+        false
+    }
+    [[ "$(< "$caller_log")" == *"temporary file retained: $tmp_dur"* ]] || {
+        echo "FAIL: residual temporary path was not reported: $(< "$caller_log")"
+        false
+    }
+
+    # `if !` inverts the helper's status, so invoke it directly to prove the
+    # original jq failure (71), rather than the cleanup failure (74), is returned.
+    run _consolidate_version_duration_file timescaledb 18 2.27.1
+
+    [ "$status" -eq 71 ] || {
+        echo "FAIL: temporary cleanup failure replaced jq status; got $status"
+        false
+    }
+    [[ "$output" == *"temporary file retained:"* ]] || {
+        echo "FAIL: direct jq failure did not report a retained temporary path: $output"
+        false
+    }
+    [[ "$output" != *"Duration consolidated (AX-3)"* ]] || {
+        echo "FAIL: temporary cleanup failure logged consolidation success: $output"
+        false
+    }
+}
+
 # ---------------------------------------------------------------------------
 # SIMP-cached-version-merged: a CACHED non-ceiling version (its -amd64/-arm64
 # suffixed tags exist in the registry from a prior run, NOT rebuilt this run)
