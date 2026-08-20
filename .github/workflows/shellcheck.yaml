@@ -84,13 +84,46 @@ jobs:
           install_package 'yamllint==1.37.1' "$yamllint_dir/requirements/yamllint.txt"
 
           "$yamllint_venv/bin/yamllint" --version
+
+          # A linter can reproduce repository-controlled text verbatim. Disable
+          # runner command parsing while it writes, and resume even if set -e
+          # exits the span because the linter fails.
+          run_with_workflow_commands_stopped() (
+            local stop_marker
+            if ! stop_marker=$(uuidgen) || [[ -z "$stop_marker" ]]; then
+              echo "::error::could not mint a workflow command stop marker" >&2
+              return 1
+            fi
+            trap 'printf "\n::%s::\n" "$stop_marker"' EXIT
+            printf '::stop-commands::%s\n' "$stop_marker"
+            "$@" 2>&1
+          )
+
           # Run yamllint only after this search has collected and validated every YAML pathname.
           ./scripts/collect-safe-paths.sh . -type f \( -name config.yaml -o -name variants.yaml \) \
-            -not -path './.git/*' | xargs -r -0 "$yamllint_venv/bin/yamllint" -c .yamllint.yml
+            -not -path './.git/*' | run_with_workflow_commands_stopped xargs -r -0 "$yamllint_venv/bin/yamllint" -c .yamllint.yml
 
       - name: Run shellcheck on scripts
         run: |
           set -euo pipefail
+
+          # Keep linter diagnostics inert: they can reproduce untrusted file
+          # contents beginning with a GitHub Actions workflow command. The EXIT
+          # trap runs for success, a lint failure, and set -e or explicit exits.
+          run_with_workflow_commands_stopped() (
+            local stop_marker
+            if ! stop_marker=$(uuidgen) || [[ -z "$stop_marker" ]]; then
+              echo "::error::could not mint a workflow command stop marker" >&2
+              return 1
+            fi
+            trap 'printf "\n::%s::\n" "$stop_marker"' EXIT
+            printf '::stop-commands::%s\n' "$stop_marker"
+            "$@" 2>&1
+          )
+
+          run_shellcheck_counting_pass() {
+            shellcheck -x -S warning "$1" 2>/dev/null
+          }
 
           scripts=()
 
@@ -137,7 +170,7 @@ jobs:
           failed_files=()
 
           for script in "${scripts[@]}"; do
-            if shellcheck -x -S warning "$script" 2>/dev/null; then
+            if run_with_workflow_commands_stopped run_shellcheck_counting_pass "$script"; then
               passed=$((passed + 1))
             else
               failed=$((failed + 1))
@@ -170,7 +203,7 @@ jobs:
             echo "Re-running failed scripts with details:"
             for f in "${failed_files[@]}"; do
               echo "--- $f ---"
-              shellcheck -x -S warning "$f" || true
+              run_with_workflow_commands_stopped shellcheck -x -S warning "$f" || true
             done
             exit 1
           fi
