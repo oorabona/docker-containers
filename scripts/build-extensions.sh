@@ -123,7 +123,7 @@ build_ext_image() {
         # final consumer postgres image).  This diverges from the main-image
         # PR-skip policy intentionally.
         local _ver_image
-        _ver_image=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
+        _ver_image=$(ext_image_name "$ext_name" "$ext_version" "$pg_major") || return 1
         local _ver_tag
         # Per-arch tag carries both the arch suffix and the PR scope suffix (if any).
         # Format: <registry>/<owner>/ext-<name>:pg<major>-<ver>-<arch>${PR_TAG_SUFFIX}
@@ -135,7 +135,7 @@ build_ext_image() {
         # deriving the cache ref from REMOTE_CR would produce the wrong namespace
         # when REMOTE_CR is unset or set to a different registry by the caller.
         # Fix: derive owner from REPO_OWNER (env, set by CI) or get_repo_owner()
-        # and construct the cache ref as ghcr.io/<owner>/ext-<name>-buildcache:...
+        # and construct the cache ref as ghcr.io/<owner>/ext-<name><package-suffix>-buildcache:...
         #
         # supply-chain policy (operator-confirmed): PR cache exports append
         # PR_TAG_SUFFIX, so this implementation does not write master's
@@ -148,8 +148,10 @@ build_ext_image() {
         # importer is emitted. Master never imports a PR-scoped cache ref.
         local _cache_owner
         _cache_owner="${REPO_OWNER:-$(get_repo_owner)}"
+        local _cache_repository
+        _cache_repository=$(ext_buildcache_repository "$ext_name" "ghcr.io" "${_cache_owner}") || return 1
         local _cache_ref
-        _cache_ref="ghcr.io/${_cache_owner}/ext-${ext_name}-buildcache:pg${pg_major}-${ARCH_SUFFIX:-local}${PR_TAG_SUFFIX:-}"
+        _cache_ref="${_cache_repository}:pg${pg_major}-${ARCH_SUFFIX:-local}${PR_TAG_SUFFIX:-}"
 
         # Compute do_push for this build leg: true unless NO_PUSH or LOCAL_ONLY.
         local _do_push_ext=true
@@ -175,7 +177,7 @@ build_ext_image() {
         local _cache_flags=()
         if [[ "${NO_CACHE:-false}" != "true" ]]; then
             local _canonical_cache_ref
-            _canonical_cache_ref="ghcr.io/${_cache_owner}/ext-${ext_name}-buildcache:pg${pg_major}-${ARCH_SUFFIX:-local}"
+            _canonical_cache_ref="${_cache_repository}:pg${pg_major}-${ARCH_SUFFIX:-local}"
             _cache_flags=("--cache-from" "type=registry,ref=${_canonical_cache_ref}")
             if [[ "$_cache_ref" != "$_canonical_cache_ref" ]]; then
                 _cache_flags+=("--cache-from" "type=registry,ref=${_cache_ref}")
@@ -274,6 +276,9 @@ Options:
 
 Environment:
   EXTENSION_REGISTRY     Registry URL (default: ghcr.io)
+  EXTENSION_PACKAGE_SUFFIX
+                         Optional safe package suffix (e.g. -staging); sends
+                         extension images and build cache to ext-<name>-staging
 
 Examples:
   $(basename "$0") postgres                        # Build & push all missing
@@ -400,7 +405,7 @@ list_extension_status() {
         local ver
         while IFS= read -r ver; do
             local image
-            image=$(ext_image_name "$ext" "$ver" "$major_ver")
+            image=$(ext_image_name "$ext" "$ver" "$major_ver") || return 1
 
             local status
             if image_exists_in_registry "$image" 2>/dev/null; then
@@ -496,7 +501,7 @@ tag_extension() {
 
     if [[ "$DRY_RUN" == "true" ]]; then
         local image
-        image=$(ext_image_name "$ext_name" "$ext_version" "$major_ver")
+        image=$(ext_image_name "$ext_name" "$ext_version" "$major_ver") || return 1
         log_info "[DRY-RUN] Would tag $image"
         return 0
     fi
@@ -518,7 +523,7 @@ push_extension() {
 
     if [[ "$DRY_RUN" == "true" ]]; then
         local image
-        image=$(ext_image_name "$ext_name" "$ext_version" "$major_ver")
+        image=$(ext_image_name "$ext_name" "$ext_version" "$major_ver") || return 1
         log_info "[DRY-RUN] Would push $image"
         return 0
     fi
@@ -541,7 +546,7 @@ pull_extension() {
 
     if [[ "$DRY_RUN" == "true" ]]; then
         local image
-        image=$(ext_image_name "$ext_name" "$ext_version" "$major_ver")
+        image=$(ext_image_name "$ext_name" "$ext_version" "$major_ver") || return 1
         log_info "[DRY-RUN] Would pull $image"
         return 0
     fi
@@ -617,7 +622,7 @@ handle_pull_only_mode() {
         local ver
         while IFS= read -r ver; do
             local image
-            image=$(ext_image_name "$ext" "$ver" "$major_ver")
+            image=$(ext_image_name "$ext" "$ver" "$major_ver") || return 1
 
             if docker image inspect "$image" &>/dev/null && [[ "$FORCE" != "true" ]]; then
                 log_success "$ext $ver already exists locally"
@@ -737,7 +742,7 @@ _bundle_and_write_artifact() {
     local _cv
     while IFS= read -r _cv; do
         local _cv_image
-        _cv_image=$(ext_image_name "$ext" "$_cv" "$major_ver")
+        _cv_image=$(ext_image_name "$ext" "$_cv" "$major_ver") || return 1
 
         if [[ -n "${_btr_set[$_cv]:-}" ]]; then
             _confirmed_available+=("$_cv")
@@ -867,7 +872,6 @@ _bundle_and_write_artifact() {
     _available_json=$(printf '%s\n' "${_confirmed_available[@]+"${_confirmed_available[@]}"}" | jq -Rsc 'split("\n") | map(select(. != ""))')
     _excluded_json="[$(IFS=,; echo "${_excluded_entries[*]+"${_excluded_entries[*]}"}")]"
     _resolved_json=$(echo "$version_set_json" | jq '.')
-
     if [[ "$_version_digests_json" == "null" ]]; then
         # No-push path: omit version_digests (local/no-push artifact).
         jq -nc \
@@ -882,6 +886,8 @@ _bundle_and_write_artifact() {
         log_info "Version-set lineage (build path, no-push — no version_digests): $_vs_lineage_file"
     else
         # Pushed path: include version_digests so consumer emits digest-pinned refs.
+        local _version_digests_repository
+        _version_digests_repository=$(ext_image_repository "$ext") || return 1
         jq -nc \
             --arg ext "$ext" \
             --arg pg_major "$major_ver" \
@@ -890,7 +896,8 @@ _bundle_and_write_artifact() {
             --argjson available "$_available_json" \
             --argjson excluded "$_excluded_json" \
             --argjson version_digests "$_version_digests_json" \
-            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, version_digests:$version_digests}' \
+            --arg version_digests_repository "$_version_digests_repository" \
+            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, version_digests:$version_digests, version_digests_repository:$version_digests_repository}' \
             > "$_vs_lineage_file"
         log_info "Version-set lineage (build path, pushed — with version_digests): $_vs_lineage_file"
     fi
@@ -1018,7 +1025,7 @@ build_tag_push_extensions() {
         local version
         while IFS= read -r version; do
             local ver_image
-            ver_image=$(ext_image_name "$ext" "$version" "$major_ver")
+            ver_image=$(ext_image_name "$ext" "$version" "$major_ver") || return 1
 
             # Skip already-available versions.
             # BF fix: on a PR (PR_TAG_SUFFIX non-empty), check the canonical arch tag
@@ -1136,7 +1143,7 @@ build_tag_push_extensions() {
             if [[ "$DRY_RUN" != "true" ]]; then
                 local _ver_duration=$(( SECONDS - _ver_start ))
                 local _ver_image
-                _ver_image=$(ext_image_name "$ext" "$version" "$major_ver")
+                _ver_image=$(ext_image_name "$ext" "$version" "$major_ver") || return 1
                 local _ver_safe="${version//[^a-zA-Z0-9.-]/_}"
                 local _ver_lineage_suffix=""
                 [[ -n "${ARCH_SUFFIX:-}" ]] && _ver_lineage_suffix="-${ARCH_SUFFIX}"
@@ -1455,7 +1462,7 @@ _should_build_extension() {
 
     local version image
     version=$(ext_config "$ext" "version" "$config_file")
-    image=$(ext_image_name "$ext" "$version" "$major_ver")
+    image=$(ext_image_name "$ext" "$version" "$major_ver") || return 2
 
     # Resolve the full version set (cached). A non-zero return from _resolve_cached
     # means the resolver script failed — NOT a no-resolver extension (which returns
@@ -1534,7 +1541,7 @@ _should_build_extension() {
     local ver
     while IFS= read -r ver; do
         local ver_image_mv
-        ver_image_mv=$(ext_image_name "$ext" "$ver" "$major_ver")
+        ver_image_mv=$(ext_image_name "$ext" "$ver" "$major_ver") || return 2
         local _check_ver_image_mv
         _check_ver_image_mv=$(_scoped_tag "$(_arch_suffix_tag "$ver_image_mv" "${ARCH_SUFFIX:-}")")
 
@@ -1764,7 +1771,7 @@ _emit_versionset_artifact() {
     local _probe_error=false
     while IFS= read -r ver; do
         local ver_image
-        ver_image=$(ext_image_name "$ext" "$ver" "$major_ver")
+        ver_image=$(ext_image_name "$ext" "$ver" "$major_ver") || return 1
 
         # Use 3-state probe to distinguish PRESENT / ABSENT / ERROR.
         # Versions in the built-this-run set are always PRESENT (propagation-lag guard).
@@ -2055,13 +2062,19 @@ finalize_multiarch_manifests() {
             # When both arch refs are absent (normal case: imagetools create hasn't run yet),
             # fall back to the computed scoped refs.
             if [[ -z "$_nr_src_amd64" ]]; then
-                _nr_src_amd64=$(_scoped_tag "$(_arch_suffix_tag "$(ext_image_name "$ext" "$ceiling" "$major_ver")" "amd64")")
+                local _nr_image
+                _nr_image=$(ext_image_name "$ext" "$ceiling" "$major_ver") || { _failed=true; continue; }
+                _nr_src_amd64=$(_scoped_tag "$(_arch_suffix_tag "$_nr_image" "amd64")")
             fi
             if [[ -z "$_nr_src_arm64" ]]; then
-                _nr_src_arm64=$(_scoped_tag "$(_arch_suffix_tag "$(ext_image_name "$ext" "$ceiling" "$major_ver")" "arm64")")
+                local _nr_image
+                _nr_image=$(ext_image_name "$ext" "$ceiling" "$major_ver") || { _failed=true; continue; }
+                _nr_src_arm64=$(_scoped_tag "$(_arch_suffix_tag "$_nr_image" "arm64")")
             fi
             if [[ -z "$_nr_target" ]]; then
-                _nr_target=$(_scoped_tag "$(ext_image_name "$ext" "$ceiling" "$major_ver")")
+                local _nr_image
+                _nr_image=$(ext_image_name "$ext" "$ceiling" "$major_ver") || { _failed=true; continue; }
+                _nr_target=$(_scoped_tag "$_nr_image")
             fi
 
             log_info "$ext $ceiling pg${major_ver}: imagetools create $_nr_target from $_nr_src_amd64 + $_nr_src_arm64 (non-resolver, stable suffixed tags)"
@@ -2224,7 +2237,9 @@ finalize_multiarch_manifests() {
             # Both arch tags confirmed PRESENT: create the multi-arch manifest.
             # Target is the scoped version ref (canonical on push, PR-scoped on PR).
             local ver_multiarch
-            ver_multiarch=$(_scoped_tag "$(ext_image_name "$ext" "$ver" "$major_ver")")
+            local _ver_image
+            _ver_image=$(ext_image_name "$ext" "$ver" "$major_ver") || { _ext_failed=true; break; }
+            ver_multiarch=$(_scoped_tag "$_ver_image")
 
             log_info "$ext $ver pg${major_ver}: imagetools create $ver_multiarch from $_ver_tag_amd64 + $_ver_tag_arm64"
             local _create_rc=0
@@ -2332,10 +2347,11 @@ finalize_multiarch_manifests() {
         local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
         mkdir -p "${ROOT_DIR}/.build-lineage"
 
-        local _available_json _excluded_json _resolved_json _version_digests_json
+        local _available_json _excluded_json _resolved_json _version_digests_json _version_digests_repository
         _available_json=$(printf '%s\n' "${_confirmed_available[@]+"${_confirmed_available[@]}"}" | jq -Rsc 'split("\n") | map(select(. != ""))')
         _excluded_json="[$(IFS=,; echo "${_excluded_entries[*]+"${_excluded_entries[*]}"}")]"
         _resolved_json=$(echo "$version_set_json" | jq '.')
+        _version_digests_repository=$(ext_image_repository "$ext") || { _failed=true; continue; }
 
         # Build version_digests JSON object: {"<ver>":"sha256:..."}
         local _vd_args=()
@@ -2362,7 +2378,8 @@ finalize_multiarch_manifests() {
             --argjson available "$_available_json" \
             --argjson excluded "$_excluded_json" \
             --argjson version_digests "$_version_digests_json" \
-            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, version_digests:$version_digests}' \
+            --arg version_digests_repository "$_version_digests_repository" \
+            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, version_digests:$version_digests, version_digests_repository:$version_digests_repository}' \
             > "$_vs_lineage_file"
         log_success "Versionset artifact written: $_vs_lineage_file"
 
@@ -2376,6 +2393,10 @@ finalize_multiarch_manifests() {
 
 main() {
     parse_args "$@"
+
+    # Validate the optional package axis before any prerequisite, registry, or
+    # build action. A malformed suffix must never influence a reference.
+    validate_extension_package_suffix || return 1
 
     validate_prerequisites
 

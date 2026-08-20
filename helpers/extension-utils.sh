@@ -76,16 +76,95 @@ get_registry() {
     echo "${EXTENSION_REGISTRY:-ghcr.io}"
 }
 
+# validate_extension_package_suffix
+#
+# EXTENSION_PACKAGE_SUFFIX selects a separate GHCR package for an extension
+# build. It is deliberately a package-name component, not a tag suffix: a
+# value of -staging sends pg18-1.2.3 to ext-<name>-staging:pg18-1.2.3.
+#
+# An unset variable preserves the canonical production package. A set empty
+# value is rejected so a caller cannot accidentally request staging and fall
+# back to production. The accepted shape is a leading hyphen followed by
+# lowercase OCI repository-name components; it cannot introduce a path, tag,
+# digest, or whitespace separator into the assembled reference.
+validate_extension_package_suffix() {
+    # `${parameter+x}` is available on Bash 4.0; `[[ -v name ]]` is not
+    # available until Bash 4.2.
+    if [[ -z "${EXTENSION_PACKAGE_SUFFIX+x}" ]]; then
+        return 0
+    fi
+
+    local suffix="$EXTENSION_PACKAGE_SUFFIX"
+    if [[ "$suffix" =~ ^-[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+        return 0
+    fi
+
+    log_error "EXTENSION_PACKAGE_SUFFIX must be unset or match ^-[a-z0-9]+([._-][a-z0-9]+)*$"
+    return 1
+}
+
+# ext_package_name <extension>
+#
+# Generate the GHCR package component before any tag or buildcache qualifier.
+ext_package_name() {
+    local ext_name="$1"
+    validate_extension_package_suffix || return 1
+    printf 'ext-%s%s' "$ext_name" "${EXTENSION_PACKAGE_SUFFIX:-}"
+}
+
+# ext_image_repository <extension> [registry] [owner]
+#
+# Generate the repository portion of an extension image reference. Keep the
+# package suffix here so tag and digest consumers cannot accidentally bypass it.
+ext_image_repository() {
+    local ext_name="$1"
+    local registry="${2:-$(get_registry)}"
+    local owner="${3:-$(get_repo_owner)}"
+    local package
+
+    package=$(ext_package_name "$ext_name") || return 1
+    printf '%s/%s/%s' "$registry" "$owner" "$package"
+}
+
+# ext_canonical_image_repository <extension> [registry] [owner]
+#
+# Return the repository that legacy artifacts necessarily describe.  Before the
+# package-suffix axis existed, every digest was observed in this canonical,
+# unsuffixed package.
+ext_canonical_image_repository() {
+    local ext_name="$1"
+    local registry="${2:-$(get_registry)}"
+    local owner="${3:-$(get_repo_owner)}"
+
+    printf '%s/%s/ext-%s' "$registry" "$owner" "$ext_name"
+}
+
+# ext_buildcache_repository <extension> [registry] [owner]
+#
+# Cache is a sibling package of the selected extension package: the package
+# suffix belongs before its existing -buildcache qualifier.
+ext_buildcache_repository() {
+    local ext_name="$1"
+    local registry="${2:-$(get_registry)}"
+    local owner="${3:-$(get_repo_owner)}"
+    local package
+
+    package=$(ext_package_name "$ext_name") || return 1
+    printf '%s/%s/%s-buildcache' "$registry" "$owner" "$package"
+}
+
 # Generate extension image name
-# Format: ghcr.io/<owner>/ext-<name>:pg<version>-<ext_version>
+# Format: ghcr.io/<owner>/ext-<name><package_suffix>:pg<version>-<ext_version>
 ext_image_name() {
     local ext_name="$1"
     local ext_version="$2"
     local pg_major="$3"
     local registry="${4:-$(get_registry)}"
     local owner="${5:-$(get_repo_owner)}"
+    local repository
 
-    echo "${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ext_version}"
+    repository=$(ext_image_repository "$ext_name" "$registry" "$owner") || return 1
+    printf '%s:pg%s-%s' "$repository" "$pg_major" "$ext_version"
 }
 
 # Generate local image name (for building)
@@ -319,7 +398,7 @@ tag_ext_image() {
     local_tag=$(ext_local_image_name "$ext_name" "$pg_major")
 
     local remote_tag
-    remote_tag=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
+    remote_tag=$(ext_image_name "$ext_name" "$ext_version" "$pg_major") || return 1
 
     log_info "Tagging $local_tag -> $remote_tag"
     if ! $DOCKER tag "$local_tag" "$remote_tag"; then
@@ -337,7 +416,7 @@ push_ext_image() {
     local pg_major="$3"
 
     local remote_tag
-    remote_tag=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
+    remote_tag=$(ext_image_name "$ext_name" "$ext_version" "$pg_major") || return 1
 
     log_info "Pushing $remote_tag"
     if ! $DOCKER push "$remote_tag"; then
@@ -500,7 +579,8 @@ _scoped_ext_ref() {
 #   rc 0  → prints the ref to use (canonical or pr-scoped).
 #   rc 1  → neither ref exists definitively (needs build or exclude).
 #           prints nothing.
-#   rc 2  → a probe returned transient ERROR, or the run scope is malformed
+#   rc 2  → a probe returned transient ERROR, the run scope is malformed, or
+#           reference construction failed
 #           → fail closed.
 #           prints nothing.
 #
@@ -551,7 +631,10 @@ ext_ref_resolve() {
 
     # Build canonical base: ext_image_name gives registry/owner/ext-<name>:pg<major>-<ver>
     # Append arch suffix when arch is non-empty.
-    canonical_ref=$(ext_image_name "$ext" "$version" "$major" "$registry" "$owner")
+    if ! canonical_ref=$(ext_image_name "$ext" "$version" "$major" "$registry" "$owner"); then
+        printf 'ERROR [ext_ref_resolve]: failed to construct reference\n' >&2
+        return 2
+    fi
     if [[ -n "$arch" ]]; then
         canonical_ref="${canonical_ref}-${arch}"
     fi
@@ -1071,6 +1154,24 @@ generate_dockerfile() {
                         > /dev/null 2>&1; then
                         _artifact_valid=1
                         printf '%s' "$_artifact_json" | jq -e 'has("version_digests")' > /dev/null 2>&1 && _artifact_has_version_digests=true
+                        # Digest-bearing artifacts record where their index digests
+                        # were observed. A missing identity is legacy provenance:
+                        # it means the canonical unsuffixed package, never the
+                        # package selected by the current caller.
+                        if [[ "$_artifact_has_version_digests" == "true" ]]; then
+                            local _artifact_digest_repository _expected_digest_repository
+                            if printf '%s' "$_artifact_json" | jq -e 'has("version_digests_repository")' > /dev/null 2>&1; then
+                                _artifact_digest_repository=$(printf '%s' "$_artifact_json" | jq -r '.version_digests_repository' 2>/dev/null || true)
+                            else
+                                _artifact_digest_repository=$(ext_canonical_image_repository "$ext_name" "$registry" "$owner") || return 1
+                            fi
+                            _expected_digest_repository=$(ext_image_repository "$ext_name" "$registry" "$owner") || return 1
+                            if [[ "$_artifact_digest_repository" != "$_expected_digest_repository" ]]; then
+                                log_warning "generate_dockerfile: version_digests for $ext_name pg${pg_major} belong to $_artifact_digest_repository, not $_expected_digest_repository — treating artifact as absent, triggering self-heal"
+                                _artifact_valid=0
+                                _artifact_has_version_digests=false
+                            fi
+                        fi
                     fi
                 fi
             fi
@@ -1351,9 +1452,11 @@ generate_dockerfile() {
                                         log_error "generate_dockerfile: version_digests[$_art_ver] for $ext_name pg${pg_major} is absent or malformed ('$(_sanitize_for_log "$(printf '%s' "${_art_digest:-}" | head -c 80)")') — fail closed"
                                         return 1
                                     fi
-                                    _art_ref="${registry}/${owner}/ext-${ext_name}@${_art_digest}"
+                                    local _art_repository
+                                    _art_repository=$(ext_image_repository "$ext_name" "$registry" "$owner") || return 1
+                                    _art_ref="${_art_repository}@${_art_digest}"
                                 else
-                                    _art_ref=$(ext_image_name "$ext_name" "$_art_ver" "$pg_major" "$registry" "$owner")
+                                    _art_ref=$(ext_image_name "$ext_name" "$_art_ver" "$pg_major" "$registry" "$owner") || return 1
                                 fi
                                 _ecs_ver_ref_list+="${_art_ver}	${_art_ref}"$'\n'
                             done <<< "$raw_versions"
@@ -1398,7 +1501,9 @@ generate_dockerfile() {
                     log_error "generate_dockerfile: version_digests[$ext_version] for $ext_name pg${pg_major} is absent or malformed ('$(_sanitize_for_log "$(printf '%s' "${_sv_digest:-}" | head -c 80)")') — fail closed"
                     return 1
                 fi
-                _sv_ref="${registry}/${owner}/ext-${ext_name}@${_sv_digest}"
+                local _sv_repository
+                _sv_repository=$(ext_image_repository "$ext_name" "$registry" "$owner") || return 1
+                _sv_ref="${_sv_repository}@${_sv_digest}"
             elif [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
                 local _sv_rc=0
                 _sv_ref=$(ext_ref_resolve "$ext_name" "$ext_version" "$pg_major" "") || _sv_rc=$?
@@ -1411,8 +1516,9 @@ generate_dockerfile() {
                     return 1
                 fi
             else
-                # Push/dispatch: always emit canonical ref (unchanged from pre-consolidation behavior).
-                _sv_ref="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ext_version}"
+                # Push/dispatch: emit the package selected by the independent
+                # package-suffix axis (canonical when it is unset).
+                _sv_ref=$(ext_image_name "$ext_name" "$ext_version" "$pg_major" "$registry" "$owner") || return 1
             fi
             stages_block+="FROM ${_sv_ref} AS ext-${ext_name}"$'\n'
             copies_block+="COPY --from=ext-${ext_name} /output/extension/ /tmp/ext/${ext_name}/extension/"$'\n'
@@ -1579,7 +1685,7 @@ pull_ext_image() {
     local pg_major="$3"
 
     local remote_tag
-    remote_tag=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
+    remote_tag=$(ext_image_name "$ext_name" "$ext_version" "$pg_major") || return 1
 
     log_info "Pulling $remote_tag"
     if ! $DOCKER pull "$remote_tag"; then
