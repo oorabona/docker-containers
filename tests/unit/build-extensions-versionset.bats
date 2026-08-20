@@ -730,6 +730,10 @@ _count_log_lines() {
     vd_present=$(jq -r 'if has("version_digests") then "yes" else "no" end' "$artifact")
     [ "$vd_present" = "yes" ]
 
+    local digest_repository
+    digest_repository=$(jq -r '.version_digests_repository // empty' "$artifact")
+    [ -n "$digest_repository" ]
+
     # version_digests must contain an entry for EVERY available version.
     local available_count vd_count
     available_count=$(jq '.available | length' "$artifact")
@@ -771,6 +775,13 @@ _count_log_lines() {
     local vd_present
     vd_present=$(jq -r 'if has("version_digests") then "yes" else "no" end' "$artifact")
     [ "$vd_present" = "no" ]
+
+    local digest_repository
+    digest_repository=$(jq -r 'has("version_digests_repository")' "$artifact")
+    [ "$digest_repository" = "false" ] || {
+        echo "FAIL: no-push artifact must not carry version_digests_repository without version_digests"
+        false
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -8661,6 +8672,10 @@ EOCFG
     local vd_2251
     vd_2251=$(jq -r '.version_digests["2.25.0"]' "$artifact" 2>/dev/null || echo "")
     [ "$vd_2251" = "sha256:cafebabe00000000000000000000000000000000000000000000000000000000" ]
+
+    local digest_repository
+    digest_repository=$(jq -r '.version_digests_repository // empty' "$artifact" 2>/dev/null || echo "")
+    [ -n "$digest_repository" ]
 
     # bundle_digest must NOT be present (replaced by version_digests).
     local has_bundle_digest

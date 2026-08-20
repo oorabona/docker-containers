@@ -343,7 +343,7 @@ EOF
     ! grep -q "/tmp/ext/pgvector/0\." <<<"$output"
 }
 
-@test "single-version artifact with digest emits an immutable FROM ref" {
+@test "legacy single-version digest artifact without repository identity remains consumable" {
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-pgvector-pg18-versionset.json" <<'EOF'
 {"ext":"pgvector","pg_major":"18","ceiling":"0.8.2","resolved":["0.8.2"],"available":["0.8.2"],"excluded":[],"version_digests":{"0.8.2":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 EOF
@@ -357,6 +357,47 @@ EOF
     [ "$status" -eq 0 ]
     echo "$output" | grep -Fxq "FROM ghcr.io/testowner/ext-pgvector@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa AS ext-pgvector" || {
         echo "FAIL: valid declared version_digests must emit immutable FROM ref"
+        false
+    }
+}
+
+@test "digest artifact for another package is ignored and self-heals" {
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"version_digests":{"2.25.0":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","2.27.1":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"version_digests_repository":"ghcr.io/testowner/ext-timescaledb-staging"}
+EOF
+    local probe_marker="$TEST_TEMP_DIR/self-heal-probes"
+    export probe_marker
+
+    resolve_version_set() {
+        echo '["2.25.0","2.27.1"]'
+    }
+    image_exists_in_registry() {
+        printf '%s\n' "$1" >> "$probe_marker"
+        return 0
+    }
+    export -f resolve_version_set image_exists_in_registry
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+    [ -s "$probe_marker" ] || {
+        echo "FAIL: mismatched digest package must trigger resolver/probe self-heal"
+        false
+    }
+    [[ "$output" == *"belong to ghcr.io/testowner/ext-timescaledb-staging, not ghcr.io/testowner/ext-timescaledb"* ]] || {
+        echo "FAIL: mismatched digest package must be refused with both identities"
+        false
+    }
+    ! grep -Fq '@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' <<<"$output" || {
+        echo "FAIL: mismatched digest package must not be emitted"
+        false
+    }
+    grep -Fxq 'COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/ /2.25.0/' <<<"$output" || {
+        echo "FAIL: self-heal must emit the current package tag"
         false
     }
 }
@@ -2644,6 +2685,57 @@ _write_versionset_with_malformed_ver_digest() {
     local pinned_count
     pinned_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:[^[:space:]]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$pinned_count" -eq 2 ]
+}
+
+@test "legacy digest artifact remains canonical when package suffix is unset" {
+    # This fixture deliberately has no version_digests_repository: artifacts
+    # written before the identity field always refer to the canonical package.
+    _write_versionset_with_digests "timescaledb" "18" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -Fxq "COPY --from=ghcr.io/testowner/ext-timescaledb@sha256:0000000000000000000000000000000000000000000000000000000000000001 /output/ /2.25.0/" || {
+        echo "FAIL: legacy digest artifact must remain consumable by the canonical package"
+        false
+    }
+}
+
+@test "legacy digest artifact with package suffix self-heals instead of pairing staging with canonical digest" {
+    _write_versionset_with_digests "timescaledb" "18" "2.25.0" "2.27.1"
+    export EXTENSION_PACKAGE_SUFFIX="-staging"
+    resolve_version_set() { echo '["2.25.0","2.27.1"]'; }
+    _image_registry_probe_3state() { return 0; }
+    export -f resolve_version_set _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    unset EXTENSION_PACKAGE_SUFFIX
+
+    [ "$status" -eq 0 ] || {
+        echo "FAIL: legacy digest artifact under a package suffix must enter self-heal"
+        false
+    }
+    [[ "$output" == *"treating artifact as absent, triggering self-heal"* ]] || {
+        echo "FAIL: legacy digest artifact under a package suffix must be refused into self-heal"
+        false
+    }
+    ! grep -q "ext-timescaledb-staging@sha256:" <<<"$output" || {
+        echo "FAIL: staging repository must never be paired with a canonical legacy digest"
+        false
+    }
+    echo "$output" | grep -Fxq "COPY --from=ghcr.io/testowner/ext-timescaledb-staging:pg18-2.25.0 /output/ /2.25.0/" || {
+        echo "FAIL: self-heal must resolve the staging repository by tag"
+        false
+    }
 }
 
 @test "no version_digests in artifact → tag-based refs in collector" {
