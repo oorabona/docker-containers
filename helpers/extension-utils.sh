@@ -1050,9 +1050,29 @@ generate_dockerfile() {
             # available:[] is necessarily stale → route to self-heal just like a
             # missing or truncated artifact.
             local _artifact_valid=0
-            if [[ -f "$versionset_file" ]] && command -v jq &>/dev/null; then
-                jq -e 'type == "object" and has("available") and (.available | type) == "array" and (.available | length) > 0' \
-                    "$versionset_file" > /dev/null 2>&1 && _artifact_valid=1
+            local _artifact_json=""
+            local _artifact_has_version_digests=false
+            if [[ -f "$versionset_file" ]]; then
+                # mapfile is a Bash builtin.  Unlike an assignment containing only
+                # a redirection, its failed file-open status is preserved when
+                # generate_dockerfile itself is invoked from an if condition.
+                local -a _artifact_lines=()
+                if ! mapfile -d '' _artifact_lines < "$versionset_file"; then
+                    log_error "generate_dockerfile: cannot read versionset artifact: $versionset_file"
+                    return 1
+                fi
+                _artifact_json="${_artifact_lines[0]-}"
+
+                if command -v jq &>/dev/null; then
+                    # Only a valid artifact may declare digest data for consumption.
+                    # A malformed artifact follows the existing self-heal/fallback path
+                    # and never supplies a digest through a fallback expression.
+                    if printf '%s' "$_artifact_json" | jq -e 'type == "object" and has("available") and (.available | type) == "array" and (.available | length) > 0' \
+                        > /dev/null 2>&1; then
+                        _artifact_valid=1
+                        printf '%s' "$_artifact_json" | jq -e 'has("version_digests")' > /dev/null 2>&1 && _artifact_has_version_digests=true
+                    fi
+                fi
             fi
 
             # _versionset_json holds the JSON source for the multi-version emission
@@ -1068,8 +1088,8 @@ generate_dockerfile() {
             local _versionset_json=""
             local _versionset_from_selfheal=false
 
-            if [[ -n "$_resolver_path" ]] && { [[ ! -f "$versionset_file" ]] || [[ "$_artifact_valid" -eq 0 ]]; }; then
-                if [[ "$_artifact_valid" -eq 0 ]] && [[ -f "$versionset_file" ]]; then
+            if [[ -n "$_resolver_path" ]] && [[ "$_artifact_valid" -eq 0 ]]; then
+                if [[ -n "$_artifact_json" ]]; then
                     log_error "generate_dockerfile: versionset artifact for $ext_name pg${pg_major} is malformed, missing .available array, or has empty available[] — treating as absent, triggering self-heal"
                 fi
                 # skopeo is required by the LIVE resolver path (skopeo list-tags docker.io).
@@ -1186,8 +1206,20 @@ generate_dockerfile() {
                 # Mark that this came from the self-heal path so the downstream
                 # emission block uses tag-based refs (no digest map available).
                 _versionset_from_selfheal=true
-            elif [[ -f "$versionset_file" ]] && [[ "$_artifact_valid" -eq 1 ]] && command -v jq &>/dev/null; then
-                _versionset_json=$(< "$versionset_file")
+            elif [[ "$_artifact_valid" -eq 1 ]] && command -v jq &>/dev/null; then
+                _versionset_json="$_artifact_json"
+            fi
+
+            # A legacy pushed artifact has the old bundle digest but no per-version
+            # digest map. Tag fallback is safe only for an artifact that was never
+            # pushed: the producer omits version_digests exactly for that case.
+            if [[ "$_artifact_valid" -eq 1 ]] && [[ "$_artifact_has_version_digests" == "false" ]]; then
+                local _legacy_bundle_digest
+                _legacy_bundle_digest=$(printf '%s' "$_artifact_json" | jq -r 'if has("bundle_digest") then "yes" else "no" end' 2>/dev/null || echo "no")
+                if [[ "$_legacy_bundle_digest" == "yes" ]]; then
+                    log_error "generate_dockerfile: $ext_name pg${pg_major} artifact has bundle_digest but no version_digests — this is a legacy pre-collector artifact; rebuild under the new schema to restore digest-pinned refs"
+                    return 1
+                fi
             fi
 
             if [[ -n "$_versionset_json" ]] && command -v jq &>/dev/null; then
@@ -1304,49 +1336,26 @@ generate_dockerfile() {
                                 _ecs_ver_ref_list+="${_sh_mv}	${_sh_mv_ref}"$'\n'
                             done <<< "$raw_versions"
                         else
-                            # Artifact-present path: use version_digests for digest-pinned refs.
-                            local _vd_field_present
-                            _vd_field_present=$(echo "$_versionset_json" | jq -r 'if has("version_digests") then "yes" else "no" end' 2>/dev/null || echo "no")
-
-                            # Guard: a legacy pushed artifact carries bundle_digest but no
-                            # version_digests.  Silently falling back to mutable tag refs for
-                            # such an artifact would regress the digest-pinned guarantee.
-                            # Fail closed so the operator rebuilds under the new schema.
-                            # The tag-fallback path is valid ONLY when neither key is present
-                            # (genuine local/no-push build — producer invariant).
-                            if [[ "$_vd_field_present" == "no" ]]; then
-                                local _bd_field_present
-                                _bd_field_present=$(echo "$_versionset_json" | jq -r 'if has("bundle_digest") then "yes" else "no" end' 2>/dev/null || echo "no")
-                                if [[ "$_bd_field_present" == "yes" ]]; then
-                                    log_error "generate_dockerfile: $ext_name pg${pg_major} artifact has bundle_digest but no version_digests — this is a legacy pre-collector artifact; rebuild under the new schema to restore digest-pinned refs"
-                                    return 1
-                                fi
-                            fi
-
+                            # Artifact-present path: the digest lookup is additive. It is
+                            # reached only for a valid artifact that declares
+                            # version_digests; tag-only artifacts retain the established
+                            # tag construction.
                             local _art_ver
                             while IFS= read -r _art_ver; do
                                 [[ -z "$_art_ver" ]] && continue
-                                if [[ "$_vd_field_present" == "yes" ]]; then
-                                    # Artifact has version_digests: require a valid digest per version.
+                                local _art_ref
+                                if [[ "$_artifact_has_version_digests" == "true" ]]; then
                                     local _art_digest
-                                    _art_digest=$(echo "$_versionset_json" | jq -r --arg v "$_art_ver" '.version_digests[$v] // empty' 2>/dev/null || true)
+                                    _art_digest=$(printf '%s' "$_artifact_json" | jq -r --arg v "$_art_ver" '.version_digests[$v] // empty' 2>/dev/null || true)
                                     if ! is_valid_oci_digest "$_art_digest"; then
                                         log_error "generate_dockerfile: version_digests[$_art_ver] for $ext_name pg${pg_major} is absent or malformed ('$(_sanitize_for_log "$(printf '%s' "${_art_digest:-}" | head -c 80)")') — fail closed"
                                         return 1
                                     fi
-                                    _ecs_ver_ref_list+="${_art_ver}	${registry}/${owner}/ext-${ext_name}@${_art_digest}"$'\n'
+                                    _art_ref="${registry}/${owner}/ext-${ext_name}@${_art_digest}"
                                 else
-                                    # Artifact lacks version_digests (LOCAL_ONLY / no-push build path):
-                                    # construct a tag-based ref using the caller's explicit registry/owner
-                                    # so the ref targets the correct repo even when the caller passed
-                                    # registry/owner overrides.
-                                    # This tag-fallback is correct ONLY for the not-pushed (local) case;
-                                    # a pushed artifact always has version_digests (producer invariant:
-                                    # version_digests absent ⟺ artifact was not pushed).
-                                    local _art_plain_ref
-                                    _art_plain_ref=$(ext_image_name "$ext_name" "$_art_ver" "$pg_major" "$registry" "$owner")
-                                    _ecs_ver_ref_list+="${_art_ver}	${_art_plain_ref}"$'\n'
+                                    _art_ref=$(ext_image_name "$ext_name" "$_art_ver" "$pg_major" "$registry" "$owner")
                                 fi
+                                _ecs_ver_ref_list+="${_art_ver}	${_art_ref}"$'\n'
                             done <<< "$raw_versions"
                         fi
 
@@ -1373,14 +1382,24 @@ generate_dockerfile() {
                 fi
             fi
 
-            # Single-version path (no versionset artifact, or jq unavailable):
+            # Single-version path (no multi-version collector needed):
+            # only a valid artifact that declares version_digests adds immutable
+            # consumption. All other cases retain the established tag resolution.
             # Route through ext_ref_resolve when in PR context (PR_TAG_SUFFIX set):
             #   canonical-first reuse (unchanged version) or PR-scoped (built this PR).
             #   rc 2 → fail closed; rc 1 → ceiling absent on both → fail closed.
             # On push/dispatch (PR_TAG_SUFFIX empty):
             #   emit canonical ref directly — no probe (image availability checked at docker build time).
             local _sv_ref
-            if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+            if [[ "$_artifact_valid" -eq 1 ]] && [[ "$_artifact_has_version_digests" == "true" ]]; then
+                local _sv_digest
+                _sv_digest=$(printf '%s' "$_artifact_json" | jq -r --arg v "$ext_version" '.version_digests[$v] // empty' 2>/dev/null || true)
+                if ! is_valid_oci_digest "$_sv_digest"; then
+                    log_error "generate_dockerfile: version_digests[$ext_version] for $ext_name pg${pg_major} is absent or malformed ('$(_sanitize_for_log "$(printf '%s' "${_sv_digest:-}" | head -c 80)")') — fail closed"
+                    return 1
+                fi
+                _sv_ref="${registry}/${owner}/ext-${ext_name}@${_sv_digest}"
+            elif [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
                 local _sv_rc=0
                 _sv_ref=$(ext_ref_resolve "$ext_name" "$ext_version" "$pg_major" "") || _sv_rc=$?
                 if [[ "$_sv_rc" -eq 2 ]]; then

@@ -97,6 +97,8 @@ build_ext_image() {
     local rust_version="${EXT_RUST_VERSION:-}"
     local _rust_args=()
     [[ -n "$rust_version" ]] && _rust_args=(--build-arg "RUST_VERSION=$rust_version")
+    local _no_cache_args=()
+    [[ "${NO_CACHE:-false}" == "true" ]] && _no_cache_args=(--no-cache)
 
     local local_tag
     local_tag=$(ext_local_image_name "$ext_name" "$pg_major")
@@ -162,21 +164,25 @@ build_ext_image() {
         # canonical cache still build normally. --cache-to writes when we have
         # GHCR write access (_do_push_ext=true);
         # omitting --cache-to on LOCAL_ONLY/NO_PUSH paths avoids attempting writes
-        # to a registry we cannot authenticate to in that context.
+        # to a registry we cannot authenticate to in that context. --no-cache
+        # disables layer-result reuse and omits external registry cache imports and exports.
         # The cache export must not be able to fail the build: a cache-to write
         # error (registry/auth/network) would otherwise surface as a non-zero
         # buildx exit and be misread as a compile/musl failure, silently dropping
         # a retained non-ceiling version. ignore-error=true makes the export
         # best-effort so only a genuine compile failure returns non-zero here;
         # real infra failures are caught by the separate push step (rc=2, fatal).
-        local _canonical_cache_ref
-        _canonical_cache_ref="ghcr.io/${_cache_owner}/ext-${ext_name}-buildcache:pg${pg_major}-${ARCH_SUFFIX:-local}"
-        local _cache_flags=("--cache-from" "type=registry,ref=${_canonical_cache_ref}")
-        if [[ "$_cache_ref" != "$_canonical_cache_ref" ]]; then
-            _cache_flags+=("--cache-from" "type=registry,ref=${_cache_ref}")
-        fi
-        if [[ "$_do_push_ext" == "true" ]]; then
-            _cache_flags+=("--cache-to" "type=registry,ref=${_cache_ref},mode=max,ignore-error=true")
+        local _cache_flags=()
+        if [[ "${NO_CACHE:-false}" != "true" ]]; then
+            local _canonical_cache_ref
+            _canonical_cache_ref="ghcr.io/${_cache_owner}/ext-${ext_name}-buildcache:pg${pg_major}-${ARCH_SUFFIX:-local}"
+            _cache_flags=("--cache-from" "type=registry,ref=${_canonical_cache_ref}")
+            if [[ "$_cache_ref" != "$_canonical_cache_ref" ]]; then
+                _cache_flags+=("--cache-from" "type=registry,ref=${_cache_ref}")
+            fi
+            if [[ "$_do_push_ext" == "true" ]]; then
+                _cache_flags+=("--cache-to" "type=registry,ref=${_cache_ref},mode=max,ignore-error=true")
+            fi
         fi
 
         if ! $DOCKER buildx build \
@@ -184,6 +190,7 @@ build_ext_image() {
             -f "$dockerfile" \
             -t "$_ver_tag" \
             --load \
+            "${_no_cache_args[@]}" \
             "${_cache_flags[@]}" \
             --build-arg REMOTE_CR="${REMOTE_CR}" \
             --build-arg MAJOR_VERSION="$pg_major" \
@@ -215,6 +222,7 @@ build_ext_image() {
     if ! $DOCKER build \
         -f "$dockerfile" \
         -t "$local_tag" \
+        "${_no_cache_args[@]}" \
         --build-arg REMOTE_CR="${REMOTE_CR}" \
         --build-arg MAJOR_VERSION="$pg_major" \
         --build-arg EXT_VERSION="$ext_version" \
@@ -238,6 +246,7 @@ LOCAL_ONLY=false
 PULL_ONLY=false
 DRY_RUN=false
 FINALIZE_MULTIARCH=false
+NO_CACHE="${DOCKER_NO_CACHE:-false}"
 
 usage() {
     cat <<EOF
@@ -256,6 +265,7 @@ Options:
   --force                Rebuild even if image already exists
   --list                 List extension status without building
   --local-only           Build locally without pushing to registry
+  --no-cache             Disable layer-result reuse and external registry cache imports and exports
   --pull-only            Pull images from registry (no build, no push)
   --dry-run              Show what would be done without executing
   --finalize-multiarch   Merge per-arch suffixed images into multi-arch manifests
@@ -300,6 +310,10 @@ parse_args() {
                 ;;
             --local-only)
                 LOCAL_ONLY=true
+                shift
+                ;;
+            --no-cache)
+                NO_CACHE=true
                 shift
                 ;;
             --dry-run)
@@ -434,6 +448,9 @@ build_extension() {
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "[DRY-RUN] Would build $ext_name $ext_version for $CONTAINER v$major_ver (REMOTE_CR=${REMOTE_CR})"
         log_info "[DRY-RUN]   --build-arg REMOTE_CR=${REMOTE_CR} --build-arg MAJOR_VERSION=$major_ver"
+        if [[ "${NO_CACHE:-false}" == "true" ]]; then
+            log_info "[DRY-RUN]   --no-cache (disables layer-result reuse and external registry cache imports and exports)"
+        fi
         return 0
     fi
 
