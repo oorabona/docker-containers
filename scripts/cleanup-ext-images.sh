@@ -21,6 +21,9 @@
 #   - If the window computation is empty/uncertain/errors for (ext, pg_major),
 #     tags for that major are treated as KEEP — never delete when the keep-set is unknown.
 #   - Every decision (keep / prune / skip) is logged.
+#   - Deletion is authorised by the most recent successful re-read of that exact
+#     record. Nothing prevents a writer outside this workflow from changing it
+#     between that re-read and DELETE.
 #
 # Required env vars: GH_TOKEN, OWNER
 # Optional env vars:
@@ -72,6 +75,16 @@ Environment:
   OWNER     (required)  GitHub owner/org (e.g. oorabona)
   EXT_CONFIG            Path to postgres/extensions/config.yaml
   PG_VERSIONS           Space-separated additional PG major versions
+
+Deletion guarantee:
+  Deletion is authorised by the most recent successful re-read of that exact
+  record. Nothing prevents a writer outside this workflow from changing it
+  between that re-read and DELETE.
+
+Exit status:
+  Returns non-zero if the invocation fails or if any record or coverage could
+  not be assessed completely, in both dry-run and execute modes. A non-zero
+  dry-run may therefore have made no deletions but is an incomplete audit.
 EOF
 }
 
@@ -125,13 +138,86 @@ _delete_ghcr_ext_version() {
     fi
 }
 
+# Re-read one GHCR package version record by the same id used by DELETE.  A
+# listing is only a snapshot: a publisher may attach a retained tag after the
+# listing and before a destructive request is made.
+_get_ghcr_ext_version_record() {
+    local package_name="$1"   # e.g. ext-timescaledb
+    local version_id="$2"
+    local owner="${OWNER:?OWNER is required}"
+
+    gh api \
+        -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "/users/${owner}/packages/container/${package_name}/versions/${version_id}" 2>/dev/null \
+        | jq -ce --arg expected_version_id "$version_id" '
+          def record_tags:
+            (.metadata.container.tags // [])
+            | if type == "array" and all(.[]; type == "string") then .
+              else error("GHCR version record tags must be an array of strings")
+              end;
+          {
+            version_id: (if .id == null then error("GHCR version record has no id")
+                         elif (.id | tostring) != $expected_version_id then error("GHCR version record id does not match requested version id")
+                         else (.id | tostring)
+                         end),
+            tags: record_tags
+          }
+        '
+}
+
 # Check whether a version string is present in a JSON array of versions.
-# Returns 0 if in window, 1 if not.
+# Returns 0 if in window, 1 if definitely not, and 2 if membership could not
+# be computed.  Only the definite-not result may contribute to a deletion.
 _version_in_window() {
     local version="$1"
     local window_json="$2"
+    local jq_status
 
-    jq -e --arg v "$version" 'any(. == $v)' <<< "$window_json" >/dev/null 2>&1
+    if jq -e --arg v "$version" 'any(. == $v)' <<< "$window_json" >/dev/null 2>&1; then
+        return 0
+    else
+        jq_status=$?
+    fi
+    [[ "$jq_status" -eq 1 ]] && return 1
+    return 2
+}
+
+# Validate and normalize a resolver retention window.  The output variables are
+# set in the caller's dynamic scope.  Return 0 for valid, 1 for structurally
+# invalid, and 2 when validation itself could not be computed.
+_retention_window_is_valid() {
+    local window_json="$1"
+    local validation_result
+
+    validated_window_json=""
+    validated_window_count=""
+    validated_window_display=""
+
+    if ! validation_result=$(jq -cr '
+      if type == "array" and length > 0
+         and all(.[]; type == "string" and test("^[0-9]+([.][0-9]+)*$"))
+      then { valid: true, window: ., count: length, display: join(", ") }
+      else { valid: false }
+      end
+    ' <<< "$window_json"); then
+        return 2
+    fi
+
+    local window_is_valid
+    if ! window_is_valid=$(jq -r '.valid' <<< "$validation_result"); then
+        return 2
+    fi
+    [[ "$window_is_valid" == "true" ]] || return 1
+    if ! validated_window_json=$(jq -ce '.window' <<< "$validation_result"); then
+        return 2
+    fi
+    if ! validated_window_count=$(jq -er '.count' <<< "$validation_result"); then
+        return 2
+    fi
+    if ! validated_window_display=$(jq -er '.display' <<< "$validation_result"); then
+        return 2
+    fi
 }
 
 # Parse a managed extension tag.
@@ -191,6 +277,89 @@ _list_version_record_tags() {
           error("tag cannot be transported safely")
         end
     ' <<< "$record_json"
+}
+
+# Return 0 only when every tag on a record is managed and outside its known
+# retention window; return 1 for a definite keep, and 2 when classification
+# could not be computed. The two output variables are intentionally set in the
+# caller's dynamic scope so the log always names the exact tags assessed.
+_record_is_prunable() {
+    local record_json="$1"
+    local tag_count
+    local tags_file
+    local tag
+    local membership_status
+
+    record_tags_csv="(tag enumeration unavailable)"
+    record_keep_reason=""
+    if ! tag_count=$(jq -er '(.tags // []) | if type == "array" then length else error("record tags must be an array") end' <<< "$record_json"); then
+        record_keep_reason="tag count unknown; keeping record fail-closed"
+        return 2
+    fi
+    if [[ ! "$tag_count" =~ ^[0-9]+$ ]]; then
+        record_keep_reason="tag count unknown; keeping record fail-closed"
+        return 2
+    fi
+
+    if [[ "$tag_count" -eq 0 ]]; then
+        if ! record_tags_csv=$(_version_record_tags_csv "$record_json"); then
+            record_keep_reason="tag enumeration unknown; keeping record fail-closed"
+            return 2
+        fi
+        record_keep_reason="no tags on version record; fail-closed"
+        return 1
+    fi
+
+    if ! tags_file=$(mktemp "${TMPDIR:-/tmp}/cleanup-ext-images-record-tags.XXXXXX"); then
+        record_keep_reason="tag enumeration unavailable; keeping record fail-closed"
+        return 2
+    fi
+    if ! collect_lines "$tags_file" -- _list_version_record_tags "$record_json"; then
+        rm -f "$tags_file" || true
+        record_keep_reason="tag enumeration unknown; keeping record fail-closed"
+        return 2
+    fi
+
+    if ! record_tags_csv=$(_version_record_tags_csv "$record_json"); then
+        rm -f "$tags_file" || true
+        record_keep_reason="tag enumeration unknown; keeping record fail-closed"
+        return 2
+    fi
+    while IFS= read -r tag; do
+        local parsed
+        local tag_major
+        local tag_version
+        if ! parsed=$(_parse_ext_managed_tag "$tag"); then
+            rm -f "$tags_file" || true
+            printf -v record_keep_reason 'contains unmanaged/unparseable tag: %q' "$tag"
+            return 1
+        fi
+
+        IFS='|' read -r tag_major tag_version <<< "$parsed"
+        if [[ "${window_known_by_major[$tag_major]:-false}" != "true" ]]; then
+            rm -f "$tags_file" || true
+            record_keep_reason="window unknown for pg${tag_major}: ${tag}"
+            return 1
+        fi
+
+        if _version_in_window "$tag_version" "${window_by_major[$tag_major]}"; then
+            rm -f "$tags_file" || true
+            record_keep_reason="contains retained tag: ${tag}"
+            return 1
+        else
+            membership_status=$?
+        fi
+        if [[ "$membership_status" -eq 2 ]]; then
+            rm -f "$tags_file" || true
+            record_keep_reason="retention membership unknown for ${tag}; keeping record fail-closed"
+            return 2
+        fi
+    done < "$tags_file"
+    if ! rm -f "$tags_file"; then
+        record_keep_reason="tag enumeration cleanup failed; keeping record fail-closed"
+        return 2
+    fi
+    return 0
 }
 
 # ── Main entry point ─────────────────────────────────────────────────────────
@@ -285,6 +454,8 @@ main() {
     local total_delete_failures=0
     local total_skipped_pairs=0
     local total_listing_failures=0
+    local total_reread_failures=0
+    local total_analysis_failures=0
 
     if [[ "$dry_run" == "true" ]]; then
         log_warning "DRY-RUN MODE — no version records will be deleted (pass --execute to delete)"
@@ -373,23 +544,29 @@ main() {
                 continue
             fi
 
-            local window_count
-            window_count=$(jq 'if type=="array" and length>0 then length else 0 end' <<< "$window_json" 2>/dev/null || echo "0")
-            if [[ "${window_count}" -le 0 ]]; then
-                log_warning "  Resolver returned empty/non-array for ${ext_name}/pg${pg_major} — SKIPPING (fail-closed)"
+            local window_validation_status
+            if _retention_window_is_valid "$window_json"; then
+                window_json="$validated_window_json"
+                window_by_major[$pg_major]="$window_json"
+                window_known_by_major[$pg_major]="true"
+                log_info "    Retention window (${validated_window_count} versions): ${validated_window_display}"
+            else
+                window_validation_status=$?
+                if [[ "$window_validation_status" -eq 1 ]]; then
+                    log_warning "  Resolver returned invalid window for ${ext_name}/pg${pg_major} — SKIPPING (fail-closed)"
+                else
+                    log_warning "  Resolver window validation failed for ${ext_name}/pg${pg_major} — SKIPPING (fail-closed)"
+                fi
                 total_skipped_pairs=$((total_skipped_pairs + 1))
                 continue
             fi
-
-            window_json=$(jq -c '.' <<< "$window_json")
-            window_by_major[$pg_major]="$window_json"
-            window_known_by_major[$pg_major]="true"
-            log_info "    Retention window (${window_count} versions): $(jq -r 'join(", ")' <<< "$window_json")"
         done
 
         local kept_count=0
         local pruned_count=0
         local delete_failures=0
+        local reread_failures=0
+        local analysis_failures=0
         local record_json
         local records_file
 
@@ -410,68 +587,49 @@ main() {
             [[ -n "$record_json" ]] || continue
 
             local version_id
-            local tags_csv
-            local tag_count
             version_id=$(jq -r '.version_id' <<< "$record_json")
-            tags_csv="(tag enumeration unavailable)"
-            tag_count=$(jq '(.tags // []) | length' <<< "$record_json")
+            local record_tags_csv
+            local record_keep_reason
 
-            local should_delete="true"
-            local keep_reason=""
-
-            if [[ "$tag_count" -eq 0 ]]; then
-                should_delete="false"
-                keep_reason="no tags on version record; fail-closed"
-            fi
-
-            local tags_file
-            tags_file=$(mktemp "${TMPDIR:-/tmp}/cleanup-ext-images-record-tags.XXXXXX") || return 1
-            if ! collect_lines "$tags_file" -- _list_version_record_tags "$record_json"; then
-                should_delete="false"
-                keep_reason="tag enumeration unknown; keeping record fail-closed"
-            else
-                tags_csv=$(_version_record_tags_csv "$record_json")
-                local tag
-                while [[ "$should_delete" == "true" ]] && IFS= read -r tag; do
-                    local parsed
-                    local tag_major
-                    local tag_version
-                    if ! parsed=$(_parse_ext_managed_tag "$tag"); then
-                        should_delete="false"
-                        printf -v keep_reason 'contains unmanaged/unparseable tag: %q' "$tag"
-                        break
-                    fi
-
-                    IFS='|' read -r tag_major tag_version <<< "$parsed"
-                    if [[ "${window_known_by_major[$tag_major]:-false}" != "true" ]]; then
-                        should_delete="false"
-                        keep_reason="window unknown for pg${tag_major}: ${tag}"
-                        break
-                    fi
-
-                    if _version_in_window "$tag_version" "${window_by_major[$tag_major]}"; then
-                        should_delete="false"
-                        keep_reason="contains retained tag: ${tag}"
-                        break
-                    fi
-                done < "$tags_file"
-            fi
-            rm -f "$tags_file"
-
-            if [[ "$should_delete" == "true" ]]; then
-                log_warning "    ✗ PRUNE version_id=${version_id} (tags: ${tags_csv}) — all managed tags outside window"
+            local record_classification_status
+            if _record_is_prunable "$record_json"; then
                 if [[ "$dry_run" == "true" ]]; then
-                    log_info "      [DRY-RUN] Would delete ${package_name} version_id=${version_id} (tags: ${tags_csv})"
+                    log_warning "    ✗ PRUNE version_id=${version_id} (tags: ${record_tags_csv}) — all managed tags outside window"
+                    log_info "      [DRY-RUN] Would delete ${package_name} version_id=${version_id} (tags: ${record_tags_csv})"
                     pruned_count=$((pruned_count + 1))
                 else
-                    if _delete_ghcr_ext_version "$package_name" "$version_id" "$tags_csv"; then
-                        pruned_count=$((pruned_count + 1))
+                    local current_record_json
+                    log_info "    Candidate version_id=${version_id} (tags: ${record_tags_csv}) — re-reading before delete"
+                    if ! current_record_json=$(_get_ghcr_ext_version_record "$package_name" "$version_id"); then
+                        log_warning "    ✓ KEEP  version_id=${version_id} (tags: ${record_tags_csv}) — re-read before deletion failed; keeping record fail-closed"
+                        kept_count=$((kept_count + 1))
+                        reread_failures=$((reread_failures + 1))
+                    elif _record_is_prunable "$current_record_json"; then
+                        log_warning "    ✗ PRUNE version_id=${version_id} (tags: ${record_tags_csv}) — all managed tags outside window"
+                        if _delete_ghcr_ext_version "$package_name" "$version_id" "$record_tags_csv"; then
+                            pruned_count=$((pruned_count + 1))
+                        else
+                            delete_failures=$((delete_failures + 1))
+                        fi
                     else
-                        delete_failures=$((delete_failures + 1))
+                        record_classification_status=$?
+                        if [[ "$record_classification_status" -eq 2 ]]; then
+                            log_warning "    ✓ KEEP  version_id=${version_id} (tags: ${record_tags_csv}) — re-read before deletion inconclusive: ${record_keep_reason}"
+                            analysis_failures=$((analysis_failures + 1))
+                        else
+                            log_info "    ✓ KEEP  version_id=${version_id} (tags: ${record_tags_csv}) — re-read before deletion: ${record_keep_reason}"
+                        fi
+                        kept_count=$((kept_count + 1))
                     fi
                 fi
             else
-                log_info "    ✓ KEEP  version_id=${version_id} (tags: ${tags_csv}) — ${keep_reason}"
+                record_classification_status=$?
+                if [[ "$record_classification_status" -eq 2 ]]; then
+                    log_warning "    ✓ KEEP  version_id=${version_id} (tags: ${record_tags_csv}) — analysis inconclusive: ${record_keep_reason}"
+                    analysis_failures=$((analysis_failures + 1))
+                else
+                    log_info "    ✓ KEEP  version_id=${version_id} (tags: ${record_tags_csv}) — ${record_keep_reason}"
+                fi
                 kept_count=$((kept_count + 1))
             fi
         done < "$records_file"
@@ -481,6 +639,8 @@ main() {
         total_kept=$((total_kept + kept_count))
         total_pruned=$((total_pruned + pruned_count))
         total_delete_failures=$((total_delete_failures + delete_failures))
+        total_reread_failures=$((total_reread_failures + reread_failures))
+        total_analysis_failures=$((total_analysis_failures + analysis_failures))
     done
 
     echo ""
@@ -492,6 +652,8 @@ main() {
     echo "  Delete failures: ${total_delete_failures}"
     echo "  (ext,major) pairs skipped (uncertain window): ${total_skipped_pairs}"
     echo "  Extensions skipped (listing failed): ${total_listing_failures}"
+    echo "  Candidate records kept (re-read failed): ${total_reread_failures}"
+    echo "  Candidate records kept (analysis inconclusive): ${total_analysis_failures}"
     if [[ "$dry_run" == "true" ]]; then
         echo "  Mode: DRY-RUN (no deletions performed)"
     else
@@ -499,7 +661,7 @@ main() {
     fi
     echo "========================================"
 
-    if [[ "$dry_run" != "true" && "$total_delete_failures" -gt 0 ]]; then
+    if [[ "$total_delete_failures" -gt 0 || "$total_skipped_pairs" -gt 0 || "$total_listing_failures" -gt 0 || "$total_reread_failures" -gt 0 || "$total_analysis_failures" -gt 0 ]]; then
         return 1
     fi
 }

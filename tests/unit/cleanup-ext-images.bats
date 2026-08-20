@@ -64,6 +64,8 @@ _run_cleanup_main_with_records() {
         CLEANUP_DELETE_MODE="$delete_mode" \
         CLEANUP_DELETE_CALLS_FILE="$delete_calls_file" \
         CLEANUP_LIST_MODE="$list_mode" \
+        CLEANUP_REREAD_RECORDS_FILE="${CLEANUP_REREAD_RECORDS_FILE:-$records_file}" \
+        CLEANUP_REREAD_MODE="${CLEANUP_REREAD_MODE:-success}" \
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-ext-images.sh"
@@ -76,15 +78,47 @@ _run_cleanup_main_with_records() {
                 [[ -f "$window_file" ]] || return 1
                 cat "$window_file"
             }
-            gh() {
-                if [[ "$*" == *"--method DELETE"* ]]; then
+            jq() {
+                if [[ "${CLEANUP_JQ_MODE:-}" == "membership-fail" ]]; then
+                    local previous_arg=""
                     local arg
-                    local last_arg=""
                     for arg in "$@"; do
-                        last_arg="$arg"
+                        if [[ "$previous_arg" == "--arg" && "$arg" == "v" ]]; then
+                            return 2
+                        fi
+                        previous_arg="$arg"
                     done
+                fi
+                command jq "$@"
+            }
+            mktemp() {
+                if [[ "${CLEANUP_MKTEMP_MODE:-}" == "record-tags-fail" && "$*" == *"cleanup-ext-images-record-tags."* ]]; then
+                    return 1
+                fi
+                command mktemp "$@"
+            }
+            gh() {
+                local arg
+                local last_arg=""
+                for arg in "$@"; do
+                    last_arg="$arg"
+                done
+
+                if [[ "$*" == *"--method DELETE"* ]]; then
                     printf "DELETE:%s\n" "${last_arg##*/}" >> "$CLEANUP_DELETE_CALLS_FILE"
                     [[ "$CLEANUP_DELETE_MODE" != "fail" ]]
+                    return
+                fi
+
+                if [[ "$last_arg" == */versions/* ]]; then
+                    [[ "$CLEANUP_REREAD_MODE" != "fail" ]] || return 1
+                    if [[ "$CLEANUP_REREAD_MODE" == "mismatched-id" ]]; then
+                        jq -ce '.[0]' "$CLEANUP_REREAD_RECORDS_FILE"
+                        return
+                    fi
+                    jq -ce --arg version_id "${last_arg##*/}" \
+                        ".[] | select((.id | tostring) == \$version_id)" \
+                        "$CLEANUP_REREAD_RECORDS_FILE"
                     return
                 fi
 
@@ -195,7 +229,7 @@ EOF
     [[ ! -f "$delete_calls_file" ]]
 }
 
-@test "retired registry-derived major is kept fail-closed when its window cannot be computed" {
+@test "uncomputable resolver window is kept fail-closed and makes dry-run non-zero" {
     local records_file="$TEST_TEMP_DIR/retired-fail-records.json"
     local windows_dir="$TEST_TEMP_DIR/windows"
     local delete_calls_file="$TEST_TEMP_DIR/retired-fail-deletes"
@@ -209,11 +243,99 @@ EOF
 
     _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success"
 
-    [[ "$status" -eq 0 ]]
+    [[ "$status" -ne 0 ]]
     [[ "$output" == *"Resolver failed for timescaledb/pg15"* ]]
     [[ "$output" == *"KEEP  version_id=311"* ]]
     [[ "$output" == *"window unknown for pg15: pg15-2.23.0"* ]]
     [[ "$output" == *"Summary: kept=1, pruned=0, failed=0"* ]]
+    [[ ! -f "$delete_calls_file" ]]
+}
+
+@test "jq membership failure keeps the record and makes execute mode non-zero" {
+    local records_file="$TEST_TEMP_DIR/jq-membership-fail-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/jq-membership-fail-deletes"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 321, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    _write_window "$windows_dir" "17" '["2.27.1"]'
+
+    export CLEANUP_JQ_MODE="membership-fail"
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
+    unset CLEANUP_JQ_MODE
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"KEEP  version_id=321"* ]]
+    [[ "$output" == *"retention membership unknown for pg17-2.23.0; keeping record fail-closed"* ]]
+    [[ "$output" == *"Candidate records kept (analysis inconclusive): 1"* ]]
+    [[ ! -f "$delete_calls_file" ]]
+}
+
+@test "structurally invalid [null] resolver window keeps records and makes execute mode non-zero" {
+    local records_file="$TEST_TEMP_DIR/null-window-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/null-window-deletes"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 331, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    _write_window "$windows_dir" "17" '[null]'
+
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"Resolver returned invalid window for timescaledb/pg17"* ]]
+    [[ "$output" == *"KEEP  version_id=331"* ]]
+    [[ "$output" == *"window unknown for pg17: pg17-2.23.0"* ]]
+    [[ ! -f "$delete_calls_file" ]]
+}
+
+@test "structurally invalid [{}] resolver window keeps records and makes execute mode non-zero" {
+    local records_file="$TEST_TEMP_DIR/object-window-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/object-window-deletes"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 341, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    _write_window "$windows_dir" "17" '[{}]'
+
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"Resolver returned invalid window for timescaledb/pg17"* ]]
+    [[ "$output" == *"KEEP  version_id=341"* ]]
+    [[ "$output" == *"window unknown for pg17: pg17-2.23.0"* ]]
+    [[ ! -f "$delete_calls_file" ]]
+}
+
+@test "classifier mktemp failure keeps the record and makes execute mode non-zero" {
+    local records_file="$TEST_TEMP_DIR/mktemp-fail-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/mktemp-fail-deletes"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 351, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    _write_window "$windows_dir" "17" '["2.27.1"]'
+
+    export CLEANUP_MKTEMP_MODE="record-tags-fail"
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
+    unset CLEANUP_MKTEMP_MODE
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"KEEP  version_id=351"* ]]
+    [[ "$output" == *"tag enumeration unavailable; keeping record fail-closed"* ]]
+    [[ "$output" == *"Candidate records kept (analysis inconclusive): 1"* ]]
     [[ ! -f "$delete_calls_file" ]]
 }
 
@@ -286,12 +408,13 @@ EOF
 
     _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
 
-    [[ "$status" -eq 0 ]]
+    [[ "$status" -ne 0 ]]
     [[ "$output" == *"KEEP  version_id=461"* ]]
     [[ "$output" == *"tag enumeration unknown; keeping record fail-closed"* ]]
     [[ "$output" != *"line-feed-quarantine-fragment"* ]]
     [[ "$output" != *"PRUNE version_id=461"* ]]
     [[ "$output" == *"Deleted ext-timescaledb version_id=462"* ]]
+    [[ "$output" == *"Candidate records kept (analysis inconclusive): 1"* ]]
     [[ -f "$delete_calls_file" ]]
     [[ "$(<"$delete_calls_file")" == "DELETE:462" ]]
 }
@@ -311,12 +434,13 @@ EOF
 
     _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
 
-    [[ "$status" -eq 0 ]]
+    [[ "$status" -ne 0 ]]
     [[ "$output" == *"KEEP  version_id=471"* ]]
     [[ "$output" == *"tag enumeration unknown; keeping record fail-closed"* ]]
     [[ "$output" != *"nul-quarantine-fragment"* ]]
     [[ "$output" != *"PRUNE version_id=471"* ]]
     [[ "$output" == *"Deleted ext-timescaledb version_id=472"* ]]
+    [[ "$output" == *"Candidate records kept (analysis inconclusive): 1"* ]]
     [[ -f "$delete_calls_file" ]]
     [[ "$(<"$delete_calls_file")" == "DELETE:472" ]]
 }
@@ -341,11 +465,12 @@ EOF
 
     _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
 
-    [[ "$status" -eq 0 ]]
+    [[ "$status" -ne 0 ]]
     [[ "$output" == *"KEEP  version_id=481"* ]]
     [[ "$output" == *"tag enumeration unknown; keeping record fail-closed"* ]]
     [[ "$output" != *"PRUNE version_id=481"* ]]
     [[ "$output" == *"Deleted ext-timescaledb version_id=482"* ]]
+    [[ "$output" == *"Candidate records kept (analysis inconclusive): 1"* ]]
     [[ -f "$delete_calls_file" ]]
     [[ "$(<"$delete_calls_file")" == "DELETE:482" ]]
 }
@@ -420,7 +545,7 @@ EOF
     [[ ! -f "$delete_calls_file" ]]
 }
 
-@test "GHCR version listing failure skips extension fail-closed" {
+@test "execute mode listing failure skips extension, deletes nothing, and exits non-zero" {
     local records_file="$TEST_TEMP_DIR/list-fail-records.json"
     local windows_dir="$TEST_TEMP_DIR/windows"
     local delete_calls_file="$TEST_TEMP_DIR/list-fail-calls"
@@ -428,12 +553,111 @@ EOF
     printf '[]\n' > "$records_file"
     _write_window "$windows_dir" "17" '["2.27.1"]'
 
-    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "fail"
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "fail" --execute
 
-    [[ "$status" -eq 0 ]]
+    [[ "$status" -ne 0 ]]
     [[ "$output" == *"GHCR version listing failed for ext-timescaledb"* ]]
     [[ "$output" == *"Extensions skipped (listing failed): 1"* ]]
     [[ ! -f "$delete_calls_file" ]]
+}
+
+@test "execute mode keeps a record retagged into the retention window before deletion" {
+    local records_file="$TEST_TEMP_DIR/retagged-listing-records.json"
+    local reread_records_file="$TEST_TEMP_DIR/retagged-reread-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/retagged-delete-calls"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 701, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    cat > "$reread_records_file" <<'EOF'
+[
+  { "id": 701, "metadata": { "container": { "tags": ["pg17-2.27.1"] } } }
+]
+EOF
+    _write_window "$windows_dir" "17" '["2.27.1"]'
+
+    export CLEANUP_REREAD_RECORDS_FILE="$reread_records_file"
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
+    unset CLEANUP_REREAD_RECORDS_FILE
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Candidate version_id=701"* ]]
+    [[ "$output" == *"KEEP  version_id=701"* ]]
+    [[ "$output" == *"re-read before deletion: contains retained tag: pg17-2.27.1"* ]]
+    [[ "$output" != *"PRUNE version_id=701"* ]]
+    [[ ! -f "$delete_calls_file" ]]
+}
+
+@test "execute mode re-read failure keeps its candidate and makes the run non-zero" {
+    local records_file="$TEST_TEMP_DIR/reread-fail-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/reread-fail-delete-calls"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 702, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    _write_window "$windows_dir" "17" '["2.27.1"]'
+
+    export CLEANUP_REREAD_MODE="fail"
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
+    unset CLEANUP_REREAD_MODE
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"re-read before deletion failed; keeping record fail-closed"* ]]
+    [[ "$output" == *"Candidate records kept (re-read failed): 1"* ]]
+    [[ ! -f "$delete_calls_file" ]]
+}
+
+@test "execute mode keeps a candidate when its re-read identifies a different record" {
+    local records_file="$TEST_TEMP_DIR/mismatched-reread-listing-records.json"
+    local reread_records_file="$TEST_TEMP_DIR/mismatched-reread-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/mismatched-reread-delete-calls"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 701, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    cat > "$reread_records_file" <<'EOF'
+[
+  { "id": 702, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    _write_window "$windows_dir" "17" '["2.27.1"]'
+
+    export CLEANUP_REREAD_RECORDS_FILE="$reread_records_file"
+    export CLEANUP_REREAD_MODE="mismatched-id"
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
+    unset CLEANUP_REREAD_RECORDS_FILE CLEANUP_REREAD_MODE
+
+    [[ ! -f "$delete_calls_file" ]] || {
+        printf 'ASSERTION FAILED: no DELETE expected; observed %s\n' "$(<"$delete_calls_file")"
+        return 1
+    }
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"Candidate version_id=701"* ]]
+    [[ "$output" == *"re-read before deletion failed; keeping record fail-closed"* ]]
+    [[ "$output" == *"Candidate records kept (re-read failed): 1"* ]]
+}
+
+@test "cleanup workflow does not share a concurrency group with publishers" {
+    local workflow="$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml"
+    local cleanup_job
+
+    cleanup_job=$(awk '
+      /^  cleanup-ext-images:$/ { in_job = 1; next }
+      in_job && /^  [[:alnum:]_-]+:$/ { exit }
+      in_job { print }
+    ' "$workflow")
+
+    [[ "$cleanup_job" != *"concurrency:"* ]]
+    [[ "$cleanup_job" != *"merge-extension-manifests-"* ]]
 }
 
 @test "--help flag exits 0 and prints usage" {
