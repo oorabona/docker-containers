@@ -172,13 +172,25 @@ _version_record_tags_csv() {
     ' <<< "$record_json"
 }
 
-# Emit all tags from one GHCR version record.  The caller collects this output
-# before making any delete/keep decision: a partial tag list is unknown, not an
-# empty list.
+# Emit all tags from one GHCR version record. The caller collects the complete
+# output before making a delete/keep decision: a malformed tag is rejected
+# before any tag is emitted, and a successful empty list emits nothing so the
+# caller's zero-tag decision remains in effect. This is intentionally a
+# newline-delimited transport, so registry tags containing LF or NUL cannot
+# round-trip and make the whole record malformed; the caller keeps it
+# fail-closed.
 _list_version_record_tags() {
     local record_json="$1"
 
-    jq -r '.tags[]?' <<< "$record_json"
+    jq -r '
+      (.tags // []) as $tags
+      | if ($tags | type) == "array" then
+          $tags
+          | if all(.[]; type == "string" and (contains("\n") | not) and (contains("\u0000") | not)) then .[] else error("tag cannot be transported safely") end
+        else
+          error("tag cannot be transported safely")
+        end
+    ' <<< "$record_json"
 }
 
 # ── Main entry point ─────────────────────────────────────────────────────────
@@ -401,7 +413,7 @@ main() {
             local tags_csv
             local tag_count
             version_id=$(jq -r '.version_id' <<< "$record_json")
-            tags_csv=$(_version_record_tags_csv "$record_json")
+            tags_csv="(tag enumeration unavailable)"
             tag_count=$(jq '(.tags // []) | length' <<< "$record_json")
 
             local should_delete="true"
@@ -418,16 +430,15 @@ main() {
                 should_delete="false"
                 keep_reason="tag enumeration unknown; keeping record fail-closed"
             else
+                tags_csv=$(_version_record_tags_csv "$record_json")
                 local tag
                 while [[ "$should_delete" == "true" ]] && IFS= read -r tag; do
-                    [[ -n "$tag" ]] || continue
-
                     local parsed
                     local tag_major
                     local tag_version
                     if ! parsed=$(_parse_ext_managed_tag "$tag"); then
                         should_delete="false"
-                        keep_reason="contains unmanaged/unparseable tag: ${tag}"
+                        printf -v keep_reason 'contains unmanaged/unparseable tag: %q' "$tag"
                         break
                     fi
 

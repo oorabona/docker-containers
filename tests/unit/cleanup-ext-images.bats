@@ -241,6 +241,115 @@ EOF
     [[ ! -f "$delete_calls_file" ]]
 }
 
+@test "empty tags protect their version records while all-canonical stale records still prune" {
+    local records_file="$TEST_TEMP_DIR/empty-tag-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/empty-tag-deletes"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 451, "metadata": { "container": { "tags": [] } } },
+  { "id": 452, "metadata": { "container": { "tags": ["pg17-2.23.0", ""] } } },
+  { "id": 453, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    _write_window "$windows_dir" "17" '["2.27.1"]'
+
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"KEEP  version_id=451"* ]]
+    [[ "$output" == *"KEEP  version_id=451 (tags: (none)) — no tags on version record; fail-closed"* ]]
+    [[ "$output" != *"KEEP  version_id=451 (tags: (tag enumeration unavailable))"* ]]
+    [[ "$output" == *"KEEP  version_id=452"* ]]
+    [[ "$output" == *"contains unmanaged/unparseable tag: ''"* ]]
+    [[ "$output" != *"PRUNE version_id=451"* ]]
+    [[ "$output" != *"PRUNE version_id=452"* ]]
+    [[ "$output" == *"PRUNE version_id=453"* ]]
+    [[ "$output" == *"[DRY-RUN] Would delete ext-timescaledb version_id=453"* ]]
+    [[ "$output" == *"Summary: kept=2, pruned=1, failed=0"* ]]
+    [[ ! -f "$delete_calls_file" ]]
+}
+
+@test "line-feed tag makes enumeration unknown and keeps the whole record" {
+    local records_file="$TEST_TEMP_DIR/line-feed-tag-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/line-feed-tag-deletes"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 461, "metadata": { "container": { "tags": ["pg17-2.23.0\nline-feed-quarantine-fragment"] } } },
+  { "id": 462, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    _write_window "$windows_dir" "17" '["2.27.1"]'
+
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"KEEP  version_id=461"* ]]
+    [[ "$output" == *"tag enumeration unknown; keeping record fail-closed"* ]]
+    [[ "$output" != *"line-feed-quarantine-fragment"* ]]
+    [[ "$output" != *"PRUNE version_id=461"* ]]
+    [[ "$output" == *"Deleted ext-timescaledb version_id=462"* ]]
+    [[ -f "$delete_calls_file" ]]
+    [[ "$(<"$delete_calls_file")" == "DELETE:462" ]]
+}
+
+@test "NUL tag makes enumeration unknown and keeps the whole record" {
+    local records_file="$TEST_TEMP_DIR/nul-tag-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/nul-tag-deletes"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 471, "metadata": { "container": { "tags": ["pg17-2.23.0\u0000nul-quarantine-fragment"] } } },
+  { "id": 472, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    _write_window "$windows_dir" "17" '["2.27.1"]'
+
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"KEEP  version_id=471"* ]]
+    [[ "$output" == *"tag enumeration unknown; keeping record fail-closed"* ]]
+    [[ "$output" != *"nul-quarantine-fragment"* ]]
+    [[ "$output" != *"PRUNE version_id=471"* ]]
+    [[ "$output" == *"Deleted ext-timescaledb version_id=472"* ]]
+    [[ -f "$delete_calls_file" ]]
+    [[ "$(<"$delete_calls_file")" == "DELETE:472" ]]
+}
+
+@test "a later malformed tag keeps its record and emits none of its first tag" {
+    local records_file="$TEST_TEMP_DIR/later-malformed-tag-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/later-malformed-tag-deletes"
+
+    run _list_version_record_tags '{"tags":["pg17-2.24.0","bad\nlater-malformed-tag-fragment"]}'
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" != *"pg17-2.24.0"* ]]
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 481, "metadata": { "container": { "tags": ["pg17-2.24.0", "bad\nlater-malformed-tag-fragment"] } } },
+  { "id": 482, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    _write_window "$windows_dir" "17" '["2.27.1"]'
+
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"KEEP  version_id=481"* ]]
+    [[ "$output" == *"tag enumeration unknown; keeping record fail-closed"* ]]
+    [[ "$output" != *"PRUNE version_id=481"* ]]
+    [[ "$output" == *"Deleted ext-timescaledb version_id=482"* ]]
+    [[ -f "$delete_calls_file" ]]
+    [[ "$(<"$delete_calls_file")" == "DELETE:482" ]]
+}
+
 @test "P2 execute mode: failed delete exits non-zero and is not counted as pruned" {
     local records_file="$TEST_TEMP_DIR/delete-failure-records.json"
     local windows_dir="$TEST_TEMP_DIR/windows"
