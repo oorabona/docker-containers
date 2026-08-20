@@ -161,7 +161,7 @@ gh workflow run recreate-manifests.yaml -f container=postgres
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `shellcheck.yaml` | push, PR | Lint all `.sh` scripts with shellcheck |
+| `shellcheck.yaml` | push, PR | Lint the build-system, version and test shell scripts with shellcheck, and the YAML config files with yamllint. Container runtime scripts are deliberately excluded |
 | `validate-version-scripts.yaml` | PR (version.sh changes) | Validate version.sh scripts can run |
 | `sync-dockerhub-readme.yaml` | push (README changes) | Sync README.md to Docker Hub descriptions |
 | `cleanup-registry.yaml` | schedule (monthly) | Delete old GHCR images per retention policy |

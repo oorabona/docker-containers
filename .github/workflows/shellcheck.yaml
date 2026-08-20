@@ -84,8 +84,9 @@ jobs:
           install_package 'yamllint==1.37.1' "$yamllint_dir/requirements/yamllint.txt"
 
           "$yamllint_venv/bin/yamllint" --version
-          find . -type f \( -name config.yaml -o -name variants.yaml \) \
-            -not -path './.git/*' -print0 | xargs -0 "$yamllint_venv/bin/yamllint" -c .yamllint.yml
+          # Run yamllint only after this search has collected and validated every YAML pathname.
+          ./scripts/collect-safe-paths.sh . -type f \( -name config.yaml -o -name variants.yaml \) \
+            -not -path './.git/*' | xargs -r -0 "$yamllint_venv/bin/yamllint" -c .yamllint.yml
 
       - name: Run shellcheck on scripts
         run: |
@@ -93,44 +94,18 @@ jobs:
 
           scripts=()
 
-          # Discovery has to fail closed, and a find inside a process
-          # substitution does the opposite: it reports nothing when it fails,
-          # the reading loop then ends normally, and a scan that broke is
-          # indistinguishable from a repository holding no scripts — on which
-          # this job reports every one of them passing. Every collector
-          # therefore goes through here, where the search completes into a file
-          # whose pipeline status is checked, under pipefail, before a single
-          # path is added.
-          #
-          # Paths are carried NUL-delimited so a newline in one cannot split a
-          # single entry into several, and what may then be linted is confined
-          # to an allowlist of characters rather than escaped wherever it is
-          # later printed. The failure list is interpolated into the step
-          # summary as Markdown and into the log, so a backtick, a newline, a
-          # carriage return or a colon in a pathname can close a code span,
-          # forge a link, or open a workflow command in either sink. Escaping
-          # each sink means getting every sink right for ever; refusing the
-          # character set at the one point where a path enters means the sinks
-          # can only ever receive names that are inert in both.
+          # This collector covers pathnames produced by its searches; shellcheck -x sources and the project-root scripts appended below are outside this boundary.
           collect() {
-            local sorted f bad=
-            sorted=$(mktemp)
-            if ! find "$@" -print0 | sort -z > "$sorted"; then
-              rm -f "$sorted"
-              echo "::error::script discovery failed: find $*"
-              exit 1
+            local collected f
+            collected=$(mktemp)
+            if ! ./scripts/collect-safe-paths.sh "$@" > "$collected"; then
+              rm -f "$collected"
+              return 1
             fi
             while IFS= read -r -d '' f; do
-              case $f in
-                *[!A-Za-z0-9._/-]*) bad=$f; break ;;
-              esac
               scripts+=("$f")
-            done < "$sorted"
-            rm -f "$sorted"
-            if [[ -n $bad ]]; then
-              echo "::error::refusing to lint a path outside [A-Za-z0-9._/-]: $(printf '%q' "$bad")"
-              exit 1
-            fi
+            done < "$collected"
+            rm -f "$collected"
           }
 
           # Collect build-system shell scripts only (not container runtime scripts)
