@@ -89,3 +89,31 @@ Build status will be available in GitHub Actions after merge.
 - Variant: 2.335.1, base ghcr.io/oorabona/library/ubuntu:24.04
   Old digest: sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
   New digest: sha256:d78ab76437b1afc5f01e223d6bf0172763f404bb166441328845adbef44518cb
+
+<!-- drift-content-hash: 4e337204ddc4d5cf run:32340015496 -->
+## base-digest-drift (2026-08-20)
+
+- Variant: 2.334.0-debian-trixie-dev, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:1fb2564ee0193d308e5297b2dc3ec2a76000260a5dcf5fa29db48c35798464fb
+  New digest: sha256:7dfb01fdd887d768f7b01a4c2f15b70133d60d4e69fbfcda6e532839a6f560df
+- Variant: 2.334.0-debian-trixie, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:1fb2564ee0193d308e5297b2dc3ec2a76000260a5dcf5fa29db48c35798464fb
+  New digest: sha256:7dfb01fdd887d768f7b01a4c2f15b70133d60d4e69fbfcda6e532839a6f560df
+- Variant: 2.334.0-dev, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+  New digest: sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+- Variant: 2.334.0, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+  New digest: sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+- Variant: 2.335.1-debian-trixie-dev, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:1fb2564ee0193d308e5297b2dc3ec2a76000260a5dcf5fa29db48c35798464fb
+  New digest: sha256:7dfb01fdd887d768f7b01a4c2f15b70133d60d4e69fbfcda6e532839a6f560df
+- Variant: 2.335.1-debian-trixie, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:1fb2564ee0193d308e5297b2dc3ec2a76000260a5dcf5fa29db48c35798464fb
+  New digest: sha256:7dfb01fdd887d768f7b01a4c2f15b70133d60d4e69fbfcda6e532839a6f560df
+- Variant: 2.335.1-dev, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+  New digest: sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+- Variant: 2.335.1, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+  New digest: sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
