@@ -120,12 +120,17 @@ Options:
   --include-final-build   include flag-marked extension containers' FINAL image build in the graph
                           (requires their extension lineage artifacts to be present; used by the
                           postgres bake routing -- NOT by the whole-fleet smoke).
-  --scope-versions <csv>  Keep versions matching a comma-separated version list.
-  --scope-flavors <csv>   Keep cells whose flavor is in a comma-separated list.
-  --scope <str>           Keep cells whose variant/os/build_flavor/flavor contains this string.
+  --scope-versions <csv>  Restrict versions to a comma-separated version list.
+  --scope-flavors <csv>   Restrict cells to flavors in a comma-separated list.
+  --scope <str>           Restrict cells whose variant/os/build_flavor/flavor contains this string.
   --container-scopes <json>
                           Per-container scope map:
                           {"<container>":{"versions":"csv","flavors":"csv","extensions":"csv"}}
+
+An active scope that selects no Linux build cells exits 1 without writing stdout.
+An already-empty matrix and a Windows-only matrix remain successful empty plans.
+Container-scope keys/filter values and build-matrix string fields containing LF
+or U+001F are refused rather than being passed through record-oriented readers.
   -h, --help              Show this help.
 EOF
 }
@@ -234,6 +239,213 @@ _scope_filters_active_for_container() {
     local scope_flavors="${filters#*$'\t'}"
 
     [[ -n "$scope_versions" || -n "$scope_flavors" || -n "${_BAKE_SCOPE:-}" ]]
+}
+
+# A scope request needs preflight only when it can narrow a build matrix.  An
+# empty container-scopes object (and entries with no filter) is
+# intentionally a no-op.
+_scope_request_active() {
+    [[ -n "${_BAKE_SCOPE_VERSIONS:-}" || -n "${_BAKE_SCOPE_FLAVORS:-}" || \
+       -n "${_BAKE_SCOPE:-}" ]] && return 0
+
+    [[ -n "${_BAKE_CONTAINER_SCOPES:-}" ]] && \
+        jq -e 'any(.[]; (.versions // "") != "" or (.flavors // "") != "" or (.extensions // "") != "")' \
+            <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null
+}
+
+# Describe the active request in diagnostics.  This is deliberately limited to
+# filters that can remove cells; an empty --container-scopes object is a no-op.
+_requested_scope_description() {
+    local -a requested_scope=()
+
+    [[ -n "${_BAKE_SCOPE_VERSIONS:-}" ]] && requested_scope+=("--scope-versions=${_BAKE_SCOPE_VERSIONS}")
+    [[ -n "${_BAKE_SCOPE_FLAVORS:-}" ]] && requested_scope+=("--scope-flavors=${_BAKE_SCOPE_FLAVORS}")
+    [[ -n "${_BAKE_SCOPE:-}" ]] && requested_scope+=("--scope=${_BAKE_SCOPE}")
+    [[ -n "${_BAKE_CONTAINER_SCOPES:-}" ]] && requested_scope+=("--container-scopes=${_BAKE_CONTAINER_SCOPES}")
+
+    printf '%s' "${requested_scope[*]}"
+}
+
+# A non-empty per-container filter must name one of the containers the caller
+# requested.  Otherwise the request would silently become pass-all for that
+# filter, which is broader than the requested plan.
+_assert_container_scope_filters_apply_to_requested() {
+    local -a requested_containers=("$@")
+    [[ -n "${_BAKE_CONTAINER_SCOPES:-}" ]] || return 0
+
+    # The active keys below are read one record per line, and their filters are
+    # carried through shell records. Reject record separators before either
+    # transport so no scope value can impersonate another value.
+    if ! jq -e '
+        all(
+            (to_entries[]
+            | select((.value.versions // "") != "" or (.value.flavors // "") != "" or (.value.extensions // "") != ""));
+            (.key | (contains("\n") | not) and (contains("\u001f") | not))
+            and ([
+                .value.versions // "",
+                .value.flavors // "",
+                .value.extensions // ""
+            ] | all(.[]; (contains("\n") | not) and (contains("\u001f") | not)))
+        )
+    ' <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null; then
+        gha_error 'container-scope key or filter contains LF or U+001F; refusing record-oriented transport' >&2
+        return 1
+    fi
+
+    local scoped_container requested_container matched
+    while IFS= read -r scoped_container; do
+        [[ -n "$scoped_container" ]] || continue
+        matched=false
+        for requested_container in "${requested_containers[@]}"; do
+            if [[ "$scoped_container" == "$requested_container" ]]; then
+                matched=true
+                break
+            fi
+        done
+        if [[ "$matched" == "false" ]]; then
+            gha_error 'requested scope %s matched no Linux build cells for requested container(s): %s' \
+                "$(_requested_scope_description)" "${requested_containers[*]}" >&2
+            return 1
+        fi
+    done < <(jq -r '
+        to_entries[]
+        | select((.value.versions // "") != "" or (.value.flavors // "") != "" or (.value.extensions // "") != "")
+        | .key
+    ' <<< "$_BAKE_CONTAINER_SCOPES")
+}
+
+# Decode the matrix fields shared by scope preflight, dependency setup, and
+# emission. Matrix output is external input. The decoder uses U+001F as a
+# record delimiter, so reject its fields' record separators rather than let a
+# value truncate or shift a later field.
+_decode_build_matrix_cell() {
+    local cell="$1"
+    local decoded unsafe_fields
+
+    if ! unsafe_fields=$(jq -r '
+        if type == "object"
+           and (.version | type) == "string"
+           and ((.tag // "") | type) == "string"
+           and ((.flavor // "") | type) == "string"
+           and ((.variant // "") | type) == "string"
+           and ((.os // "linux") | type) == "string"
+           and ((.build_flavor // "") | type) == "string"
+           and ((.dockerfile // "") | type) == "string"
+        then [
+            .version,
+            (.tag // ""),
+            (.flavor // ""),
+            (.variant // ""),
+            (.os // "linux"),
+            (.build_flavor // ""),
+            (.dockerfile // "")
+        ] | any(.[]; contains("\n") or contains("\u001f"))
+        else false
+        end
+    ' <<< "$cell" 2>/dev/null); then
+        return 1
+    fi
+    if [[ "$unsafe_fields" == "true" ]]; then
+        gha_error 'build matrix cell contains LF or U+001F; refusing record-oriented transport' >&2
+        return 1
+    fi
+
+    if ! decoded=$(jq -er '
+        if type != "object"
+           or (.version | type) != "string"
+           or ((.tag // "") | type) != "string"
+           or ((.flavor // "") | type) != "string"
+           or ((.variant // "") | type) != "string"
+           or ((.os // "linux") | type) != "string"
+           or ((.build_flavor // "") | type) != "string"
+           or ((.dockerfile // "") | type) != "string"
+        then error("invalid build matrix cell")
+        else [
+            .version,
+            (.tag // ""),
+            (.flavor // ""),
+            (.variant // ""),
+            (.os // "linux"),
+            (.build_flavor // ""),
+            (.dockerfile // ""),
+            (if .is_default then "true" else "false" end),
+            (if .is_latest_version then "true" else "false" end)
+        ] | join("\u001f")
+        end
+    ' <<< "$cell" 2>/dev/null); then
+        return 1
+    fi
+
+    IFS=$'\x1f' read -r _EC_cell_version _EC_cell_tag _EC_cell_flavor \
+        _EC_cell_variant _EC_cell_os _EC_cell_build_flavor _EC_cell_dockerfile \
+        _EC_cell_is_default _EC_cell_is_latest_version <<< "$decoded"
+}
+
+# Refuse an explicit scope only when it eliminates every otherwise-buildable
+# requested cell.  A matrix that is already empty (or contains only Windows
+# cells) is a valid container state, not evidence that an operator's scope was
+# wrong, and keeps its established empty-plan success behavior.
+_assert_requested_scope_matches_cells() {
+    local -a requested_containers=("$@")
+    local matrix_cells=0
+    local candidate_cells=0
+    local selected_cells=0
+    local c
+
+    _scope_request_active || return 0
+    _assert_container_scope_filters_apply_to_requested "${requested_containers[@]}" || return 1
+
+    for c in "${requested_containers[@]}"; do
+        local matrix="${_EC_all_matrix_json[$c]}"
+        local has_scope=false
+        if _scope_filters_active_for_container "$c"; then
+            has_scope=true
+        fi
+
+        local ncells
+        if ! ncells=$(jq -er 'if type == "array" then length else error("not array") end' \
+                <<< "$matrix" 2>/dev/null); then
+            gha_error 'could not parse build matrix for %s while checking requested scope' "$c" >&2
+            return 1
+        fi
+        matrix_cells=$((matrix_cells + ncells))
+        local i
+        for (( i=0; i<ncells; i++ )); do
+            local cell
+            if ! cell=$(jq -ce ".[$i]" <<< "$matrix" 2>/dev/null); then
+                gha_error 'could not parse build matrix cell for %s while checking requested scope' "$c" >&2
+                return 1 # parser-cell-json
+            fi
+
+            if ! _decode_build_matrix_cell "$cell"; then
+                gha_error 'could not parse build matrix cell for %s while checking requested scope' "$c" >&2
+                return 1 # parser-cell
+            fi
+
+            [[ "$_EC_cell_os" == "windows" ]] && continue
+            candidate_cells=$((candidate_cells + 1))
+
+            if [[ "$has_scope" == "false" ]] || \
+                    _cell_passes_scope "$c" "$_EC_cell_version" "$_EC_cell_flavor" \
+                        "$_EC_cell_variant" "$_EC_cell_os" "$_EC_cell_build_flavor"; then
+                selected_cells=$((selected_cells + 1))
+            fi
+        done
+    done
+
+    if [[ "$selected_cells" -eq 0 ]]; then
+        # These are distinct successful empty-plan states. Keep the guards
+        # separate so each contract is independently mutation-tested.
+        [[ "$matrix_cells" -eq 0 ]] && return 0
+        [[ "$matrix_cells" -gt 0 && "$candidate_cells" -eq 0 ]] && return 0
+
+        # Scope values and requested container names originate with the caller.
+        # gha_error escapes CR/LF, legacy commands, control bytes, and bidi
+        # controls before the runner can interpret this annotation.
+        gha_error 'requested scope %s matched no Linux build cells for requested container(s): %s' \
+            "$(_requested_scope_description)" "${requested_containers[*]}" >&2
+        return 1
+    fi
 }
 
 # _cell_passes_scope <container> <version> <flavor> <variant> <os> <build_flavor>
@@ -924,20 +1136,17 @@ _enumerate_cells_init() {
             local _first_i
             for (( _first_i=0; _first_i<_first_ncells; _first_i++ )); do
                 local _first_cell
-                _first_cell=$(jq -c ".[$_first_i]" <<< "$matrix")
+                if ! _first_cell=$(jq -ce ".[$_first_i]" <<< "$matrix" 2>/dev/null) || \
+                   ! _decode_build_matrix_cell "$_first_cell"; then
+                    gha_error 'could not parse build matrix cell for %s while checking requested scope' "$c" >&2
+                    return 1
+                fi
 
-                local _first_version _first_flavor _first_variant _first_os _first_build_flavor
-                _first_version=$(jq -r '.version' <<< "$_first_cell")
-                _first_flavor=$(jq -r '.flavor // ""' <<< "$_first_cell")
-                _first_variant=$(jq -r '.variant // ""' <<< "$_first_cell")
-                _first_os=$(jq -r '.os // "linux"' <<< "$_first_cell")
-                _first_build_flavor=$(jq -r '.build_flavor // ""' <<< "$_first_cell")
-
-                if [[ "$_first_os" == "windows" ]]; then
+                if [[ "$_EC_cell_os" == "windows" ]]; then
                     continue
                 fi
-                if _cell_passes_scope "$c" "$_first_version" "$_first_flavor" "$_first_variant" \
-                        "$_first_os" "$_first_build_flavor"; then
+                if _cell_passes_scope "$c" "$_EC_cell_version" "$_EC_cell_flavor" \
+                        "$_EC_cell_variant" "$_EC_cell_os" "$_EC_cell_build_flavor"; then
                     first_entry="$_first_cell"
                     break
                 fi
@@ -947,16 +1156,16 @@ _enumerate_cells_init() {
                 <<< "$matrix" 2>/dev/null) || first_entry=""
         fi
         if [[ -n "$first_entry" && "$first_entry" != "null" ]]; then
-            local fver fvariant ftag
-            fver=$(jq -r '.version'           <<< "$first_entry")
-            fvariant=$(jq -r '.variant // ""' <<< "$first_entry")
-            ftag=$(jq -r '.tag'               <<< "$first_entry")
+            if ! _decode_build_matrix_cell "$first_entry"; then
+                gha_error 'could not parse build matrix cell for %s' "$c" >&2
+                return 1
+            fi
 
             local ftid
-            if [[ -z "$fvariant" ]]; then
-                ftid="$(_target_id "${c}_${ftag}")"
+            if [[ -z "$_EC_cell_variant" ]]; then
+                ftid="$(_target_id "${c}_${_EC_cell_tag}")"
             else
-                ftid="$(_target_id "${c}_${fver}_${fvariant}")"
+                ftid="$(_target_id "${c}_${_EC_cell_version}_${_EC_cell_variant}")"
             fi
             _EC_first_target_per_container[$c]="$ftid"
         fi
@@ -964,84 +1173,8 @@ _enumerate_cells_init() {
 }
 
 # ---------------------------------------------------------------------------
-# Core per-cell enumerator — shared by _build_bake_json and _emit_cells_json.
-#
-# Iterates the closure × matrix, skipping windows cells.
-# For each linux cell, calls one of two callbacks:
-#
-#   _on_cell_bake   <container> <cell_json> <dep_target_ids_json> <config_args>
-#   _on_cell_plain  <container> <tag> <flavor> <is_default> <intermediate_ref>
-#
-# The caller defines whichever callback is needed.  Both modes share the same
-# skip logic (os == windows) and the same cell field extraction.
-#
-# Args: <mode> <dep_target_ids_json> <requested_containers[@]> (mode: bake|cells)
-# Context: _EC_closure_containers, _EC_all_matrix_json must be set by
-#          _enumerate_cells_init before calling.
-# ---------------------------------------------------------------------------
-_enumerate_cells() {
-    local mode="$1"
-    local dep_target_ids_json="$2"
-    shift 2
-    local -a requested_containers=("$@")
-
-    local c
-    for c in "${_EC_closure_containers[@]}"; do
-        local matrix="${_EC_all_matrix_json[$c]}"
-
-        # Read config build_args once per container (DEFECT 1: validator fires here).
-        # Only needed for bake mode; cells mode skips this expensive step.
-        local config_args='{}'
-        if [[ "$mode" == "bake" ]]; then
-            if ! config_args=$(_config_build_args "$c"); then
-                printf 'ERROR: _config_build_args failed for %q\n' "$c" >&2
-                return 1
-            fi
-        fi
-
-        local ncells
-        ncells=$(jq 'length' <<< "$matrix")
-        local i
-        for (( i=0; i<ncells; i++ )); do
-            local cell
-            cell=$(jq -c ".[$i]" <<< "$matrix")
-
-            local version variant tag flavor build_flavor cell_os cell_dockerfile
-            version=$(jq -r '.version'               <<< "$cell")
-            variant=$(jq -r '.variant // ""'         <<< "$cell")
-            tag=$(jq -r '.tag'                       <<< "$cell")
-            flavor=$(jq -r '.flavor // ""'           <<< "$cell")
-            build_flavor=$(jq -r '.build_flavor // ""'   <<< "$cell")
-            cell_os=$(jq -r '.os // "linux"'         <<< "$cell")
-            cell_dockerfile=$(jq -r '.dockerfile // ""' <<< "$cell")
-            local is_default
-            is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
-
-            # Skip Windows cells — bake/linux-native only.
-            if [[ "$cell_os" == "windows" ]]; then
-                continue
-            fi
-            if ! _cell_passes_scope "$c" "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
-                continue
-            fi
-
-            if [[ "$mode" == "cells" ]]; then
-                # cells mode: emit compact cell descriptor (no Dockerfile work needed)
-                local intermediate_ref="${_BAKE_REMOTE_CR}/${c}:${tag}"
-                _on_cell_plain "$c" "$tag" "$flavor" "$is_default" "$intermediate_ref"
-            else
-                # bake mode: full target construction (original _build_bake_json logic)
-                _on_cell_bake "$c" "$cell" "$dep_target_ids_json" "$config_args" \
-                    "$version" "$variant" "$tag" "$flavor" "$build_flavor" \
-                    "$cell_dockerfile"
-            fi
-        done
-    done
-}
-
-# ---------------------------------------------------------------------------
-# Bake-mode cell handler — called by _enumerate_cells for each linux cell
-# when mode == "bake".  Accumulates into the caller-scope variables:
+# Bake-mode cell handler — accumulates each decoded Linux cell into the
+# caller-scope variables:
 #   targets_json, container_target_lists[c]
 # ---------------------------------------------------------------------------
 _on_cell_bake() {
@@ -1243,6 +1376,10 @@ _build_bake_json() {
     if ! _enumerate_cells_init "${requested_containers[@]}"; then
         return 1
     fi
+    if _scope_request_active && \
+            ! _assert_requested_scope_matches_cells "${requested_containers[@]}"; then
+        return 1
+    fi
 
     # Build dep_target_ids_json: {"container": "first_target_id", ...}
     local dep_target_ids_json='{}'
@@ -1277,29 +1414,26 @@ _build_bake_json() {
         local i
         for (( i=0; i<ncells; i++ )); do
             local cell
-            cell=$(jq -c ".[$i]" <<< "$matrix")
-
-            local version variant tag flavor build_flavor cell_os cell_dockerfile
-            version=$(jq -r '.version'               <<< "$cell")
-            variant=$(jq -r '.variant // ""'         <<< "$cell")
-            tag=$(jq -r '.tag'                       <<< "$cell")
-            flavor=$(jq -r '.flavor // ""'           <<< "$cell")
-            build_flavor=$(jq -r '.build_flavor // ""'   <<< "$cell")
-            cell_os=$(jq -r '.os // "linux"'         <<< "$cell")
-            cell_dockerfile=$(jq -r '.dockerfile // ""' <<< "$cell")
+            if ! cell=$(jq -ce ".[$i]" <<< "$matrix" 2>/dev/null) || \
+               ! _decode_build_matrix_cell "$cell"; then
+                gha_error 'could not parse build matrix cell for %s' "$c" >&2
+                return 1
+            fi
 
             # Skip Windows cells
-            if [[ "$cell_os" == "windows" ]]; then
+            if [[ "$_EC_cell_os" == "windows" ]]; then
                 continue
             fi
             if [[ -n "${_requested_set[$c]+set}" ]] && \
-                    ! _cell_passes_scope "$c" "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
+                    ! _cell_passes_scope "$c" "$_EC_cell_version" "$_EC_cell_flavor" \
+                        "$_EC_cell_variant" "$_EC_cell_os" "$_EC_cell_build_flavor"; then
                 continue
             fi
 
             _on_cell_bake "$c" "$cell" "$dep_target_ids_json" "$config_args" \
-                "$version" "$variant" "$tag" "$flavor" "$build_flavor" \
-                "$cell_dockerfile" || return 1
+                "$_EC_cell_version" "$_EC_cell_variant" "$_EC_cell_tag" \
+                "$_EC_cell_flavor" "$_EC_cell_build_flavor" \
+                "$_EC_cell_dockerfile" || return 1
         done
 
         container_target_lists[$c]="$container_targets"
@@ -1425,6 +1559,10 @@ _emit_cells_json() {
     if ! _enumerate_cells_init "${requested_containers[@]}"; then
         return 1
     fi
+    if _scope_request_active && \
+            ! _assert_requested_scope_matches_cells "${requested_containers[@]}"; then
+        return 1
+    fi
 
     # Accumulate cell objects into a JSON array
     local cells_json='[]'
@@ -1465,39 +1603,34 @@ _emit_cells_json() {
         local i
         for (( i=0; i<ncells; i++ )); do
             local cell
-            cell=$(jq -c ".[$i]" <<< "$matrix")
-
-            local version tag flavor build_flavor variant cell_os is_default_raw is_latest_raw
-            version=$(jq -r '.version'          <<< "$cell")
-            tag=$(jq -r '.tag'              <<< "$cell")
-            flavor=$(jq -r '.flavor // ""'  <<< "$cell")
-            build_flavor=$(jq -r '.build_flavor // ""' <<< "$cell")
-            # FIX F: variant is the unique per-cell name for rolling-alias routing
-            variant=$(jq -r '.variant // ""' <<< "$cell")
-            cell_os=$(jq -r '.os // "linux"' <<< "$cell")
-            is_default_raw=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
-            # F2: propagate is_latest_version from the matrix cell
-            is_latest_raw=$(jq -r 'if .is_latest_version then "true" else "false" end' <<< "$cell")
+            if ! cell=$(jq -ce ".[$i]" <<< "$matrix" 2>/dev/null) || \
+               ! _decode_build_matrix_cell "$cell"; then
+                gha_error 'could not parse build matrix cell for %s' "$c" >&2
+                return 1
+            fi
 
             # Skip Windows cells — same filter as bake mode
-            if [[ "$cell_os" == "windows" ]]; then
+            if [[ "$_EC_cell_os" == "windows" ]]; then
                 continue
             fi
-            if ! _cell_passes_scope "$c" "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
+            if ! _cell_passes_scope "$c" "$_EC_cell_version" "$_EC_cell_flavor" \
+                    "$_EC_cell_variant" "$_EC_cell_os" "$_EC_cell_build_flavor"; then
                 continue
             fi
 
             # #595: Compute target_id using IDENTICAL logic to _on_cell_bake so
             # that --cells[].target_id matches the bake --metadata-file keys.
             local cell_tid
-            if [[ -z "$variant" ]]; then
-                cell_tid="$(_target_id "${c}_${tag}")"
+            if [[ -z "$_EC_cell_variant" ]]; then
+                cell_tid="$(_target_id "${c}_${_EC_cell_tag}")"
             else
-                cell_tid="$(_target_id "${c}_${version}_${variant}")"
+                cell_tid="$(_target_id "${c}_${_EC_cell_version}_${_EC_cell_variant}")"
             fi
 
-            local intermediate_ref="${_BAKE_REMOTE_CR}/${c}:${tag}"
-            _on_cell_plain "$c" "$tag" "$flavor" "$is_default_raw" "$intermediate_ref" "$is_latest_raw" "$variant" "$cell_tid"
+            local intermediate_ref="${_BAKE_REMOTE_CR}/${c}:${_EC_cell_tag}"
+            _on_cell_plain "$c" "$_EC_cell_tag" "$_EC_cell_flavor" \
+                "$_EC_cell_is_default" "$intermediate_ref" "$_EC_cell_is_latest_version" \
+                "$_EC_cell_variant" "$cell_tid"
         done
     done
 
