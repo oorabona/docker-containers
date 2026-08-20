@@ -3,31 +3,25 @@
 # Unit tests for scripts/cleanup-outdated-tags.sh
 # Focus: is_valid_tag — bake cache tag validity derived from underlying base tag
 
-# Source is_valid_tag from the script.
-# The script has top-level guards (GH_TOKEN, OWNER) and a main loop; we set
-# dummy env vars and an empty CONTAINERS so the loop is a no-op on source.
-# We do NOT use bats `run` for is_valid_tag since that would re-execute the
-# main loop in the subshell.  Instead we call the function directly and check
-# the return code.
+# Source is_valid_tag from the script.  Sourcing is intentionally inert: it
+# defines functions only, so these tests do not need to arrange a fake main.
 
 setup() {
     TEST_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
     PROJECT_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
+    ORIGINAL_PATH="$PATH"
 
     export GH_TOKEN="test-token"
     export OWNER="test-owner"
     export DRY_RUN="true"
-    # Empty CONTAINERS prevents the main loop from iterating anything
-    export CONTAINERS=""
-
-    # Create a stub make so the script doesn't call the real one
+    # Keep a stub make available for tests that invoke main.
     _STUB_DIR="$(mktemp -d)"
     mkdir -p "$_STUB_DIR"
     printf '#!/bin/bash\necho ""\n' > "$_STUB_DIR/make"
     chmod +x "$_STUB_DIR/make"
     export PATH="$_STUB_DIR:$PATH"
 
-    # Source the script; the main loop runs but CONTAINERS="" → no iterations
+    # Source the script without triggering validation, output, or main.
     # shellcheck source=/dev/null
     source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh" 2>/dev/null || true
 
@@ -35,8 +29,10 @@ setup() {
 }
 
 teardown() {
+    PATH="$ORIGINAL_PATH"
+    export PATH
     rm -rf "${_STUB_DIR:-}"
-    unset GH_TOKEN OWNER DRY_RUN CONTAINERS _STUB_DIR
+    unset GH_TOKEN OWNER DRY_RUN _STUB_DIR ORIGINAL_PATH
 }
 
 # ---------------------------------------------------------------------------
@@ -183,4 +179,252 @@ make_valid_tags() {
     local valid_tags
     valid_tags=$(make_valid_tags "2.334.0" "latest" "buildcache")
     is_valid_tag "buildcache-amd64" "$valid_tags"
+}
+
+@test "purge_ghcr listing failure is counted and makes the completed run fail" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="true" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            gh() {
+                echo "gh: API rate limit exceeded" >&2
+                return 1
+            }
+            main broken
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"gh: API rate limit exceeded"* ]]
+    [[ "$output" == *"Failed to list GHCR versions; skipping broken"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+    [[ "$output" == *"Registry listing failures: 1"* ]]
+    [[ "$output" == *"GHCR — delete failures: 0"* ]]
+}
+
+@test "purge_ghcr treats a zero-status non-JSON body as a listing failure and leaves the package unassessed" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="true" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            gh() { printf "%s\\n" "not-json"; }
+            main broken
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"GHCR version listing was not a JSON array; skipping broken"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+    [[ "$output" == *"Registry listing failures: 1"* ]]
+}
+
+@test "purge_ghcr rejects a zero-byte successful listing rather than treating it as an empty array" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="true" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            gh() { return 0; }
+            main broken
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"GHCR version listing was not a JSON array; skipping broken"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+    [[ "$output" == *"Registry listing failures: 1"* ]]
+}
+
+@test "purge_ghcr flattens two paginated version arrays and classifies a second-page version" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="true" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            purge_dockerhub() { printf "%s\\n" "0|0"; }
+            gh() {
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:first\",\"metadata\":{\"container\":{\"tags\":[\"stale-first\"]}}}]"
+                printf "%s\\n" "[{\"id\":102,\"name\":\"sha256:second\",\"metadata\":{\"container\":{\"tags\":[\"stale-second\"]}}}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Found 2 GHCR versions"* ]]
+    [[ "$output" == *"Would delete version 102"* ]]
+}
+
+@test "purge_ghcr rejects a non-array first paginated page even when a later page is valid" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="true" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            gh() { printf "%s\\n" "{}" "[]"; }
+            main broken
+        '
+
+    if [[ "$status" -ne 1 ]]; then
+        echo "ASSERTION FAILED: expected a non-array first page to refuse the listing" >&2
+        return 1
+    fi
+    [[ "$output" == *"GHCR version listing was not a JSON array; skipping broken"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+    [[ "$output" == *"Registry listing failures: 1"* ]]
+}
+
+@test "a successful Docker Hub assessment counts when GHCR listing fails" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="true" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            gh() { return 1; }
+            purge_dockerhub() { printf "%s\\n" "1|0"; }
+            main broken
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+    [[ "$output" == *"Registry listing failures: 1"* ]]
+}
+
+@test "sourcing is inert and script_root uses BASH_SOURCE rather than the caller directory" {
+    run env -u GH_TOKEN -u OWNER bash -c '
+        set -e
+        before=$(set +o)
+        cd /
+        source "$1"
+        after=$(set +o)
+        [[ "$before" == "$after" ]]
+        [[ "$(script_root)" == "$2" ]]
+    ' _ "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh" "$PROJECT_ROOT"
+
+    [[ "$status" -eq 0 ]]
+    [[ -z "$output" ]]
+}
+
+@test "workflow attempts both registry pruners and fails after either failure" {
+    local workflow purge_step
+    workflow=$(<"$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml")
+    purge_step=$(sed -n '/- name: Purge obsolete images/,/- name: Fail if registry cleanup failed/p' "$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml")
+
+    [[ "$workflow" == *"id: cleanup_old_versions"* ]]
+    [[ "$workflow" == *"id: purge_obsolete_images"* ]]
+    [[ "$purge_step" == *"continue-on-error: true"* ]]
+    [[ "$purge_step" == *"always() && (github.event_name == 'schedule' || inputs.purge_obsolete == true)"* ]]
+    [[ "$workflow" == *"steps.cleanup_old_versions.outcome }}\" == \"failure\" || \"\${{ steps.purge_obsolete_images.outcome"* ]]
+
+    # This is the failure path that GitHub Actions evaluates: continue-on-error
+    # preserves the age-pruner outcome while always() still starts the second
+    # pruner, then the final gate fails the job.
+    run bash -c '
+        printf "%s\\n" "Cleanup old versions ran (failure)"
+        [[ "$1" == *"continue-on-error: true"* ]]
+        [[ "$2" == *"always() && (github.event_name == '\''schedule'\'' || inputs.purge_obsolete == true)"* ]]
+        printf "%s\\n" "Purge obsolete images ran"
+        [[ "$1" == *"steps.cleanup_old_versions.outcome }}\" == \"failure\" || \"\${{ steps.purge_obsolete_images.outcome"* ]]
+    ' _ "$workflow" "$purge_step"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Cleanup old versions ran (failure)"* ]]
+    [[ "$output" == *"Purge obsolete images ran"* ]]
+}
+
+@test "purge_ghcr delete failure is counted and returned as a failed completed run" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then
+                    echo "gh: delete denied" >&2
+                    return 1
+                fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:stale\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"gh: delete denied"* ]]
+    [[ "$output" == *"Failed to delete"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphans=0, delete_failures=1"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+    [[ "$output" == *"Registry listing failures: 0"* ]]
+    [[ "$output" == *"GHCR — delete failures: 1"* ]]
+}
+
+@test "a failed post-delete GHCR cleanup still reports successful deletions" {
+    cat > "$_STUB_DIR/rm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${RM_CALLS:-}" ]]; then
+    exec /bin/rm "$@"
+fi
+
+calls=0
+[[ -f "$RM_CALLS" ]] && calls=$(<"$RM_CALLS")
+calls=$((calls + 1))
+printf '%s\n' "$calls" > "$RM_CALLS"
+exit 1
+EOF
+    chmod +x "$_STUB_DIR/rm"
+    local rm_calls="$_STUB_DIR/rm-calls"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        PATH="$_STUB_DIR:$PATH" \
+        RM_CALLS="$rm_calls" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then
+                    return 0
+                fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:stale\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"Failed to remove GHCR work files after cleanup"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphans=0, delete_failures=0"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+    [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+    [[ "$output" == *"GHCR — kept: 0, obsolete: 1, orphans: 0"* ]]
 }

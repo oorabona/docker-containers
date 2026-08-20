@@ -43,6 +43,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Cleanup old versions
+        id: cleanup_old_versions
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
@@ -50,12 +52,14 @@ jobs:
         run: ./scripts/cleanup-old-versions.sh
 
       - name: Install yq
-        if: github.event_name == 'schedule' || inputs.purge_obsolete == true
+        if: ${{ always() && (github.event_name == 'schedule' || inputs.purge_obsolete == true) }}
         shell: bash
         run: yq --version
 
       - name: Purge obsolete images
-        if: github.event_name == 'schedule' || inputs.purge_obsolete == true
+        id: purge_obsolete_images
+        continue-on-error: true
+        if: ${{ always() && (github.event_name == 'schedule' || inputs.purge_obsolete == true) }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
@@ -68,6 +72,13 @@ jobs:
             ./scripts/cleanup-outdated-tags.sh "$CONTAINER_FILTER"
           else
             ./scripts/cleanup-outdated-tags.sh
+          fi
+
+      - name: Fail if registry cleanup failed
+        if: ${{ always() }}
+        run: |
+          if [[ "${{ steps.cleanup_old_versions.outcome }}" == "failure" || "${{ steps.purge_obsolete_images.outcome }}" == "failure" ]]; then
+            exit 1
           fi
 
   cleanup-ext-images:
