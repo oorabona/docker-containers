@@ -54,9 +54,13 @@ is_valid_tag() {
 }
 
 purge_ghcr() {
+  # 10 listing failure, 11 processing failure, 12 delete failure, 13 failure
+  # after complete assessment, and 15 protection failure.  Replaying either
+  # completed deletion list is execution, so a replay failure returns 13.
   local container="$1" valid_tags="$2"
   local versions version_count versions_file="" obsolete_file="" protected_file=""
-  local version_id digest tags tag has_valid kept=0 obsolete=0 orphans=0 delete_failures=0
+  local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 deletion_read_error=0
+  local record_b64 record_json
   local protected_digests="" ghcr_token manifest children
   local -a kept_digests=()
 
@@ -93,7 +97,7 @@ purge_ghcr() {
     echo "  ✗ Failed to create GHCR work files; skipping $container" >&2
     return "$PROCESSING_FAILURE"
   fi
-  if ! jq -er '.[] | "\(.id)|\(.name)|\(.metadata.container.tags // [] | join(","))"' <<< "$versions" > "$versions_file"; then
+  if ! jq -er '.[] | {id: (.id | tostring), digest: .name, tags: (.metadata.container.tags // [])} | @base64' <<< "$versions" > "$versions_file"; then
     cleanup_files
     echo "  ✗ Failed to prepare GHCR version list; skipping $container" >&2
     return "$PROCESSING_FAILURE"
@@ -104,16 +108,30 @@ purge_ghcr() {
     return "$PROCESSING_FAILURE"
   fi
 
-  while IFS='|' read -r version_id digest tags; do
-    [[ -z "$version_id" || -z "$tags" ]] && continue
+  while IFS= read -r record_b64; do
+    [[ -z "$record_b64" ]] && continue
+    if ! record_json=$(printf '%s' "$record_b64" | base64 -d) \
+      || ! version_id=$(jq -er '.id' <<< "$record_json") \
+      || ! digest=$(jq -er '.digest' <<< "$record_json") \
+      || ! tags=$(jq -er '.tags | join(",")' <<< "$record_json"); then
+      cleanup_files
+      echo "  ✗ Failed to read GHCR version record; skipping $container" >&2
+      return "$PROCESSING_FAILURE"
+    fi
+    [[ -z "$tags" ]] && continue
     has_valid=false
-    for tag in $(tr ',' ' ' <<< "$tags"); do
+    if ! tag_list=$(jq -r '.tags[]' <<< "$record_json"); then
+      cleanup_files
+      echo "  ✗ Failed to read GHCR version tags; skipping $container" >&2
+      return "$PROCESSING_FAILURE"
+    fi
+    while IFS= read -r tag; do
       if is_valid_tag "$tag" "$valid_tags"; then has_valid=true; break; fi
-    done
+    done <<< "$tag_list"
     if [[ "$has_valid" == true ]]; then
       echo "  ✓ Keep (tags: $tags)" >&2
       kept=$((kept + 1)); kept_digests+=("$digest")
-    elif ! printf '%s|%s|%s\n' "$version_id" "$digest" "$tags" >> "$obsolete_file"; then
+    elif ! printf '%s\n' "$record_b64" >> "$obsolete_file"; then
       cleanup_files
       echo "  ✗ Failed to write GHCR obsolete list; skipping $container" >&2
       return "$PROCESSING_FAILURE"
@@ -128,12 +146,12 @@ purge_ghcr() {
         "https://ghcr.io/token?service=ghcr.io&scope=repository:${OWNER}/${container}:pull" | jq -er '.token'); then
       cleanup_files
       echo "  ✗ Failed to get GHCR token; skipping $container" >&2
-      return "$PROCESSING_FAILURE"
+      return "$PROTECTION_FAILURE"
     fi
     if ! protected_file=$(mktemp) || ! printf '%s\n' "${kept_digests[@]}" > "$protected_file"; then
       cleanup_files
       echo "  ✗ Failed to prepare protected-digest list; skipping $container" >&2
-      return "$PROCESSING_FAILURE"
+      return "$PROTECTION_FAILURE"
     fi
     for digest in "${kept_digests[@]}"; do
       if ! manifest=$(curl -sf -H "Authorization: Bearer $ghcr_token" \
@@ -141,33 +159,41 @@ purge_ghcr() {
         "https://ghcr.io/v2/${OWNER}/${container}/manifests/${digest}"); then
         cleanup_files
         echo "  ✗ Failed to fetch manifest for ${digest:0:19}; skipping $container" >&2
-        return "$PROCESSING_FAILURE"
+        return "$PROTECTION_FAILURE"
       fi
       if ! jq -e 'type == "object"' >/dev/null <<< "$manifest"; then
         cleanup_files
         echo "  ✗ Failed to parse manifest for ${digest:0:19}; skipping $container" >&2
-        return "$PROCESSING_FAILURE"
+        return "$PROTECTION_FAILURE"
       fi
       if ! children=$(jq -r '.manifests[]?.digest // empty' <<< "$manifest"); then
         cleanup_files
         echo "  ✗ Failed to read manifest for ${digest:0:19}; skipping $container" >&2
-        return "$PROCESSING_FAILURE"
+        return "$PROTECTION_FAILURE"
       fi
       if [[ -n "$children" ]] && ! printf '%s\n' "$children" >> "$protected_file"; then
         cleanup_files
         echo "  ✗ Failed to write protected-digest list; skipping $container" >&2
-        return "$PROCESSING_FAILURE"
+        return "$PROTECTION_FAILURE"
       fi
     done
     if ! protected_digests=$(sort -u "$protected_file"); then
       cleanup_files
       echo "  ✗ Failed to read protected-digest list; skipping $container" >&2
-      return "$PROCESSING_FAILURE"
+      return "$PROTECTION_FAILURE"
     fi
   fi
 
-  while IFS='|' read -r version_id digest tags; do
-    [[ -z "$version_id" ]] && continue
+  while IFS= read -r record_b64; do
+    [[ -z "$record_b64" ]] && continue
+    if ! record_json=$(printf '%s' "$record_b64" | base64 -d) \
+      || ! version_id=$(jq -er '.id' <<< "$record_json") \
+      || ! digest=$(jq -er '.digest' <<< "$record_json") \
+      || ! tags=$(jq -er '.tags | join(",")' <<< "$record_json"); then
+      echo "  ✗ Failed to read prepared GHCR deletion record; skipping $container" >&2
+      deletion_read_error=1
+      break
+    fi
     if [[ -n "$protected_digests" ]] && grep -qxF "$digest" <<< "$protected_digests"; then
       echo "  ✓ Keep (tags: $tags) — digest is manifest child" >&2; kept=$((kept + 1))
     else
@@ -184,8 +210,26 @@ purge_ghcr() {
     fi
   done < "$obsolete_file"
 
-  while IFS='|' read -r version_id digest tags; do
-    [[ -z "$version_id" || -n "$tags" ]] && continue
+  if [[ "$deletion_read_error" -ne 0 ]]; then
+    if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
+      cleanup_files
+      return "$PROCESSING_FAILURE"
+    fi
+    cleanup_files
+    return "$POST_DELETE_PROCESSING_FAILURE"
+  fi
+
+  while IFS= read -r record_b64; do
+    [[ -z "$record_b64" ]] && continue
+    if ! record_json=$(printf '%s' "$record_b64" | base64 -d) \
+      || ! version_id=$(jq -er '.id' <<< "$record_json") \
+      || ! digest=$(jq -er '.digest' <<< "$record_json") \
+      || ! tags=$(jq -er '.tags | join(",")' <<< "$record_json"); then
+      echo "  ✗ Failed to read GHCR version record; skipping $container" >&2
+      deletion_read_error=1
+      break
+    fi
+    [[ -n "$tags" ]] && continue
     if [[ -n "$protected_digests" ]] && grep -qxF "$digest" <<< "$protected_digests"; then
       kept=$((kept + 1))
     else
@@ -201,6 +245,14 @@ purge_ghcr() {
       orphans=$((orphans + 1))
     fi
   done < "$versions_file"
+  if [[ "$deletion_read_error" -ne 0 ]]; then
+    if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
+      cleanup_files
+      return "$PROCESSING_FAILURE"
+    fi
+    cleanup_files
+    return "$POST_DELETE_PROCESSING_FAILURE"
+  fi
   if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
     return "$PROCESSING_FAILURE"
   fi
@@ -264,9 +316,13 @@ main() {
   ROOT_DIR=$(script_root) || return 1
   export ROOT_DIR
 
-  local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13
+  # 14 is reserved for a distinct uninterpretable-record producer.  Current
+  # decoding failures are processing failures (11).  16 is reserved for a
+  # future partial-assessment producer; this plan-then-delete implementation
+  # deliberately has none, and replay failures are post-complete (13).
+  local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
   local containers container valid_tags valid_count result ghcr_status dh_result dh_status
-  local kept obsolete orphans delete_failures dh_assessed dh_deleted package_assessed
+  local kept obsolete orphans delete_failures dh_assessed dh_deleted package_assessed skip_dockerhub
   local total_assessed=0 total_build_failures=0 total_listing_failures=0 total_processing_failures=0 total_ghcr_delete_failures=0 total_dh_delete_failures=0
   local total_kept=0 total_obsolete=0 total_orphans=0 total_dh_deleted=0
   if [[ $# -gt 0 ]]; then containers="$*"; else containers=$("$ROOT_DIR/make" list) || return 1; fi
@@ -279,21 +335,38 @@ main() {
     valid_count=$(wc -l <<< "$valid_tags")
     echo "  Valid tags ($valid_count total):"; printf '    %s\n' "${valid_tags//$'\n'/$'\n    '}"
     package_assessed=false
+    skip_dockerhub=false
 
     if result=$(purge_ghcr "$container" "$valid_tags"); then ghcr_status=0; else ghcr_status=$?; fi
     case "$ghcr_status" in
       0|"$DELETE_FAILURE"|"$POST_DELETE_PROCESSING_FAILURE")
         if ! IFS='|' read -r kept obsolete orphans delete_failures <<< "$result"; then
-          echo "  ✗ Failed to read GHCR cleanup result; skipping $container"; total_processing_failures=$((total_processing_failures + 1))
+          echo "  ✗ Failed to read GHCR cleanup result; skipping $container"; total_processing_failures=$((total_processing_failures + 1)); skip_dockerhub=true
         else
           package_assessed=true; total_kept=$((total_kept + kept)); total_obsolete=$((total_obsolete + obsolete)); total_orphans=$((total_orphans + orphans)); total_ghcr_delete_failures=$((total_ghcr_delete_failures + delete_failures))
           echo "  GHCR summary: kept=$kept, obsolete=$obsolete, orphans=$orphans, delete_failures=$delete_failures"
           [[ "$ghcr_status" -ne "$POST_DELETE_PROCESSING_FAILURE" ]] || total_processing_failures=$((total_processing_failures + 1))
         fi ;;
-      "$LISTING_FAILURE") total_listing_failures=$((total_listing_failures + 1)) ;;
-      "$PROCESSING_FAILURE") total_processing_failures=$((total_processing_failures + 1)) ;;
-      *) echo "  ✗ Unexpected GHCR cleanup status $ghcr_status; skipping $container"; total_processing_failures=$((total_processing_failures + 1)) ;;
+      "$LISTING_FAILURE") total_listing_failures=$((total_listing_failures + 1)); skip_dockerhub=true ;;
+      "$PROCESSING_FAILURE"|"$UNINTERPRETABLE_RECORD_FAILURE"|"$PROTECTION_FAILURE") total_processing_failures=$((total_processing_failures + 1)); skip_dockerhub=true ;;
+      # Reserved fail-closed status; see the declaration above.  A status 16
+      # caller has not supplied a completed assessment, so Docker Hub stays off.
+      "$INCOMPLETE_DELETION_FAILURE")
+        if ! IFS='|' read -r kept obsolete orphans delete_failures <<< "$result"; then
+          echo "  ✗ Failed to read incomplete GHCR cleanup result; skipping $container"
+        else
+          total_kept=$((total_kept + kept)); total_obsolete=$((total_obsolete + obsolete)); total_orphans=$((total_orphans + orphans)); total_ghcr_delete_failures=$((total_ghcr_delete_failures + delete_failures))
+          echo "  GHCR summary: kept=$kept, obsolete=$obsolete, orphans=$orphans, delete_failures=$delete_failures"
+        fi
+        total_processing_failures=$((total_processing_failures + 1)); skip_dockerhub=true
+        ;;
+      *) echo "  ✗ Unexpected GHCR cleanup status $ghcr_status; skipping $container"; total_processing_failures=$((total_processing_failures + 1)); skip_dockerhub=true ;;
     esac
+
+    if [[ "$skip_dockerhub" == true ]]; then
+      echo "  Docker Hub cleanup skipped: GHCR safety assessment was incomplete"
+      continue
+    fi
 
     if dh_result=$(purge_dockerhub "$container" "$valid_tags"); then dh_status=0; else dh_status=$?; fi
     case "$dh_status" in

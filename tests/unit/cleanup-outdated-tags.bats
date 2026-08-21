@@ -42,6 +42,37 @@ make_valid_tags() {
     printf '%s\n' "$@"
 }
 
+assert_tag_decode_failure_stops_before_delete() {
+    local log_file="$1"
+    if [[ "$status" -ne 1 || -s "$log_file" || "$output" != *"Failed to read GHCR version tags; skipping protected"* ]]; then
+        echo "ASSERTION FAILED: tag decode failure must stop the package before DELETE" >&2
+        return 1
+    fi
+}
+
+assert_preplan_failure_is_unassessed_and_skips_dockerhub() {
+    local call_file="$1"
+    if [[ "$output" != *"Packages assessed: 0"* || -s "$call_file" ]]; then
+        echo "ASSERTION FAILED: a pre-plan failure must stay unassessed and Docker Hub must not run" >&2
+        return 1
+    fi
+}
+
+assert_prepared_decode_preserves_delete_totals() {
+    if [[ "$output" != *"GHCR summary: kept=0, obsolete=1, orphans=0, delete_failures=0"* || "$output" != *"Packages assessed: 1"* ]]; then
+        echo "ASSERTION FAILED: a completed GHCR plan must keep successful deletes in the totals and assess the package" >&2
+        return 1
+    fi
+}
+
+assert_dockerhub_called_after_complete_ghcr_plan() {
+    local call_file="$1"
+    if [[ ! -s "$call_file" ]]; then
+        echo "ASSERTION FAILED: Docker Hub must run after a completed GHCR plan even when its execution fails" >&2
+        return 1
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Direct-match tests (regression: existing behaviour must be preserved)
 # ---------------------------------------------------------------------------
@@ -292,9 +323,12 @@ make_valid_tags() {
     [[ "$output" == *"Registry listing failures: 1"* ]]
 }
 
-@test "a successful Docker Hub assessment counts when GHCR listing fails" {
+@test "Docker Hub is called only after every GHCR assessment status is complete" {
+    local dockerhub_calls="$_STUB_DIR/dockerhub-calls"
+
     run env \
         PROJECT_ROOT="$PROJECT_ROOT" \
+        DOCKERHUB_CALLS="$dockerhub_calls" \
         GH_TOKEN="$GH_TOKEN" \
         OWNER="$OWNER" \
         DRY_RUN="true" \
@@ -302,14 +336,37 @@ make_valid_tags() {
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" "latest"; }
-            gh() { return 1; }
-            purge_dockerhub() { printf "%s\\n" "1|0"; }
-            main broken
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            for expectation in success:0:complete:success listing:10:incomplete:failure processing:11:incomplete:failure delete:12:complete:failure post-complete:13:complete:failure uninterpretable:14:incomplete:failure protection:15:incomplete:failure incomplete-delete:16:incomplete:failure unexpected:99:incomplete:failure; do
+                name=${expectation%%:*}; remainder=${expectation#*:}; stub_ghcr_status=${remainder%%:*}; remainder=${remainder#*:}; assessment=${remainder%%:*}; expected_run=${remainder#*:}
+                : > "$DOCKERHUB_CALLS"
+                purge_ghcr() {
+                    if [[ "$stub_ghcr_status" -eq 12 ]]; then printf "%s\\n" "0|0|0|1"; else printf "%s\\n" "0|0|0|0"; fi
+                    return "$stub_ghcr_status"
+                }
+                if main stale; then main_result=success; else main_result=failure; fi
+                if [[ "$main_result" != "$expected_run" ]]; then
+                    echo "ASSERTION FAILED: GHCR $name status returned $main_result instead of $expected_run" >&2
+                    exit 1
+                fi
+                if [[ "$assessment" == incomplete && -s "$DOCKERHUB_CALLS" ]]; then
+                    echo "ASSERTION FAILED: Docker Hub was called while GHCR $name protection was incomplete" >&2
+                    exit 1
+                fi
+                if [[ "$assessment" == complete && ! -s "$DOCKERHUB_CALLS" ]]; then
+                    echo "ASSERTION FAILED: Docker Hub was not called after complete GHCR $name assessment" >&2
+                    exit 1
+                fi
+            done
+            exit 0
         '
 
-    [[ "$status" -eq 1 ]]
-    [[ "$output" == *"Packages assessed: 1"* ]]
-    [[ "$output" == *"Registry listing failures: 1"* ]]
+    if [[ "$status" -ne 0 ]]; then
+        echo "ASSERTION FAILED: Docker Hub completion guard test exited unexpectedly" >&2
+        echo "$output" >&2
+        return 1
+    fi
+    [[ "$output" == *"Docker Hub cleanup skipped: GHCR safety assessment was incomplete"* ]]
 }
 
 @test "sourcing is inert and script_root uses BASH_SOURCE rather than the caller directory" {
@@ -427,4 +484,75 @@ EOF
     [[ "$output" == *"Packages assessed: 1"* ]]
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
     [[ "$output" == *"GHCR — kept: 0, obsolete: 1, orphans: 0"* ]]
+}
+
+@test "a tag decode failure stops a protecting GHCR version before DELETE" {
+    local gh_log="$_STUB_DIR/gh.log"
+    local dockerhub_calls="$_STUB_DIR/dockerhub-calls"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$gh_log" \
+        DOCKERHUB_CALLS="$dockerhub_calls" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:protected\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}}]"
+            }
+            jq() {
+                if [[ "${!#}" == ".tags[]" ]]; then echo "jq: tag decode exhausted" >&2; return 1; fi
+                command jq "$@"
+            }
+            main protected
+        '
+
+    assert_tag_decode_failure_stops_before_delete "$gh_log"
+    assert_preplan_failure_is_unassessed_and_skips_dockerhub "$dockerhub_calls"
+    [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+}
+
+@test "a prepared GHCR deletion decode failure assesses the completed plan, reports the DELETE, and runs Docker Hub" {
+    local gh_log="$_STUB_DIR/gh.log"
+    local base64_calls="$_STUB_DIR/base64-calls"
+    local dockerhub_calls="$_STUB_DIR/dockerhub-calls"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$gh_log" \
+        BASE64_CALLS="$base64_calls" \
+        DOCKERHUB_CALLS="$dockerhub_calls" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:first\",\"metadata\":{\"container\":{\"tags\":[\"stale-first\"]}}},{\"id\":102,\"name\":\"sha256:second\",\"metadata\":{\"container\":{\"tags\":[\"stale-second\"]}}}]"
+            }
+            base64() {
+                calls=0; [[ -f "$BASE64_CALLS" ]] && calls=$(<"$BASE64_CALLS")
+                calls=$((calls + 1)); printf "%s\\n" "$calls" > "$BASE64_CALLS"
+                [[ "$calls" -lt 4 ]] || { echo "base64: prepared record lost" >&2; return 1; }
+                command base64 "$@"
+            }
+            main stale
+        '
+
+    assert_dockerhub_called_after_complete_ghcr_plan "$dockerhub_calls"
+    [[ "$status" -eq 1 ]]
+    [[ "$(<"$gh_log")" == *"/versions/101"* ]]
+    [[ "$(<"$gh_log")" != *"/versions/102"* ]]
+    assert_prepared_decode_preserves_delete_totals
+    [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
 }
