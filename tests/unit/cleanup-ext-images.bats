@@ -143,6 +143,23 @@ _run_cleanup_main_with_records() {
     ! _parse_ext_managed_tag "other-image-tag"
 }
 
+@test "GHCR record contract keeps tags as an array and exposes whether they were observed" {
+    gh() {
+        printf '%s\n' '[{"id":1,"metadata":{"container":{"tags":[]}}},{"id":2,"metadata":{"container":{"tags":null}}}]'
+    }
+
+    run _list_ghcr_ext_version_records "ext-timescaledb"
+    unset -f gh
+
+    [[ "$status" -eq 0 ]]
+    command jq -e '
+      . == [
+        {version_id: "1", name: "", tags: [], tags_observed: true, updated_at: ""},
+        {version_id: "2", name: "", tags: [], tags_observed: false, updated_at: ""}
+      ]
+    ' <<< "$output" >/dev/null
+}
+
 @test "mixed-tag version record is kept; separate all-stale record is selected" {
     local records_file="$TEST_TEMP_DIR/mixed-records.json"
     local windows_dir="$TEST_TEMP_DIR/windows"
@@ -172,7 +189,7 @@ EOF
     [[ "$output" != *"Would delete ext-timescaledb version_id=101"* ]]
     [[ "$output" == *"PRUNE version_id=102"* ]]
     [[ "$output" == *"[DRY-RUN] Would delete ext-timescaledb version_id=102"* ]]
-    [[ "$output" == *"Summary: kept=1, pruned=1, failed=0"* ]]
+    [[ "$output" == *"Summary: kept=1, would_delete=1, deleted=0, failed=0"* ]]
     [[ ! -f "$delete_calls_file" ]]
 }
 
@@ -202,7 +219,7 @@ EOF
     [[ "$output" != *"PRUNE version_id=203"* ]]
     [[ "$output" == *"PRUNE version_id=204"* ]]
     [[ "$output" == *"PRUNE version_id=205"* ]]
-    [[ "$output" == *"Summary: kept=3, pruned=2, failed=0"* ]]
+    [[ "$output" == *"Summary: kept=3, would_delete=2, deleted=0, failed=0"* ]]
     [[ ! -f "$delete_calls_file" ]]
 }
 
@@ -225,7 +242,8 @@ EOF
     [[ "$output" == *"Registry PG majors: 15"* ]]
     [[ "$output" == *"PG major: 15"* ]]
     [[ "$output" == *"PRUNE version_id=301"* ]]
-    [[ "$output" == *"Version records pruned: 1"* ]]
+    [[ "$output" == *"Version records that would be deleted: 1"* ]]
+    [[ "$output" == *"Version records deleted: 0"* ]]
     [[ ! -f "$delete_calls_file" ]]
 }
 
@@ -247,7 +265,14 @@ EOF
     [[ "$output" == *"Resolver failed for timescaledb/pg15"* ]]
     [[ "$output" == *"KEEP  version_id=311"* ]]
     [[ "$output" == *"window unknown for pg15: pg15-2.23.0"* ]]
-    [[ "$output" == *"Summary: kept=1, pruned=0, failed=0"* ]]
+    if [[ "$output" != *"Candidate records kept (analysis inconclusive): 1"* ]]; then
+        printf '%s\n' 'ASSERTION FAILED: a record with no computed major window must be counted as inconclusive'
+        return 1
+    fi
+    if [[ "$output" != *"Summary: kept=1, would_delete=0, deleted=0, failed=1 (delete_failures=0, reread_failures=0, analysis_inconclusive=1, listing_failures=0)"* ]]; then
+        printf '%s\n' 'ASSERTION FAILED: per-extension summary must count an inconclusive record as a failure'
+        return 1
+    fi
     [[ ! -f "$delete_calls_file" ]]
 }
 
@@ -359,7 +384,7 @@ EOF
     [[ "$output" == *"contains unmanaged/unparseable tag: pg17-latest"* ]]
     [[ "$output" == *"KEEP  version_id=402"* ]]
     [[ "$output" == *"contains unmanaged/unparseable tag: latest"* ]]
-    [[ "$output" == *"Summary: kept=2, pruned=0, failed=0"* ]]
+    [[ "$output" == *"Summary: kept=2, would_delete=0, deleted=0, failed=0"* ]]
     [[ ! -f "$delete_calls_file" ]]
 }
 
@@ -389,7 +414,75 @@ EOF
     [[ "$output" != *"PRUNE version_id=452"* ]]
     [[ "$output" == *"PRUNE version_id=453"* ]]
     [[ "$output" == *"[DRY-RUN] Would delete ext-timescaledb version_id=453"* ]]
-    [[ "$output" == *"Summary: kept=2, pruned=1, failed=0"* ]]
+    [[ "$output" == *"Summary: kept=2, would_delete=1, deleted=0, failed=0"* ]]
+    [[ ! -f "$delete_calls_file" ]]
+}
+
+@test "listing record without metadata.container tags is inconclusive and makes dry-run non-zero" {
+    local records_file="$TEST_TEMP_DIR/missing-list-tags-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/missing-list-tags-deletes"
+
+    printf '%s\n' '[{"id":701}]' > "$records_file"
+    _write_window "$windows_dir" "17" '["2.27.1"]'
+
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success"
+
+    if [[ "$status" -eq 0 || "$output" != *"Candidate records kept (analysis inconclusive): 1"* ]]; then
+        printf '%s\n' 'ASSERTION FAILED: absent tag metadata must make the run non-zero with the record counted as inconclusive'
+        return 1
+    fi
+    [[ "$output" == *"KEEP  version_id=701 (tags: (tag enumeration unavailable)) — analysis inconclusive: tags were not observed; keeping record fail-closed"* ]]
+    [[ "$output" == *"Version records kept  : 1"* ]]
+    [[ ! -f "$delete_calls_file" ]]
+}
+
+@test "invalid PG_VERSIONS still classifies a record whose tags were not observed" {
+    local records_file="$TEST_TEMP_DIR/no-major-unobserved-tags-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/no-major-unobserved-tags-deletes"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 701, "metadata": { "container": { "tags": null } } }
+]
+EOF
+
+    export PG_VERSIONS=x
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success"
+    unset PG_VERSIONS
+
+    if [[ "$status" -eq 0 \
+        || "$output" != *"Summary: kept=1, would_delete=0, deleted=0, failed=1 (delete_failures=0, reread_failures=0, analysis_inconclusive=1, listing_failures=0)"* \
+        || "$output" != *"Candidate records kept (analysis inconclusive): 1"* ]]; then
+        printf '%s\n' 'ASSERTION FAILED: PG_VERSIONS=x with an unobserved tag record must exit non-zero and count the record as analysis inconclusive'
+        return 1
+    fi
+    [[ "$output" == *"No PG majors to resolve — classifying records without retention windows"* ]]
+    [[ "$output" == *"KEEP  version_id=701 (tags: (tag enumeration unavailable)) — analysis inconclusive: tags were not observed; keeping record fail-closed"* ]]
+    [[ ! -f "$delete_calls_file" ]]
+}
+
+@test "no resolvable PG major still definitely keeps observed empty and foreign tag records" {
+    local records_file="$TEST_TEMP_DIR/no-major-observed-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/no-major-observed-deletes"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 711, "metadata": { "container": { "tags": [] } } },
+  { "id": 712, "metadata": { "container": { "tags": ["latest"] } } }
+]
+EOF
+
+    export PG_VERSIONS=x
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success"
+    unset PG_VERSIONS
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"KEEP  version_id=711 (tags: (none)) — no tags on version record; fail-closed"* ]]
+    [[ "$output" == *"KEEP  version_id=712 (tags: latest) — contains unmanaged/unparseable tag: latest"* ]]
+    [[ "$output" == *"Summary: kept=2, would_delete=0, deleted=0, failed=0 (delete_failures=0, reread_failures=0, analysis_inconclusive=0, listing_failures=0)"* ]]
     [[ ! -f "$delete_calls_file" ]]
 }
 
@@ -494,8 +587,8 @@ EOF
     grep -q "DELETE:501" "$delete_calls_file"
     [[ "$output" == *"PRUNE version_id=501"* ]]
     [[ "$output" == *"Failed to delete ext-timescaledb version_id=501"* ]]
-    [[ "$output" == *"Summary: kept=0, pruned=0, failed=1"* ]]
-    [[ "$output" == *"Version records pruned: 0"* ]]
+    [[ "$output" == *"Summary: kept=0, would_delete=0, deleted=0, failed=1"* ]]
+    [[ "$output" == *"Version records deleted: 0"* ]]
     [[ "$output" == *"Delete failures: 1"* ]]
 }
 
@@ -518,8 +611,8 @@ EOF
     grep -q "DELETE:502" "$delete_calls_file"
     [[ "$output" == *"PRUNE version_id=502"* ]]
     [[ "$output" == *"Deleted ext-timescaledb version_id=502"* ]]
-    [[ "$output" == *"Summary: kept=0, pruned=1, failed=0"* ]]
-    [[ "$output" == *"Version records pruned: 1"* ]]
+    [[ "$output" == *"Summary: kept=0, would_delete=0, deleted=1, failed=0"* ]]
+    [[ "$output" == *"Version records deleted: 1"* ]]
     [[ "$output" == *"Delete failures: 0"* ]]
 }
 
@@ -541,7 +634,11 @@ EOF
     [[ "$output" == *"DRY-RUN MODE"* ]]
     [[ "$output" == *"PRUNE version_id=601"* ]]
     [[ "$output" == *"[DRY-RUN] Would delete ext-timescaledb version_id=601"* ]]
-    [[ "$output" == *"Version records pruned: 1"* ]]
+    if [[ "$output" != *"Version records deleted: 0"* ]]; then
+        printf '%s\n' 'ASSERTION FAILED: dry-run summary must report zero deleted records'
+        return 1
+    fi
+    [[ "$output" == *"Version records that would be deleted: 1"* ]]
     [[ ! -f "$delete_calls_file" ]]
 }
 
@@ -588,6 +685,30 @@ EOF
     [[ "$output" == *"KEEP  version_id=701"* ]]
     [[ "$output" == *"re-read before deletion: contains retained tag: pg17-2.27.1"* ]]
     [[ "$output" != *"PRUNE version_id=701"* ]]
+    [[ ! -f "$delete_calls_file" ]]
+}
+
+@test "execute mode treats a re-read without metadata.container tags as inconclusive" {
+    local records_file="$TEST_TEMP_DIR/missing-reread-tags-listing-records.json"
+    local reread_records_file="$TEST_TEMP_DIR/missing-reread-tags-records.json"
+    local windows_dir="$TEST_TEMP_DIR/windows"
+    local delete_calls_file="$TEST_TEMP_DIR/missing-reread-tags-delete-calls"
+
+    cat > "$records_file" <<'EOF'
+[
+  { "id": 701, "metadata": { "container": { "tags": ["pg17-2.23.0"] } } }
+]
+EOF
+    printf '%s\n' '[{"id":701}]' > "$reread_records_file"
+    _write_window "$windows_dir" "17" '["2.27.1"]'
+
+    export CLEANUP_REREAD_RECORDS_FILE="$reread_records_file"
+    _run_cleanup_main_with_records "$records_file" "$windows_dir" "success" "$delete_calls_file" "success" --execute
+    unset CLEANUP_REREAD_RECORDS_FILE
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"KEEP  version_id=701 (tags: (tag enumeration unavailable)) — re-read before deletion inconclusive: tags were not observed; keeping record fail-closed"* ]]
+    [[ "$output" == *"Candidate records kept (analysis inconclusive): 1"* ]]
     [[ ! -f "$delete_calls_file" ]]
 }
 

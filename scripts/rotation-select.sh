@@ -244,6 +244,10 @@ main() {
         listed_extension[$ext_name]=1
         if records_json=$(_list_ghcr_ext_version_records "ext-${ext_name}"); then
             records_by_extension[$ext_name]="$records_json"
+            if ! jq -e 'all(.[]; .tags_observed == true)' <<< "$records_json" >/dev/null; then
+                registry_failure=true
+                log_error "GHCR version listing for ext-${ext_name} has unobserved tags; refusing to select from incomplete registry data"
+            fi
         else
             registry_failure=true
             records_by_extension[$ext_name]='[]'

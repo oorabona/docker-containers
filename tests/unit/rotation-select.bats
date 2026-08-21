@@ -104,6 +104,31 @@ _duplicate_canonical_record() {
     mv "$fixture.next" "$fixture"
 }
 
+_replace_with_unobserved_record() {
+    local ext_name="$1"
+    local fixture="$GH_FIXTURE_DIR/ext-${ext_name}.json"
+
+    jq -cn '[{
+      id: 100,
+      name: "sha256:unobserved",
+      updated_at: "2020-01-01T00:00:00Z",
+      metadata: {container: {tags: null}}
+    }]' > "$fixture"
+}
+
+_append_unobserved_record() {
+    local ext_name="$1"
+    local fixture="$GH_FIXTURE_DIR/ext-${ext_name}.json"
+
+    jq '. + [{
+      id: 100,
+      name: "sha256:unobserved",
+      updated_at: "2020-01-01T00:00:00Z",
+      metadata: {container: {tags: null}}
+    }]' "$fixture" > "$fixture.next"
+    mv "$fixture.next" "$fixture"
+}
+
 _expected_full_pairs() {
     local pg_major
     while IFS= read -r pg_major; do
@@ -342,6 +367,48 @@ _output_value() {
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"GHCR version listing failed"* ]]
     [[ "$output" != *$'pgvector\t17\t0.8.6\tunknown'* ]]
+}
+
+@test "an extension listing whose only record has unobserved tags selects nothing and exits non-zero" {
+    _replace_with_unobserved_record pgvector
+
+    _run_selector
+
+    if [[ "$status" -eq 0 \
+        || "$output" == *"Selected pair:"* \
+        || "$(_output_value selected)" != "false" ]]; then
+        printf '%s\n' 'ASSERTION FAILED: an extension listing whose only record has unobserved tags must exit non-zero and select no pair'
+        return 1
+    fi
+    [[ "$output" == *"GHCR version listing for ext-pgvector has unobserved tags"* ]]
+}
+
+@test "an unobserved record alongside a canonical tag selects nothing and exits non-zero" {
+    _append_unobserved_record pgvector
+
+    _run_selector
+
+    if [[ "$status" -eq 0 \
+        || "$output" == *"Selected pair:"* \
+        || "$(_output_value selected)" != "false" ]]; then
+        printf '%s\n' 'ASSERTION FAILED: an unobserved record alongside a canonical tag must exit non-zero and select no pair'
+        return 1
+    fi
+    [[ "$output" == *"GHCR version listing for ext-pgvector has unobserved tags"* ]]
+}
+
+@test "unobserved tags are a registry failure rather than an UNKNOWN pair" {
+    _replace_with_unobserved_record pgvector
+
+    _run_selector
+
+    if [[ "$status" -eq 0 \
+        || "$output" == *"Selected pair:"* \
+        || "$output" == *$'EXTENSION\tMAJOR\tCEILING\tAGE_DAYS'* ]]; then
+        printf '%s\n' 'ASSERTION FAILED: unobserved tags must be a registry failure, not an UNKNOWN pair'
+        return 1
+    fi
+    [[ "$(_output_value selected)" == "false" ]]
 }
 
 @test "blocking issue query failure selects nothing and exits non-zero" {
