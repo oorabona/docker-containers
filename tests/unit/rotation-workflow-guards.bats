@@ -83,11 +83,23 @@ load "../test_helper"
     [[ "$validation" == *'Invalid push input'* ]]
 }
 
-@test "rotation cleanup retains staging after a failed promotion" {
+@test "rotation schedules three daily runs with enough room for a long run" {
+    run yq -r '.on.schedule | length' "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+
+    [ "$status" -eq 0 ]
+    [ "$output" -eq 3 ]
+
+    run yq -r '.on.schedule[].cron' "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+    [ "$status" -eq 0 ]
+    [ "$output" = $'17 1 * * *\n17 9 * * *\n17 17 * * *' ]
+}
+
+@test "rotation cleanup retains staging after failed or cancelled promotion" {
     run yq -r '.jobs."cleanup-staging".if' "$PROJECT_ROOT/.github/workflows/rotation.yaml"
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"needs.promote.result != 'failure'"* ]]
+    [[ "$output" == *"needs.promote.result != 'cancelled'"* ]]
     [ "$output" != 'always()' ]
 
     run yq -r '.jobs."retain-staging-after-promotion-failure".if' "$PROJECT_ROOT/.github/workflows/rotation.yaml"
@@ -100,7 +112,7 @@ load "../test_helper"
     [ "$output" = false ]
 }
 
-@test "rotation derives a dispatch version and rechecks blocks before compiling" {
+@test "rotation validates a dispatch pair and rechecks blocks before compiling" {
     local select_run recheck_index compile_index
 
     run yq -r '.on.workflow_dispatch.inputs | has("version")' "$PROJECT_ROOT/.github/workflows/rotation.yaml"
@@ -112,6 +124,11 @@ load "../test_helper"
     [ "$status" -eq 0 ]
     select_run="$output"
     [[ "$select_run" == *'.extensions[strenv(DISPATCH_EXTENSION)].version'* ]]
+    [[ "$select_run" == *'[[ "$DISPATCH_EXTENSION" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]'* ]]
+    [[ "$select_run" == *'[[ "$DISPATCH_MAJOR" =~ ^[0-9]+$ ]]'* ]]
+    [[ "$select_run" == *".pg_versions[]"* ]]
+    [[ "$select_run" == *'get_flavor_extensions postgres/extensions/config.yaml full "$DISPATCH_MAJOR"'* ]]
+    [[ "$select_run" == *"printf 'selected=true\\n'"* ]]
 
     run yq -r '.jobs.build.steps | to_entries[] | select(.value.name == "Recheck rotation block before compiling") | .key' \
         "$PROJECT_ROOT/.github/workflows/rotation.yaml"
@@ -122,4 +139,35 @@ load "../test_helper"
     [ "$status" -eq 0 ]
     compile_index="$output"
     [ "$compile_index" -eq $((recheck_index + 1)) ]
+}
+
+@test "rotation attributes a failed candidate image build on both architectures" {
+    local build_condition suite_condition
+
+    for job in test-amd64 test-arm64; do
+        run yq -r ".jobs.\"$job\".steps[] | select(.name == \"Fail attributable candidate image build result\") | .if" \
+            "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+
+        [ "$status" -eq 0 ]
+        build_condition="$output"
+        [ "$build_condition" = "steps.build-e2e-image.outcome == 'failure'" ]
+
+        run yq -r ".jobs.\"$job\".steps[] | select(.name == \"Fail attributable e2e suite result\") | .if" \
+            "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+        [ "$status" -eq 0 ]
+        suite_condition="$output"
+        [ "$suite_condition" = "steps.e2e.outcome == 'failure'" ]
+    done
+}
+
+@test "rotation test-job push comments do not claim a post-build push" {
+    local comment
+
+    for job in test-amd64 test-arm64; do
+        run yq -r ".jobs.\"$job\".steps[] | select(.id == \"build-e2e-image\") | .with | to_entries[] | select(.key == \"push\") | (.key | headComment)" \
+            "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+
+        [ "$status" -eq 0 ]
+        [[ "$output" != *'post-build push'* ]]
+    done
 }

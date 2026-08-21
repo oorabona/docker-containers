@@ -5,7 +5,9 @@ name: Extension Rotation
 # avoids maintaining a second, weaker validation path.
 on:
   schedule:
-    - cron: '17 4 * * *'
+    - cron: '17 1 * * *'
+    - cron: '17 9 * * *'
+    - cron: '17 17 * * *'
   workflow_dispatch:
     inputs:
       extension:
@@ -79,6 +81,24 @@ jobs:
             exit 1
           fi
           if [[ "$supplied" -eq 2 ]]; then
+            [[ "$DISPATCH_EXTENSION" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]] || {
+              echo 'Invalid extension name' >&2
+              exit 1
+            }
+            [[ "$DISPATCH_MAJOR" =~ ^[0-9]+$ ]] || {
+              echo 'Invalid PostgreSQL major' >&2
+              exit 1
+            }
+            if ! yq -r '.pg_versions[]' postgres/extensions/config.yaml | grep -Fx -- "$DISPATCH_MAJOR" >/dev/null; then
+              echo "PostgreSQL major is not configured: $DISPATCH_MAJOR" >&2
+              exit 1
+            fi
+            source helpers/extension-utils.sh
+            full_extensions=$(get_flavor_extensions postgres/extensions/config.yaml full "$DISPATCH_MAJOR")
+            if ! printf '%s\n' "$full_extensions" | grep -Fx -- "$DISPATCH_EXTENSION" >/dev/null; then
+              echo "Extension is not in the full flavor for PostgreSQL $DISPATCH_MAJOR: $DISPATCH_EXTENSION" >&2
+              exit 1
+            fi
             version=$(DISPATCH_EXTENSION="$DISPATCH_EXTENSION" yq -er \
               '.extensions[strenv(DISPATCH_EXTENSION)].version' postgres/extensions/config.yaml)
             [[ "$version" =~ ^[0-9]+([.][0-9]+)*$ ]] || {
@@ -122,11 +142,10 @@ jobs:
           fi
 
       - name: Record no eligible pair
-        id: no-selection
         if: steps.select.outputs.selected != 'true'
         shell: bash
         run: |
-          printf 'selected=false\n' >> "$GITHUB_OUTPUT"
+          printf 'No eligible extension rotation pair was selected\n'
 
   build:
     needs: select
@@ -360,6 +379,13 @@ jobs:
           push: 'false'
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Fail attributable candidate image build result
+        if: steps.build-e2e-image.outcome == 'failure'
+        shell: bash
+        run: |
+          printf 'true\n' > rotation-artifacts/test-amd64
+          exit 1
+
       - name: Resolve loaded e2e image ID
         shell: bash
         env:
@@ -382,12 +408,7 @@ jobs:
         run: |
           E2E_IMAGE="$E2E_IMAGE_ID" tests/e2e-test.sh postgres
 
-      - name: Fail attributable build or suite result
-        # build-container is production-oriented and attempts a post-build push
-        # on scheduled/dispatch events. This job intentionally has packages:read;
-        # a failed post-build push is harmless once the exact loaded image was
-        # resolved below. A missing image-ID remains infrastructure, not a pair
-        # quarantine signal; the suite verdict is the attributable test result.
+      - name: Fail attributable e2e suite result
         if: steps.e2e.outcome == 'failure'
         shell: bash
         run: |
@@ -442,6 +463,13 @@ jobs:
           push: 'false'
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Fail attributable candidate image build result
+        if: steps.build-e2e-image.outcome == 'failure'
+        shell: bash
+        run: |
+          printf 'true\n' > rotation-artifacts/test-arm64
+          exit 1
+
       - name: Resolve loaded e2e image ID
         shell: bash
         env:
@@ -464,9 +492,7 @@ jobs:
         run: |
           E2E_IMAGE="$E2E_IMAGE_ID" tests/e2e-test.sh postgres
 
-      - name: Fail attributable build or suite result
-        # See the amd64 leg: packages:read makes build-container's post-build
-        # push advisory here once the loaded image has been resolved.
+      - name: Fail attributable e2e suite result
         if: steps.e2e.outcome == 'failure'
         shell: bash
         run: |
@@ -615,7 +641,6 @@ jobs:
           TEST_ARM64_RESULT: ${{ needs.test-arm64.result }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
           attributable=false
           expected_statuses=(build-amd64 build-arm64)
           if [[ "$TEST_AMD64_RESULT" == success || "$TEST_AMD64_RESULT" == failure ]]; then
@@ -677,13 +702,34 @@ jobs:
             printf -v line 'arm64 digest: %s\n' "$ARM64_DIGEST"
             body+="$line"
           fi
+          issues=$(gh issue list --repo "$REPOSITORY" --state open \
+            --label extension-rotation-blocked --json number,body --limit 1000)
+          jq -e 'type == "array" and length < 1000 and all(.[]; type == "object" and (.number | type == "number") and ((.body == null) or (.body | type == "string")))' \
+            >/dev/null <<< "$issues"
+          marker="rotation-pair: ${EXTENSION} pg${PG_MAJOR} ${VERSION}"
+          existing_issue=''
+          while IFS= read -r issue; do
+            issue_number=$(jq -er '.number' <<< "$issue")
+            while IFS= read -r line; do
+              line="${line%$'\r'}"
+              if [[ "$line" == "$marker" ]]; then
+                existing_issue="$issue_number"
+                break 2
+              fi
+            done < <(jq -r '.body // ""' <<< "$issue")
+          done < <(jq -c '.[]' <<< "$issues")
+          if [[ -n "$existing_issue" ]]; then
+            body+=$'\nA marker already existed immediately before quarantine creation; commented instead of creating a duplicate. This removes ordinary rerun duplicates and cannot remove a simultaneous external creator, since GitHub Issues has no uniqueness constraint.\n'
+            gh issue comment --repo "$REPOSITORY" "$existing_issue" --body "$body"
+            exit 0
+          fi
           gh issue create --repo "$REPOSITORY" \
             --title "Extension rotation blocked: ${EXTENSION} pg${PG_MAJOR} ${VERSION}" \
             --label extension-rotation-blocked --body "$body"
 
   cleanup-staging:
     needs: [select, promote, promote-dry-run]
-    if: always() && needs.select.outputs.selected == 'true' && needs.promote.result != 'failure'
+    if: always() && needs.select.outputs.selected == 'true' && needs.promote.result != 'failure' && needs.promote.result != 'cancelled'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -702,11 +748,15 @@ jobs:
           set -euo pipefail
           failed=0
           for package in "ext-${EXTENSION}-staging" "ext-${EXTENSION}-staging-buildcache"; do
-            output=''
+            response=''
             rc=0
-            output=$(gh api --method DELETE "/users/${OWNER}/packages/container/${package}" 2>&1) || rc=$?
-            if [[ "$rc" -ne 0 && "$output" != *404* ]]; then
-              printf '%s\n' "$output" >&2
+            response=$(gh api --include --method DELETE "/users/${OWNER}/packages/container/${package}" 2>&1) || rc=$?
+            status=$(sed -nE 's#^HTTP/[0-9.]+ ([0-9]{3})( |$).*#\1#p' <<< "$response" | tail -n 1)
+            if [[ "$status" == 404 ]]; then
+              continue
+            fi
+            if [[ -z "$status" || "$rc" -ne 0 || ! "$status" =~ ^2[0-9]{2}$ ]]; then
+              printf '%s\n' "$response" >&2
               failed=1
             fi
           done
