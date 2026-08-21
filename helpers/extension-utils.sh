@@ -726,7 +726,7 @@ _force_scoped_extension_ref() {
 
 # _parse_rotation_candidate_ref
 #
-# Parse ROTATION_CANDIDATE_REF's shared selector grammar.  The fixed
+# Parse ROTATION_CANDIDATE_REF's promotion selector grammar.  The fixed
 # _rotation_candidate_ref_* globals are this function's deliberate multi-value
 # return channel: a caller-supplied output variable (and therefore a nameref)
 # could silently collide with a variable in a script that sources this file.
@@ -739,11 +739,12 @@ _force_scoped_extension_ref() {
 #   1  ROTATION_CANDIDATE_REF is unset or empty.
 #   2  ROTATION_CANDIDATE_REF is set and malformed.
 #
-# This helper owns only the left/right split and selector shape.  Its callers
-# retain validation of the pinned reference and its applicability.
+# This helper owns the left/right split and the three field grammars.  Keep
+# these expressions byte-for-byte equal to scripts/rotation-promote.sh:224-235
+# so a selector promotion would reject is malformed for the consumer too.
 _parse_rotation_candidate_ref() {
     local LC_ALL=C
-    local candidate candidate_left candidate_ref
+    local candidate candidate_left candidate_ref candidate_extra
 
     _rotation_candidate_ref_extension=""
     _rotation_candidate_ref_pg_major=""
@@ -761,14 +762,78 @@ _parse_rotation_candidate_ref() {
     fi
     candidate_left="${candidate%%=*}"
     candidate_ref="${candidate#*=}"
-    if [[ "$candidate_ref" == *=* ]] || ! [[ "$candidate_left" =~ ^([A-Za-z0-9_-]+):([0-9]+):([^:=]+)$ ]]; then
+    if [[ "$candidate_ref" == *=* ]] || [[ "$candidate_left" == *$'\n'* ]] || [[ "$candidate_left" == *$'\r'* ]]; then
+        return 2
+    fi
+    IFS=':' read -r _rotation_candidate_ref_extension _rotation_candidate_ref_pg_major \
+        _rotation_candidate_ref_version candidate_extra <<< "$candidate_left"
+    if [[ -z "$_rotation_candidate_ref_extension" || -z "$_rotation_candidate_ref_pg_major" ||
+        -z "$_rotation_candidate_ref_version" || -n "$candidate_extra" ]]; then
+        return 2
+    fi
+    if [[ ! "$_rotation_candidate_ref_extension" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]] ||
+        [[ ! "$_rotation_candidate_ref_pg_major" =~ ^[1-9][0-9]*$ ]] ||
+        [[ ! "$_rotation_candidate_ref_version" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+        return 2
+    fi
+    _rotation_candidate_ref_value="$candidate_ref"
+    return 0
+}
+
+# _validate_rotation_candidate_context <registry> <owner>
+#
+# Validate every invariant shared by a frozen rotation candidate.  Keeping this
+# outside the per-extension gateway makes it unconditional for flavors with no
+# compiled extensions; the gateway calls it as well for direct callers.
+#
+# Returns 0 for a present, valid candidate; 1 when absent or empty; 2 when
+# present but malformed.  Parsed fields remain in the fixed parser globals.
+_validate_rotation_candidate_context() {
+    local LC_ALL=C
+    local registry="${1:-}" owner="${2:-}"
+    local candidate_rc=0
+    local candidate_ref candidate_repository candidate_digest expected_repository
+
+    _parse_rotation_candidate_ref || candidate_rc=$?
+    case "$candidate_rc" in
+        0) ;;
+        1) return 1 ;;
+        2)
+            log_error "ROTATION_CANDIDATE_REF must match <extension>:<pg_major>:<version>=<repository>@<digest>"
+            return 2
+            ;;
+        *)
+            log_error "ROTATION_CANDIDATE_REF could not be parsed"
+            return 2
+            ;;
+    esac
+
+    # Definedness matters: a set-empty suffix is invalid just like every other
+    # explicit suffix request.  Check it before a matching candidate can return.
+    if [[ -n "${EXTENSION_PACKAGE_SUFFIX+x}" ]]; then
+        log_error "ROTATION_CANDIDATE_REF cannot be consumed while EXTENSION_PACKAGE_SUFFIX is set"
         return 2
     fi
 
-    _rotation_candidate_ref_extension="${BASH_REMATCH[1]}"
-    _rotation_candidate_ref_pg_major="${BASH_REMATCH[2]}"
-    _rotation_candidate_ref_version="${BASH_REMATCH[3]}"
-    _rotation_candidate_ref_value="$candidate_ref"
+    candidate_ref="$_rotation_candidate_ref_value"
+    if ! [[ "$candidate_ref" =~ ^(.+)@([^@]+)$ ]]; then
+        log_error "ROTATION_CANDIDATE_REF must contain one pinned repository@sha256 digest reference"
+        return 2
+    fi
+    candidate_repository="${BASH_REMATCH[1]}"
+    candidate_digest="${BASH_REMATCH[2]}"
+    if ! is_valid_oci_digest "$candidate_digest"; then
+        log_error "ROTATION_CANDIDATE_REF must contain a valid pinned sha256 digest"
+        return 2
+    fi
+
+    # This literal must stay equal to scripts/rotation-promote.sh:275: the
+    # package tested by this consumer is the package that promotion promotes.
+    expected_repository="${registry}/${owner}/ext-${_rotation_candidate_ref_extension}-staging"
+    if [[ "$candidate_repository" != "$expected_repository" ]]; then
+        log_error "ROTATION_CANDIDATE_REF repository must be this invocation's staging package"
+        return 2
+    fi
     return 0
 }
 
@@ -872,8 +937,7 @@ ext_consumed_source_ref() {
     local LC_ALL=C
     local candidate_rc=0
     local candidate_ref candidate_extension candidate_pg_major candidate_version
-    local candidate_repository candidate_digest candidate_suffix expected_repository
-    local repository candidate_prefix
+    local repository
 
     if [[ -z "$extension" || -z "$version" || -z "$pg_major" || -z "$registry" || -z "$owner" || -z "$mode" ]]; then
         log_error "ext_consumed_source_ref: extension, version, pg_major, registry, owner, and mode are required"
@@ -892,69 +956,19 @@ ext_consumed_source_ref() {
 
     # A requested frozen candidate must be completely understood before any
     # fallback can run; otherwise a malformed rotation could test canonical bytes.
-    _parse_rotation_candidate_ref || candidate_rc=$?
+    _validate_rotation_candidate_context "$registry" "$owner" || candidate_rc=$?
     case "$candidate_rc" in
         0)
             candidate_extension="$_rotation_candidate_ref_extension"
             candidate_pg_major="$_rotation_candidate_ref_pg_major"
             candidate_version="$_rotation_candidate_ref_version"
             candidate_ref="$_rotation_candidate_ref_value"
-
-            # The producer uses this package axis to write a staging package. A
-            # consumer with a frozen candidate must not inherit it: its
-            # non-candidate versions would otherwise be redirected to that
-            # staging package.
-            if [[ -n "${EXTENSION_PACKAGE_SUFFIX+x}" && -n "$EXTENSION_PACKAGE_SUFFIX" ]]; then
-                log_error "ROTATION_CANDIDATE_REF cannot be consumed while EXTENSION_PACKAGE_SUFFIX is set"
-                return 2
-            fi
             ;;
         1) ;;
-        2)
-            log_error "ROTATION_CANDIDATE_REF must match <extension>:<pg_major>:<version>=<repository>@<digest>"
-            return 2
-            ;;
-        *)
-            log_error "ROTATION_CANDIDATE_REF could not be parsed"
-            return 2
-            ;;
+        *) return 2 ;;
     esac
 
     if [[ "$candidate_rc" -eq 0 ]]; then
-        if ! [[ "$candidate_ref" =~ ^(.+)@([^@]+)$ ]]; then
-            log_error "ROTATION_CANDIDATE_REF must contain one pinned repository@sha256 digest reference"
-            return 2
-        fi
-        candidate_repository="${BASH_REMATCH[1]}"
-        candidate_digest="${BASH_REMATCH[2]}"
-        if ! is_valid_oci_digest "$candidate_digest"; then
-            log_error "ROTATION_CANDIDATE_REF must contain a valid pinned sha256 digest"
-            return 2
-        fi
-
-        candidate_prefix="${registry}/${owner}/ext-${candidate_extension}"
-        case "$candidate_repository" in
-            "$candidate_prefix"-*) candidate_suffix="${candidate_repository#"$candidate_prefix"}" ;;
-            *)
-                log_error "ROTATION_CANDIDATE_REF repository must be a suffixed package belonging to this invocation's registry, owner, and extension"
-                return 2
-                ;;
-        esac
-
-        # A suffixed package prevents a rotation from testing bytes already in
-        # the canonical package. It does not establish that the suffix belongs
-        # to this rotation: an arbitrary ext-<name>-something is still accepted
-        # from the actor who supplies the workflow candidate.
-        if ! EXTENSION_PACKAGE_SUFFIX="$candidate_suffix" validate_extension_package_suffix; then
-            log_error "ROTATION_CANDIDATE_REF repository has an invalid package suffix"
-            return 2
-        fi
-        expected_repository=$(EXTENSION_PACKAGE_SUFFIX="$candidate_suffix" ext_image_repository "$candidate_extension" "$registry" "$owner") || return 2
-        if [[ "$candidate_repository" != "$expected_repository" ]]; then
-            log_error "ROTATION_CANDIDATE_REF repository does not match the frozen candidate package"
-            return 2
-        fi
-
         if [[ "$extension" == "$candidate_extension" && "$pg_major" == "$candidate_pg_major" && "$version" == "$candidate_version" ]]; then
             printf '%s' "$candidate_ref"
             return 0
@@ -1311,6 +1325,26 @@ generate_dockerfile() {
         export FORCE=true
     fi
 
+    # Validate frozen rotation context once for every render, including a base
+    # flavor that has no compiled extensions and therefore never reaches the
+    # consumed-source gateway below.
+    local candidate_rc=0
+    local candidate_ref candidate_extension candidate_pg_major candidate_version
+    _validate_rotation_candidate_context "$registry" "$owner" || candidate_rc=$?
+    case "$candidate_rc" in
+        0)
+            candidate_extension="$_rotation_candidate_ref_extension"
+            candidate_pg_major="$_rotation_candidate_ref_pg_major"
+            candidate_version="$_rotation_candidate_ref_version"
+            candidate_ref="$_rotation_candidate_ref_value"
+            ;;
+        1) ;;
+        *)
+            log_error "generate_dockerfile: ROTATION_CANDIDATE_REF is malformed — fail closed"
+            return 1
+            ;;
+    esac
+
     # Get filtered extension list for this flavor + PG version
     local extensions
     if ! extensions=$(get_flavor_extensions "$config_file" "$flavor" "$pg_major"); then
@@ -1353,34 +1387,13 @@ generate_dockerfile() {
     local stages_block=""
     local copies_block=""
     local all_runtime_deps=""
-    local candidate_rc=0
-    local candidate_ref candidate_extension candidate_pg_major
     local candidate_applies=false
 
-    # The source gateway validates every candidate it reaches.  This render
-    # scope check covers the distinct valid-but-unconsumed case: only a
-    # candidate naming an extension emitted by this flavor and this PG major is
-    # required to appear in the assembled stage text.
-    _parse_rotation_candidate_ref || candidate_rc=$?
-    case "$candidate_rc" in
-        0)
-            candidate_extension="$_rotation_candidate_ref_extension"
-            candidate_pg_major="$_rotation_candidate_ref_pg_major"
-            candidate_ref="$_rotation_candidate_ref_value"
-            if [[ "$candidate_pg_major" == "$pg_major" ]] && grep -Fxq -- "$candidate_extension" <<< "$extensions"; then
-                candidate_applies=true
-            fi
-            ;;
-        1) ;;
-        2)
-            log_error "generate_dockerfile: ROTATION_CANDIDATE_REF is malformed — fail closed"
-            return 1
-            ;;
-        *)
-            log_error "generate_dockerfile: ROTATION_CANDIDATE_REF could not be parsed — fail closed"
-            return 1
-            ;;
-    esac
+    # A candidate naming an extension emitted by this flavor and PG major must
+    # replace that tuple's source reference in the stages about to be emitted.
+    if [[ "$candidate_rc" -eq 0 ]] && [[ "$candidate_pg_major" == "$pg_major" ]] && grep -Fxq -- "$candidate_extension" <<< "$extensions"; then
+        candidate_applies=true
+    fi
 
     if [[ -n "$extensions" ]]; then
         while IFS= read -r ext_name; do
@@ -1844,11 +1857,18 @@ generate_dockerfile() {
     fi
 
     # Decide from the exact stage text about to be emitted, not from an
-    # intention flag updated inside command substitutions. A candidate scoped
-    # to this render must have replaced one emitted source reference.
-    if [[ "$candidate_applies" == "true" ]] && ! grep -Fq -- "$candidate_ref" <<< "$stages_block"; then
-        log_error "generate_dockerfile: rotation candidate '$ROTATION_CANDIDATE_REF' was not consumed for ${candidate_extension} pg${pg_major} — fail closed"
-        return 1
+    # intention flag updated inside command substitutions.  A whole source-line
+    # match proves this candidate tuple consumed the reference: the collector
+    # path pins its version in the destination path and the single-version path
+    # pins its extension in the stage alias.
+    if [[ "$candidate_applies" == "true" ]]; then
+        local candidate_collector_line="COPY --from=${candidate_ref} /output/ /${candidate_version}/"
+        local candidate_stage_line="FROM ${candidate_ref} AS ext-${candidate_extension}"
+        if ! grep -Fxq -- "$candidate_collector_line" <<< "$stages_block" &&
+            ! grep -Fxq -- "$candidate_stage_line" <<< "$stages_block"; then
+            log_error "generate_dockerfile: rotation candidate '$ROTATION_CANDIDATE_REF' was not consumed for ${candidate_extension} pg${pg_major} — fail closed"
+            return 1
+        fi
     fi
 
     # Build runtime_deps block (deduplicated)

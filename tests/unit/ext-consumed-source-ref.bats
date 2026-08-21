@@ -142,6 +142,149 @@ teardown() {
     done
 }
 
+@test "rotation candidate accepts only the staging package promotion promotes" {
+    local digest invalid
+    digest=$(_digest 46)
+    local -a invalid=(
+        "pgvector:18:0.8.2=ghcr.io/testowner/ext-pgvector-old@${digest}"
+        "pgvector:18:0.8.2=ghcr.io/testowner/ext-pgvector-rotation42@${digest}"
+        "pgvector:18:0.8.2=ghcr.io/testowner/ext-pgvector@${digest}"
+        "pgvector:18:0.8.2=ghcr.io/testowner/ext-postgis-staging@${digest}"
+    )
+
+    for invalid in "${invalid[@]}"; do
+        export ROTATION_CANDIDATE_REF="$invalid"
+        run --separate-stderr ext_consumed_source_ref pgvector 0.8.2 18 ghcr.io testowner direct
+        [ "$status" -eq 2 ]
+        [ -z "$output" ]
+        # shellcheck disable=SC2154 # Bats --separate-stderr result variable
+        [[ "$stderr" == *"staging package"* ]]
+    done
+}
+
+@test "rotation selector uses promotion's extension pg-major and version grammars" {
+    local digest invalid parser_rc=0
+    digest=$(_digest 47)
+    local -a invalid=(
+        "pgvector:018:0.8.2=ghcr.io/testowner/ext-pgvector-staging@${digest}"
+        "pgvector:0:0.8.2=ghcr.io/testowner/ext-pgvector-staging@${digest}"
+        "Pgvector:18:0.8.2=ghcr.io/testowner/ext-Pgvector-staging@${digest}"
+        "_pgvector:18:0.8.2=ghcr.io/testowner/ext-_pgvector-staging@${digest}"
+        "pgvector:18:0.8. 2=ghcr.io/testowner/ext-pgvector-staging@${digest}"
+        $'pgvector:18:0.8.2\nbad=ghcr.io/testowner/ext-pgvector-staging@'"${digest}"
+        "pgvector:18:0.8/2=ghcr.io/testowner/ext-pgvector-staging@${digest}"
+    )
+
+    for invalid in "${invalid[@]}"; do
+        export ROTATION_CANDIDATE_REF="$invalid"
+        parser_rc=0
+        _parse_rotation_candidate_ref || parser_rc=$?
+        [ "$parser_rc" -eq 2 ]
+        run --separate-stderr ext_consumed_source_ref pgvector 0.8.2 18 ghcr.io testowner direct
+        [ "$status" -eq 2 ]
+        [ -z "$output" ]
+    done
+}
+
+# shellcheck disable=SC2030,SC2031
+@test "base flavor refuses any defined package suffix with a rotation candidate" {
+    mkdir -p "$TEST_TEMP_DIR/extensions"
+    cat > "$TEST_TEMP_DIR/extensions/config.yaml" <<'EOF'
+extensions: {}
+flavors:
+  base: []
+EOF
+    cat > "$TEST_TEMP_DIR/Dockerfile.template" <<'EOF'
+ARG VERSION
+# @@EXTENSION_STAGES@@
+FROM postgres:${VERSION}
+# @@FLAVOR_ARG@@
+# @@EXTENSION_COPIES@@
+# @@EXTENSION_INSTALLS@@
+# @@BUILTIN_INITDB@@
+# @@FLAVOR_INITDB@@
+# @@RUNTIME_DEPS@@
+EOF
+    local digest
+    digest=$(_digest 48)
+    export ROTATION_CANDIDATE_REF="pgvector:18:0.8.2=ghcr.io/testowner/ext-pgvector-staging@${digest}"
+    export EXTENSION_PACKAGE_SUFFIX="-staging"
+
+    run --separate-stderr generate_dockerfile "$TEST_TEMP_DIR/extensions/config.yaml" "$TEST_TEMP_DIR/Dockerfile.template" base 18 ghcr.io testowner
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    # shellcheck disable=SC2154 # Bats --separate-stderr result variable
+    [[ "$stderr" == *"EXTENSION_PACKAGE_SUFFIX is set"* ]]
+}
+
+@test "set-empty package suffix is refused before a matching candidate returns" {
+    local digest
+    digest=$(_digest 49)
+    export ROTATION_CANDIDATE_REF="pgvector:18:0.8.2=ghcr.io/testowner/ext-pgvector-staging@${digest}"
+    export EXTENSION_PACKAGE_SUFFIX=""
+
+    run --separate-stderr ext_consumed_source_ref pgvector 0.8.2 18 ghcr.io testowner direct
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    # shellcheck disable=SC2154 # Bats --separate-stderr result variable
+    [[ "$stderr" == *"EXTENSION_PACKAGE_SUFFIX is set"* ]]
+}
+
+# shellcheck disable=SC2030,SC2031,SC2317
+@test "a sibling stage containing candidate bytes does not prove candidate consumption" {
+    mkdir -p "$TEST_TEMP_DIR/extensions"
+    cat > "$TEST_TEMP_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.2"
+    repo: "pgvector/pgvector"
+    priority: 1
+    initdb:
+      mode: create
+  postgis:
+    version: "3.5.1"
+    repo: "postgis/postgis"
+    priority: 2
+    initdb:
+      mode: create
+flavors:
+  vector:
+    - pgvector
+    - postgis
+EOF
+    cat > "$TEST_TEMP_DIR/Dockerfile.template" <<'EOF'
+ARG VERSION
+# @@EXTENSION_STAGES@@
+FROM postgres:${VERSION}
+# @@FLAVOR_ARG@@
+# @@EXTENSION_COPIES@@
+# @@EXTENSION_INSTALLS@@
+# @@BUILTIN_INITDB@@
+# @@FLAVOR_INITDB@@
+# @@RUNTIME_DEPS@@
+EOF
+    local digest candidate_ref
+    digest=$(_digest 50)
+    candidate_ref="ghcr.io/testowner/ext-pgvector-staging@${digest}"
+    export ROTATION_CANDIDATE_REF="pgvector:18:0.8.2=${candidate_ref}"
+
+    # Model a wrong gateway result: only the sibling stage contains candidate
+    # bytes.  A substring proof would accept it; the tuple-line proof must not.
+    ext_consumed_source_ref() {
+        if [[ "$1" == "postgis" ]]; then
+            printf '%s' "$candidate_ref"
+        else
+            printf 'ghcr.io/testowner/ext-%s:pg%s-%s' "$1" "$3" "$2"
+        fi
+    }
+
+    run --separate-stderr generate_dockerfile "$TEST_TEMP_DIR/extensions/config.yaml" "$TEST_TEMP_DIR/Dockerfile.template" vector 18 ghcr.io testowner
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    # shellcheck disable=SC2154 # Bats --separate-stderr result variable
+    [[ "$stderr" == *"was not consumed"* ]]
+}
+
 @test "pinned-digest rejects malformed digests rather than emitting a tag" {
     run --separate-stderr ext_consumed_source_ref pgvector 0.8.2 18 ghcr.io testowner pinned-digest "sha256:bad"
     [ "$status" -eq 1 ]
@@ -446,16 +589,22 @@ EOF
     fi
 }
 
-@test "lint keeps ROTATION_CANDIDATE_REF triple parsing in its shared helper" {
-    local parser_body gateway_body render_body triple_pattern
-    triple_pattern='^([A-Za-z0-9_-]+):([0-9]+):([^:=]+)$'
+@test "lint keeps promotion selector grammars in the shared parser" {
+    local parser_body gateway_body render_body extension_pattern pg_major_pattern version_pattern
+    extension_pattern='^[a-z0-9]+([._-][a-z0-9]+)*$'
+    pg_major_pattern='^[1-9][0-9]*$'
+    version_pattern='^[A-Za-z0-9][A-Za-z0-9_.-]*$'
     parser_body=$(awk '/^_parse_rotation_candidate_ref\(\) \{/{inside=1} inside {print} /^}$/ && inside {exit}' "$HELPERS_DIR/extension-utils.sh")
     gateway_body=$(awk '/^ext_consumed_source_ref\(\) \{/{inside=1} inside {print} /^}$/ && inside {exit}' "$HELPERS_DIR/extension-utils.sh")
     render_body=$(awk '/^generate_dockerfile\(\) \{/{inside=1} inside {print} /^}$/ && inside {exit}' "$HELPERS_DIR/extension-utils.sh")
 
-    grep -Fq -- "$triple_pattern" <<<"$parser_body"
-    if grep -Fq -- "$triple_pattern" <<<"$gateway_body" || grep -Fq -- "$triple_pattern" <<<"$render_body"; then
-        echo "ROTATION_CANDIDATE_REF triple parsing must stay in _parse_rotation_candidate_ref"
+    grep -Fq -- "$extension_pattern" <<<"$parser_body"
+    grep -Fq -- "$pg_major_pattern" <<<"$parser_body"
+    grep -Fq -- "$version_pattern" <<<"$parser_body"
+    if grep -Fq -- "$extension_pattern" <<<"$gateway_body" || grep -Fq -- "$extension_pattern" <<<"$render_body" ||
+        grep -Fq -- "$pg_major_pattern" <<<"$gateway_body" || grep -Fq -- "$pg_major_pattern" <<<"$render_body" ||
+        grep -Fq -- "$version_pattern" <<<"$gateway_body" || grep -Fq -- "$version_pattern" <<<"$render_body"; then
+        echo "ROTATION_CANDIDATE_REF promotion grammars must stay in _parse_rotation_candidate_ref"
         return 1
     fi
 }
