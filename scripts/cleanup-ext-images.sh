@@ -152,17 +152,22 @@ _get_ghcr_ext_version_record() {
         "/users/${owner}/packages/container/${package_name}/versions/${version_id}" 2>/dev/null \
         | jq -ce --arg expected_version_id "$version_id" '
           def record_tags:
-            (.metadata.container.tags // [])
-            | if type == "array" and all(.[]; type == "string") then .
-              else error("GHCR version record tags must be an array of strings")
-              end;
-          {
+            if ((.metadata? | type) == "object"
+                and (.metadata.container? | type) == "object"
+                and (.metadata.container | has("tags") and .tags != null)) then
+              .metadata.container.tags
+              | if type == "array" and all(.[]; type == "string") then .
+                else error("GHCR version record tags must be an array of strings")
+                end
+              | { tags: ., tags_observed: true }
+            else { tags: [], tags_observed: false }
+            end;
+          ({
             version_id: (if .id == null then error("GHCR version record has no id")
                          elif (.id | tostring) != $expected_version_id then error("GHCR version record id does not match requested version id")
                          else (.id | tostring)
                          end),
-            tags: record_tags
-          }
+          } + record_tags)
         '
 }
 
@@ -235,26 +240,15 @@ _parse_ext_managed_tag() {
     printf '%s|%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 }
 
-# Extract the resolver version from a managed extension tag for a specific major.
-_derive_ext_tag_window_version() {
-    local tag="$1"
-    local pg_major="$2"
-    local parsed
-    local parsed_major
-    local version
-
-    parsed=$(_parse_ext_managed_tag "$tag") || return 1
-    IFS='|' read -r parsed_major version <<< "$parsed"
-    [[ "$parsed_major" == "$pg_major" ]] || return 1
-    printf '%s\n' "$version"
-}
-
 _version_record_tags_csv() {
     local record_json="$1"
 
     jq -r '
-      (.tags // []) as $tags
-      | if ($tags | length) > 0 then ($tags | join(",")) else "(none)" end
+      .tags as $tags
+      | if ($tags | type) == "array" then
+          if ($tags | length) > 0 then ($tags | join(",")) else "(none)" end
+        else error("record tags must be an array")
+        end
     ' <<< "$record_json"
 }
 
@@ -269,7 +263,7 @@ _list_version_record_tags() {
     local record_json="$1"
 
     jq -r '
-      (.tags // []) as $tags
+      .tags as $tags
       | if ($tags | type) == "array" then
           $tags
           | if all(.[]; type == "string" and (contains("\n") | not) and (contains("\u0000") | not)) then .[] else error("tag cannot be transported safely") end
@@ -292,7 +286,16 @@ _record_is_prunable() {
 
     record_tags_csv="(tag enumeration unavailable)"
     record_keep_reason=""
-    if ! tag_count=$(jq -er '(.tags // []) | if type == "array" then length else error("record tags must be an array") end' <<< "$record_json"); then
+    local tags_observed
+    if ! tags_observed=$(jq -r '.tags_observed | if type == "boolean" then . else error("record tags_observed must be boolean") end' <<< "$record_json"); then
+        record_keep_reason="tag observation unknown; keeping record fail-closed"
+        return 2
+    fi
+    if [[ "$tags_observed" != "true" ]]; then
+        record_keep_reason="tags were not observed; keeping record fail-closed"
+        return 2
+    fi
+    if ! tag_count=$(jq -er '.tags | if type == "array" then length else error("record tags must be an array") end' <<< "$record_json"); then
         record_keep_reason="tag count unknown; keeping record fail-closed"
         return 2
     fi
@@ -339,7 +342,7 @@ _record_is_prunable() {
         if [[ "${window_known_by_major[$tag_major]:-false}" != "true" ]]; then
             rm -f "$tags_file" || true
             record_keep_reason="window unknown for pg${tag_major}: ${tag}"
-            return 1
+            return 2
         fi
 
         if _version_in_window "$tag_version" "${window_by_major[$tag_major]}"; then
@@ -450,7 +453,8 @@ main() {
     fi
 
     local total_kept=0
-    local total_pruned=0
+    local total_would_delete=0
+    local total_deleted=0
     local total_delete_failures=0
     local total_skipped_pairs=0
     local total_listing_failures=0
@@ -474,6 +478,7 @@ main() {
 
         if ! version_records_json=$(_list_ghcr_ext_version_records "$package_name"); then
             log_warning "  GHCR version listing failed for ${package_name} — SKIPPING extension (fail-closed)"
+            log_warning "    Summary: kept=0, would_delete=0, deleted=0, failed=1 (delete_failures=0, reread_failures=0, analysis_inconclusive=0, listing_failures=1)"
             total_listing_failures=$((total_listing_failures + 1))
             continue
         fi
@@ -484,6 +489,7 @@ main() {
 
         if [[ "$version_record_count" -eq 0 ]]; then
             log_info "  No GHCR version records found — nothing to prune"
+            log_info "    Summary: kept=0, would_delete=0, deleted=0, failed=0 (delete_failures=0, reread_failures=0, analysis_inconclusive=0, listing_failures=0)"
             continue
         fi
 
@@ -519,13 +525,11 @@ main() {
             log_info "  No pg<major>- tags found in registry records"
         fi
 
-        if [[ ${#pg_majors[@]} -eq 0 ]]; then
-            log_info "  No PG majors to resolve — nothing to prune"
-            continue
-        fi
-
         local -A window_by_major=()
         local -A window_known_by_major=()
+        if [[ ${#pg_majors[@]} -eq 0 ]]; then
+            log_info "  No PG majors to resolve — classifying records without retention windows"
+        fi
         for pg_major in "${pg_majors[@]}"; do
             echo ""
             log_step "  PG major: ${pg_major}"
@@ -563,7 +567,8 @@ main() {
         done
 
         local kept_count=0
-        local pruned_count=0
+        local would_delete_count=0
+        local deleted_count=0
         local delete_failures=0
         local reread_failures=0
         local analysis_failures=0
@@ -596,7 +601,7 @@ main() {
                 if [[ "$dry_run" == "true" ]]; then
                     log_warning "    ✗ PRUNE version_id=${version_id} (tags: ${record_tags_csv}) — all managed tags outside window"
                     log_info "      [DRY-RUN] Would delete ${package_name} version_id=${version_id} (tags: ${record_tags_csv})"
-                    pruned_count=$((pruned_count + 1))
+                    would_delete_count=$((would_delete_count + 1))
                 else
                     local current_record_json
                     log_info "    Candidate version_id=${version_id} (tags: ${record_tags_csv}) — re-reading before delete"
@@ -607,7 +612,7 @@ main() {
                     elif _record_is_prunable "$current_record_json"; then
                         log_warning "    ✗ PRUNE version_id=${version_id} (tags: ${record_tags_csv}) — all managed tags outside window"
                         if _delete_ghcr_ext_version "$package_name" "$version_id" "$record_tags_csv"; then
-                            pruned_count=$((pruned_count + 1))
+                            deleted_count=$((deleted_count + 1))
                         else
                             delete_failures=$((delete_failures + 1))
                         fi
@@ -635,9 +640,11 @@ main() {
         done < "$records_file"
         rm -f "$records_file"
 
-        log_info "    Summary: kept=${kept_count}, pruned=${pruned_count}, failed=${delete_failures}"
+        local extension_failures=$((delete_failures + reread_failures + analysis_failures))
+        log_info "    Summary: kept=${kept_count}, would_delete=${would_delete_count}, deleted=${deleted_count}, failed=${extension_failures} (delete_failures=${delete_failures}, reread_failures=${reread_failures}, analysis_inconclusive=${analysis_failures}, listing_failures=0)"
         total_kept=$((total_kept + kept_count))
-        total_pruned=$((total_pruned + pruned_count))
+        total_would_delete=$((total_would_delete + would_delete_count))
+        total_deleted=$((total_deleted + deleted_count))
         total_delete_failures=$((total_delete_failures + delete_failures))
         total_reread_failures=$((total_reread_failures + reread_failures))
         total_analysis_failures=$((total_analysis_failures + analysis_failures))
@@ -648,7 +655,8 @@ main() {
     echo "Extension image cleanup summary"
     echo "========================================"
     echo "  Version records kept  : ${total_kept}"
-    echo "  Version records pruned: ${total_pruned}"
+    echo "  Version records that would be deleted: ${total_would_delete}"
+    echo "  Version records deleted: ${total_deleted}"
     echo "  Delete failures: ${total_delete_failures}"
     echo "  (ext,major) pairs skipped (uncertain window): ${total_skipped_pairs}"
     echo "  Extensions skipped (listing failed): ${total_listing_failures}"
