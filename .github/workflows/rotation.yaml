@@ -9,15 +9,11 @@ on:
   workflow_dispatch:
     inputs:
       extension:
-        description: Extension package component (set all three pair inputs to override selection)
+        description: Extension package component (set both pair inputs to override selection)
         required: false
         type: string
       pg_major:
-        description: PostgreSQL major (set all three pair inputs to override selection)
-        required: false
-        type: string
-      version:
-        description: Extension version (set all three pair inputs to override selection)
+        description: PostgreSQL major (set both pair inputs to override selection)
         required: false
         type: string
       dry_run:
@@ -53,13 +49,24 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Require the default branch
+        shell: bash
+        env:
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF" != "refs/heads/${DEFAULT_BRANCH}" ]]; then
+            printf '::error::Extension rotation only runs on the default branch (%s); ref %s would not share the auto-build promotion lock\n' "$DEFAULT_BRANCH" "$REF"
+            exit 1
+          fi
+
       - name: Select rotation pair
         id: select
         shell: bash
         env:
           DISPATCH_EXTENSION: ${{ inputs.extension }}
           DISPATCH_MAJOR: ${{ inputs.pg_major }}
-          DISPATCH_VERSION: ${{ inputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER: ${{ github.repository_owner }}
         run: |
@@ -67,19 +74,22 @@ jobs:
           supplied=0
           [[ -n "$DISPATCH_EXTENSION" ]] && supplied=$((supplied + 1))
           [[ -n "$DISPATCH_MAJOR" ]] && supplied=$((supplied + 1))
-          [[ -n "$DISPATCH_VERSION" ]] && supplied=$((supplied + 1))
-          if [[ "$supplied" -ne 0 && "$supplied" -ne 3 ]]; then
-            echo 'All of extension, pg_major, and version must be supplied together' >&2
+          if [[ "$supplied" -ne 0 && "$supplied" -ne 2 ]]; then
+            echo 'Both extension and pg_major must be supplied together' >&2
             exit 1
           fi
-          if [[ "$supplied" -eq 3 ]]; then
-            # A maintainer-selected pair is an operator action. Do not let the
-            # selector's blocking marker override this explicit dispatch.
+          if [[ "$supplied" -eq 2 ]]; then
+            version=$(DISPATCH_EXTENSION="$DISPATCH_EXTENSION" yq -er \
+              '.extensions[strenv(DISPATCH_EXTENSION)].version' postgres/extensions/config.yaml)
+            [[ "$version" =~ ^[0-9]+([.][0-9]+)*$ ]] || {
+              echo "Configured extension version is invalid: $version" >&2
+              exit 1
+            }
             {
               printf 'selected=true\n'
               printf 'extension=%s\n' "$DISPATCH_EXTENSION"
               printf 'major=%s\n' "$DISPATCH_MAJOR"
-              printf 'version=%s\n' "$DISPATCH_VERSION"
+              printf 'version=%s\n' "$version"
             } >> "$GITHUB_OUTPUT"
           else
             scripts/rotation-select.sh
@@ -146,9 +156,11 @@ jobs:
 
       - name: Initialize failure attribution
         shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
-          mkdir -p .rotation
-          printf 'false\n' > .rotation/attributable
+          mkdir -p rotation-artifacts
+          printf 'false\n' > "rotation-artifacts/build-${ARCH}"
 
       - name: Install yq
         shell: bash
@@ -189,6 +201,29 @@ jobs:
         with:
           driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
+      - name: Recheck rotation block before compiling
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          EXTENSION: ${{ needs.select.outputs.extension }}
+          PG_MAJOR: ${{ needs.select.outputs.major }}
+          VERSION: ${{ needs.select.outputs.version }}
+        run: |
+          set -euo pipefail
+          issues=$(gh issue list --repo "$REPOSITORY" --state open \
+            --label extension-rotation-blocked --json number,body --limit 1000)
+          jq -e 'type == "array" and length < 1000 and all(.[]; type == "object" and (.number | type == "number") and ((.body == null) or (.body | type == "string")))' \
+            >/dev/null <<< "$issues"
+          marker="rotation-pair: ${EXTENSION} pg${PG_MAJOR} ${VERSION}"
+          while IFS= read -r line; do
+            line="${line%$'\r'}"
+            if [[ "$line" == "$marker" ]]; then
+              printf '::error::Refusing to compile %s: an open extension-rotation-blocked issue now names this pair\n' "$marker"
+              exit 1
+            fi
+          done < <(jq -r '.[] | .body // ""' <<< "$issues")
+
       - name: Compile and push cacheless staging extension
         id: compile
         continue-on-error: true
@@ -198,7 +233,6 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           EXTENSION: ${{ needs.select.outputs.extension }}
           PG_MAJOR: ${{ needs.select.outputs.major }}
-          VERSION: ${{ needs.select.outputs.version }}
         run: |
           set -euo pipefail
           EXTENSION_PACKAGE_SUFFIX=-staging ARCH_SUFFIX="$ARCH" BUILD_PLATFORM="$PLATFORM" \
@@ -207,8 +241,10 @@ jobs:
       - name: Fail an attributable extension compile
         if: steps.compile.outcome == 'failure'
         shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
-          printf 'true\n' > .rotation/attributable
+          printf 'true\n' > "rotation-artifacts/build-${ARCH}"
           exit 1
 
       - name: Freeze and validate staging manifest digest
@@ -235,7 +271,7 @@ jobs:
           ' >/dev/null <<< "$raw"
           config=$(skopeo inspect --config "docker://${ref}")
           jq -e --arg arch "$ARCH" '.os == "linux" and .architecture == $arch' >/dev/null <<< "$config"
-          printf '%s\n' "$digest" > .rotation/digest
+          printf '%s\n' "$digest" > rotation-artifacts/digest
           printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
 
       - name: Upload frozen staging digest
@@ -243,16 +279,16 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: rotation-digest-${{ matrix.arch }}
-          path: .rotation/digest
-          if-no-files-found: ignore
+          path: rotation-artifacts/digest
+          if-no-files-found: error
 
       - name: Upload build attribution
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: rotation-status-build-${{ matrix.arch }}
-          path: .rotation/attributable
-          if-no-files-found: ignore
+          path: rotation-artifacts/build-${{ matrix.arch }}
+          if-no-files-found: error
 
   freeze-digests:
     needs: [select, build]
@@ -269,7 +305,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           pattern: rotation-digest-*
-          path: .rotation/digests
+          path: rotation-artifacts/digests
 
       - name: Read frozen staging digests
         id: read
@@ -277,8 +313,8 @@ jobs:
         run: |
           set -euo pipefail
           export LC_ALL=C
-          amd64_digest=$(<.rotation/digests/rotation-digest-amd64/digest)
-          arm64_digest=$(<.rotation/digests/rotation-digest-arm64/digest)
+          amd64_digest=$(<rotation-artifacts/digests/rotation-digest-amd64/digest)
+          arm64_digest=$(<rotation-artifacts/digests/rotation-digest-arm64/digest)
           [[ "$amd64_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           [[ "$arm64_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           [[ "$amd64_digest" != "$arm64_digest" ]]
@@ -303,8 +339,8 @@ jobs:
       - name: Initialize failure attribution
         shell: bash
         run: |
-          mkdir -p .rotation
-          printf 'false\n' > .rotation/attributable
+          mkdir -p rotation-artifacts
+          printf 'false\n' > rotation-artifacts/test-amd64
 
       - name: Build loadable PostgreSQL full image
         id: build-e2e-image
@@ -338,6 +374,11 @@ jobs:
         id: e2e
         continue-on-error: true
         shell: bash
+        env:
+          E2E_BUILD_TAG: ${{ format('{0}-full-alpine', needs.select.outputs.major) }}
+          E2E_BUILD_VERSION: ${{ needs.select.outputs.major }}
+          E2E_BUILD_VARIANT: full
+          E2E_BUILD_FLAVOR: full
         run: |
           E2E_IMAGE="$E2E_IMAGE_ID" tests/e2e-test.sh postgres
 
@@ -350,7 +391,7 @@ jobs:
         if: steps.e2e.outcome == 'failure'
         shell: bash
         run: |
-          printf 'true\n' > .rotation/attributable
+          printf 'true\n' > rotation-artifacts/test-amd64
           exit 1
 
       - name: Upload test attribution
@@ -358,8 +399,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: rotation-status-test-amd64
-          path: .rotation/attributable
-          if-no-files-found: ignore
+          path: rotation-artifacts/test-amd64
+          if-no-files-found: error
 
   test-arm64:
     needs: [select, freeze-digests]
@@ -380,8 +421,8 @@ jobs:
       - name: Initialize failure attribution
         shell: bash
         run: |
-          mkdir -p .rotation
-          printf 'false\n' > .rotation/attributable
+          mkdir -p rotation-artifacts
+          printf 'false\n' > rotation-artifacts/test-arm64
 
       - name: Build loadable PostgreSQL full image
         id: build-e2e-image
@@ -415,6 +456,11 @@ jobs:
         id: e2e
         continue-on-error: true
         shell: bash
+        env:
+          E2E_BUILD_TAG: ${{ format('{0}-full-alpine', needs.select.outputs.major) }}
+          E2E_BUILD_VERSION: ${{ needs.select.outputs.major }}
+          E2E_BUILD_VARIANT: full
+          E2E_BUILD_FLAVOR: full
         run: |
           E2E_IMAGE="$E2E_IMAGE_ID" tests/e2e-test.sh postgres
 
@@ -424,7 +470,7 @@ jobs:
         if: steps.e2e.outcome == 'failure'
         shell: bash
         run: |
-          printf 'true\n' > .rotation/attributable
+          printf 'true\n' > rotation-artifacts/test-arm64
           exit 1
 
       - name: Upload test attribution
@@ -432,8 +478,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: rotation-status-test-arm64
-          path: .rotation/attributable
-          if-no-files-found: ignore
+          path: rotation-artifacts/test-arm64
+          if-no-files-found: error
 
   promote:
     needs: [select, build, freeze-digests, test-amd64, test-arm64]
@@ -558,22 +604,47 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           pattern: rotation-status-*
-          path: .rotation/status
+          path: rotation-artifacts/status
           merge-multiple: true
-        continue-on-error: true
 
       - name: Decide whether a failure is attributable
         id: attribution
         shell: bash
+        env:
+          TEST_AMD64_RESULT: ${{ needs.test-amd64.result }}
+          TEST_ARM64_RESULT: ${{ needs.test-arm64.result }}
         run: |
+          set -euo pipefail
           shopt -s nullglob
           attributable=false
-          for status_file in .rotation/status/*; do
-            if [[ $(<"$status_file") == true ]]; then
+          expected_statuses=(build-amd64 build-arm64)
+          if [[ "$TEST_AMD64_RESULT" == success || "$TEST_AMD64_RESULT" == failure ]]; then
+            expected_statuses+=(test-amd64)
+          fi
+          if [[ "$TEST_ARM64_RESULT" == success || "$TEST_ARM64_RESULT" == failure ]]; then
+            expected_statuses+=(test-arm64)
+          fi
+          failed_statuses=()
+          for status_name in "${expected_statuses[@]}"; do
+            status_file="rotation-artifacts/status/${status_name}"
+            if [[ ! -f "$status_file" ]]; then
+              printf '::error::Missing failure attribution from completed producer: %s\n' "$status_name" >&2
+              exit 1
+            fi
+            status=$(<"$status_file")
+            if [[ "$status" != true && "$status" != false ]]; then
+              printf '::error::Invalid failure attribution from %s: %s\n' "$status_name" "$status" >&2
+              exit 1
+            fi
+            if [[ "$status" == true ]]; then
               attributable=true
+              failed_statuses+=("$status_name")
             fi
           done
+          IFS=,
+          printf -v failed_statuses_csv '%s' "${failed_statuses[*]}"
           printf 'create=%s\n' "$attributable" >> "$GITHUB_OUTPUT"
+          printf 'failed_statuses=%s\n' "$failed_statuses_csv" >> "$GITHUB_OUTPUT"
 
       - name: Quarantine failing extension pair
         if: steps.attribution.outputs.create == 'true'
@@ -587,14 +658,24 @@ jobs:
           AMD64_DIGEST: ${{ needs.freeze-digests.outputs.amd64_digest }}
           ARM64_DIGEST: ${{ needs.freeze-digests.outputs.arm64_digest }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          FAILED_STATUSES: ${{ steps.attribution.outputs.failed_statuses }}
         run: |
           set -euo pipefail
-          body=$(printf 'rotation-pair: %s pg%s %s\n\nFailed run: %s\n' "$EXTENSION" "$PG_MAJOR" "$VERSION" "$RUN_URL")
+          printf -v body 'rotation-pair: %s pg%s %s\n\nFailed run: %s\n' "$EXTENSION" "$PG_MAJOR" "$VERSION" "$RUN_URL"
+          IFS=, read -r -a failed_statuses <<< "$FAILED_STATUSES"
+          for status_name in "${failed_statuses[@]}"; do
+            phase="${status_name%%-*}"
+            arch="${status_name#*-}"
+            printf -v line 'Failed phase: %s; architecture: %s\n' "$phase" "$arch"
+            body+="$line"
+          done
           if [[ -n "$AMD64_DIGEST" ]]; then
-            body+=$(printf 'amd64 digest: %s\n' "$AMD64_DIGEST")
+            printf -v line 'amd64 digest: %s\n' "$AMD64_DIGEST"
+            body+="$line"
           fi
           if [[ -n "$ARM64_DIGEST" ]]; then
-            body+=$(printf 'arm64 digest: %s\n' "$ARM64_DIGEST")
+            printf -v line 'arm64 digest: %s\n' "$ARM64_DIGEST"
+            body+="$line"
           fi
           gh issue create --repo "$REPOSITORY" \
             --title "Extension rotation blocked: ${EXTENSION} pg${PG_MAJOR} ${VERSION}" \
@@ -602,16 +683,16 @@ jobs:
 
   cleanup-staging:
     needs: [select, promote, promote-dry-run]
-    if: always() && needs.select.outputs.selected == 'true'
+    if: always() && needs.select.outputs.selected == 'true' && needs.promote.result != 'failure'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - name: Delete staging packages
-        # Cleanup failure is not a failed rotation: staging is unreachable from
-        # production, so leave a visible cleanup error without quarantining it.
-        continue-on-error: true
+        # A deletion failure must remain visible in the workflow result. It is
+        # not attributable to the extension pair, so quarantine does not act on
+        # it, but a successful rotation cannot claim staging was cleaned up.
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -630,3 +711,27 @@ jobs:
             fi
           done
           exit "$failed"
+
+  retain-staging-after-promotion-failure:
+    needs: [select, promote, freeze-digests]
+    if: always() && needs.select.outputs.selected == 'true' && needs.promote.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Record retained staging packages
+        shell: bash
+        env:
+          EXTENSION: ${{ needs.select.outputs.extension }}
+          AMD64_DIGEST: ${{ needs.freeze-digests.outputs.amd64_digest }}
+          ARM64_DIGEST: ${{ needs.freeze-digests.outputs.arm64_digest }}
+        run: |
+          set -euo pipefail
+          {
+            printf '## Staging packages retained after promotion failure\n\n'
+            printf -- "- \`ext-%s-staging\`\n" "$EXTENSION"
+            printf -- "- \`ext-%s-staging-buildcache\`\n\n" "$EXTENSION"
+            printf 'Retry inputs:\n\n'
+            printf -- "- amd64 digest: \`%s\`\n" "$AMD64_DIGEST"
+            printf -- "- arm64 digest: \`%s\`\n" "$ARM64_DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"

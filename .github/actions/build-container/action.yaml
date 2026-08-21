@@ -96,6 +96,24 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Validate push input
+      shell: bash
+      env:
+        PUSH: ${{ inputs.push }}
+      run: |
+        set -euo pipefail
+        case "$PUSH" in
+          true|false) ;;
+          *)
+            # Use the repository's workflow-command escaper before logging an
+            # arbitrary caller value.
+            source ./helpers/logging.sh
+            safe_push=$(_escape_gha_command "$PUSH")
+            printf '::error::Invalid push input %s; expected true or false\n' "$safe_push" >&2
+            exit 1
+            ;;
+        esac
+
     - name: Log in to GitHub Container Registry
       if: runner.os != 'Windows'
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
