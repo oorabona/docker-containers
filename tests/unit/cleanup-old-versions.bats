@@ -79,6 +79,21 @@ assert_summary_reports_successful_deletion() {
     fi
 }
 
+assert_tag_decode_failure_stops_before_delete() {
+    local log_file="$1"
+    if [[ "$status" -ne 1 || -s "$log_file" || "$output" != *"Failed to read version tags; skipping protected"* ]]; then
+        echo "ASSERTION FAILED: tag decode failure must stop the package before DELETE" >&2
+        return 1
+    fi
+}
+
+assert_prepared_decode_preserves_delete_totals() {
+    if [[ "$output" != *"Summary: kept=0, deleted=1, delete_failures=0"* || "$output" != *"Packages assessed: 1"* ]]; then
+        echo "ASSERTION FAILED: a completed deletion plan must keep successful deletes in the totals and assess the package" >&2
+        return 1
+    fi
+}
+
 @test "workflow-executed registry pruners are executable" {
     assert_executable "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
     assert_executable "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
@@ -189,7 +204,7 @@ EOF
         bash "$PROJECT_ROOT/scripts/cleanup-old-versions.sh" broken healthy
 
     [[ "$status" -eq 1 ]]
-    [[ "$output" == *"Failed to prepare version list; skipping broken"* ]]
+    [[ "$output" == *"Failed to read version record; skipping broken"* ]]
     [[ "$output" == *"Processing: healthy"* ]]
     [[ "$output" == *"Packages assessed: 1"* ]]
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
@@ -328,4 +343,65 @@ EOF
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
     [[ "$output" == *"Versions deleted: 1"* ]]
     [[ "$(<"$GH_LOG")" == *"/versions/101"* ]]
+}
+
+@test "a tag decode failure stops a protecting version before DELETE" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$GH_LOG" \
+        GH_TOKEN="test-token" \
+        OWNER="test-owner" \
+        DRY_RUN="false" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"v1.2.3\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+            }
+            jq() {
+                if [[ "${!#}" == ".tags[]" ]]; then echo "jq: tag decode exhausted" >&2; return 1; fi
+                command jq "$@"
+            }
+            main protected
+        '
+
+    assert_tag_decode_failure_stops_before_delete "$GH_LOG"
+    [[ "$output" == *"Packages assessed: 0"* ]]
+    [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+}
+
+@test "a prepared deletion decode failure assesses the completed plan and still reports an earlier DELETE" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$GH_LOG" \
+        BASE64_CALLS="$STUB_DIR/base64-calls" \
+        GH_TOKEN="test-token" \
+        OWNER="test-owner" \
+        DRY_RUN="false" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+            }
+            base64() {
+                calls=0; [[ -f "$BASE64_CALLS" ]] && calls=$(<"$BASE64_CALLS")
+                calls=$((calls + 1)); printf "%s\\n" "$calls" > "$BASE64_CALLS"
+                [[ "$calls" -lt 4 ]] || { echo "base64: prepared record lost" >&2; return 1; }
+                command base64 "$@"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$(<"$GH_LOG")" == *"/versions/101"* ]]
+    [[ "$(<"$GH_LOG")" != *"/versions/102"* ]]
+    assert_prepared_decode_preserves_delete_totals
+    [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
 }
