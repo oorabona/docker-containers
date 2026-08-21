@@ -45,6 +45,9 @@ Usage: rotation-promote.sh --extension NAME --pg-major MAJOR --version VERSION \
   (--baseline-digest DIGEST | --no-canonical-index) \
   --amd64-digest DIGEST --arm64-digest DIGEST
 
+       rotation-promote.sh --read-canonical-index --extension NAME \
+  --pg-major MAJOR --version VERSION
+
 Promote the two tested staging manifests identified by DIGEST to the canonical
 extension architecture tags, then publish their canonical multi-arch index.
 The caller must declare exactly one pre-test canonical state: the canonical
@@ -55,6 +58,10 @@ Promotion must be serialized per canonical (extension, pg major, version).
 This script does not acquire that lock: the caller must hold it before invoking
 the script and retain it through completion. The lock-time read below is a
 conflict fence, not a lock.
+
+--read-canonical-index only reads the current canonical index state. It prints
+the index digest when present, or "absent" when a successful tag listing proves
+the tag absent. It cannot be combined with promotion flags.
 EOF
 }
 
@@ -176,6 +183,8 @@ main() {
     local baseline_mode=""
     local amd64_digest=""
     local arm64_digest=""
+    local read_canonical_index=false
+    local promotion_flag=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -189,6 +198,7 @@ main() {
                     --pg-major) pg_major="$2" ;;
                     --version) version="$2" ;;
                     --baseline-digest)
+                        promotion_flag="$1"
                         if [[ -n "$baseline_mode" ]]; then
                             log_error "Specify exactly one of --baseline-digest or --no-canonical-index"
                             return 1
@@ -196,17 +206,28 @@ main() {
                         baseline_digest="$2"
                         baseline_mode="digest"
                         ;;
-                    --amd64-digest) amd64_digest="$2" ;;
-                    --arm64-digest) arm64_digest="$2" ;;
+                    --amd64-digest)
+                        promotion_flag="$1"
+                        amd64_digest="$2"
+                        ;;
+                    --arm64-digest)
+                        promotion_flag="$1"
+                        arm64_digest="$2"
+                        ;;
                 esac
                 shift 2
                 ;;
             --no-canonical-index)
+                promotion_flag="$1"
                 if [[ -n "$baseline_mode" ]]; then
                     log_error "Specify exactly one of --baseline-digest or --no-canonical-index"
                     return 1
                 fi
                 baseline_mode="absent"
+                shift
+                ;;
+            --read-canonical-index)
+                read_canonical_index=true
                 shift
                 ;;
             -h|--help)
@@ -221,6 +242,11 @@ main() {
         esac
     done
 
+    if [[ "$read_canonical_index" == true && -n "$promotion_flag" ]]; then
+        log_error "--read-canonical-index cannot be combined with promotion flag $(_escape_gha_command "$promotion_flag")"
+        return 1
+    fi
+
     if [[ ! "$extension" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
         log_error "--extension must be a lowercase extension package component"
         return 1
@@ -232,6 +258,42 @@ main() {
     if [[ ! "$version" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
         log_error "--version must be a safe OCI tag component"
         return 1
+    fi
+
+    # This read uses the same registry-state contract as the promotion lock
+    # fence. It is deliberately before all promotion-only validation and does
+    # not acquire a lock or mutate a registry record.
+    if [[ "$read_canonical_index" == true ]]; then
+        local read_registry read_owner read_registry_rc=0 read_owner_rc=0
+        read_registry=$(get_registry) || read_registry_rc=$?
+        read_owner=$(get_repo_owner) || read_owner_rc=$?
+        if [[ "$read_registry_rc" -ne 0 || "$read_owner_rc" -ne 0 || -z "$read_registry" || -z "$read_owner" ]]; then
+            log_error "Could not determine the extension registry and owner"
+            return 1
+        fi
+
+        local read_canonical_index_ref="${read_registry}/${read_owner}/ext-${extension}:pg${pg_major}-${version}"
+        if ! oci_tag_is_constructible "pg${pg_major}-${version}"; then
+            log_error "Constructed canonical OCI tag exceeds the grammar or 128-character limit"
+            return 1
+        fi
+
+        local read_digest="" read_rc=0
+        read_digest=$(read_registry_digest "$read_canonical_index_ref") || read_rc=$?
+        case "$read_rc" in
+            0)
+                printf '%s\n' "$read_digest"
+                return 0
+                ;;
+            1)
+                printf 'absent\n'
+                return 0
+                ;;
+            *)
+                log_error "Could not read the canonical index state"
+                return 1
+                ;;
+        esac
     fi
 
     if [[ -z "$baseline_mode" ]]; then

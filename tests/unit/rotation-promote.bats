@@ -169,6 +169,106 @@ EOF
         '
 }
 
+run_canonical_index_read() {
+    run env \
+        OWNER="$OWNER" \
+        GITHUB_REPOSITORY_OWNER="$GITHUB_REPOSITORY_OWNER" \
+        EXTENSION_REGISTRY="$EXTENSION_REGISTRY" \
+        CALLS_FILE="$CALLS_FILE" \
+        CANONICAL_DIGEST="$CANONICAL_DIGEST" \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        SKOPEO_MODE="${SKOPEO_MODE:-read-present}" \
+        bash -c '
+            skopeo() {
+                local ref="${!#}"
+                printf "%s\\n" "$*" >> "$CALLS_FILE"
+                if [[ "$1" == "inspect" ]]; then
+                    [[ "$SKOPEO_MODE" == "read-present" ]] || return 24
+                    printf "%s" "$CANONICAL_DIGEST"
+                    return 0
+                fi
+                if [[ "$1" == "list-tags" ]]; then
+                    [[ "$SKOPEO_MODE" != "read-indeterminate" ]] || return 25
+                    printf "{\\\"Tags\\\":[]}\\n"
+                    return 0
+                fi
+                return 98
+            }
+            export -f skopeo
+            exec "$PROJECT_ROOT/scripts/rotation-promote.sh" \
+                --read-canonical-index --extension pgvector --pg-major 17 --version 0.8.6 "$@"
+        ' bash "$@"
+}
+
+@test "read-canonical-index prints a resolved canonical digest" {
+    run_canonical_index_read
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "$CANONICAL_DIGEST" ]
+    grep -Fqx 'inspect --format {{.Digest}} docker://ghcr.io/testowner/ext-pgvector:pg17-0.8.6' "$CALLS_FILE"
+}
+
+@test "read-canonical-index prints absent only after a successful tag listing" {
+    export SKOPEO_MODE="read-absent"
+
+    run_canonical_index_read
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "absent" ]
+    grep -Fqx 'list-tags docker://ghcr.io/testowner/ext-pgvector' "$CALLS_FILE"
+}
+
+@test "read-canonical-index leaves stdout empty for an indeterminate registry read" {
+    local stdout_file="$TEST_TEMP_DIR/read-stdout"
+    export SKOPEO_MODE="read-indeterminate"
+
+    run env \
+        OWNER="$OWNER" GITHUB_REPOSITORY_OWNER="$GITHUB_REPOSITORY_OWNER" EXTENSION_REGISTRY="$EXTENSION_REGISTRY" \
+        CALLS_FILE="$CALLS_FILE" CANONICAL_DIGEST="$CANONICAL_DIGEST" SKOPEO_MODE="$SKOPEO_MODE" \
+        PROJECT_ROOT="$PROJECT_ROOT" READ_STDOUT="$stdout_file" \
+        bash -c '
+            skopeo() {
+                printf "%s\\n" "$*" >> "$CALLS_FILE"
+                [[ "$1" != "inspect" ]] || return 24
+                # A failed listing may still emit parseable stale data. Only a
+                # successful list-tags response can establish absence.
+                printf "{\\\"Tags\\\":[]}\\n"
+                return 25
+            }
+            export -f skopeo
+            "$PROJECT_ROOT/scripts/rotation-promote.sh" \
+                --read-canonical-index --extension pgvector --pg-major 17 --version 0.8.6 > "$READ_STDOUT"
+        '
+
+    [ "$status" -ne 0 ]
+    [ ! -s "$stdout_file" ]
+    [[ "$output" == *"Could not read the canonical index state"* ]]
+}
+
+@test "read-canonical-index refuses every promotion flag before a registry call" {
+    local flag
+    local value
+
+    for flag in --amd64-digest --arm64-digest --baseline-digest --no-canonical-index; do
+        : > "$CALLS_FILE"
+        if [[ "$flag" == "--no-canonical-index" ]]; then
+            run_canonical_index_read "$flag"
+        else
+            value="$AMD64_DIGEST"
+            run_canonical_index_read "$flag" "$value"
+        fi
+        [ "$status" -ne 0 ] || {
+            echo "ASSERTION: $flag must be refused with --read-canonical-index"
+            false
+        }
+        [[ "$output" == *"cannot be combined with promotion flag $flag"* ]]
+        [[ ! -s "$CALLS_FILE" ]] || {
+            echo "ASSERTION: $flag must be refused before any registry call"
+            false
+        }
+    done
+}
+
 @test "promotion copies frozen staging digests, verifies destinations, and creates a digest-pinned index" {
     run_promotion
 
