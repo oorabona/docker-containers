@@ -1,0 +1,632 @@
+name: Extension Rotation
+
+# The arm64 leg deliberately runs the same full e2e harness as amd64. This is
+# stronger than the issue's originally proposed arm64 activation smoke and
+# avoids maintaining a second, weaker validation path.
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      extension:
+        description: Extension package component (set all three pair inputs to override selection)
+        required: false
+        type: string
+      pg_major:
+        description: PostgreSQL major (set all three pair inputs to override selection)
+        required: false
+        type: string
+      version:
+        description: Extension version (set all three pair inputs to override selection)
+        required: false
+        type: string
+      dry_run:
+        description: Render promotion commands without changing canonical tags
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: extension-rotation
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      packages: read
+    outputs:
+      selected: ${{ steps.select.outputs.selected }}
+      extension: ${{ steps.select.outputs.extension }}
+      major: ${{ steps.select.outputs.major }}
+      version: ${{ steps.select.outputs.version }}
+      baseline_digest: ${{ steps.baseline.outputs.digest }}
+      no_canonical_index: ${{ steps.baseline.outputs.absent }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select rotation pair
+        id: select
+        shell: bash
+        env:
+          DISPATCH_EXTENSION: ${{ inputs.extension }}
+          DISPATCH_MAJOR: ${{ inputs.pg_major }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          supplied=0
+          [[ -n "$DISPATCH_EXTENSION" ]] && supplied=$((supplied + 1))
+          [[ -n "$DISPATCH_MAJOR" ]] && supplied=$((supplied + 1))
+          [[ -n "$DISPATCH_VERSION" ]] && supplied=$((supplied + 1))
+          if [[ "$supplied" -ne 0 && "$supplied" -ne 3 ]]; then
+            echo 'All of extension, pg_major, and version must be supplied together' >&2
+            exit 1
+          fi
+          if [[ "$supplied" -eq 3 ]]; then
+            # A maintainer-selected pair is an operator action. Do not let the
+            # selector's blocking marker override this explicit dispatch.
+            {
+              printf 'selected=true\n'
+              printf 'extension=%s\n' "$DISPATCH_EXTENSION"
+              printf 'major=%s\n' "$DISPATCH_MAJOR"
+              printf 'version=%s\n' "$DISPATCH_VERSION"
+            } >> "$GITHUB_OUTPUT"
+          else
+            scripts/rotation-select.sh
+          fi
+
+      - name: Install skopeo for canonical index read
+        if: steps.select.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+
+      - name: Read pre-test canonical index
+        id: baseline
+        if: steps.select.outputs.selected == 'true'
+        shell: bash
+        env:
+          EXTENSION: ${{ steps.select.outputs.extension }}
+          PG_MAJOR: ${{ steps.select.outputs.major }}
+          VERSION: ${{ steps.select.outputs.version }}
+        run: |
+          set -euo pipefail
+          baseline=$(scripts/rotation-promote.sh --read-canonical-index \
+            --extension "$EXTENSION" --pg-major "$PG_MAJOR" --version "$VERSION")
+          if [[ "$baseline" == absent ]]; then
+            printf 'digest=\nabsent=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'digest=%s\nabsent=false\n' "$baseline" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Record no eligible pair
+        id: no-selection
+        if: steps.select.outputs.selected != 'true'
+        shell: bash
+        run: |
+          printf 'selected=false\n' >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: select
+    if: needs.select.outputs.selected == 'true'
+    name: Build ${{ matrix.arch }} staging extension
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize failure attribution
+        shell: bash
+        run: |
+          mkdir -p .rotation
+          printf 'false\n' > .rotation/attributable
+
+      - name: Install yq
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_${ARCH}"
+          case "$ARCH" in
+            amd64) echo '0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq' | sha256sum -c - ;;
+            arm64) echo '4c2cc022a129be5cc1187959bb4b09bebc7fb543c5837b93001c68f97ce39a5d  /usr/local/bin/yq' | sha256sum -c - ;;
+            *) exit 1 ;;
+          esac
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Install skopeo
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+
+      - name: Log in to container registries
+        uses: ./.github/actions/docker-login
+        with:
+          ghcr_username: ${{ github.actor }}
+          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Compile and push cacheless staging extension
+        id: compile
+        continue-on-error: true
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          PLATFORM: ${{ matrix.platform }}
+          EXTENSION: ${{ needs.select.outputs.extension }}
+          PG_MAJOR: ${{ needs.select.outputs.major }}
+          VERSION: ${{ needs.select.outputs.version }}
+        run: |
+          set -euo pipefail
+          EXTENSION_PACKAGE_SUFFIX=-staging ARCH_SUFFIX="$ARCH" BUILD_PLATFORM="$PLATFORM" \
+            scripts/build-extensions.sh postgres --major-version "$PG_MAJOR" --extension "$EXTENSION" --force --no-cache
+
+      - name: Fail an attributable extension compile
+        if: steps.compile.outcome == 'failure'
+        shell: bash
+        run: |
+          printf 'true\n' > .rotation/attributable
+          exit 1
+
+      - name: Freeze and validate staging manifest digest
+        id: freeze
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          EXTENSION: ${{ needs.select.outputs.extension }}
+          PG_MAJOR: ${{ needs.select.outputs.major }}
+          VERSION: ${{ needs.select.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          ref="ghcr.io/${OWNER}/ext-${EXTENSION}-staging:pg${PG_MAJOR}-${VERSION}-${ARCH}"
+          digest=$(skopeo inspect --format '{{.Digest}}' "docker://${ref}")
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          raw=$(skopeo inspect --raw "docker://${ref}")
+          jq -e '
+            .schemaVersion == 2 and
+            (.mediaType == "application/vnd.oci.image.manifest.v1+json" or
+             .mediaType == "application/vnd.docker.distribution.manifest.v2+json") and
+            (.manifests | not)
+          ' >/dev/null <<< "$raw"
+          config=$(skopeo inspect --config "docker://${ref}")
+          jq -e --arg arch "$ARCH" '.os == "linux" and .architecture == $arch' >/dev/null <<< "$config"
+          printf '%s\n' "$digest" > .rotation/digest
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Upload frozen staging digest
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: rotation-digest-${{ matrix.arch }}
+          path: .rotation/digest
+          if-no-files-found: ignore
+
+      - name: Upload build attribution
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: rotation-status-build-${{ matrix.arch }}
+          path: .rotation/attributable
+          if-no-files-found: ignore
+
+  freeze-digests:
+    needs: [select, build]
+    if: needs.select.outputs.selected == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      amd64_digest: ${{ steps.read.outputs.amd64_digest }}
+      arm64_digest: ${{ steps.read.outputs.arm64_digest }}
+    steps:
+      - name: Download frozen staging digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          pattern: rotation-digest-*
+          path: .rotation/digests
+
+      - name: Read frozen staging digests
+        id: read
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          amd64_digest=$(<.rotation/digests/rotation-digest-amd64/digest)
+          arm64_digest=$(<.rotation/digests/rotation-digest-arm64/digest)
+          [[ "$amd64_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$arm64_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$amd64_digest" != "$arm64_digest" ]]
+          printf 'amd64_digest=%s\narm64_digest=%s\n' "$amd64_digest" "$arm64_digest" >> "$GITHUB_OUTPUT"
+
+  test-amd64:
+    needs: [select, freeze-digests]
+    if: needs.select.outputs.selected == 'true' && needs.freeze-digests.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    env:
+      ROTATION_CANDIDATE_REF: ${{ format('{0}:{1}:{2}=ghcr.io/{3}/ext-{0}-staging@{4}', needs.select.outputs.extension, needs.select.outputs.major, needs.select.outputs.version, github.repository_owner, needs.freeze-digests.outputs.amd64_digest) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize failure attribution
+        shell: bash
+        run: |
+          mkdir -p .rotation
+          printf 'false\n' > .rotation/attributable
+
+      - name: Build loadable PostgreSQL full image
+        id: build-e2e-image
+        continue-on-error: true
+        uses: ./.github/actions/build-container
+        with:
+          container: postgres
+          version: ${{ needs.select.outputs.major }}
+          tag: ${{ format('{0}-full-alpine', needs.select.outputs.major) }}
+          flavor: full
+          variant: full
+          platform: linux/amd64
+          rebuild_mode: force
+          docker_no_cache: 'true'
+          scan_vulnerabilities: 'false'
+          # This image exists to be tested against a candidate that has not been promoted.
+          push: 'false'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve loaded e2e image ID
+        shell: bash
+        env:
+          IMAGE: ${{ format('ghcr.io/{0}/postgres:{1}-full-alpine', github.repository_owner, needs.select.outputs.major) }}
+        run: |
+          set -euo pipefail
+          image_id=$(timeout -k 2 10 docker image inspect --format '{{.Id}}' "$IMAGE")
+          test -n "$image_id"
+          echo "E2E_IMAGE_ID=$image_id" >> "$GITHUB_ENV"
+
+      - name: Run e2e suite
+        id: e2e
+        continue-on-error: true
+        shell: bash
+        run: |
+          E2E_IMAGE="$E2E_IMAGE_ID" tests/e2e-test.sh postgres
+
+      - name: Fail attributable build or suite result
+        # build-container is production-oriented and attempts a post-build push
+        # on scheduled/dispatch events. This job intentionally has packages:read;
+        # a failed post-build push is harmless once the exact loaded image was
+        # resolved below. A missing image-ID remains infrastructure, not a pair
+        # quarantine signal; the suite verdict is the attributable test result.
+        if: steps.e2e.outcome == 'failure'
+        shell: bash
+        run: |
+          printf 'true\n' > .rotation/attributable
+          exit 1
+
+      - name: Upload test attribution
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: rotation-status-test-amd64
+          path: .rotation/attributable
+          if-no-files-found: ignore
+
+  test-arm64:
+    needs: [select, freeze-digests]
+    if: needs.select.outputs.selected == 'true' && needs.freeze-digests.result == 'success'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    env:
+      ROTATION_CANDIDATE_REF: ${{ format('{0}:{1}:{2}=ghcr.io/{3}/ext-{0}-staging@{4}', needs.select.outputs.extension, needs.select.outputs.major, needs.select.outputs.version, github.repository_owner, needs.freeze-digests.outputs.arm64_digest) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize failure attribution
+        shell: bash
+        run: |
+          mkdir -p .rotation
+          printf 'false\n' > .rotation/attributable
+
+      - name: Build loadable PostgreSQL full image
+        id: build-e2e-image
+        continue-on-error: true
+        uses: ./.github/actions/build-container
+        with:
+          container: postgres
+          version: ${{ needs.select.outputs.major }}
+          tag: ${{ format('{0}-full-alpine', needs.select.outputs.major) }}
+          flavor: full
+          variant: full
+          platform: linux/arm64
+          rebuild_mode: force
+          docker_no_cache: 'true'
+          scan_vulnerabilities: 'false'
+          # This image exists to be tested against a candidate that has not been promoted.
+          push: 'false'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve loaded e2e image ID
+        shell: bash
+        env:
+          IMAGE: ${{ format('ghcr.io/{0}/postgres:{1}-full-alpine', github.repository_owner, needs.select.outputs.major) }}
+        run: |
+          set -euo pipefail
+          image_id=$(timeout -k 2 10 docker image inspect --format '{{.Id}}' "$IMAGE")
+          test -n "$image_id"
+          echo "E2E_IMAGE_ID=$image_id" >> "$GITHUB_ENV"
+
+      - name: Run e2e suite
+        id: e2e
+        continue-on-error: true
+        shell: bash
+        run: |
+          E2E_IMAGE="$E2E_IMAGE_ID" tests/e2e-test.sh postgres
+
+      - name: Fail attributable build or suite result
+        # See the amd64 leg: packages:read makes build-container's post-build
+        # push advisory here once the loaded image has been resolved.
+        if: steps.e2e.outcome == 'failure'
+        shell: bash
+        run: |
+          printf 'true\n' > .rotation/attributable
+          exit 1
+
+      - name: Upload test attribution
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: rotation-status-test-arm64
+          path: .rotation/attributable
+          if-no-files-found: ignore
+
+  promote:
+    needs: [select, build, freeze-digests, test-amd64, test-arm64]
+    if: |
+      needs.select.outputs.selected == 'true' &&
+      needs.build.result == 'success' &&
+      needs.freeze-digests.result == 'success' &&
+      needs.test-amd64.result == 'success' &&
+      needs.test-arm64.result == 'success' &&
+      (github.event_name != 'workflow_dispatch' || inputs.dry_run != true)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: merge-extension-manifests-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install skopeo
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+
+      - name: Log in to container registries
+        uses: ./.github/actions/docker-login
+        with:
+          ghcr_username: ${{ github.actor }}
+          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Promote frozen staging digests
+        shell: bash
+        env:
+          DRY_RUN: 'false'
+          EXTENSION: ${{ needs.select.outputs.extension }}
+          PG_MAJOR: ${{ needs.select.outputs.major }}
+          VERSION: ${{ needs.select.outputs.version }}
+          BASELINE_DIGEST: ${{ needs.select.outputs.baseline_digest }}
+          NO_CANONICAL_INDEX: ${{ needs.select.outputs.no_canonical_index }}
+          AMD64_DIGEST: ${{ needs.freeze-digests.outputs.amd64_digest }}
+          ARM64_DIGEST: ${{ needs.freeze-digests.outputs.arm64_digest }}
+        run: |
+          set -euo pipefail
+          baseline_args=()
+          if [[ "$NO_CANONICAL_INDEX" == true ]]; then
+            baseline_args=(--no-canonical-index)
+          else
+            baseline_args=(--baseline-digest "$BASELINE_DIGEST")
+          fi
+          scripts/rotation-promote.sh --extension "$EXTENSION" --pg-major "$PG_MAJOR" --version "$VERSION" \
+            "${baseline_args[@]}" --amd64-digest "$AMD64_DIGEST" --arm64-digest "$ARM64_DIGEST"
+
+  promote-dry-run:
+    needs: [select, build, freeze-digests, test-amd64, test-arm64]
+    if: |
+      needs.select.outputs.selected == 'true' &&
+      needs.build.result == 'success' &&
+      needs.freeze-digests.result == 'success' &&
+      needs.test-amd64.result == 'success' &&
+      needs.test-arm64.result == 'success' &&
+      github.event_name == 'workflow_dispatch' && inputs.dry_run == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Render frozen staging promotion
+        shell: bash
+        env:
+          DRY_RUN: 'true'
+          EXTENSION: ${{ needs.select.outputs.extension }}
+          PG_MAJOR: ${{ needs.select.outputs.major }}
+          VERSION: ${{ needs.select.outputs.version }}
+          BASELINE_DIGEST: ${{ needs.select.outputs.baseline_digest }}
+          NO_CANONICAL_INDEX: ${{ needs.select.outputs.no_canonical_index }}
+          AMD64_DIGEST: ${{ needs.freeze-digests.outputs.amd64_digest }}
+          ARM64_DIGEST: ${{ needs.freeze-digests.outputs.arm64_digest }}
+        run: |
+          set -euo pipefail
+          baseline_args=()
+          if [[ "$NO_CANONICAL_INDEX" == true ]]; then
+            baseline_args=(--no-canonical-index)
+          else
+            baseline_args=(--baseline-digest "$BASELINE_DIGEST")
+          fi
+          scripts/rotation-promote.sh --extension "$EXTENSION" --pg-major "$PG_MAJOR" --version "$VERSION" \
+            "${baseline_args[@]}" --amd64-digest "$AMD64_DIGEST" --arm64-digest "$ARM64_DIGEST"
+
+  quarantine:
+    needs: [select, build, freeze-digests, test-amd64, test-arm64]
+    if: always() && needs.select.outputs.selected == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - name: Download failure attribution
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          pattern: rotation-status-*
+          path: .rotation/status
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Decide whether a failure is attributable
+        id: attribution
+        shell: bash
+        run: |
+          shopt -s nullglob
+          attributable=false
+          for status_file in .rotation/status/*; do
+            if [[ $(<"$status_file") == true ]]; then
+              attributable=true
+            fi
+          done
+          printf 'create=%s\n' "$attributable" >> "$GITHUB_OUTPUT"
+
+      - name: Quarantine failing extension pair
+        if: steps.attribution.outputs.create == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          EXTENSION: ${{ needs.select.outputs.extension }}
+          PG_MAJOR: ${{ needs.select.outputs.major }}
+          VERSION: ${{ needs.select.outputs.version }}
+          AMD64_DIGEST: ${{ needs.freeze-digests.outputs.amd64_digest }}
+          ARM64_DIGEST: ${{ needs.freeze-digests.outputs.arm64_digest }}
+          RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        run: |
+          set -euo pipefail
+          body=$(printf 'rotation-pair: %s pg%s %s\n\nFailed run: %s\n' "$EXTENSION" "$PG_MAJOR" "$VERSION" "$RUN_URL")
+          if [[ -n "$AMD64_DIGEST" ]]; then
+            body+=$(printf 'amd64 digest: %s\n' "$AMD64_DIGEST")
+          fi
+          if [[ -n "$ARM64_DIGEST" ]]; then
+            body+=$(printf 'arm64 digest: %s\n' "$ARM64_DIGEST")
+          fi
+          gh issue create --repo "$REPOSITORY" \
+            --title "Extension rotation blocked: ${EXTENSION} pg${PG_MAJOR} ${VERSION}" \
+            --label extension-rotation-blocked --body "$body"
+
+  cleanup-staging:
+    needs: [select, promote, promote-dry-run]
+    if: always() && needs.select.outputs.selected == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Delete staging packages
+        # Cleanup failure is not a failed rotation: staging is unreachable from
+        # production, so leave a visible cleanup error without quarantining it.
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          EXTENSION: ${{ needs.select.outputs.extension }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for package in "ext-${EXTENSION}-staging" "ext-${EXTENSION}-staging-buildcache"; do
+            output=''
+            rc=0
+            output=$(gh api --method DELETE "/users/${OWNER}/packages/container/${package}" 2>&1) || rc=$?
+            if [[ "$rc" -ne 0 && "$output" != *404* ]]; then
+              printf '%s\n' "$output" >&2
+              failed=1
+            fi
+          done
+          exit "$failed"
