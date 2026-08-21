@@ -808,6 +808,113 @@ ext_ref_resolve() {
     esac
 }
 
+# ext_consumed_source_ref <extension> <version> <pg_major> <registry> <owner> <mode> [artifact_digest]
+#
+# Return the immutable or tag-based source reference a generated Dockerfile
+# consumes.  Keeping the candidate selector here means every generated FROM and
+# COPY --from reference has the same narrow, frozen-rotation escape hatch.
+ext_consumed_source_ref() {
+    local extension="${1:-}"
+    local version="${2:-}"
+    local pg_major="${3:-}"
+    local registry="${4:-}"
+    local owner="${5:-}"
+    local mode="${6:-}"
+    local artifact_digest="${7:-}"
+    local LC_ALL=C
+    local candidate="${ROTATION_CANDIDATE_REF:-}"
+    local candidate_left candidate_ref candidate_extension candidate_pg_major candidate_version
+    local candidate_repository candidate_digest candidate_suffix expected_repository
+    local repository candidate_prefix
+
+    if [[ -z "$extension" || -z "$version" || -z "$pg_major" || -z "$registry" || -z "$owner" || -z "$mode" ]]; then
+        log_error "ext_consumed_source_ref: extension, version, pg_major, registry, owner, and mode are required"
+        return 1
+    fi
+
+    # A requested frozen candidate must be completely understood before any
+    # fallback can run; otherwise a malformed rotation could test canonical bytes.
+    if [[ -n "$candidate" ]]; then
+        if [[ "$candidate" != *=* ]]; then
+            log_error "ROTATION_CANDIDATE_REF must match <extension>:<pg_major>:<version>=<repository>@<digest>"
+            return 2
+        fi
+        candidate_left="${candidate%%=*}"
+        candidate_ref="${candidate#*=}"
+        if [[ "$candidate_ref" == *=* ]] || ! [[ "$candidate_left" =~ ^([A-Za-z0-9_-]+):([0-9]+):([^:=]+)$ ]]; then
+            log_error "ROTATION_CANDIDATE_REF must match <extension>:<pg_major>:<version>=<repository>@<digest>"
+            return 2
+        fi
+        candidate_extension="${BASH_REMATCH[1]}"
+        candidate_pg_major="${BASH_REMATCH[2]}"
+        candidate_version="${BASH_REMATCH[3]}"
+
+        if ! [[ "$candidate_ref" =~ ^(.+)@([^@]+)$ ]]; then
+            log_error "ROTATION_CANDIDATE_REF must contain one pinned repository@sha256 digest reference"
+            return 2
+        fi
+        candidate_repository="${BASH_REMATCH[1]}"
+        candidate_digest="${BASH_REMATCH[2]}"
+        if ! is_valid_oci_digest "$candidate_digest"; then
+            log_error "ROTATION_CANDIDATE_REF must contain a valid pinned sha256 digest"
+            return 2
+        fi
+
+        candidate_prefix="${registry}/${owner}/ext-${candidate_extension}"
+        case "$candidate_repository" in
+            "$candidate_prefix") candidate_suffix="" ;;
+            "$candidate_prefix"-*) candidate_suffix="${candidate_repository#"$candidate_prefix"}" ;;
+            *)
+                log_error "ROTATION_CANDIDATE_REF repository must belong to this invocation's registry, owner, and extension"
+                return 2
+                ;;
+        esac
+
+        if [[ -n "$candidate_suffix" ]]; then
+            if ! EXTENSION_PACKAGE_SUFFIX="$candidate_suffix" validate_extension_package_suffix; then
+                log_error "ROTATION_CANDIDATE_REF repository has an invalid package suffix"
+                return 2
+            fi
+            expected_repository=$(EXTENSION_PACKAGE_SUFFIX="$candidate_suffix" ext_image_repository "$candidate_extension" "$registry" "$owner") || return 2
+        else
+            expected_repository=$(unset EXTENSION_PACKAGE_SUFFIX; ext_image_repository "$candidate_extension" "$registry" "$owner") || return 2
+        fi
+        if [[ "$candidate_repository" != "$expected_repository" ]]; then
+            log_error "ROTATION_CANDIDATE_REF repository does not match the frozen candidate package"
+            return 2
+        fi
+
+        if [[ "$extension" == "$candidate_extension" && "$pg_major" == "$candidate_pg_major" && "$version" == "$candidate_version" ]]; then
+            printf '%s' "$candidate_ref"
+            return 0
+        fi
+    fi
+
+    case "$mode" in
+        pinned-digest)
+            if ! is_valid_oci_digest "$artifact_digest"; then
+                log_error "ext_consumed_source_ref: artifact digest for $extension $version pg${pg_major} is absent or malformed — fail closed"
+                return 1
+            fi
+            repository=$(ext_image_repository "$extension" "$registry" "$owner") || return 1
+            printf '%s@%s' "$repository" "$artifact_digest"
+            ;;
+        probe)
+            # ext_ref_resolve resolves registry and owner internally, unlike the
+            # other modes; forward this invocation's explicit identity once here.
+            EXTENSION_REGISTRY="$registry" GITHUB_REPOSITORY_OWNER="$owner" \
+                ext_ref_resolve "$extension" "$version" "$pg_major" ""
+            ;;
+        direct)
+            ext_image_name "$extension" "$version" "$pg_major" "$registry" "$owner"
+            ;;
+        *)
+            log_error "ext_consumed_source_ref: unsupported mode '$mode'"
+            return 1
+            ;;
+    esac
+}
+
 # Get list of extensions for a flavor, filtered by PG version compatibility
 # Excludes disabled extensions and those exceeding max_pg_version
 get_flavor_extensions() {
@@ -1350,8 +1457,8 @@ generate_dockerfile() {
                     return 1
                 fi
 
-                # Probe registry presence for each resolved version via ext_ref_resolve.
-                # ext_ref_resolve encapsulates canonical-first, PR-scoped fallback,
+                # Probe registry presence for each resolved version through the consumed
+                # source gateway. It preserves ext_ref_resolve's canonical-first, PR-scoped fallback,
                 # both force signals, and 3-state fail-closed in one call
                 # (arch="" = multi-arch tag).
                 # rc 0 → PRESENT (ref printed); rc 1 → ABSENT; rc 2 → transient ERROR (fail-closed).
@@ -1362,7 +1469,7 @@ generate_dockerfile() {
                 while IFS= read -r _sh_ver; do
                     [[ -z "$_sh_ver" ]] && continue
                     local _sh_resolved_ref _sh_rc=0
-                    _sh_resolved_ref=$(ext_ref_resolve "$ext_name" "$_sh_ver" "$pg_major" "") || _sh_rc=$?
+                    _sh_resolved_ref=$(ext_consumed_source_ref "$ext_name" "$_sh_ver" "$pg_major" "$registry" "$owner" probe) || _sh_rc=$?
                     case "$_sh_rc" in
                         0)
                             _sh_available+=("$_sh_ver")
@@ -1542,7 +1649,7 @@ generate_dockerfile() {
                         # sourced inside a function scope). Serializing as a string passes cleanly.
                         local _ecs_ver_ref_list=""
                         if [[ "$_versionset_from_selfheal" == "true" ]]; then
-                            # Self-heal path: refs already resolved by ext_ref_resolve above.
+                            # Self-heal path: refs already resolved by the source gateway above.
                             local _sh_mv
                             while IFS= read -r _sh_mv; do
                                 [[ -z "$_sh_mv" ]] && continue
@@ -1569,11 +1676,9 @@ generate_dockerfile() {
                                         log_error "generate_dockerfile: version_digests[$_art_ver] for $ext_name pg${pg_major} is absent or malformed ('$(_sanitize_for_log "$(printf '%s' "${_art_digest:-}" | head -c 80)")') — fail closed"
                                         return 1
                                     fi
-                                    local _art_repository
-                                    _art_repository=$(ext_image_repository "$ext_name" "$registry" "$owner") || return 1
-                                    _art_ref="${_art_repository}@${_art_digest}"
+                                    _art_ref=$(ext_consumed_source_ref "$ext_name" "$_art_ver" "$pg_major" "$registry" "$owner" pinned-digest "$_art_digest") || return 1
                                 else
-                                    _art_ref=$(ext_image_name "$ext_name" "$_art_ver" "$pg_major" "$registry" "$owner") || return 1
+                                    _art_ref=$(ext_consumed_source_ref "$ext_name" "$_art_ver" "$pg_major" "$registry" "$owner" direct) || return 1
                                 fi
                                 _ecs_ver_ref_list+="${_art_ver}	${_art_ref}"$'\n'
                             done <<< "$raw_versions"
@@ -1618,12 +1723,10 @@ generate_dockerfile() {
                     log_error "generate_dockerfile: version_digests[$ext_version] for $ext_name pg${pg_major} is absent or malformed ('$(_sanitize_for_log "$(printf '%s' "${_sv_digest:-}" | head -c 80)")') — fail closed"
                     return 1
                 fi
-                local _sv_repository
-                _sv_repository=$(ext_image_repository "$ext_name" "$registry" "$owner") || return 1
-                _sv_ref="${_sv_repository}@${_sv_digest}"
+                _sv_ref=$(ext_consumed_source_ref "$ext_name" "$ext_version" "$pg_major" "$registry" "$owner" pinned-digest "$_sv_digest") || return 1
             elif [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
                 local _sv_rc=0
-                _sv_ref=$(ext_ref_resolve "$ext_name" "$ext_version" "$pg_major" "") || _sv_rc=$?
+                _sv_ref=$(ext_consumed_source_ref "$ext_name" "$ext_version" "$pg_major" "$registry" "$owner" probe) || _sv_rc=$?
                 if [[ "$_sv_rc" -eq 2 ]]; then
                     log_error "generate_dockerfile: transient registry probe error resolving $ext_name $ext_version pg${pg_major} — fail closed"
                     return 1
@@ -1633,9 +1736,8 @@ generate_dockerfile() {
                     return 1
                 fi
             else
-                # Push/dispatch: emit the package selected by the independent
-                # package-suffix axis (canonical when it is unset).
-                _sv_ref=$(ext_image_name "$ext_name" "$ext_version" "$pg_major" "$registry" "$owner") || return 1
+                # Push/dispatch remains direct so scheduled builds do not acquire a probe.
+                _sv_ref=$(ext_consumed_source_ref "$ext_name" "$ext_version" "$pg_major" "$registry" "$owner" direct) || return 1
             fi
             stages_block+="FROM ${_sv_ref} AS ext-${ext_name}"$'\n'
             copies_block+="COPY --from=ext-${ext_name} /output/extension/ /tmp/ext/${ext_name}/extension/"$'\n'
