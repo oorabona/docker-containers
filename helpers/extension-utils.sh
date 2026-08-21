@@ -14,6 +14,8 @@ HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -F log_info &>/dev/null; then
     source "$HELPERS_DIR/logging.sh"
 fi
+# shellcheck source=helpers/gha.sh
+source "$HELPERS_DIR/gha.sh"
 
 # shellcheck source=helpers/validate-extensions-schema.sh
 source "$HELPERS_DIR/validate-extensions-schema.sh"
@@ -464,6 +466,121 @@ is_valid_oci_digest() {
     # match the first line, silently accepting multi-line injections otherwise.
     [[ "$_d" == *$'\n'* ]] && return 1
     printf '%s' "$_d" | grep -Eqx 'sha256:[0-9a-f]{64}'
+}
+
+# extension_index_has_exact_digests <raw-index-json> <amd64-digest> <arm64-digest>
+#
+# Return success only for an index containing exactly one requested linux/amd64
+# descriptor and exactly one requested linux/arm64 descriptor.  The promotion
+# read-back and retry-recovery paths intentionally share this one predicate.
+extension_index_has_exact_digests() {
+    local raw_manifest="${1:-}"
+    local amd64_digest="${2:-}"
+    local arm64_digest="${3:-}"
+
+    jq -e --arg amd64_digest "$amd64_digest" --arg arm64_digest "$arm64_digest" '
+        .schemaVersion == 2 and
+        (.mediaType == "application/vnd.oci.image.index.v1+json" or
+         .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json") and
+        (.manifests | type == "array" and length == 2) and
+        ([.manifests[] |
+            select(.platform.os == "linux" and
+                   .platform.architecture == "amd64" and
+                   .digest == $amd64_digest)] | length == 1) and
+        ([.manifests[] |
+            select(.platform.os == "linux" and
+                   .platform.architecture == "arm64" and
+                   .digest == $arm64_digest)] | length == 1)
+    ' >/dev/null <<< "$raw_manifest"
+}
+
+# publish_extension_index_from_digests <target-tag-ref> <amd64-digest-ref> <arm64-digest-ref>
+#
+# Publish one extension multi-architecture index from two explicit, immutable
+# per-architecture digest references.  The target is intentionally a tag: it
+# is the canonical index consumers resolve.  Its children must be digest refs,
+# never mutable architecture tags.  On success, print the digest read back from
+# the published index. Returns 1 if creation itself failed and 2 if creation
+# succeeded but read-back verification failed, so callers do not claim the tag
+# was not written after a successful create.
+#
+# This is deliberately narrow so callers keep their own state-machine rules
+# (copying, conflict fences, and post-publication comparisons) while sharing
+# the one registry operation whose inputs must remain digest-pinned.
+publish_extension_index_from_digests() {
+    local target_ref="${1:-}"
+    local amd64_ref="${2:-}"
+    local arm64_ref="${3:-}"
+    local amd64_digest="${amd64_ref##*@}"
+    local arm64_digest="${arm64_ref##*@}"
+    local create_rc=0
+    local inspect_rc=0
+    local hash_rc=0
+    local raw_manifest
+    local raw_hash
+    local published_digest
+
+    if [[ -z "$target_ref" || "$amd64_ref" != *@* || "$arm64_ref" != *@* ]]; then
+        log_error "publish_extension_index_from_digests requires one target tag and two digest references"
+        return 1
+    fi
+
+    is_valid_oci_digest "$amd64_digest" || create_rc=$?
+    if [[ "$create_rc" -ne 0 ]]; then
+        log_error "Refusing to create extension index: amd64 source is not an explicit valid OCI digest reference"
+        return 1
+    fi
+
+    create_rc=0
+    is_valid_oci_digest "$arm64_digest" || create_rc=$?
+    if [[ "$create_rc" -ne 0 ]]; then
+        log_error "Refusing to create extension index: arm64 source is not an explicit valid OCI digest reference"
+        return 1
+    fi
+
+    create_rc=0
+    # Intentionally unquoted: logging.sh represents DRY_RUN commands as the
+    # two-word substitution "echo docker".
+    # shellcheck disable=SC2086
+    $DOCKER buildx imagetools create \
+        -t "$target_ref" \
+        "$amd64_ref" \
+        "$arm64_ref" || create_rc=$?
+    if [[ "$create_rc" -ne 0 ]]; then
+        log_error "Extension index creation outcome is unknown for $(_escape_gha_command "$target_ref") (rc=$create_rc); canonical state may have changed"
+        return 3
+    fi
+
+    raw_manifest=""
+    inspect_rc=0
+    # Intentionally unquoted; see the create invocation above.
+    # shellcheck disable=SC2086
+    raw_manifest=$($DOCKER buildx imagetools inspect "$target_ref" --raw 2>/dev/null) || inspect_rc=$?
+    if [[ "$inspect_rc" -ne 0 || -z "$raw_manifest" ]]; then
+        log_error "Could not read back the published extension index for $(_escape_gha_command "$target_ref")"
+        return 2
+    fi
+
+    if ! extension_index_has_exact_digests "$raw_manifest" "$amd64_digest" "$arm64_digest"; then
+        log_error "Published extension index for $(_escape_gha_command "$target_ref") did not contain exactly the requested linux/amd64 and linux/arm64 digests"
+        return 2
+    fi
+
+    raw_hash=""
+    raw_hash=$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}') || hash_rc=$?
+    if [[ "$hash_rc" -ne 0 || -z "$raw_hash" ]]; then
+        log_error "Could not calculate the read-back digest for $(_escape_gha_command "$target_ref")"
+        return 2
+    fi
+    published_digest="sha256:${raw_hash}"
+    inspect_rc=0
+    is_valid_oci_digest "$published_digest" || inspect_rc=$?
+    if [[ "$inspect_rc" -ne 0 ]]; then
+        log_error "Read-back digest for $(_escape_gha_command "$target_ref") was malformed"
+        return 2
+    fi
+
+    printf '%s' "$published_digest"
 }
 
 # validate_semver_set_json <json_array> <ceiling>
