@@ -30,6 +30,28 @@ teardown() {
     teardown_temp_dir
 }
 
+# shellcheck disable=SC2154 # shared parser output globals
+@test "rotation candidate parser distinguishes valid, absent, and malformed values" {
+    export ROTATION_CANDIDATE_REF="pgvector:18:0.8.2=ghcr.io/testowner/ext-pgvector-staging@sha256:reference"
+    local parser_rc=0
+    _parse_rotation_candidate_ref || parser_rc=$?
+    [ "$parser_rc" -eq 0 ]
+    [ "$_rotation_candidate_ref_extension" = "pgvector" ]
+    [ "$_rotation_candidate_ref_pg_major" = "18" ]
+    [ "$_rotation_candidate_ref_version" = "0.8.2" ]
+    [ "$_rotation_candidate_ref_value" = "ghcr.io/testowner/ext-pgvector-staging@sha256:reference" ]
+
+    unset ROTATION_CANDIDATE_REF
+    parser_rc=0
+    _parse_rotation_candidate_ref || parser_rc=$?
+    [ "$parser_rc" -eq 1 ]
+
+    export ROTATION_CANDIDATE_REF="pgvector:18broken:0.8.2=reference"
+    parser_rc=0
+    _parse_rotation_candidate_ref || parser_rc=$?
+    [ "$parser_rc" -eq 2 ]
+}
+
 # shellcheck disable=SC2030,SC2031
 @test "matching frozen candidate wins pinned-digest, probe, and direct modes" {
     local digest candidate
@@ -50,6 +72,32 @@ teardown() {
     run ext_consumed_source_ref pgvector 0.8.2 18 ghcr.io testowner direct
     [ "$status" -eq 0 ]
     [ "$output" = "ghcr.io/testowner/ext-pgvector-staging@${digest}" ]
+}
+
+@test "unsupported mode is refused before a matching frozen candidate" {
+    local digest
+    digest=$(_digest 41)
+    export ROTATION_CANDIDATE_REF="pgvector:18:0.8.2=ghcr.io/testowner/ext-pgvector-staging@${digest}"
+
+    run --separate-stderr ext_consumed_source_ref pgvector 0.8.2 18 ghcr.io testowner typo
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    # shellcheck disable=SC2154 # Bats --separate-stderr result variable
+    [[ "$stderr" == *"unsupported mode 'typo'"* ]]
+}
+
+# shellcheck disable=SC2030,SC2031
+@test "frozen candidate refuses an ambient package suffix" {
+    local digest
+    digest=$(_digest 42)
+    export ROTATION_CANDIDATE_REF="pgvector:18:0.8.2=ghcr.io/testowner/ext-pgvector-staging@${digest}"
+    export EXTENSION_PACKAGE_SUFFIX="-staging"
+
+    run --separate-stderr ext_consumed_source_ref pgvector 0.8.2 18 ghcr.io testowner direct
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    # shellcheck disable=SC2154 # Bats --separate-stderr result variable
+    [[ "$stderr" == *"cannot be consumed while EXTENSION_PACKAGE_SUFFIX is set"* ]]
 }
 
 # shellcheck disable=SC2030,SC2031
@@ -81,6 +129,7 @@ teardown() {
         "pgvector:18:0.8.2=ghcr.io/testowner/ext-pgvector"
         "pgvector:18:0.8.2=ghcr.io/testowner/ext-pgvector@${short_digest}"
         "pgvector:18:0.8.2=ghcr.io/testowner/ext-pgvector@${upper_digest}"
+        "pgvector:18:0.8.2=ghcr.io/testowner/ext-pgvector@${digest}"
         "pgvector:18:0.8.2=ghcr.io/not-testowner/ext-pgvector@${digest}"
         "pgvector:18:0.8.2=registry.example/testowner/ext-pgvector@${digest}"
     )
@@ -135,7 +184,7 @@ teardown() {
 }
 
 # shellcheck disable=SC2030,SC2031
-@test "generated direct path stays unprobed and the frozen candidate preserves COPY count" {
+@test "generated canonical direct path stays unprobed and the frozen candidate preserves COPY count" {
     mkdir -p "$TEST_TEMP_DIR/extensions"
     cat > "$TEST_TEMP_DIR/extensions/config.yaml" <<'EOF'
 extensions:
@@ -145,9 +194,16 @@ extensions:
     priority: 1
     initdb:
       mode: create
+  postgis:
+    version: "3.5.1"
+    repo: "postgis/postgis"
+    priority: 2
+    initdb:
+      mode: create
 flavors:
   vector:
     - pgvector
+    - postgis
 EOF
     cat > "$TEST_TEMP_DIR/Dockerfile.template" <<'EOF'
 ARG VERSION
@@ -179,9 +235,31 @@ EOF
     run generate_dockerfile "$TEST_TEMP_DIR/extensions/config.yaml" "$TEST_TEMP_DIR/Dockerfile.template" vector 18 ghcr.io testowner
     [ "$status" -eq 0 ]
     [[ "$output" == *"FROM ghcr.io/testowner/ext-pgvector-staging@${digest} AS ext-pgvector"* ]]
+    [ "$(grep -Foc -- "ghcr.io/testowner/ext-pgvector-staging@${digest}" <<<"$output" || true)" -eq 1 ]
+    [[ "$output" != *"ghcr.io/testowner/ext-pgvector:pg18-0.8.2"* ]]
+    [[ "$output" == *"FROM ghcr.io/testowner/ext-postgis:pg18-3.5.1 AS ext-postgis"* ]]
     canonical_copy_count=$(grep -c '^COPY --from=' <<<"$canonical_output" || true)
     candidate_copy_count=$(grep -c '^COPY --from=' <<<"$output" || true)
     [ "$candidate_copy_count" -eq "$canonical_copy_count" ]
+
+    export ROTATION_CANDIDATE_REF="pgvector:18:0.8.1=ghcr.io/testowner/ext-pgvector-staging@${digest}"
+    run --separate-stderr generate_dockerfile "$TEST_TEMP_DIR/extensions/config.yaml" "$TEST_TEMP_DIR/Dockerfile.template" vector 18 ghcr.io testowner
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    # shellcheck disable=SC2154 # Bats --separate-stderr result variable
+    [[ "$stderr" == *"rotation candidate 'pgvector:18:0.8.1="*"was not consumed"* ]]
+
+    export ROTATION_CANDIDATE_REF="pgvector:18broken:0.8.2=ghcr.io/testowner/ext-pgvector-staging@${digest}"
+    # Isolate the render guard from the gateway's separate fail-closed check:
+    # if the render treats parser rc 2 as absent, this canonical source would
+    # otherwise let it assemble a Dockerfile.
+    # shellcheck disable=SC2317
+    ext_consumed_source_ref() { printf 'ghcr.io/testowner/ext-%s:pg%s-%s' "$1" "$3" "$2"; }
+    run --separate-stderr generate_dockerfile "$TEST_TEMP_DIR/extensions/config.yaml" "$TEST_TEMP_DIR/Dockerfile.template" vector 18 ghcr.io testowner
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    # shellcheck disable=SC2154 # Bats --separate-stderr result variable
+    [[ "$stderr" == *"ROTATION_CANDIDATE_REF is malformed"* ]]
 }
 
 # shellcheck disable=SC2030,SC2031
@@ -345,8 +423,10 @@ EOF
     [[ "$output" == *"FROM ghcr.io/testowner/ext-pgvector-staging@${probe_digest} AS ext-pgvector"* ]]
 }
 
-@test "generate_dockerfile has no consumed-reference bypass" {
-    # This lint catches a newly added bypass; it is not proof that none exists.
+@test "lint detects direct consumed-reference constructors in generate_dockerfile" {
+    # This is a lint, not behavioral proof. It cannot detect a bypass written as
+    # either `printf -v _art_ref '%s@%s' "$repository" "$digest"` or
+    # `_art_ref="$repository@$digest"`; those are the known gap.
     # The sole ext_image_repository allowance compares artifact provenance; it
     # does not emit a consumed reference.
     local body non_provenance_body
@@ -362,6 +442,20 @@ EOF
     fi
     if grep -Eq '"\$\{[^}]+\}@\$\{[^}]+\}"' <<<"$body"; then
         echo "generate_dockerfile assembles a digest reference directly"
+        return 1
+    fi
+}
+
+@test "lint keeps ROTATION_CANDIDATE_REF triple parsing in its shared helper" {
+    local parser_body gateway_body render_body triple_pattern
+    triple_pattern='^([A-Za-z0-9_-]+):([0-9]+):([^:=]+)$'
+    parser_body=$(awk '/^_parse_rotation_candidate_ref\(\) \{/{inside=1} inside {print} /^}$/ && inside {exit}' "$HELPERS_DIR/extension-utils.sh")
+    gateway_body=$(awk '/^ext_consumed_source_ref\(\) \{/{inside=1} inside {print} /^}$/ && inside {exit}' "$HELPERS_DIR/extension-utils.sh")
+    render_body=$(awk '/^generate_dockerfile\(\) \{/{inside=1} inside {print} /^}$/ && inside {exit}' "$HELPERS_DIR/extension-utils.sh")
+
+    grep -Fq -- "$triple_pattern" <<<"$parser_body"
+    if grep -Fq -- "$triple_pattern" <<<"$gateway_body" || grep -Fq -- "$triple_pattern" <<<"$render_body"; then
+        echo "ROTATION_CANDIDATE_REF triple parsing must stay in _parse_rotation_candidate_ref"
         return 1
     fi
 }

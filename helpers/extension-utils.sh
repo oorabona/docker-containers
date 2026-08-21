@@ -724,6 +724,54 @@ _force_scoped_extension_ref() {
     return 1
 }
 
+# _parse_rotation_candidate_ref
+#
+# Parse ROTATION_CANDIDATE_REF's shared selector grammar.  The fixed
+# _rotation_candidate_ref_* globals are this function's deliberate multi-value
+# return channel: a caller-supplied output variable (and therefore a nameref)
+# could silently collide with a variable in a script that sources this file.
+#
+# Returns:
+#   0  ROTATION_CANDIDATE_REF is set, non-empty, and has a valid selector;
+#      _rotation_candidate_ref_extension, _rotation_candidate_ref_pg_major,
+#      _rotation_candidate_ref_version, and _rotation_candidate_ref_value are
+#      available to the caller.
+#   1  ROTATION_CANDIDATE_REF is unset or empty.
+#   2  ROTATION_CANDIDATE_REF is set and malformed.
+#
+# This helper owns only the left/right split and selector shape.  Its callers
+# retain validation of the pinned reference and its applicability.
+_parse_rotation_candidate_ref() {
+    local LC_ALL=C
+    local candidate candidate_left candidate_ref
+
+    _rotation_candidate_ref_extension=""
+    _rotation_candidate_ref_pg_major=""
+    _rotation_candidate_ref_version=""
+    _rotation_candidate_ref_value=""
+
+    if [[ -z "${ROTATION_CANDIDATE_REF+x}" ]]; then
+        return 1
+    fi
+    candidate="$ROTATION_CANDIDATE_REF"
+    [[ -n "$candidate" ]] || return 1
+
+    if [[ "$candidate" != *=* ]]; then
+        return 2
+    fi
+    candidate_left="${candidate%%=*}"
+    candidate_ref="${candidate#*=}"
+    if [[ "$candidate_ref" == *=* ]] || ! [[ "$candidate_left" =~ ^([A-Za-z0-9_-]+):([0-9]+):([^:=]+)$ ]]; then
+        return 2
+    fi
+
+    _rotation_candidate_ref_extension="${BASH_REMATCH[1]}"
+    _rotation_candidate_ref_pg_major="${BASH_REMATCH[2]}"
+    _rotation_candidate_ref_version="${BASH_REMATCH[3]}"
+    _rotation_candidate_ref_value="$candidate_ref"
+    return 0
+}
+
 ext_ref_resolve() {
     local ext="$1" version="$2" major="$3" arch="${4:-}"
     local registry owner canonical_ref pr_ref scope_rc=0
@@ -822,8 +870,8 @@ ext_consumed_source_ref() {
     local mode="${6:-}"
     local artifact_digest="${7:-}"
     local LC_ALL=C
-    local candidate="${ROTATION_CANDIDATE_REF:-}"
-    local candidate_left candidate_ref candidate_extension candidate_pg_major candidate_version
+    local candidate_rc=0
+    local candidate_ref candidate_extension candidate_pg_major candidate_version
     local candidate_repository candidate_digest candidate_suffix expected_repository
     local repository candidate_prefix
 
@@ -832,23 +880,47 @@ ext_consumed_source_ref() {
         return 1
     fi
 
+    # Keep the mode set closed even when a matching candidate would otherwise
+    # return before the fallback switch below.
+    case "$mode" in
+        pinned-digest|probe|direct) ;;
+        *)
+            log_error "ext_consumed_source_ref: unsupported mode '$mode'"
+            return 1
+            ;;
+    esac
+
     # A requested frozen candidate must be completely understood before any
     # fallback can run; otherwise a malformed rotation could test canonical bytes.
-    if [[ -n "$candidate" ]]; then
-        if [[ "$candidate" != *=* ]]; then
-            log_error "ROTATION_CANDIDATE_REF must match <extension>:<pg_major>:<version>=<repository>@<digest>"
-            return 2
-        fi
-        candidate_left="${candidate%%=*}"
-        candidate_ref="${candidate#*=}"
-        if [[ "$candidate_ref" == *=* ]] || ! [[ "$candidate_left" =~ ^([A-Za-z0-9_-]+):([0-9]+):([^:=]+)$ ]]; then
-            log_error "ROTATION_CANDIDATE_REF must match <extension>:<pg_major>:<version>=<repository>@<digest>"
-            return 2
-        fi
-        candidate_extension="${BASH_REMATCH[1]}"
-        candidate_pg_major="${BASH_REMATCH[2]}"
-        candidate_version="${BASH_REMATCH[3]}"
+    _parse_rotation_candidate_ref || candidate_rc=$?
+    case "$candidate_rc" in
+        0)
+            candidate_extension="$_rotation_candidate_ref_extension"
+            candidate_pg_major="$_rotation_candidate_ref_pg_major"
+            candidate_version="$_rotation_candidate_ref_version"
+            candidate_ref="$_rotation_candidate_ref_value"
 
+            # The producer uses this package axis to write a staging package. A
+            # consumer with a frozen candidate must not inherit it: its
+            # non-candidate versions would otherwise be redirected to that
+            # staging package.
+            if [[ -n "${EXTENSION_PACKAGE_SUFFIX+x}" && -n "$EXTENSION_PACKAGE_SUFFIX" ]]; then
+                log_error "ROTATION_CANDIDATE_REF cannot be consumed while EXTENSION_PACKAGE_SUFFIX is set"
+                return 2
+            fi
+            ;;
+        1) ;;
+        2)
+            log_error "ROTATION_CANDIDATE_REF must match <extension>:<pg_major>:<version>=<repository>@<digest>"
+            return 2
+            ;;
+        *)
+            log_error "ROTATION_CANDIDATE_REF could not be parsed"
+            return 2
+            ;;
+    esac
+
+    if [[ "$candidate_rc" -eq 0 ]]; then
         if ! [[ "$candidate_ref" =~ ^(.+)@([^@]+)$ ]]; then
             log_error "ROTATION_CANDIDATE_REF must contain one pinned repository@sha256 digest reference"
             return 2
@@ -862,23 +934,22 @@ ext_consumed_source_ref() {
 
         candidate_prefix="${registry}/${owner}/ext-${candidate_extension}"
         case "$candidate_repository" in
-            "$candidate_prefix") candidate_suffix="" ;;
             "$candidate_prefix"-*) candidate_suffix="${candidate_repository#"$candidate_prefix"}" ;;
             *)
-                log_error "ROTATION_CANDIDATE_REF repository must belong to this invocation's registry, owner, and extension"
+                log_error "ROTATION_CANDIDATE_REF repository must be a suffixed package belonging to this invocation's registry, owner, and extension"
                 return 2
                 ;;
         esac
 
-        if [[ -n "$candidate_suffix" ]]; then
-            if ! EXTENSION_PACKAGE_SUFFIX="$candidate_suffix" validate_extension_package_suffix; then
-                log_error "ROTATION_CANDIDATE_REF repository has an invalid package suffix"
-                return 2
-            fi
-            expected_repository=$(EXTENSION_PACKAGE_SUFFIX="$candidate_suffix" ext_image_repository "$candidate_extension" "$registry" "$owner") || return 2
-        else
-            expected_repository=$(unset EXTENSION_PACKAGE_SUFFIX; ext_image_repository "$candidate_extension" "$registry" "$owner") || return 2
+        # A suffixed package prevents a rotation from testing bytes already in
+        # the canonical package. It does not establish that the suffix belongs
+        # to this rotation: an arbitrary ext-<name>-something is still accepted
+        # from the actor who supplies the workflow candidate.
+        if ! EXTENSION_PACKAGE_SUFFIX="$candidate_suffix" validate_extension_package_suffix; then
+            log_error "ROTATION_CANDIDATE_REF repository has an invalid package suffix"
+            return 2
         fi
+        expected_repository=$(EXTENSION_PACKAGE_SUFFIX="$candidate_suffix" ext_image_repository "$candidate_extension" "$registry" "$owner") || return 2
         if [[ "$candidate_repository" != "$expected_repository" ]]; then
             log_error "ROTATION_CANDIDATE_REF repository does not match the frozen candidate package"
             return 2
@@ -907,10 +978,6 @@ ext_consumed_source_ref() {
             ;;
         direct)
             ext_image_name "$extension" "$version" "$pg_major" "$registry" "$owner"
-            ;;
-        *)
-            log_error "ext_consumed_source_ref: unsupported mode '$mode'"
-            return 1
             ;;
     esac
 }
@@ -1226,6 +1293,7 @@ generate_dockerfile() {
     local pg_major="$4"
     local registry="${5:-$(get_registry)}"
     local owner="${6:-$(get_repo_owner)}"
+    local LC_ALL=C
 
     if ! validate_extensions_schema "$config_file"; then
         log_error "generate_dockerfile: extensions schema validation failed for ${config_file}"
@@ -1285,6 +1353,34 @@ generate_dockerfile() {
     local stages_block=""
     local copies_block=""
     local all_runtime_deps=""
+    local candidate_rc=0
+    local candidate_ref candidate_extension candidate_pg_major
+    local candidate_applies=false
+
+    # The source gateway validates every candidate it reaches.  This render
+    # scope check covers the distinct valid-but-unconsumed case: only a
+    # candidate naming an extension emitted by this flavor and this PG major is
+    # required to appear in the assembled stage text.
+    _parse_rotation_candidate_ref || candidate_rc=$?
+    case "$candidate_rc" in
+        0)
+            candidate_extension="$_rotation_candidate_ref_extension"
+            candidate_pg_major="$_rotation_candidate_ref_pg_major"
+            candidate_ref="$_rotation_candidate_ref_value"
+            if [[ "$candidate_pg_major" == "$pg_major" ]] && grep -Fxq -- "$candidate_extension" <<< "$extensions"; then
+                candidate_applies=true
+            fi
+            ;;
+        1) ;;
+        2)
+            log_error "generate_dockerfile: ROTATION_CANDIDATE_REF is malformed — fail closed"
+            return 1
+            ;;
+        *)
+            log_error "generate_dockerfile: ROTATION_CANDIDATE_REF could not be parsed — fail closed"
+            return 1
+            ;;
+    esac
 
     if [[ -n "$extensions" ]]; then
         while IFS= read -r ext_name; do
@@ -1461,10 +1557,9 @@ generate_dockerfile() {
                 # source gateway. It preserves ext_ref_resolve's canonical-first, PR-scoped fallback,
                 # both force signals, and 3-state fail-closed in one call
                 # (arch="" = multi-arch tag).
-                # rc 0 → PRESENT (ref printed); rc 1 → ABSENT; rc 2 → transient ERROR (fail-closed).
+                # rc 0 → PRESENT (ref printed); rc 1 → ABSENT; rc 2 → consumed-source resolution failure (fail-closed).
                 local _sh_available=()
                 local -A _sh_emit_ref_map=()  # version → resolved emit ref (for lookup in emit loop)
-                local _sh_probe_error=false
                 local _sh_ver
                 while IFS= read -r _sh_ver; do
                     [[ -z "$_sh_ver" ]] && continue
@@ -1477,15 +1572,11 @@ generate_dockerfile() {
                             ;;
                         1)  ;;   # ABSENT — musl-failed / never-built / not yet pushed
                         *)
-                            log_error "generate_dockerfile: self-heal probe for $ext_name $pg_major $ext_version — registry probe for $_sh_ver returned an ambiguous error; cannot determine availability (fail-closed)"
-                            _sh_probe_error=true
+                            log_error "generate_dockerfile: consumed-source resolution failure for $ext_name $_sh_ver pg${pg_major} during self-heal — cannot determine availability (fail-closed)"
+                            return 1
                             ;;
                     esac
                 done < <(echo "$_sh_resolved_json" | jq -r '.[]' 2>/dev/null || true)
-
-                if [[ "$_sh_probe_error" == "true" ]]; then
-                    return 1
-                fi
 
                 if [[ ${#_sh_available[@]} -eq 0 ]]; then
                     log_error "generate_dockerfile: self-heal for $ext_name pg${pg_major}: no resolved images are present in registry — cannot emit multi-version stages"
@@ -1728,7 +1819,7 @@ generate_dockerfile() {
                 local _sv_rc=0
                 _sv_ref=$(ext_consumed_source_ref "$ext_name" "$ext_version" "$pg_major" "$registry" "$owner" probe) || _sv_rc=$?
                 if [[ "$_sv_rc" -eq 2 ]]; then
-                    log_error "generate_dockerfile: transient registry probe error resolving $ext_name $ext_version pg${pg_major} — fail closed"
+                    log_error "generate_dockerfile: consumed-source resolution failure for $ext_name $ext_version pg${pg_major} — fail closed"
                     return 1
                 fi
                 if [[ "$_sv_rc" -ne 0 ]] || [[ -z "$_sv_ref" ]]; then
@@ -1750,6 +1841,14 @@ generate_dockerfile() {
                 all_runtime_deps+="${deps}"$'\n'
             fi
         done <<< "$extensions"
+    fi
+
+    # Decide from the exact stage text about to be emitted, not from an
+    # intention flag updated inside command substitutions. A candidate scoped
+    # to this render must have replaced one emitted source reference.
+    if [[ "$candidate_applies" == "true" ]] && ! grep -Fq -- "$candidate_ref" <<< "$stages_block"; then
+        log_error "generate_dockerfile: rotation candidate '$ROTATION_CANDIDATE_REF' was not consumed for ${candidate_extension} pg${pg_major} — fail closed"
+        return 1
     fi
 
     # Build runtime_deps block (deduplicated)
