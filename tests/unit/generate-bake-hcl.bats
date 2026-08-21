@@ -1,6 +1,8 @@
 #!/usr/bin/env bats
 # Unit tests for scripts/generate-bake-hcl.sh — ADR-013 R2+R3 slice
 #
+bats_require_minimum_version 1.5.0
+
 # Mutation guards (named per test, see "catches mutation" comments):
 #   Remove contexts wiring → consumer targets lose "contexts" key
 #   Emit docker.io / :latest rolling tag → generator produces non-intermediate refs
@@ -113,6 +115,18 @@ CALLER
 # ---------------------------------------------------------------------------
 _run_generator() {
     run bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" "$@"
+}
+
+_run_generator_separate_stderr() {
+    run --separate-stderr bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" "$@"
+}
+
+_assert_no_uncontrolled_workflow_command() {
+    if tail -n +2 <<< "$stderr" | grep -q '^::'; then
+        output+=$'\nAssertion: no caller-supplied value starts a workflow-command line'
+        printf 'Assertion: no caller-supplied value starts a workflow-command line\n' >&2
+        return 1
+    fi
 }
 
 _run_generator_with_lineage_root() {
@@ -1582,16 +1596,277 @@ YAML
     [ "$actual_count" -eq "$expected_count" ]
 }
 
-@test "B4 — over-narrow --scope-versions emits an empty bake target set" {
-    _run_generator --scope-versions 999 terraform
+@test "B4 — help documents scope refusal and its two successful-empty exceptions" {
+    _run_generator --help
     [ "$status" -eq 0 ]
+    [[ "$output" == *"active scope that selects no Linux build cells exits 1 without writing stdout"* ]]
+    [[ "$output" == *"already-empty matrix and a Windows-only matrix remain successful empty plans"* ]]
+    [[ "$output" == *"Container-scope keys/filter values and build-matrix string fields containing LF"* ]]
+    [[ "$output" == *"or U+001F are refused rather than being passed through record-oriented readers"* ]]
+}
 
-    local target_count default_count
-    target_count=$(echo "$output" | jq '.target | length')
-    default_count=$(echo "$output" | jq '.group.default.targets | length')
+@test "B4 — every over-narrow active scope refuses both bake and cells output" {
+    local -a mode_args=()
+    local mode
+    for mode in bake cells; do
+        if [[ "$mode" == "cells" ]]; then
+            mode_args=(--cells)
+        else
+            mode_args=()
+        fi
 
-    [ "$target_count" -eq 0 ]
-    [ "$default_count" -eq 0 ]
+        _run_generator_separate_stderr "${mode_args[@]}" --scope-versions 999 terraform
+        [ "$status" -eq 1 ]
+        [ -z "$output" ]
+        [[ "$stderr" == *"--scope-versions=999"* ]]
+        [[ "$stderr" == *"matched no Linux build cells"* ]]
+        [[ "$stderr" == *"terraform"* ]]
+
+        _run_generator_separate_stderr "${mode_args[@]}" --scope-flavors not-a-flavor terraform
+        [ "$status" -eq 1 ]
+        [ -z "$output" ]
+        [[ "$stderr" == *"--scope-flavors=not-a-flavor"* ]]
+        [[ "$stderr" == *"matched no Linux build cells"* ]]
+        [[ "$stderr" == *"terraform"* ]]
+
+        _run_generator_separate_stderr "${mode_args[@]}" --scope not-a-scope terraform
+        [ "$status" -eq 1 ]
+        [ -z "$output" ]
+        [[ "$stderr" == *"--scope=not-a-scope"* ]]
+        [[ "$stderr" == *"matched no Linux build cells"* ]]
+        [[ "$stderr" == *"terraform"* ]]
+
+        _run_generator_separate_stderr "${mode_args[@]}" \
+            --container-scopes '{"terraform":{"flavors":"not-a-flavor"}}' terraform
+        [ "$status" -eq 1 ]
+        [ -z "$output" ]
+        [[ "$stderr" == *"--container-scopes={\"terraform\":{\"flavors\":\"not-a-flavor\"}}"* ]]
+        [[ "$stderr" == *"matched no Linux build cells"* ]]
+        [[ "$stderr" == *"terraform"* ]]
+    done
+}
+
+@test "container scopes — filtered keys outside the request refuse both output modes" {
+    local -a mode_args=()
+    local mode container_scopes
+    for mode in bake cells; do
+        if [[ "$mode" == "cells" ]]; then
+            mode_args=(--cells)
+        else
+            mode_args=()
+        fi
+
+        for container_scopes in \
+            '{"terrafom":{"flavors":"not-a-flavor"}}' \
+            '{"debian":{"flavors":"not-a-flavor"}}'; do
+            _run_generator_separate_stderr "${mode_args[@]}" \
+                --container-scopes "$container_scopes" terraform
+            if [[ "$status" -ne 1 || -n "$output" ]]; then
+                output+=$'\nAssertion: a filtered container-scope key outside the request refuses without stdout in both output modes'
+                printf 'Assertion: a filtered container-scope key outside the request refuses without stdout in both output modes\n' >&2
+                return 1
+            fi
+            [[ "$stderr" == *"matched no Linux build cells"* ]]
+            [[ "$stderr" == *"terraform"* ]]
+        done
+    done
+}
+
+@test "container scopes — LF and U+001F keys or filters are refused before record transport" {
+    local -a mode_args=()
+    local mode one_container_scope two_container_scope unit_separator_scope unsafe_filter_scope
+    one_container_scope=$(jq -cn --arg key $'terraform\n' '{($key):{flavors:"not-a-flavor"}}')
+    two_container_scope=$(jq -cn --arg key $'terraform\ndebian' '{($key):{flavors:"not-a-flavor"}}')
+    unit_separator_scope=$(jq -cn --arg key $'terraform\x1f' '{($key):{flavors:"not-a-flavor"}}')
+    unsafe_filter_scope=$(jq -cn --arg value $'not-a-flavor\n' '{terraform:{flavors:$value}}')
+    for mode in bake cells; do
+        if [[ "$mode" == "cells" ]]; then
+            mode_args=(--cells)
+        else
+            mode_args=()
+        fi
+
+        _run_generator_separate_stderr "${mode_args[@]}" \
+            --container-scopes "$one_container_scope" terraform
+        if [[ "$status" -ne 1 || -n "$output" ]]; then
+            output+=$'\nAssertion: an LF or U+001F container-scope key or filter is refused with status 1 and no stdout in both output modes'
+            printf 'Assertion: an LF or U+001F container-scope key or filter is refused with status 1 and no stdout in both output modes\n' >&2
+            return 1
+        fi
+        [[ "$stderr" == *"container-scope key or filter contains LF or U+001F"* ]]
+
+        for container_scopes in "$two_container_scope" "$unit_separator_scope" "$unsafe_filter_scope"; do
+            _run_generator_separate_stderr "${mode_args[@]}" \
+                --container-scopes "$container_scopes" terraform debian
+            if [[ "$status" -ne 1 || -n "$output" ]]; then
+                output+=$'\nAssertion: an LF or U+001F container-scope key or filter is refused with status 1 and no stdout in both output modes'
+                printf 'Assertion: an LF or U+001F container-scope key or filter is refused with status 1 and no stdout in both output modes\n' >&2
+                return 1
+            fi
+            [[ "$stderr" == *"container-scope key or filter contains LF or U+001F"* ]]
+        done
+    done
+}
+
+@test "B4 — caller scope values cannot forge a second workflow command" {
+    # CR remains printable because it does not cross either record-oriented
+    # transport. gha_error must encode it before emitting this diagnostic.
+    local forged=$'not-a-scope\r::warning::forged'
+    local container_scopes
+    container_scopes=$(jq -cn --arg scope "$forged" '{terraform:{flavors:$scope}}')
+    local -a mode_args=()
+    local mode
+
+    for mode in bake cells; do
+        if [[ "$mode" == "cells" ]]; then
+            mode_args=(--cells)
+        else
+            mode_args=()
+        fi
+
+        _run_generator_separate_stderr "${mode_args[@]}" --scope-versions "$forged" terraform
+        [ "$status" -eq 1 ]
+        [ -z "$output" ]
+        # The first line is the controlled gha_error annotation; no following
+        # caller-controlled line may begin another workflow command.
+        _assert_no_uncontrolled_workflow_command
+        [[ "$stderr" == ::error::*"%0D::warning::forged"* ]]
+
+        _run_generator_separate_stderr "${mode_args[@]}" --scope-flavors "$forged" terraform
+        [ "$status" -eq 1 ]
+        [ -z "$output" ]
+        _assert_no_uncontrolled_workflow_command
+        [[ "$stderr" == ::error::*"%0D::warning::forged"* ]]
+
+        _run_generator_separate_stderr "${mode_args[@]}" --scope "$forged" terraform
+        [ "$status" -eq 1 ]
+        [ -z "$output" ]
+        _assert_no_uncontrolled_workflow_command
+        [[ "$stderr" == ::error::*"%0D::warning::forged"* ]]
+
+        _run_generator_separate_stderr "${mode_args[@]}" --container-scopes "$container_scopes" terraform
+        [ "$status" -eq 1 ]
+        [ -z "$output" ]
+        _assert_no_uncontrolled_workflow_command
+        [[ "$stderr" == ::error::*"--container-scopes="* ]]
+        [[ "$stderr" == *'\r::warning::forged'* ]]
+    done
+}
+
+@test "B4 — malformed matrices are classified once on the main path in both output modes" {
+    local -a mode_args=()
+    local mode parser_message parser_count
+    parser_message='could not parse build matrix cell for terraform while checking requested scope'
+    for mode in bake cells; do
+        if [[ "$mode" == "cells" ]]; then
+            mode_args=(--cells)
+        else
+            mode_args=()
+        fi
+    run --separate-stderr bash -c '
+        source "$1/scripts/generate-bake-hcl.sh"
+        _list_all_containers() { printf "%s\\n" terraform; }
+        _expand_closure() { printf "%s\\n" "$@"; }
+        list_build_matrix() { printf "[42]"; }
+        shift
+        main "$@"
+    ' _ "$PROJECT_ROOT" "${mode_args[@]}" --scope-versions 999 terraform
+        parser_count=$(grep -Foc "$parser_message" <<< "$stderr" || true)
+        if [[ "$status" -ne 1 || -n "$output" || "$parser_count" -ne 1 || \
+              "$stderr" == *"jq:"* || "$stderr" == *"matched no Linux build cells"* ]]; then
+            output+=$'\nAssertion: main classifies a malformed matrix once without jq diagnostics in both output modes'
+            printf 'Assertion: main classifies a malformed matrix once without jq diagnostics in both output modes\n' >&2
+            return 1
+        fi
+    done
+}
+
+@test "B4 — cells with record separators are refused before Windows classification" {
+    local -a mode_args=()
+    local mode
+    for mode in bake cells; do
+        if [[ "$mode" == "cells" ]]; then
+            mode_args=(--cells)
+        else
+            mode_args=()
+        fi
+
+        local unsafe_tag
+        for unsafe_tag in $'windows\nbad-tag' $'windows\x1fbad-tag'; do
+            run --separate-stderr env UNSAFE_TAG="$unsafe_tag" bash -c '
+                source "$1/scripts/generate-bake-hcl.sh"
+                _list_all_containers() { printf "%s\\n" terraform; }
+                _expand_closure() { printf "%s\\n" "$@"; }
+                list_build_matrix() {
+                    jq -nc --arg tag "$UNSAFE_TAG" '\''[{version:"42",tag:$tag,os:"windows"}]'\''
+                }
+                shift
+                main "$@"
+            ' _ "$PROJECT_ROOT" "${mode_args[@]}" terraform
+            if [[ "$status" -ne 1 || -n "$output" || \
+                  "$stderr" != *"build matrix cell contains LF or U+001F"* ]]; then
+                output+=$'\nAssertion: a Windows cell with LF or U+001F in its tag is refused by name before it can be misclassified'
+                printf 'Assertion: a Windows cell with LF or U+001F in its tag is refused by name before it can be misclassified\n' >&2
+                return 1
+            fi
+        done
+    done
+}
+
+@test "B4 — a legitimately empty matrix under an active non-matching scope remains a successful empty plan" {
+    run --separate-stderr bash -c '
+        source "$1/scripts/generate-bake-hcl.sh"
+        _list_all_containers() { printf "%s\\n" terraform; }
+        _expand_closure() { printf "%s\\n" "$@"; }
+        list_build_matrix() { printf "[]"; }
+        shift
+        main "$@"
+    ' _ "$PROJECT_ROOT" --scope-versions 999 terraform
+    if [[ "$status" -ne 0 ]]; then
+        output+=$'\nAssertion: active non-matching scope preserves an already-empty matrix'
+        printf 'Assertion: active non-matching scope preserves an already-empty matrix\n' >&2
+        return 1
+    fi
+    [ "$(echo "$output" | jq '.target | length')" -eq 0 ]
+
+    run --separate-stderr bash -c '
+        source "$1/scripts/generate-bake-hcl.sh"
+        _list_all_containers() { printf "%s\\n" terraform; }
+        _expand_closure() { printf "%s\\n" "$@"; }
+        list_build_matrix() { printf "[]"; }
+        shift
+        main "$@"
+    ' _ "$PROJECT_ROOT" --cells --scope-versions 999 terraform
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq 'length')" -eq 0 ]
+}
+
+@test "B4 — a Windows-only matrix under an active non-matching scope remains a successful empty plan" {
+    run --separate-stderr bash -c '
+        source "$1/scripts/generate-bake-hcl.sh"
+        _list_all_containers() { printf "%s\\n" terraform; }
+        _expand_closure() { printf "%s\\n" "$@"; }
+        list_build_matrix() { printf "%s" "[{\"version\":\"42\",\"os\":\"windows\"}]"; }
+        shift
+        main "$@"
+    ' _ "$PROJECT_ROOT" --scope-versions 999 terraform
+    if [[ "$status" -ne 0 ]]; then
+        output+=$'\nAssertion: active non-matching scope preserves a Windows-only matrix'
+        printf 'Assertion: active non-matching scope preserves a Windows-only matrix\n' >&2
+        return 1
+    fi
+    [ "$(echo "$output" | jq '.target | length')" -eq 0 ]
+
+    run --separate-stderr bash -c '
+        source "$1/scripts/generate-bake-hcl.sh"
+        _list_all_containers() { printf "%s\\n" terraform; }
+        _expand_closure() { printf "%s\\n" "$@"; }
+        list_build_matrix() { printf "%s" "[{\"version\":\"42\",\"os\":\"windows\"}]"; }
+        shift
+        main "$@"
+    ' _ "$PROJECT_ROOT" --cells --scope-versions 999 terraform
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq 'length')" -eq 0 ]
 }
 
 @test "B4 gate — scoped github-runner graph keeps debian internal base target and contexts" {
