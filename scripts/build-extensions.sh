@@ -251,6 +251,7 @@ FINALIZE_MULTIARCH=false
 NO_CACHE="${DOCKER_NO_CACHE:-false}"
 
 usage() {
+    local exit_code="${1:-0}"
     cat <<EOF
 Usage: $(basename "$0") <container> [options]
 
@@ -287,21 +288,40 @@ Examples:
   $(basename "$0") postgres --list                 # Show status
   $(basename "$0") postgres --local-only           # Build without push
 EOF
-    exit 0
+    exit "$exit_code"
 }
 
 # Parse arguments
 parse_args() {
+    # Command-line grammars are ASCII bytes, regardless of the caller locale.
+    local LC_ALL=C
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -h|--help)
-                usage
+                usage 0
                 ;;
             --major-version)
+                if [[ $# -lt 2 || "$2" == -* ]]; then
+                    log_error "Option --major-version requires a value"
+                    usage 2
+                fi
+                if [[ ! "$2" =~ ^[0-9]+$ ]]; then
+                    log_error "Option --major-version must match ^[0-9]+$"
+                    usage 2
+                fi
                 MAJOR_VERSION="$2"
                 shift 2
                 ;;
             --extension)
+                if [[ $# -lt 2 || "$2" == -* ]]; then
+                    log_error "Option --extension requires a value"
+                    usage 2
+                fi
+                if [[ ! "$2" =~ ^[A-Za-z0-9_][A-Za-z0-9_-]*$ ]]; then
+                    log_error "Option --extension must match ^[A-Za-z0-9_][A-Za-z0-9_-]*$"
+                    usage 2
+                fi
                 EXTENSION="$2"
                 shift 2
                 ;;
@@ -335,14 +355,14 @@ parse_args() {
                 ;;
             -*)
                 log_error "Unknown option: $1"
-                usage
+                usage 2
                 ;;
             *)
                 if [[ -z "$CONTAINER" ]]; then
                     CONTAINER="$1"
                 else
                     log_error "Unexpected argument: $1"
-                    usage
+                    usage 2
                 fi
                 shift
                 ;;
@@ -351,7 +371,17 @@ parse_args() {
 
     if [[ -z "$CONTAINER" ]]; then
         log_error "Container name required"
-        usage
+        usage 2
+    fi
+}
+
+log_dry_run_cache_mode() {
+    [[ "$DRY_RUN" == "true" ]] || return 0
+
+    if [[ "${NO_CACHE:-false}" == "true" ]]; then
+        log_info "[DRY-RUN] Cache mode: disabled"
+    else
+        log_info "[DRY-RUN] Cache mode: enabled"
     fi
 }
 
@@ -453,9 +483,6 @@ build_extension() {
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "[DRY-RUN] Would build $ext_name $ext_version for $CONTAINER v$major_ver (REMOTE_CR=${REMOTE_CR})"
         log_info "[DRY-RUN]   --build-arg REMOTE_CR=${REMOTE_CR} --build-arg MAJOR_VERSION=$major_ver"
-        if [[ "${NO_CACHE:-false}" == "true" ]]; then
-            log_info "[DRY-RUN]   --no-cache (disables layer-result reuse and external registry cache imports and exports)"
-        fi
         return 0
     fi
 
@@ -2393,6 +2420,7 @@ finalize_multiarch_manifests() {
 
 main() {
     parse_args "$@"
+    log_dry_run_cache_mode
 
     # Validate the optional package axis before any prerequisite, registry, or
     # build action. A malformed suffix must never influence a reference.

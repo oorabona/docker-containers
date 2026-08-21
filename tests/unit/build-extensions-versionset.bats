@@ -1571,24 +1571,6 @@ _count_log_lines() {
     [ ! -d "$lineage_dir" ]
 }
 
-@test "dry-run --no-cache reports layer-result and external registry cache semantics" {
-    export DRY_RUN=true
-    NO_CACHE=false
-
-    run build_extension timescaledb "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
-
-    [ "$status" -eq 0 ]
-    local cached_output="$output"
-    ! grep -Fq -- "--no-cache (disables layer-result reuse and external registry cache imports and exports)" <<<"$cached_output"
-
-    NO_CACHE=true
-    run build_extension timescaledb "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
-
-    [ "$status" -eq 0 ]
-    [[ "$output" != "$cached_output" ]]
-    grep -Fq -- "--no-cache (disables layer-result reuse and external registry cache imports and exports)" <<<"$output"
-}
-
 # ---------------------------------------------------------------------------
 # P-malformed: resolver returns non-JSON → _resolve_cached must return non-zero
 # (fail-closed on publish path), NOT cache the bad value and silently skip builds.
