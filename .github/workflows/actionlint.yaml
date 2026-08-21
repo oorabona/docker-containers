@@ -8,7 +8,9 @@
 #     because they never interpret the workflow grammar.  actionlint does.
 #
 # (2) WHY SHELLCHECK_OPTS=--severity=error
-#     actionlint bundles shellcheck and runs it on every embedded `run:` block.
+#     actionlint discovers shellcheck on PATH and runs it on every embedded
+#     `run:` block. This job verifies that dependency first so the documented
+#     embedded-shell analysis cannot be silently skipped.
 #     At the default severity the repo has ~193 SC2086 (info) findings —
 #     intentional in GHA-controlled `run:` blocks where word-splitting is
 #     harmless.  At --severity=error those drop to 0 while the gate still
@@ -71,11 +73,42 @@ jobs:
           SHELLCHECK_OPTS: "--severity=error"
         run: |
           set -euo pipefail
+          shellcheck_status=0
+          shellcheck --version || shellcheck_status=$?
+          if [[ $shellcheck_status -ne 0 ]]; then
+            echo "::error::shellcheck tooling availability check failed (exit $shellcheck_status); actionlint cannot run embedded-shell analysis" >&2
+            exit "$shellcheck_status"
+          fi
+
+          # actionlint can reproduce repository-controlled workflow names and
+          # embedded shell text verbatim. Keep both streams inert while it runs.
+          run_with_workflow_commands_stopped() (
+            local stop_marker status
+            if ! stop_marker=$(uuidgen) || [[ -z "$stop_marker" ]]; then
+              echo "::error::could not mint a workflow command stop marker" >&2
+              return 1
+            fi
+            if ! printf '::stop-commands::%s\n' "$stop_marker"; then
+              echo "::error::could not write workflow command stop marker; refusing to run linter" >&2
+              return 1
+            fi
+            if "$@" 2>&1; then
+              status=0
+            else
+              status=$?
+            fi
+            if ! printf '\n::%s::\n' "$stop_marker"; then
+              echo "::error::could not write workflow command resume marker; refusing to report lint success" >&2
+              return 2
+            fi
+            return "$status"
+          )
+
           # No path args: actionlint auto-discovers all .github/workflows/*.{yaml,yml}
           # and excludes composite actions by location. See header note (3).
           # -config-file /dev/null: ignore any in-repo .github/actionlint.yaml so a
           # branch can't add `ignore:` patterns that silently weaken this gate
           # (a config-only change wouldn't even re-trigger this job). Wanting an
           # actionlint config later is a deliberate edit to THIS line, reviewed.
-          ./actionlint -no-color -config-file /dev/null
+          run_with_workflow_commands_stopped ./actionlint -no-color -config-file /dev/null
           echo "✅ actionlint: workflows compile clean" >> "$GITHUB_STEP_SUMMARY"
