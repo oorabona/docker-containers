@@ -101,9 +101,8 @@ MOCK
 }
 
 teardown() {
-    if [[ -n "${RUNNER_PGID:-}" ]]; then
-        kill -TERM -- "-$RUNNER_PGID" 2>/dev/null || true
-        wait "$RUNNER_PGID" 2>/dev/null || true
+    if ! _cleanup_runner_group "${RUNNER_PGID:-}"; then
+        return 1
     fi
     rm -rf "$WORK_DIR"
 }
@@ -214,6 +213,44 @@ _run_entrypoint() {
 # its retry backoff through the mocked sleep on PATH.
 _real_sleep() {
     command "$REAL_SLEEP" "$@"
+}
+
+# Stop a runner session without deleting its workspace while a descendant may
+# still be using it.  The six-second TERM grace exceeds the five-second
+# readiness window and covers the mocked entrypoint's deregistration path; the
+# one-second KILL confirmation remains well below the
+# outer test timeout if a process stops responding.
+_cleanup_runner_group() {
+    local pgid="${1:-}"
+    local term_waited=0
+    local kill_waited=0
+
+    # An unset, invalid, or already-extinct group needs no cleanup.
+    if [[ -z "$pgid" ]] || ! kill -0 -- "-$pgid" 2>/dev/null; then
+        return 0
+    fi
+
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+    while kill -0 -- "-$pgid" 2>/dev/null && [[ $term_waited -lt 60 ]]; do
+        _real_sleep 0.1
+        term_waited=$((term_waited + 1))
+    done
+
+    if kill -0 -- "-$pgid" 2>/dev/null; then
+        kill -KILL -- "-$pgid" 2>/dev/null || true
+        while kill -0 -- "-$pgid" 2>/dev/null && [[ $kill_waited -lt 10 ]]; do
+            _real_sleep 0.1
+            kill_waited=$((kill_waited + 1))
+        done
+    fi
+
+    if kill -0 -- "-$pgid" 2>/dev/null; then
+        return 1
+    fi
+
+    # The group is already absent, so this wait can only collect the leader's
+    # cached status; it cannot block on a surviving process.
+    wait "$pgid" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -465,13 +502,15 @@ coproc readiness_blocker { while IFS= read -r _; do :; done; }
 read -r -t 0.2 _ <&"\${readiness_blocker[0]}" || true
 kill "\$readiness_blocker_PID"
 wait "\$readiness_blocker_PID" 2>/dev/null || true
-# Signal the parent that we've started
-touch "$WORK_DIR/runner-started"
 # Block without polling or resolving a binary through PATH.  The coprocess
 # waits on the pipe held open by this shell, and this shell waits on it.
 trap 'exit 0' TERM INT
 coproc runner_blocker { while IFS= read -r _; do :; done; }
-wait "\$runner_blocker_PID"
+# A killed Bats process never reaches teardown.  This kernel-blocking read
+# limits that otherwise detached mock to thirty seconds without using PATH.
+read -r -t 30 _ <&"\${runner_blocker[0]}" || true
+kill "\$runner_blocker_PID" 2>/dev/null || true
+wait "\$runner_blocker_PID" 2>/dev/null || true
 MOCK
     chmod +x "$RUNNER_WORK/run.sh"
 
@@ -492,21 +531,27 @@ MOCK
     RUNNER_PGID=$!
     local ep_pid=$RUNNER_PGID
 
-    # Wait for runner to start (max 5s)
-    local waited=0
-    while [[ ! -f "$WORK_DIR/runner-started" ]] && [[ $waited -lt 50 ]]; do
+    # Make the marker arrive on the final permitted poll.  The marker itself,
+    # not the counter after observing it, is the readiness evidence.
+    local readiness_polls=0
+    _real_sleep() {
+        command "$REAL_SLEEP" "$@"
+        readiness_polls=$((readiness_polls + 1))
+        if [[ $readiness_polls -eq 50 ]]; then
+            touch "$WORK_DIR/runner-started"
+        fi
+    }
+
+    # Wait for runner to start (max 5s).
+    local waited=1
+    while [[ ! -f "$WORK_DIR/runner-started" ]] && [[ $waited -le 50 ]]; do
         _real_sleep 0.1
         waited=$((waited + 1))
     done
     [[ -f "$WORK_DIR/runner-started" ]]
-    [[ $waited -lt 50 ]]
 
-    # Signal and reap the whole entrypoint process group.
-    kill -TERM -- "-$ep_pid" 2>/dev/null || true
-    wait "$ep_pid" 2>/dev/null || true
-    if kill -0 -- "-$ep_pid" 2>/dev/null; then
-        false
-    fi
+    # Signal, prove extinction, and reap the whole entrypoint process group.
+    _cleanup_runner_group "$ep_pid"
     RUNNER_PGID=""
 
     # Deregistration obtains a removal token and invokes config.sh remove.
@@ -514,12 +559,65 @@ MOCK
     [[ -f "$WORK_DIR/runner-deregistered" ]]
     grep -q "Runner deregistered\." "$LOG_FILE"
 
-    # The teardown must reap the process group before it removes its files.
-    local teardown_wait_line teardown_remove_line
-    teardown_wait_line=$(declare -f teardown | grep -n 'wait "$RUNNER_PGID"' | cut -d: -f1)
-    teardown_remove_line=$(declare -f teardown | grep -n 'rm -rf "$WORK_DIR"' | cut -d: -f1)
-    [[ -n "$teardown_wait_line" && -n "$teardown_remove_line" ]]
-    [[ $teardown_wait_line -lt $teardown_remove_line ]]
+}
+
+@test "process-group cleanup waits for group extinction before returning" {
+    # The leader exits before its TERM-resistant descendant.  A leader-only
+    # probe would treat that live group as already gone.
+    command setsid bash -c "bash -c 'trap \"\" TERM INT; exec $REAL_SLEEP 1' & exec $REAL_SLEEP 0.1" &
+    local pgid=$!
+    _real_sleep 0.2
+
+    _cleanup_runner_group "$pgid"
+
+    [[ -d "$WORK_DIR" ]]
+    ! kill -0 -- "-$pgid" 2>/dev/null
+}
+
+@test "process-group cleanup escalates an unresponsive member within its deadline" {
+    command setsid bash -c '
+        trap "" TERM INT
+        coproc blocker { trap "" TERM INT; while IFS= read -r _; do :; done; }
+        while :; do read -r -t 30 _ <&"${blocker[0]}" || true; done
+    ' &
+    local pgid=$!
+    _real_sleep 0.1
+    local started=$SECONDS
+
+    _cleanup_runner_group "$pgid"
+
+    (( SECONDS - started < 8 ))
+    ! kill -0 -- "-$pgid" 2>/dev/null
+}
+
+@test "teardown keeps the workspace when group extinction cannot be proven" {
+    command setsid bash -c '
+        trap "" TERM INT
+        coproc blocker { trap "" TERM INT; while IFS= read -r _; do :; done; }
+        while :; do read -r -t 30 _ <&"${blocker[0]}" || true; done
+    ' &
+    RUNNER_PGID=$!
+    _real_sleep 0.1
+
+    # Simulate a group that remains observable after KILL.  This lets teardown
+    # exercise its failure branch without needing an unkillable test process.
+    kill() {
+        if [[ "$1" == "-0" ]]; then
+            return 0
+        fi
+        builtin kill "$@"
+    }
+
+    local teardown_status=0
+    teardown || teardown_status=$?
+    local workspace_status=0
+    [[ -d "$WORK_DIR" ]] || workspace_status=$?
+
+    unset -f kill
+    RUNNER_PGID=""
+
+    [[ $teardown_status -ne 0 ]]
+    [[ $workspace_status -eq 0 ]]
 }
 
 # ---------------------------------------------------------------------------
