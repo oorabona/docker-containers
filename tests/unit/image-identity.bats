@@ -124,9 +124,21 @@ versions:
 }
 
 @test "resolves terraform's retained empty-suffix full variant as a variant cell" {
-    resolve "$PROJECT_ROOT/terraform" "ghcr.io/oorabona/terraform:1.15.6-alpine"
+    local terraform_tag terraform_version
+    terraform_tag=$(yq -r '[.versions[] | select(([.variants[] | select((.name == "full") and (.suffix == "") and (.flavor == "full"))] | length) > 0) | .tag] | .[0] // ""' \
+        "$PROJECT_ROOT/terraform/variants.yaml") || {
+        echo "terraform/variants.yaml could not be read to find a full variant with an empty suffix" >&2
+        return 1
+    }
+    if [[ -z "$terraform_tag" || "$terraform_tag" == "null" || "$terraform_tag" != *-alpine ]]; then
+        echo "terraform/variants.yaml does not declare an -alpine version with a full variant with an empty suffix" >&2
+        return 1
+    fi
+    terraform_version="${terraform_tag%-alpine}"
+
+    resolve "$PROJECT_ROOT/terraform" "ghcr.io/oorabona/terraform:$terraform_tag"
     [ "$status" -eq 0 ]
-    [ "$(jq -r '.component_version + ":" + .kind + ":" + .variant + ":" + .flavor' <<<"$output")" = "1.15.6:variant:full:full" ]
+    [ "$(jq -r '.component_version + ":" + .kind + ":" + .variant + ":" + .flavor' <<<"$output")" = "$terraform_version:variant:full:full" ]
 }
 
 @test "mirrors generator coercions for version, suffix, and empty flavor" {
@@ -157,26 +169,51 @@ versions:
 }
 
 @test "resolves web-shell ubuntu but rejects a typo instead of falling back to debian" {
-    resolve "$PROJECT_ROOT/web-shell" "web-shell:1.7.7-ubuntu"
+    local web_shell_version
+    web_shell_version=$(yq -r '[.versions[] | select(([.variants[] | select((.name == "ubuntu") and (.suffix == "-ubuntu") and (.flavor == "ubuntu"))] | length) > 0) | select(([.variants[] | select((.name == "typo") or (.suffix == "-typo"))] | length) == 0) | .tag] | .[0] // ""' \
+        "$PROJECT_ROOT/web-shell/variants.yaml") || {
+        echo "web-shell/variants.yaml could not be read to find an ubuntu variant without a typo suffix" >&2
+        return 1
+    }
+    if [[ -z "$web_shell_version" || "$web_shell_version" == "null" ]]; then
+        echo "web-shell/variants.yaml does not declare an ubuntu variant without a typo suffix" >&2
+        return 1
+    fi
+
+    resolve "$PROJECT_ROOT/web-shell" "web-shell:$web_shell_version-ubuntu"
     [ "$status" -eq 0 ]
     [ "$(jq -r '.variant' <<<"$output")" = "ubuntu" ]
 
-    resolve "$PROJECT_ROOT/web-shell" "web-shell:1.7.7-typo"
+    resolve "$PROJECT_ROOT/web-shell" "web-shell:$web_shell_version-typo"
     [ "$status" -ne 0 ]
     [[ "$output" == *"does not name a declared cell"* ]]
 }
 
 @test "uses the longest github-runner suffix and preserves the distinct variant name" {
-    resolve "$PROJECT_ROOT/github-runner" "github-runner:2.336.0-debian-trixie-dev"
+    local github_runner_version
+    github_runner_version=$(yq -r '[.versions[] | select(([.variants[] | select((.name == "debian-trixie-dev") and (.suffix == "-debian-trixie-dev") and (.flavor == "debian-trixie"))] | length) > 0) | select(([.variants[] | select((.name == "ubuntu-2404-dev") and (.suffix == "-dev") and (.flavor == "ubuntu-2404"))] | length) > 0) | .tag] | .[0] // ""' \
+        "$PROJECT_ROOT/github-runner/variants.yaml") || {
+        echo "github-runner/variants.yaml could not be read to find debian-trixie-dev and dev suffixes" >&2
+        return 1
+    }
+    if [[ -z "$github_runner_version" || "$github_runner_version" == "null" ]]; then
+        echo "github-runner/variants.yaml does not declare debian-trixie-dev and dev suffixes" >&2
+        return 1
+    fi
+
+    resolve "$PROJECT_ROOT/github-runner" "github-runner:$github_runner_version-debian-trixie-dev"
     [ "$status" -eq 0 ]
     [ "$(jq -r '.variant + ":" + .flavor' <<<"$output")" = "debian-trixie-dev:debian-trixie" ]
 
-    resolve "$PROJECT_ROOT/github-runner" "github-runner:2.336.0-dev"
+    resolve "$PROJECT_ROOT/github-runner" "github-runner:$github_runner_version-dev"
     [ "$status" -eq 0 ]
     [ "$(jq -r '.variant + ":" + .flavor' <<<"$output")" = "ubuntu-2404-dev:ubuntu-2404" ]
 }
 
 @test "accepts only postgres's generated base-before-variant tag order" {
+    # 17 is a long-lived major stream (always_all_versions: true), and this
+    # assertion requires that major to declare vector. Deriving it would trade
+    # this stable pin for a fragile choice among supported majors.
     resolve "$PROJECT_ROOT/postgres" "postgres:17-alpine-vector"
     [ "$status" -eq 0 ]
     [ "$(jq -r '.variant' <<<"$output")" = "vector" ]
