@@ -11,6 +11,10 @@ setup() {
     TEST_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
     RUNNER_DIR="$(cd "$TEST_DIR/.." && pwd)"
     ENTRYPOINT="$RUNNER_DIR/entrypoint.sh"
+    # Resolve this before the mock directory shadows PATH.  type -P ignores
+    # shell functions, and the resulting pathname does not depend on PATH.
+    REAL_SLEEP="$(type -P sleep)"
+    RUNNER_PGID=""
 
     # Temp workspace — every test gets an isolated directory
     WORK_DIR="$(mktemp -d)"
@@ -97,6 +101,10 @@ MOCK
 }
 
 teardown() {
+    if [[ -n "${RUNNER_PGID:-}" ]]; then
+        kill -TERM -- "-$RUNNER_PGID" 2>/dev/null || true
+        wait "$RUNNER_PGID" 2>/dev/null || true
+    fi
     rm -rf "$WORK_DIR"
 }
 
@@ -200,6 +208,12 @@ MOCK
 _run_entrypoint() {
     # Run entrypoint from RUNNER_WORK so relative ./config.sh and ./run.sh work
     run bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT'" 2>"$LOG_FILE"
+}
+
+# Use the real sleep binary for test timing.  entrypoint.sh must still resolve
+# its retry backoff through the mocked sleep on PATH.
+_real_sleep() {
+    command "$REAL_SLEEP" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -442,37 +456,70 @@ MOCK
     export GITHUB_TOKEN="ghp_pattoken"
     export GITHUB_REPOSITORY="owner/repo"
 
-    # Make run.sh block until signalled, then exit
+    # Make run.sh block until signalled, then exit.  The readiness delay makes
+    # the assertion below discriminate between real and mocked test sleeps.
     cat > "$RUNNER_WORK/run.sh" <<MOCK
 #!/usr/bin/env bash
+# Delay without resolving any binary through PATH.
+coproc readiness_blocker { while IFS= read -r _; do :; done; }
+read -r -t 0.2 _ <&"\${readiness_blocker[0]}" || true
+kill "\$readiness_blocker_PID"
+wait "\$readiness_blocker_PID" 2>/dev/null || true
 # Signal the parent that we've started
 touch "$WORK_DIR/runner-started"
-# Block until killed
-while true; do sleep 0.1; done
+# Block without polling or resolving a binary through PATH.  The coprocess
+# waits on the pipe held open by this shell, and this shell waits on it.
+trap 'exit 0' TERM INT
+coproc runner_blocker { while IFS= read -r _; do :; done; }
+wait "\$runner_blocker_PID"
 MOCK
     chmod +x "$RUNNER_WORK/run.sh"
 
-    # Run entrypoint in background
-    bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT'" 2>"$LOG_FILE" &
-    local ep_pid=$!
+    # Record config.sh remove invocations so this test proves deregistration,
+    # not merely that its log contains a generic runner-related message.
+    cat > "$RUNNER_WORK/config.sh" <<MOCK
+#!/usr/bin/env bash
+if [[ "\$1" == "remove" ]]; then
+    touch "$WORK_DIR/runner-deregistered"
+fi
+exit 0
+MOCK
+    chmod +x "$RUNNER_WORK/config.sh"
+
+    # Run entrypoint in its own process group so its runner child can receive
+    # the same signal.  With setsid, the leader PID is also the process group.
+    command setsid bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT'" 2>"$LOG_FILE" &
+    RUNNER_PGID=$!
+    local ep_pid=$RUNNER_PGID
 
     # Wait for runner to start (max 5s)
     local waited=0
     while [[ ! -f "$WORK_DIR/runner-started" ]] && [[ $waited -lt 50 ]]; do
-        sleep 0.1
+        _real_sleep 0.1
         waited=$((waited + 1))
     done
+    [[ -f "$WORK_DIR/runner-started" ]]
+    [[ $waited -lt 50 ]]
 
-    # Send SIGTERM to the entrypoint process group
-    kill -SIGTERM "$ep_pid" 2>/dev/null || true
+    # Signal and reap the whole entrypoint process group.
+    kill -TERM -- "-$ep_pid" 2>/dev/null || true
     wait "$ep_pid" 2>/dev/null || true
+    if kill -0 -- "-$ep_pid" 2>/dev/null; then
+        false
+    fi
+    RUNNER_PGID=""
 
-    # The cleanup function should have called curl for a removal token
-    # Check the log for deregistration message
-    grep -q "deregistering" "$LOG_FILE" || \
-    grep -q "shutdown" "$LOG_FILE" || \
-    grep -q "SIGTERM\|signal" "$LOG_FILE" || \
-    grep -q "runner" "$LOG_FILE"
+    # Deregistration obtains a removal token and invokes config.sh remove.
+    grep -q "repos/owner/repo/actions/runners/remove-token" "$WORK_DIR/curl-urls.log"
+    [[ -f "$WORK_DIR/runner-deregistered" ]]
+    grep -q "Runner deregistered\." "$LOG_FILE"
+
+    # The teardown must reap the process group before it removes its files.
+    local teardown_wait_line teardown_remove_line
+    teardown_wait_line=$(declare -f teardown | grep -n 'wait "$RUNNER_PGID"' | cut -d: -f1)
+    teardown_remove_line=$(declare -f teardown | grep -n 'rm -rf "$WORK_DIR"' | cut -d: -f1)
+    [[ -n "$teardown_wait_line" && -n "$teardown_remove_line" ]]
+    [[ $teardown_wait_line -lt $teardown_remove_line ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -500,8 +547,8 @@ MOCK
     # First invocation
     bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT'" 2>/dev/null || true
 
-    # Brief pause to ensure timestamp differs — bypass mock sleep with real binary
-    /usr/bin/sleep 1 2>/dev/null || /bin/sleep 1 2>/dev/null || true
+    # Brief pause to ensure timestamp differs.
+    _real_sleep 1
 
     # Second invocation
     bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT'" 2>/dev/null || true
