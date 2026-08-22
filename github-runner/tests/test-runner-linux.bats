@@ -212,45 +212,122 @@ _run_entrypoint() {
 # Use the real sleep binary for test timing.  entrypoint.sh must still resolve
 # its retry backoff through the mocked sleep on PATH.
 _real_sleep() {
-    command "$REAL_SLEEP" "$@"
+    command "${RUNNER_REAL_SLEEP:-$REAL_SLEEP}" "$@"
+}
+
+# Return one of three states for a process group: 0 present, 1 absent, or 2
+# unknown.  A failed signal probe alone is never evidence of extinction: an
+# EPERM result has the same shell status as ESRCH.  /proc is available on the
+# Linux-only test host, so membership in the process group is the authoritative
+# answer when the normal probe has a conventional result.
+_runner_group_state() {
+    local pgid="${1:-}"
+    local probe_status=0
+    local stat_file stat_line state ppid stat_pgid ignored rest
+
+    [[ "$pgid" =~ ^[1-9][0-9]*$ ]] || return 2
+
+    # Use env so the decision table can mock kill in BIN_DIR despite Bash's
+    # kill builtin taking precedence over PATH.
+    env kill -0 -- "-$pgid" 2>/dev/null || probe_status=$?
+    [[ $probe_status -eq 0 ]] && return 0
+    # GNU/procps kill uses 1 for the expected ESRCH/EPERM outcomes.  Anything
+    # else is an unexpected probe failure and must retain the workspace.
+    [[ $probe_status -eq 1 ]] || return 2
+    [[ -d "${RUNNER_PROC_ROOT:-/proc}" ]] || return 2
+
+    for stat_file in "${RUNNER_PROC_ROOT:-/proc}"/[0-9]*/stat; do
+        [[ -e "$stat_file" ]] || continue
+        stat_line=$(<"$stat_file") || return 2
+        # Fields after the final ')' are: state (3), ppid (4), pgrp (5), ... .
+        rest="${stat_line##*) }"
+        read -r state ppid stat_pgid ignored <<<"$rest"
+        [[ "$state" =~ ^[A-Z]$ && "$ppid" =~ ^[0-9]+$ && "$stat_pgid" =~ ^[0-9]+$ && -n "$ignored" ]] || return 2
+        [[ "$stat_pgid" == "$pgid" ]] && return 0
+    done
+
+    return 1
+}
+
+# A group proven absent cannot contain a running leader, so wait can only reap
+# the already-dead child.  The watchdog makes that invariant an actual one-
+# second deadline rather than relying on wait's expected immediate return.
+_reap_absent_runner_leader() {
+    local pgid="$1"
+    local timed_out=0
+    local parent_pid="$BASHPID"
+    local watchdog_pid
+    local saved_usr1_trap
+
+    saved_usr1_trap=$(trap -p USR1 || true)
+    trap 'timed_out=1' USR1
+    ( command "$REAL_SLEEP" 1 && kill -USR1 "$parent_pid" 2>/dev/null ) &
+    watchdog_pid=$!
+
+    wait "$pgid" 2>/dev/null || true
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+    if [[ -n "$saved_usr1_trap" ]]; then
+        eval "$saved_usr1_trap"
+    else
+        trap - USR1
+    fi
+
+    [[ $timed_out -eq 0 ]]
 }
 
 # Stop a runner session without deleting its workspace while a descendant may
 # still be using it.  The six-second TERM grace exceeds the five-second
-# readiness window and covers the mocked entrypoint's deregistration path; the
-# one-second KILL confirmation remains well below the
-# outer test timeout if a process stops responding.
+# readiness window; KILL confirmation is limited to one second.
 _cleanup_runner_group() {
     local pgid="${1:-}"
     local term_waited=0
     local kill_waited=0
+    local group_state=0
+    local grace_failed=0
 
-    # An unset, invalid, or already-extinct group needs no cleanup.
-    if [[ -z "$pgid" ]] || ! kill -0 -- "-$pgid" 2>/dev/null; then
-        return 0
+    [[ -z "$pgid" ]] && return 0
+
+    if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
+    if [[ $group_state -eq 1 ]]; then
+        _reap_absent_runner_leader "$pgid"
+        return $?
     fi
+    [[ $group_state -eq 0 ]] || return 1
 
-    kill -TERM -- "-$pgid" 2>/dev/null || true
-    while kill -0 -- "-$pgid" 2>/dev/null && [[ $term_waited -lt 60 ]]; do
-        _real_sleep 0.1
+    env kill -TERM -- "-$pgid" 2>/dev/null || true
+    while [[ $term_waited -lt 60 ]]; do
+        if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
+        [[ $group_state -eq 1 ]] && break
+        [[ $group_state -eq 0 ]] || return 1
+        if ! _real_sleep 0.1; then
+            grace_failed=1
+            break
+        fi
         term_waited=$((term_waited + 1))
     done
 
-    if kill -0 -- "-$pgid" 2>/dev/null; then
-        kill -KILL -- "-$pgid" 2>/dev/null || true
-        while kill -0 -- "-$pgid" 2>/dev/null && [[ $kill_waited -lt 10 ]]; do
-            _real_sleep 0.1
-            kill_waited=$((kill_waited + 1))
-        done
+    if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
+    if [[ $grace_failed -eq 1 || $group_state -ne 1 ]]; then
+        env kill -KILL -- "-$pgid" 2>/dev/null || true
     fi
 
-    if kill -0 -- "-$pgid" 2>/dev/null; then
-        return 1
-    fi
+    while [[ $kill_waited -lt 10 ]]; do
+        if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
+        [[ $group_state -eq 1 ]] && break
+        [[ $group_state -eq 0 ]] || return 1
+        if ! _real_sleep 0.1; then
+            grace_failed=1
+            break
+        fi
+        kill_waited=$((kill_waited + 1))
+    done
 
-    # The group is already absent, so this wait can only collect the leader's
-    # cached status; it cannot block on a surviving process.
-    wait "$pgid" 2>/dev/null || true
+    if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
+    [[ $group_state -eq 1 ]] || return 1
+    _reap_absent_runner_leader "$pgid" || return 1
+
+    [[ $grace_failed -eq 0 ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -493,24 +570,14 @@ MOCK
     export GITHUB_TOKEN="ghp_pattoken"
     export GITHUB_REPOSITORY="owner/repo"
 
-    # Make run.sh block until signalled, then exit.  The readiness delay makes
-    # the assertion below discriminate between real and mocked test sleeps.
+    # The runner itself publishes readiness after a bounded delay.  It also
+    # self-expires, so an abruptly killed Bats process leaves only a bounded
+    # child behind; this test deliberately creates no detached process group.
     cat > "$RUNNER_WORK/run.sh" <<MOCK
 #!/usr/bin/env bash
-# Delay without resolving any binary through PATH.
-coproc readiness_blocker { while IFS= read -r _; do :; done; }
-read -r -t 0.2 _ <&"\${readiness_blocker[0]}" || true
-kill "\$readiness_blocker_PID"
-wait "\$readiness_blocker_PID" 2>/dev/null || true
-# Block without polling or resolving a binary through PATH.  The coprocess
-# waits on the pipe held open by this shell, and this shell waits on it.
-trap 'exit 0' TERM INT
-coproc runner_blocker { while IFS= read -r _; do :; done; }
-# A killed Bats process never reaches teardown.  This kernel-blocking read
-# limits that otherwise detached mock to thirty seconds without using PATH.
-read -r -t 30 _ <&"\${runner_blocker[0]}" || true
-kill "\$runner_blocker_PID" 2>/dev/null || true
-wait "\$runner_blocker_PID" 2>/dev/null || true
+command "$REAL_SLEEP" 0.1
+touch "$WORK_DIR/runner-started"
+command "$REAL_SLEEP" 5
 MOCK
     chmod +x "$RUNNER_WORK/run.sh"
 
@@ -525,34 +592,22 @@ exit 0
 MOCK
     chmod +x "$RUNNER_WORK/config.sh"
 
-    # Run entrypoint in its own process group so its runner child can receive
-    # the same signal.  With setsid, the leader PID is also the process group.
-    command setsid bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT'" 2>"$LOG_FILE" &
-    RUNNER_PGID=$!
-    local ep_pid=$RUNNER_PGID
-
-    # Make the marker arrive on the final permitted poll.  The marker itself,
-    # not the counter after observing it, is the readiness evidence.
-    local readiness_polls=0
-    _real_sleep() {
-        command "$REAL_SLEEP" "$@"
-        readiness_polls=$((readiness_polls + 1))
-        if [[ $readiness_polls -eq 50 ]]; then
-            touch "$WORK_DIR/runner-started"
-        fi
-    }
+    bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT'" 2>"$LOG_FILE" &
+    local ep_pid=$!
 
     # Wait for runner to start (max 5s).
-    local waited=1
-    while [[ ! -f "$WORK_DIR/runner-started" ]] && [[ $waited -le 50 ]]; do
-        _real_sleep 0.1
+    local waited=0
+    while [[ ! -f "$WORK_DIR/runner-started" ]] && [[ $waited -lt 50 ]]; do
+        _real_sleep 0.1 || return 1
         waited=$((waited + 1))
     done
     [[ -f "$WORK_DIR/runner-started" ]]
 
-    # Signal, prove extinction, and reap the whole entrypoint process group.
-    _cleanup_runner_group "$ep_pid"
-    RUNNER_PGID=""
+    # This test covers entrypoint deregistration, not group cleanup.
+    kill -TERM "$ep_pid"
+    local entrypoint_status=0
+    wait "$ep_pid" || entrypoint_status=$?
+    [[ $entrypoint_status -eq 0 || $entrypoint_status -eq 143 ]]
 
     # Deregistration obtains a removal token and invokes config.sh remove.
     grep -q "repos/owner/repo/actions/runners/remove-token" "$WORK_DIR/curl-urls.log"
@@ -561,63 +616,79 @@ MOCK
 
 }
 
-@test "process-group cleanup waits for group extinction before returning" {
-    # The leader exits before its TERM-resistant descendant.  A leader-only
-    # probe would treat that live group as already gone.
-    command setsid bash -c "bash -c 'trap \"\" TERM INT; exec $REAL_SLEEP 1' & exec $REAL_SLEEP 0.1" &
-    local pgid=$!
-    _real_sleep 0.2
+# The decision table below exercises cleanup state transitions without real
+# processes.  End-to-end orchestration covers actual survivor and disk-growth
+# behaviour, where it is observable without making each fixture a leak/race.
+_write_mock_kill_sequence() {
+    local states="$1"
 
-    _cleanup_runner_group "$pgid"
+    cat > "$BIN_DIR/kill" <<MOCK
+#!/usr/bin/env bash
+if [[ "\$1" == "-0" ]]; then
+    count_file="$WORK_DIR/kill-probe-count"
+    count=\$(cat "\$count_file" 2>/dev/null || echo 0)
+    state=\$(printf '%s\\n' '$states' | sed -n "\$((count + 1))p")
+    [[ -n "\$state" ]] || state=\$(printf '%s\\n' '$states' | tail -n 1)
+    echo \$((count + 1)) > "\$count_file"
+    case "\$state" in
+        present) exit 0 ;;
+        absent) exit 1 ;;
+        unknown) exit 2 ;;
+    esac
+fi
+echo "\$1" >> "$WORK_DIR/kill-signals.log"
+exit 0
+MOCK
+    chmod +x "$BIN_DIR/kill"
+}
+
+@test "cleanup succeeds when probes change from present to absent" {
+    _write_mock_kill_sequence $'present\nabsent'
+
+    _cleanup_runner_group 424242
 
     [[ -d "$WORK_DIR" ]]
-    ! kill -0 -- "-$pgid" 2>/dev/null
+    grep -q -- '-TERM' "$WORK_DIR/kill-signals.log"
 }
 
-@test "process-group cleanup escalates an unresponsive member within its deadline" {
-    command setsid bash -c '
-        trap "" TERM INT
-        coproc blocker { trap "" TERM INT; while IFS= read -r _; do :; done; }
-        while :; do read -r -t 30 _ <&"${blocker[0]}" || true; done
-    ' &
-    local pgid=$!
-    _real_sleep 0.1
-    local started=$SECONDS
+@test "cleanup fails and retains workspace when probes stay present" {
+    _write_mock_kill_sequence 'present'
+    RUNNER_REAL_SLEEP="$BIN_DIR/sleep"
 
-    _cleanup_runner_group "$pgid"
+    local cleanup_status=0
+    _cleanup_runner_group 424242 || cleanup_status=$?
 
-    (( SECONDS - started < 8 ))
-    ! kill -0 -- "-$pgid" 2>/dev/null
+    [[ $cleanup_status -ne 0 ]]
+    [[ -d "$WORK_DIR" ]]
+    grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
 }
 
-@test "teardown keeps the workspace when group extinction cannot be proven" {
-    command setsid bash -c '
-        trap "" TERM INT
-        coproc blocker { trap "" TERM INT; while IFS= read -r _; do :; done; }
-        while :; do read -r -t 30 _ <&"${blocker[0]}" || true; done
-    ' &
-    RUNNER_PGID=$!
-    _real_sleep 0.1
+@test "cleanup fails and retains workspace when a probe is unknown" {
+    _write_mock_kill_sequence 'unknown'
 
-    # Simulate a group that remains observable after KILL.  This lets teardown
-    # exercise its failure branch without needing an unkillable test process.
-    kill() {
-        if [[ "$1" == "-0" ]]; then
-            return 0
-        fi
-        builtin kill "$@"
-    }
+    local cleanup_status=0
+    _cleanup_runner_group 424242 || cleanup_status=$?
 
-    local teardown_status=0
-    teardown || teardown_status=$?
-    local workspace_status=0
-    [[ -d "$WORK_DIR" ]] || workspace_status=$?
+    [[ $cleanup_status -ne 0 ]]
+    [[ -d "$WORK_DIR" ]]
+    [[ ! -f "$WORK_DIR/kill-signals.log" ]]
+}
 
-    unset -f kill
-    RUNNER_PGID=""
+@test "cleanup fails after a failed grace period even when KILL proves absence" {
+    _write_mock_kill_sequence $'present\npresent\nabsent'
+    cat > "$BIN_DIR/failing-real-sleep" <<'MOCK'
+#!/usr/bin/env bash
+exit 1
+MOCK
+    chmod +x "$BIN_DIR/failing-real-sleep"
+    RUNNER_REAL_SLEEP="$BIN_DIR/failing-real-sleep"
 
-    [[ $teardown_status -ne 0 ]]
-    [[ $workspace_status -eq 0 ]]
+    local cleanup_status=0
+    _cleanup_runner_group 424242 || cleanup_status=$?
+
+    [[ $cleanup_status -ne 0 ]]
+    [[ -d "$WORK_DIR" ]]
+    grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
 }
 
 # ---------------------------------------------------------------------------
