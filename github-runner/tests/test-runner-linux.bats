@@ -572,9 +572,11 @@ MOCK
 
     # The runner itself publishes readiness after a bounded delay.  It also
     # self-expires, so an abruptly killed Bats process leaves only a bounded
-    # child behind; this test deliberately creates no detached process group.
+    # child behind.  Its TERM marker proves the entrypoint's group signal
+    # reaches the runner, not just the entrypoint leader.
     cat > "$RUNNER_WORK/run.sh" <<MOCK
 #!/usr/bin/env bash
+trap 'touch "$WORK_DIR/runner-terminated"; exit 0' TERM INT
 command "$REAL_SLEEP" 0.1
 touch "$WORK_DIR/runner-started"
 command "$REAL_SLEEP" 5
@@ -592,8 +594,13 @@ exit 0
 MOCK
     chmod +x "$RUNNER_WORK/config.sh"
 
-    bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT'" 2>"$LOG_FILE" &
+    command setsid bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT'" 2>"$LOG_FILE" &
     local ep_pid=$!
+    RUNNER_PGID="$ep_pid"
+    if [[ -z "$RUNNER_PGID" ]]; then
+        _cleanup_runner_group "$ep_pid" || true
+        return 1
+    fi
 
     # Wait for runner to start (max 5s).
     local waited=0
@@ -603,11 +610,28 @@ MOCK
     done
     [[ -f "$WORK_DIR/runner-started" ]]
 
-    # This test covers entrypoint deregistration, not group cleanup.
-    kill -TERM "$ep_pid"
-    local entrypoint_status=0
-    wait "$ep_pid" || entrypoint_status=$?
-    [[ $entrypoint_status -eq 0 || $entrypoint_status -eq 143 ]]
+    # The entrypoint is the session and process-group leader, so its PID names
+    # the group.  Prove the group exists before signalling all its members.
+    if ! kill -0 -- "-$RUNNER_PGID"; then
+        _cleanup_runner_group "$RUNNER_PGID" || true
+        return 1
+    fi
+    kill -TERM -- "-$RUNNER_PGID"
+
+    # A leader-only signal leaves run.sh running until its self-expiry.  Check
+    # the runner's signal marker before the cleanup helper can signal it again.
+    local signal_waited=0
+    while [[ ! -f "$WORK_DIR/runner-terminated" ]] && [[ $signal_waited -lt 10 ]]; do
+        _real_sleep 0.1 || return 1
+        signal_waited=$((signal_waited + 1))
+    done
+    if [[ ! -f "$WORK_DIR/runner-terminated" ]]; then
+        _cleanup_runner_group "$RUNNER_PGID" || true
+        return 1
+    fi
+
+    # The helper bounds the wait and escalates if the group does not exit.
+    _cleanup_runner_group "$RUNNER_PGID"
 
     # Deregistration obtains a removal token and invokes config.sh remove.
     grep -q "repos/owner/repo/actions/runners/remove-token" "$WORK_DIR/curl-urls.log"
@@ -661,6 +685,22 @@ MOCK
     [[ $cleanup_status -ne 0 ]]
     [[ -d "$WORK_DIR" ]]
     grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
+}
+
+@test "teardown retains workspace when cleanup cannot prove group extinction" {
+    _write_mock_kill_sequence 'present'
+    RUNNER_REAL_SLEEP="$BIN_DIR/sleep"
+    RUNNER_PGID=424242
+
+    local teardown_status=0
+    teardown || teardown_status=$?
+
+    [[ $teardown_status -ne 0 ]]
+    [[ -d "$WORK_DIR" ]]
+
+    # Bats invokes teardown again after this test.  Clear the synthetic group
+    # only after observing that this teardown left the workspace intact.
+    RUNNER_PGID=""
 }
 
 @test "cleanup fails and retains workspace when a probe is unknown" {
