@@ -53,6 +53,10 @@ inputs:
     description: Enable Trivy vulnerability scanning (true/false)
     required: false
     default: 'true'
+  push:
+    description: Whether to publish the built image. 'false' builds and loads only.
+    required: false
+    default: 'true'
   vulnerability_severity:
     description: 'Severities surfaced in SARIF + dashboard (advisory). Build is never blocked — Trivy runs continue-on-error.'
     required: false
@@ -92,6 +96,24 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Validate push input
+      shell: bash
+      env:
+        PUSH: ${{ inputs.push }}
+      run: |
+        set -euo pipefail
+        case "$PUSH" in
+          true|false) ;;
+          *)
+            # Use the repository's workflow-command escaper before logging an
+            # arbitrary caller value.
+            source ./helpers/logging.sh
+            safe_push=$(_escape_gha_command "$PUSH")
+            printf '::error::Invalid push input %s; expected true or false\n' "$safe_push" >&2
+            exit 1
+            ;;
+        esac
+
     - name: Log in to GitHub Container Registry
       if: runner.os != 'Windows'
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -711,7 +733,7 @@ runs:
     # GHCR Push - PRIMARY REGISTRY (required)
     # Push the already-built image with platform suffix for multi-arch manifest creation
     - name: Push to GHCR (primary)
-      if: ${{ steps.build.outputs.image_loaded == 'true' && github.event_name != 'pull_request' }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && inputs.push == 'true' && github.event_name != 'pull_request' }}
       id: push-ghcr
       shell: bash
       run: |
@@ -748,7 +770,7 @@ runs:
     # Docker Hub Push - SECONDARY REGISTRY (optional, can fail)
     # Tag and push the already-built image with platform suffix
     - name: Push to Docker Hub (secondary)
-      if: ${{ steps.build.outputs.image_loaded == 'true' && github.event_name != 'pull_request' && (steps.dockerhub-login.outcome == 'success' || steps.dockerhub-login-windows.outcome == 'success') }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && inputs.push == 'true' && github.event_name != 'pull_request' && (steps.dockerhub-login.outcome == 'success' || steps.dockerhub-login-windows.outcome == 'success') }}
       id: push-dockerhub
       shell: bash
       run: |
@@ -913,8 +935,12 @@ runs:
           fi
         fi
 
-    - name: Skip push for pull request
-      if: ${{ steps.build.outputs.image_loaded == 'true' && github.event_name == 'pull_request' }}
+    - name: Skip push for pull request or disabled publishing
+      if: ${{ steps.build.outputs.image_loaded == 'true' && (github.event_name == 'pull_request' || inputs.push != 'true') }}
       shell: bash
       run: |
-        echo "::notice::Skipping push (pull request - test build only)"
+        if [[ "${{ inputs.push }}" != "true" ]]; then
+          echo "::notice::Skipping push (push input is false - test build only)"
+        else
+          echo "::notice::Skipping push (pull request - test build only)"
+        fi

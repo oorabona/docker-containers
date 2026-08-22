@@ -69,7 +69,7 @@ EOF
 
 teardown() {
     teardown_temp_dir
-    unset FORCE FORCE_SCOPED_EXTENSION_REFS LOCAL_ONLY DRY_RUN CONTAINER ROOT_DIR
+    unset FORCE FORCE_SCOPED_EXTENSION_REFS LOCAL_ONLY DRY_RUN CONTAINER ROOT_DIR NO_CACHE
 }
 
 # ---------------------------------------------------------------------------
@@ -730,6 +730,10 @@ _count_log_lines() {
     vd_present=$(jq -r 'if has("version_digests") then "yes" else "no" end' "$artifact")
     [ "$vd_present" = "yes" ]
 
+    local digest_repository
+    digest_repository=$(jq -r '.version_digests_repository // empty' "$artifact")
+    [ -n "$digest_repository" ]
+
     # version_digests must contain an entry for EVERY available version.
     local available_count vd_count
     available_count=$(jq '.available | length' "$artifact")
@@ -771,6 +775,13 @@ _count_log_lines() {
     local vd_present
     vd_present=$(jq -r 'if has("version_digests") then "yes" else "no" end' "$artifact")
     [ "$vd_present" = "no" ]
+
+    local digest_repository
+    digest_repository=$(jq -r 'has("version_digests_repository")' "$artifact")
+    [ "$digest_repository" = "false" ] || {
+        echo "FAIL: no-push artifact must not carry version_digests_repository without version_digests"
+        false
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -8644,6 +8655,10 @@ EOCFG
     vd_2251=$(jq -r '.version_digests["2.25.0"]' "$artifact" 2>/dev/null || echo "")
     [ "$vd_2251" = "sha256:cafebabe00000000000000000000000000000000000000000000000000000000" ]
 
+    local digest_repository
+    digest_repository=$(jq -r '.version_digests_repository // empty' "$artifact" 2>/dev/null || echo "")
+    [ -n "$digest_repository" ]
+
     # bundle_digest must NOT be present (replaced by version_digests).
     local has_bundle_digest
     has_bundle_digest=$(jq 'has("bundle_digest")' "$artifact" 2>/dev/null || echo "false")
@@ -12597,6 +12612,66 @@ EOF
             [[ "$buildx_line" != *"--cache-to"* ]]
         fi
     fi
+}
+
+@test "--no-cache disables layer-result reuse and external registry cache imports and exports" {
+    local docker_calls="$TEST_TEMP_DIR/no_cache_docker_calls.log"
+
+    # Re-source after setup's build_ext_image mock so this drives the real
+    # buildx invocation. parse_args is part of the contract: callers opt in
+    # with --no-cache rather than --force or --local-only implying it.
+    _source_build_extensions
+    DOCKER=docker
+    export DOCKER BUILD_PLATFORM=linux/amd64 ARCH_SUFFIX=amd64 REPO_OWNER=testowner
+    docker() {
+        printf '%s\n' "$*" >> "$docker_calls"
+        return 0
+    }
+
+    parse_args postgres --no-cache
+    [ "$NO_CACHE" = "true" ]
+    build_ext_image pgvector 0.8.2 https://github.com/pgvector/pgvector 18 Dockerfile .
+
+    local buildx_line
+    buildx_line=$(grep 'buildx build' "$docker_calls")
+    [[ "$buildx_line" == *"--no-cache"* ]] || { echo "FAIL: no-cache build must pass --no-cache"; false; }
+    [[ "$buildx_line" != *"--cache-from"* ]] || { echo "FAIL: no-cache build must not import registry cache"; false; }
+    [[ "$buildx_line" != *"--cache-to"* ]] || { echo "FAIL: no-cache build must not export registry cache"; false; }
+}
+
+@test "default cache flags remain enabled under local-only and force" {
+    local docker_calls="$TEST_TEMP_DIR/default_cache_docker_calls.log"
+
+    # Drive the real function twice: --local-only still imports its canonical
+    # cache, and --force changes only skip behaviour, not cache semantics.
+    unset DOCKER_NO_CACHE NO_CACHE
+    _source_build_extensions
+    DOCKER=docker
+    export DOCKER BUILD_PLATFORM=linux/amd64 ARCH_SUFFIX=amd64 REPO_OWNER=testowner
+    docker() {
+        printf '%s\n' "$*" >> "$docker_calls"
+        return 0
+    }
+
+    LOCAL_ONLY=true
+    FORCE=false
+    build_ext_image pgvector 0.8.2 https://github.com/pgvector/pgvector 18 Dockerfile .
+
+    LOCAL_ONLY=false
+    FORCE=true
+    build_ext_image pgvector 0.8.2 https://github.com/pgvector/pgvector 18 Dockerfile .
+
+    local -a buildx_lines
+    mapfile -t buildx_lines < <(grep 'buildx build' "$docker_calls")
+    [ "${#buildx_lines[@]}" -eq 2 ]
+
+    [[ "${buildx_lines[0]}" == *"--cache-from type=registry,ref=ghcr.io/testowner/ext-pgvector-buildcache:pg18-amd64"* ]] || { echo "FAIL: default local-only build must retain canonical cache import"; false; }
+    [[ "${buildx_lines[0]}" != *"--cache-to"* ]]
+    [[ "${buildx_lines[0]}" != *"--no-cache"* ]]
+
+    [[ "${buildx_lines[1]}" == *"--cache-from type=registry,ref=ghcr.io/testowner/ext-pgvector-buildcache:pg18-amd64"* ]] || { echo "FAIL: --force must retain canonical cache import by default"; false; }
+    [[ "${buildx_lines[1]}" == *"--cache-to type=registry,ref=ghcr.io/testowner/ext-pgvector-buildcache:pg18-amd64,mode=max,ignore-error=true"* ]]
+    [[ "${buildx_lines[1]}" != *"--no-cache"* ]]
 }
 
 # ---------------------------------------------------------------------------

@@ -33,7 +33,13 @@ jobs:
 
       - name: Install shellcheck
         run: |
-          echo "shellcheck version: $(shellcheck --version | head -2)"
+          set -euo pipefail
+          shellcheck_status=0
+          shellcheck --version || shellcheck_status=$?
+          if [[ $shellcheck_status -ne 0 ]]; then
+            echo "::error::shellcheck tooling availability check failed (exit $shellcheck_status)" >&2
+            exit "$shellcheck_status"
+          fi
 
       - name: Check duplicate YAML mapping keys
         run: |
@@ -84,53 +90,88 @@ jobs:
           install_package 'yamllint==1.37.1' "$yamllint_dir/requirements/yamllint.txt"
 
           "$yamllint_venv/bin/yamllint" --version
-          find . -type f \( -name config.yaml -o -name variants.yaml \) \
-            -not -path './.git/*' -print0 | xargs -0 "$yamllint_venv/bin/yamllint" -c .yamllint.yml
+
+          # A linter can reproduce repository-controlled text verbatim. Disable
+          # runner command parsing while it writes. Capture the child verdict
+          # so the resume marker is written before the wrapper returns it.
+          run_with_workflow_commands_stopped() (
+            local stop_marker status
+            if ! stop_marker=$(uuidgen) || [[ -z "$stop_marker" ]]; then
+              echo "::error::could not mint a workflow command stop marker" >&2
+              return 1
+            fi
+            if ! printf '::stop-commands::%s\n' "$stop_marker"; then
+              echo "::error::could not write workflow command stop marker; refusing to run linter" >&2
+              return 1
+            fi
+            if "$@" 2>&1; then
+              status=0
+            else
+              status=$?
+            fi
+            if ! printf '\n::%s::\n' "$stop_marker"; then
+              echo "::error::could not write workflow command resume marker; refusing to report lint success" >&2
+              return 2
+            fi
+            return "$status"
+          )
+
+          # Run yamllint only after this search has collected and validated every YAML pathname.
+          # The collector owns its annotation, so it must finish while runner
+          # command parsing is live before the linter span opens.
+          yaml_paths=$(mktemp)
+          trap 'rm -f "$yaml_paths"' EXIT
+          ./scripts/collect-safe-paths.sh . -type f \( -name config.yaml -o -name variants.yaml \) \
+            -not -path './.git/*' > "$yaml_paths"
+          run_with_workflow_commands_stopped xargs -r -0 "$yamllint_venv/bin/yamllint" -c .yamllint.yml < "$yaml_paths"
 
       - name: Run shellcheck on scripts
         run: |
           set -euo pipefail
 
+          # Keep linter diagnostics inert: they can reproduce untrusted file
+          # contents beginning with a GitHub Actions workflow command. Capture
+          # the child verdict so the resume marker is printed before set -e can
+          # leave the wrapper.
+          workflow_command_stop_marker_failed=0
+          run_with_workflow_commands_stopped() {
+            local stop_marker status
+            if ! stop_marker=$(uuidgen) || [[ -z "$stop_marker" ]]; then
+              workflow_command_stop_marker_failed=1
+              echo "::error::could not mint a workflow command stop marker" >&2
+              return 1
+            fi
+            if ! printf '::stop-commands::%s\n' "$stop_marker"; then
+              workflow_command_stop_marker_failed=1
+              echo "::error::could not write workflow command stop marker; refusing to run linter" >&2
+              return 1
+            fi
+            if "$@" 2>&1; then
+              status=0
+            else
+              status=$?
+            fi
+            if ! printf '\n::%s::\n' "$stop_marker"; then
+              echo "::error::could not write workflow command resume marker; refusing to report lint success" >&2
+              return 2
+            fi
+            return "$status"
+          }
+
           scripts=()
 
-          # Discovery has to fail closed, and a find inside a process
-          # substitution does the opposite: it reports nothing when it fails,
-          # the reading loop then ends normally, and a scan that broke is
-          # indistinguishable from a repository holding no scripts — on which
-          # this job reports every one of them passing. Every collector
-          # therefore goes through here, where the search completes into a file
-          # whose pipeline status is checked, under pipefail, before a single
-          # path is added.
-          #
-          # Paths are carried NUL-delimited so a newline in one cannot split a
-          # single entry into several, and what may then be linted is confined
-          # to an allowlist of characters rather than escaped wherever it is
-          # later printed. The failure list is interpolated into the step
-          # summary as Markdown and into the log, so a backtick, a newline, a
-          # carriage return or a colon in a pathname can close a code span,
-          # forge a link, or open a workflow command in either sink. Escaping
-          # each sink means getting every sink right for ever; refusing the
-          # character set at the one point where a path enters means the sinks
-          # can only ever receive names that are inert in both.
+          # This collector covers pathnames produced by its searches; shellcheck -x sources and the project-root scripts appended below are outside this boundary.
           collect() {
-            local sorted f bad=
-            sorted=$(mktemp)
-            if ! find "$@" -print0 | sort -z > "$sorted"; then
-              rm -f "$sorted"
-              echo "::error::script discovery failed: find $*"
-              exit 1
+            local collected f
+            collected=$(mktemp)
+            if ! ./scripts/collect-safe-paths.sh "$@" > "$collected"; then
+              rm -f "$collected"
+              return 1
             fi
             while IFS= read -r -d '' f; do
-              case $f in
-                *[!A-Za-z0-9._/-]*) bad=$f; break ;;
-              esac
               scripts+=("$f")
-            done < "$sorted"
-            rm -f "$sorted"
-            if [[ -n $bad ]]; then
-              echo "::error::refusing to lint a path outside [A-Za-z0-9._/-]: $(printf '%q' "$bad")"
-              exit 1
-            fi
+            done < "$collected"
+            rm -f "$collected"
           }
 
           # Collect build-system shell scripts only (not container runtime scripts)
@@ -162,11 +203,21 @@ jobs:
           failed_files=()
 
           for script in "${scripts[@]}"; do
-            if shellcheck -x -S warning "$script" 2>/dev/null; then
+            workflow_command_stop_marker_failed=0
+            if run_with_workflow_commands_stopped shellcheck -x -S warning "$script"; then
               passed=$((passed + 1))
             else
-              failed=$((failed + 1))
-              failed_files+=("$script")
+              status=$?
+              if [[ $workflow_command_stop_marker_failed -eq 1 ]]; then
+                status=2
+              fi
+              if [[ $status -eq 1 ]]; then
+                failed=$((failed + 1))
+                failed_files+=("$script")
+              else
+                echo "::error::shellcheck tooling failed for $script (exit $status); expected 0 or finding status 1" >&2
+                exit "$status"
+              fi
             fi
           done
 
@@ -189,14 +240,7 @@ jobs:
               done
             } >> "$GITHUB_STEP_SUMMARY"
 
-            echo ""
             echo "❌ $failed/$total scripts have shellcheck warnings"
-            echo ""
-            echo "Re-running failed scripts with details:"
-            for f in "${failed_files[@]}"; do
-              echo "--- $f ---"
-              shellcheck -x -S warning "$f" || true
-            done
             exit 1
           fi
 
