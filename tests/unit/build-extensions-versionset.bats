@@ -26,6 +26,152 @@ _source_build_extensions() {
     popd > /dev/null 2>&1
 }
 
+_capture_rotation_build_status() {
+    local rc=0
+    if build_tag_push_extensions "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" true timescaledb; then
+        rc=0
+    else
+        rc=$?
+    fi
+    printf 'rotation-status=%s\n' "$_ROTATION_BUILD_STATUS"
+    return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# Rotation producer state: a build phase exhausted after retries is distinct
+# from push and resolver failures, which remain infra.  These tests exercise
+# the same build_tag_push_extensions paths used by the rotation leg.
+# ---------------------------------------------------------------------------
+
+@test "rotation status: push failure is infra and keeps its existing failure exit" {
+    export EXT_BUILD_RETRIES=1
+    _ROTATION_BUILD_STATUS=infra
+    _ROTATION_BUILD_HAS_INFRA=false
+
+    build_ext_image() { return 2; }
+    export -f build_ext_image
+
+    unset ROTATION_STATUS_FILE
+    run _capture_rotation_build_status
+    local without_status_rc="$status"
+
+    export ROTATION_STATUS_FILE="$TEST_TEMP_DIR/build-status"
+    _ROTATION_BUILD_STATUS=infra
+    _ROTATION_BUILD_HAS_INFRA=false
+    run _capture_rotation_build_status
+    local with_status_rc="$status"
+
+    [ "$without_status_rc" -eq 1 ]
+    [ "$with_status_rc" -eq 1 ]
+    [[ "$output" == *"rotation-status=infra"* ]]
+}
+
+@test "rotation status: resolver failure is infra and keeps its existing failure exit" {
+    export ROTATION_STATUS_FILE="$TEST_TEMP_DIR/build-status"
+    _ROTATION_BUILD_STATUS=infra
+    _ROTATION_BUILD_HAS_INFRA=false
+
+    resolve_version_set() { return 1; }
+    export -f resolve_version_set
+
+    run _capture_rotation_build_status
+    local rc="$status"
+
+    [ "$rc" -eq 1 ]
+    [[ "$output" == *"rotation-status=infra"* ]]
+}
+
+@test "rotation status: exhausted ceiling build retries are build-failed and directory targets are refused" {
+    export EXT_BUILD_RETRIES=1
+    export ROTATION_STATUS_FILE="$TEST_TEMP_DIR/build-status"
+    _ROTATION_BUILD_STATUS=infra
+    _ROTATION_BUILD_HAS_INFRA=false
+
+    build_ext_image() { return 1; }
+    export -f build_ext_image
+
+    run _capture_rotation_build_status
+    local rc="$status"
+
+    [ "$rc" -eq 1 ]
+    [[ "$output" == *"rotation-status=build-failed"* ]]
+    mkdir "$ROTATION_STATUS_FILE"
+
+    run _write_rotation_status infra
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ROTATION_STATUS_FILE must name a regular file"* ]]
+
+    rmdir "$ROTATION_STATUS_FILE"
+    local status_target="$TEST_TEMP_DIR/build-status-target"
+    printf 'unchanged\n' > "$status_target"
+    ln -s "$status_target" "$ROTATION_STATUS_FILE"
+
+    run _write_rotation_status infra
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ROTATION_STATUS_FILE must name a regular file"* ]]
+    [ "$(<"$status_target")" = unchanged ]
+}
+
+@test "rotation status: an infra retry before a build-phase failure remains infra" {
+    export EXT_BUILD_RETRIES=3
+    export _rotation_attempt=0
+    _ROTATION_BUILD_STATUS=infra
+    _ROTATION_BUILD_HAS_INFRA=false
+
+    build_ext_image() {
+        _rotation_attempt=$((_rotation_attempt + 1))
+        case "$_rotation_attempt" in
+            1|2) return 2 ;;
+            3) return 1 ;;
+        esac
+        return 99
+    }
+    sleep() { :; }
+    export -f build_ext_image sleep
+
+    run _capture_rotation_build_status
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"rotation-status=infra"* ]]
+}
+
+@test "zero build attempts are infrastructure, not a build failure" {
+    local build_marker="$TEST_TEMP_DIR/build-ran"
+    export EXT_BUILD_RETRIES=0
+
+    build_ext_image() {
+        : > "$build_marker"
+        return 1
+    }
+    export -f build_ext_image
+
+    run build_extension timescaledb "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    [ "$status" -eq 2 ]
+    [ ! -e "$build_marker" ]
+    [[ "$output" == *"made no attempts"* ]]
+}
+
+@test "rotation status target is refused before build prerequisites run" {
+    local status_file="$TEST_TEMP_DIR/build-status"
+    local status_target="$TEST_TEMP_DIR/build-status-target"
+    local prerequisite_marker="$TEST_TEMP_DIR/prerequisite-ran"
+    printf 'unchanged\n' > "$status_target"
+    ln -s "$status_target" "$status_file"
+    export ROTATION_STATUS_FILE="$status_file"
+
+    validate_prerequisites() { : > "$prerequisite_marker"; }
+
+    run main postgres
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ROTATION_STATUS_FILE must name a regular file"* ]]
+    [ ! -e "$prerequisite_marker" ]
+    [ "$(<"$status_target")" = unchanged ]
+}
+
 # ---------------------------------------------------------------------------
 # Setup / Teardown
 # ---------------------------------------------------------------------------
@@ -69,7 +215,7 @@ EOF
 
 teardown() {
     teardown_temp_dir
-    unset FORCE FORCE_SCOPED_EXTENSION_REFS LOCAL_ONLY DRY_RUN CONTAINER ROOT_DIR NO_CACHE
+    unset FORCE FORCE_SCOPED_EXTENSION_REFS LOCAL_ONLY DRY_RUN CONTAINER ROOT_DIR NO_CACHE ROTATION_STATUS_FILE EXT_BUILD_RETRIES
 }
 
 # ---------------------------------------------------------------------------
