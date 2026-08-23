@@ -304,7 +304,7 @@ _write_rotation_status() {
         rm -f -- "$status_tmp" || true
         return 1
     }
-    mv -f -- "$status_tmp" "$ROTATION_STATUS_FILE" || {
+    mv -f -T -- "$status_tmp" "$ROTATION_STATUS_FILE" || {
         rm -f -- "$status_tmp" || true
         return 1
     }
@@ -312,6 +312,25 @@ _write_rotation_status() {
         log_error "ROTATION_STATUS_FILE was not written as a regular file: $ROTATION_STATUS_FILE"
         return 1
     fi
+}
+
+_rotation_build_exit() {
+    local _exit_status="$1"
+    local _cleanup_status=0
+
+    rm -rf "${_RESOLVER_CACHE_DIR}" "${_BUILT_THIS_RUN_DIR}" || _cleanup_status=$?
+    if [[ "$_cleanup_status" -ne 0 ]]; then
+        # A failed cleanup invalidates the producer evidence, even after a
+        # completed build. Preserve a pre-existing non-zero process status so
+        # a genuine build failure remains a failure at the caller.
+        [[ "$_exit_status" -eq 0 ]] && _exit_status=$_cleanup_status
+        _ROTATION_BUILD_STATUS=infra
+    fi
+    _write_rotation_status "$_ROTATION_BUILD_STATUS" || {
+        local _write_status=$?
+        [[ "$_exit_status" -eq 0 ]] && _exit_status=$_write_status
+    }
+    exit "$_exit_status"
 }
 
 # This is intentionally a build-phase result, not a compiler diagnosis:
@@ -2727,6 +2746,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     # never clobbered. _RESOLVER_CACHE_DIR is already set at source time above.
     _rotation_status_file_is_valid || exit 1
     # shellcheck disable=SC2064,SC2154
-    trap '_exit_status=$?; _cleanup_status=0; rm -rf "${_RESOLVER_CACHE_DIR}" "${_BUILT_THIS_RUN_DIR}" || _cleanup_status=$?; if [[ "$_exit_status" -eq 0 && "$_cleanup_status" -ne 0 ]]; then _exit_status=$_cleanup_status; _ROTATION_BUILD_STATUS=infra; fi; _write_rotation_status "$_ROTATION_BUILD_STATUS" || { _write_status=$?; [[ "$_exit_status" -eq 0 ]] && _exit_status=$_write_status; }; exit "$_exit_status"' EXIT
+    trap '_rotation_build_exit "$?"' EXIT
     main "$@"
 fi

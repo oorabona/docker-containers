@@ -99,6 +99,84 @@ _rotation_read_status() {
     done
 }
 
+@test "rotation test jobs rethrow each tolerated candidate failure" {
+    local job build_condition build_run suite_condition suite_run
+
+    # These names intentionally couple the guard to the steps it rethrows. That
+    # is cheaper and clearer than adding workflow-only ids for test addressing.
+    for job in test-amd64 test-arm64; do
+        run yq -r ".jobs.\"$job\".steps[] | select(.name == \"Fail candidate image build result\") | .if" \
+            "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+        [ "$status" -eq 0 ]
+        build_condition="$output"
+        [ "$build_condition" = "steps.build-e2e-image.outcome == 'failure'" ]
+
+        run yq -r ".jobs.\"$job\".steps[] | select(.name == \"Fail candidate image build result\") | .run" \
+            "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+        [ "$status" -eq 0 ]
+        build_run="$output"
+        [ "$build_run" = "exit 1" ]
+
+        run yq -r ".jobs.\"$job\".steps[] | select(.name == \"Fail e2e suite result\") | .if" \
+            "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+        [ "$status" -eq 0 ]
+        suite_condition="$output"
+        [ "$suite_condition" = "steps.e2e.outcome == 'failure'" ]
+
+        run yq -r ".jobs.\"$job\".steps[] | select(.name == \"Fail e2e suite result\") | .run" \
+            "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+        [ "$status" -eq 0 ]
+        suite_run="$output"
+        [ "$suite_run" = "exit 1" ]
+    done
+}
+
+@test "rotation cleanup failure makes a build-failed producer infra without hiding its failure exit" {
+    local bin_dir="$BATS_TEST_TMPDIR/cleanup-failure-bin"
+    local status_file="$BATS_TEST_TMPDIR/cleanup-failure-status"
+    mkdir -p "$bin_dir"
+    cat > "$bin_dir/rm" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -rf ]]; then
+    exit 75
+fi
+exec /bin/rm "$@"
+EOF
+    chmod +x "$bin_dir/rm"
+
+    run env PATH="$bin_dir:$PATH" TMPDIR="$BATS_TEST_TMPDIR" ROTATION_STATUS_FILE="$status_file" \
+        bash -c '
+            source "$1"
+            _ROTATION_BUILD_STATUS=build-failed
+            _RESOLVER_CACHE_DIR="$2/resolver-cache"
+            _BUILT_THIS_RUN_DIR="$2/built-this-run"
+            _rotation_build_exit 1
+        ' _ "$PROJECT_ROOT/scripts/build-extensions.sh" "$BATS_TEST_TMPDIR"
+
+    [ "$status" -ne 0 ]
+    [ "$(<"$status_file")" = infra ]
+}
+
+@test "rotation status rename cannot place a record inside a raced target directory" {
+    local status_file="$BATS_TEST_TMPDIR/build-status"
+
+    run env TMPDIR="$BATS_TEST_TMPDIR" ROTATION_STATUS_FILE="$status_file" \
+        bash -c '
+            source "$1"
+            mv() {
+                mkdir "$ROTATION_STATUS_FILE"
+                command mv "$@"
+            }
+            if _write_rotation_status infra; then
+                exit 1
+            fi
+            [[ -d "$ROTATION_STATUS_FILE" ]]
+            [[ -z "$(find "$ROTATION_STATUS_FILE" -mindepth 1 -print -quit)" ]]
+        ' _ "$PROJECT_ROOT/scripts/build-extensions.sh"
+
+    [ "$status" -eq 0 ]
+}
+
 @test "rotation status artifacts keep build producer state files" {
     local names build_path attribution issue_body
 
