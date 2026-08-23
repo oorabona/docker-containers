@@ -9,7 +9,7 @@ script_root() {
 }
 
 build_valid_tags() {
-  local container="$1" builds_json tags variant_tags
+  local container="$1" builds_json tags variant_tags flavor_tags
   if ! builds_json=$("$ROOT_DIR/make" list-builds "$container" 2>/dev/null); then
     return 1
   fi
@@ -20,11 +20,19 @@ build_valid_tags() {
     return 1
   fi
   tags+=$'\nlatest\nbuildcache'
-  if ! variant_tags=$(jq -r '.[] | select(.variant != "" and .is_latest_version == true) | "latest-" + .variant' <<< "$builds_json" | sort -u); then
+  if ! variant_tags=$(set -o pipefail; jq -r '.[] | select(.variant != "" and .is_latest_version == true) | "latest-" + .variant' <<< "$builds_json" | sort -u); then
     return 1
   fi
   if [[ -n "$variant_tags" ]]; then
     tags+=$'\n'"$variant_tags"
+  fi
+  # Publisher creates latest-<flavor> on any version for non-default Windows builds with a non-empty flavor.
+  # This script's is_latest_version filter is narrower; #1395 tracks the difference.
+  if ! flavor_tags=$(set -o pipefail; jq -r '.[] | select(.os == "windows" and .is_default != true and .flavor != "" and .is_latest_version == true) | "latest-" + .flavor' <<< "$builds_json" | sort -u); then
+    return 1
+  fi
+  if [[ -n "$flavor_tags" ]]; then
+    tags+=$'\n'"$flavor_tags"
   fi
   printf '%s\n' "$tags" | sort -u
 }
