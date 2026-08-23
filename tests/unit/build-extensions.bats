@@ -32,6 +32,7 @@ _source_build_extensions() {
 
 setup() {
     setup_temp_dir
+    STATUS_TARGET_FIXTURES=()
 
     # Minimal extension filesystem under TEST_TEMP_DIR
     CONTAINER_DIR="$TEST_TEMP_DIR/postgres"
@@ -76,8 +77,21 @@ EOF
 }
 
 teardown() {
+    local fixture cleanup_failed=0
+    # Status-target refusal tests may return before their final assertion. Keep
+    # their deliberately-invalid fixtures outside the test body cleanup so
+    # Bats removes them on both passing and failing paths.
+    for fixture in "${STATUS_TARGET_FIXTURES[@]}"; do
+        chmod -R u+w -- "$fixture" 2>/dev/null || true
+        rm -rf -- "$fixture"
+        if [[ -e "$fixture" || -L "$fixture" ]]; then
+            echo "FAIL: status-target fixture remains after teardown: $fixture" >&2
+            cleanup_failed=1
+        fi
+    done
     teardown_temp_dir
     unset FORCE LOCAL_ONLY CONTAINER ROOT_DIR
+    return "$cleanup_failed"
 }
 
 # ---------------------------------------------------------------------------
@@ -108,6 +122,33 @@ teardown() {
         echo "FAIL: deliberate --help must exit zero"
         return 1
     }
+    local temp_root="$TEST_TEMP_DIR/status-refusal-tmp"
+    local directory_target="$TEST_TEMP_DIR/status-target-directory"
+    local symlink_target="$TEST_TEMP_DIR/status-target-symlink"
+    local symlink_destination="$TEST_TEMP_DIR/status-target-destination"
+    local unwritable_parent="$TEST_TEMP_DIR/status-target-unwritable"
+    local unwritable_target="$unwritable_parent/build-status"
+    mkdir -p "$temp_root" "$directory_target" "$unwritable_parent"
+    printf 'unchanged\n' > "$symlink_destination"
+    ln -s "$symlink_destination" "$symlink_target"
+    chmod u-w "$unwritable_parent"
+    STATUS_TARGET_FIXTURES=("$directory_target" "$symlink_target" "$symlink_destination" "$unwritable_parent")
+
+    run env TMPDIR="$temp_root" ROTATION_STATUS_FILE="$directory_target" \
+        "$SCRIPTS_DIR/build-extensions.sh" --help
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"ROTATION_STATUS_FILE must name a regular file"* ]]
+    [[ -z "$(find "$temp_root" -mindepth 1 -print -quit)" ]]
+
+    run env TMPDIR="$temp_root" ROTATION_STATUS_FILE="$symlink_target" \
+        "$SCRIPTS_DIR/build-extensions.sh" --help
+    [ "$status" -ne 0 ]
+    [[ -z "$(find "$temp_root" -mindepth 1 -print -quit)" ]]
+
+    run env TMPDIR="$temp_root" ROTATION_STATUS_FILE="$unwritable_target" \
+        "$SCRIPTS_DIR/build-extensions.sh" --help
+    [ "$status" -ne 0 ]
+    [[ -z "$(find "$temp_root" -mindepth 1 -print -quit)" ]]
 }
 
 @test "EXIT cleanup failure records infra instead of a success verdict" {

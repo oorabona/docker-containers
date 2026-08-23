@@ -317,8 +317,13 @@ _write_rotation_status() {
 _rotation_build_exit() {
     local _exit_status="$1"
     local _cleanup_status=0
+    local _cleanup_paths=()
 
-    rm -rf "${_RESOLVER_CACHE_DIR}" "${_BUILT_THIS_RUN_DIR}" || _cleanup_status=$?
+    [[ -n "${_RESOLVER_CACHE_DIR:-}" ]] && _cleanup_paths+=("$_RESOLVER_CACHE_DIR")
+    [[ -n "${_BUILT_THIS_RUN_DIR:-}" ]] && _cleanup_paths+=("$_BUILT_THIS_RUN_DIR")
+    if [[ ${#_cleanup_paths[@]} -gt 0 ]]; then
+        rm -rf "${_cleanup_paths[@]}" || _cleanup_status=$?
+    fi
     if [[ "$_cleanup_status" -ne 0 ]]; then
         # A failed cleanup invalidates the producer evidence, even after a
         # completed build. Preserve a pre-existing non-zero process status so
@@ -1384,10 +1389,18 @@ build_tag_push_extensions() {
 # In-memory variables cannot survive command-substitution subshells ($(...)), so
 # each resolved JSON is written to a per-run temp directory keyed by
 # "<ext>-<major>". The cache directory is created at source time so that every
-# $(...) subshell inherits the path via the exported variable. The EXIT trap
-# that removes this directory is installed ONLY inside the execution guard
-# below (when the script runs as a program), so sourcing this file never
-# clobbers the caller's own EXIT trap.
+# $(...) subshell inherits the path via the exported variable.
+#
+# For direct execution, validate the status target before allocating either
+# directory, then install the EXIT trap immediately before the first allocation.
+# We reject the alternative of validating after allocation: an invalid target
+# must be refused before the build spends any temporary resources. Sourcing
+# keeps the caller's EXIT trap untouched.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    _rotation_status_file_is_valid || exit 1
+    # shellcheck disable=SC2064,SC2154
+    trap '_rotation_build_exit "$?"' EXIT
+fi
 _RESOLVER_CACHE_DIR="$(mktemp -d)"
 export _RESOLVER_CACHE_DIR
 
@@ -2741,11 +2754,5 @@ main() {
 
 # Only run main when executed directly, not when sourced (e.g. by unit tests)
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    # Install EXIT cleanup only when executing as a program. When sourced (e.g.
-    # by unit tests) no trap is installed here so the caller's EXIT trap is
-    # never clobbered. _RESOLVER_CACHE_DIR is already set at source time above.
-    _rotation_status_file_is_valid || exit 1
-    # shellcheck disable=SC2064,SC2154
-    trap '_rotation_build_exit "$?"' EXIT
     main "$@"
 fi
