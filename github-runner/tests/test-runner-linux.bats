@@ -15,11 +15,13 @@ setup() {
     # shell functions, and the resulting pathname does not depend on PATH.
     REAL_SLEEP="$(type -P sleep)"
     RUNNER_PGID=""
+    RUNNER_LAUNCH_ATTEMPTED=0
 
     # Temp workspace — every test gets an isolated directory
     WORK_DIR="$(mktemp -d)"
     BIN_DIR="$WORK_DIR/bin"
     RUNNER_WORK="$WORK_DIR/actions-runner"
+    RUNNER_IDENTITY_FILE="$WORK_DIR/runner-identity"
     mkdir -p "$BIN_DIR" "$RUNNER_WORK"
 
     # Prepend mock bin dir to PATH so our fakes win
@@ -91,8 +93,6 @@ MOCK
     # Log file captures all stderr output from the entrypoint
     LOG_FILE="$WORK_DIR/entrypoint.log"
 
-    # Common env: always run as non-root for tests that don't check root
-    export ALLOW_ROOT=false
     # Prevent auto-update noise
     export RUNNER_DISABLE_AUTO_UPDATE=1
     # Point cache dirs into temp space
@@ -101,6 +101,13 @@ MOCK
 }
 
 teardown() {
+    # An attempted launch without a validated group identity may still have a
+    # detached session using this workspace.  Retain it rather than guessing
+    # which group to signal or deleting files below a live runner.
+    if [[ "${RUNNER_LAUNCH_ATTEMPTED:-0}" == "1" && -z "${RUNNER_PGID:-}" ]]; then
+        echo "Runner session identity is unknown; preserving workspace: $WORK_DIR" >&2
+        return 1
+    fi
     if ! _cleanup_runner_group "${RUNNER_PGID:-}"; then
         return 1
     fi
@@ -242,7 +249,7 @@ _runner_group_state() {
         # Fields after the final ')' are: state (3), ppid (4), pgrp (5), ... .
         rest="${stat_line##*) }"
         read -r state ppid stat_pgid ignored <<<"$rest"
-        [[ "$state" =~ ^[A-Z]$ && "$ppid" =~ ^[0-9]+$ && "$stat_pgid" =~ ^[0-9]+$ && -n "$ignored" ]] || return 2
+        [[ "$state" =~ ^[RSDZTWXxKWPIt]$ && "$ppid" =~ ^[0-9]+$ && "$stat_pgid" =~ ^[0-9]+$ && -n "$ignored" ]] || return 2
         [[ "$stat_pgid" == "$pgid" ]] && return 0
     done
 
@@ -566,6 +573,76 @@ MOCK
 # Test 10: SIGTERM cleanup → deregistration call before exit
 # ---------------------------------------------------------------------------
 
+@test "job-controlled launch records the child-owned runner process group" {
+    export GITHUB_TOKEN="ghp_pattoken"
+    export GITHUB_REPOSITORY="owner/repo"
+
+    # This is the case that makes parent-side $! unusable: Bash gives the
+    # background job its own group, so setsid forks and the PID it returns dies.
+    set -m
+    [[ "$-" == *m* ]]
+
+    cat > "$RUNNER_WORK/run.sh" <<MOCK
+#!/usr/bin/env bash
+touch "$WORK_DIR/runner-started"
+command "$REAL_SLEEP" 5
+MOCK
+    chmod +x "$RUNNER_WORK/run.sh"
+
+    export RUNNER_WORK ENTRYPOINT RUNNER_IDENTITY_FILE
+    RUNNER_LAUNCH_ATTEMPTED=1
+    command setsid bash -c '
+        identity_pid=$BASHPID
+        identity_pgid=$(ps -o pgid= -p "$identity_pid") || exit 1
+        identity_pgid=${identity_pgid//[[:space:]]/}
+        identity_tmp="${RUNNER_IDENTITY_FILE}.tmp"
+        printf "%s %s\\n" "$identity_pid" "$identity_pgid" > "$identity_tmp" &&
+            mv -f "$identity_tmp" "$RUNNER_IDENTITY_FILE" || exit 1
+        cd "$RUNNER_WORK" || exit 1
+        exec bash "$ENTRYPOINT"
+    ' 2>"$LOG_FILE" &
+    local launch_pid=$!
+
+    local identity_waited=0
+    while [[ ! -f "$RUNNER_IDENTITY_FILE" ]] && [[ $identity_waited -lt 50 ]]; do
+        _real_sleep 0.1 || return 1
+        identity_waited=$((identity_waited + 1))
+    done
+
+    local reported_pid=""
+    local reported_pgid=""
+    local identity_extra=""
+    [[ -f "$RUNNER_IDENTITY_FILE" ]]
+    IFS=' ' read -r reported_pid reported_pgid identity_extra < "$RUNNER_IDENTITY_FILE"
+    [[ "$reported_pid" =~ ^[1-9][0-9]*$ ]]
+    [[ "$reported_pgid" =~ ^[1-9][0-9]*$ ]]
+    [[ -z "$identity_extra" ]]
+
+    # setsid's child owns the new session, so its PID and PGID agree.  Neither
+    # may be the transient PID returned by the parent-side background launch.
+    [[ "$reported_pid" == "$reported_pgid" ]]
+    [[ "$reported_pgid" != "$launch_pid" ]]
+    RUNNER_PGID="$reported_pgid"
+
+    local bats_pgid
+    bats_pgid=$(ps -o pgid= -p "$BASHPID") || return 1
+    bats_pgid=${bats_pgid//[[:space:]]/}
+    [[ "$RUNNER_PGID" != "$bats_pgid" ]]
+
+    local waited=0
+    while [[ ! -f "$WORK_DIR/runner-started" ]] && [[ $waited -lt 50 ]]; do
+        _real_sleep 0.1 || return 1
+        waited=$((waited + 1))
+    done
+    [[ -f "$WORK_DIR/runner-started" ]]
+
+    if ! _cleanup_runner_group "$RUNNER_PGID"; then
+        return 1
+    fi
+    RUNNER_PGID=""
+    RUNNER_LAUNCH_ATTEMPTED=0
+}
+
 @test "SIGTERM triggers cleanup deregistration before exit" {
     export GITHUB_TOKEN="ghp_pattoken"
     export GITHUB_REPOSITORY="owner/repo"
@@ -594,11 +671,59 @@ exit 0
 MOCK
     chmod +x "$RUNNER_WORK/config.sh"
 
-    command setsid bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT'" 2>"$LOG_FILE" &
-    local ep_pid=$!
-    RUNNER_PGID="$ep_pid"
-    if [[ -z "$RUNNER_PGID" ]]; then
-        _cleanup_runner_group "$ep_pid" || true
+    export RUNNER_WORK ENTRYPOINT RUNNER_IDENTITY_FILE
+    RUNNER_LAUNCH_ATTEMPTED=1
+    command setsid bash -c '
+        identity_pid=$BASHPID
+        identity_pgid=$(ps -o pgid= -p "$identity_pid") || exit 1
+        identity_pgid=${identity_pgid//[[:space:]]/}
+        identity_tmp="${RUNNER_IDENTITY_FILE}.tmp"
+        printf "%s %s\\n" "$identity_pid" "$identity_pgid" > "$identity_tmp" &&
+            mv -f "$identity_tmp" "$RUNNER_IDENTITY_FILE" || exit 1
+        cd "$RUNNER_WORK" || exit 1
+        exec bash "$ENTRYPOINT"
+    ' 2>"$LOG_FILE" &
+
+    # The session-owning shell writes this atomically before it execs the
+    # entrypoint.  In particular, never infer a group from the parent-side
+    # launch PID: setsid may fork, and the parent can otherwise observe Bats'
+    # own process group.
+    local identity_waited=0
+    while [[ ! -f "$RUNNER_IDENTITY_FILE" ]] && [[ $identity_waited -lt 50 ]]; do
+        _real_sleep 0.1 || return 1
+        identity_waited=$((identity_waited + 1))
+    done
+
+    local reported_pid=""
+    local reported_pgid=""
+    local identity_extra=""
+    if [[ ! -f "$RUNNER_IDENTITY_FILE" ]] || \
+        ! IFS=' ' read -r reported_pid reported_pgid identity_extra < "$RUNNER_IDENTITY_FILE" || \
+        [[ ! "$reported_pid" =~ ^[1-9][0-9]*$ ]] || \
+        [[ ! "$reported_pgid" =~ ^[1-9][0-9]*$ ]] || \
+        [[ "$reported_pid" != "$reported_pgid" ]] || \
+        [[ -n "$identity_extra" ]]; then
+        echo "Could not establish runner process group from its session handshake" >&2
+        local teardown_status=0
+        teardown || teardown_status=$?
+        [[ $teardown_status -ne 0 && -d "$WORK_DIR" ]] || return 1
+        return 1
+    fi
+    # A Linux setsid session leader owns its process group, so the handshake
+    # must report matching PID and PGID.  Reject non-POSIX setsid behaviour
+    # rather than signal a positive group the child does not own.
+    # The recorded group must also not be Bats' group.  This catches any
+    # regression that reintroduces parent-side process-group discovery.
+    local bats_pgid
+    bats_pgid=$(ps -o pgid= -p "$BASHPID") || return 1
+    bats_pgid=${bats_pgid//[[:space:]]/}
+    if [[ ! "$bats_pgid" =~ ^[1-9][0-9]*$ || "$reported_pgid" == "$bats_pgid" ]]; then
+        return 1
+    fi
+    RUNNER_PGID="$reported_pgid"
+    if [[ "$RUNNER_PGID" == "$bats_pgid" ]]; then
+        # Do not let teardown signal Bats' own group if this guard regresses.
+        RUNNER_PGID=""
         return 1
     fi
 
@@ -610,8 +735,7 @@ MOCK
     done
     [[ -f "$WORK_DIR/runner-started" ]]
 
-    # The entrypoint is the session and process-group leader, so its PID names
-    # the group.  Prove the group exists before signalling all its members.
+    # Prove the child-reported group exists before signalling all its members.
     if ! kill -0 -- "-$RUNNER_PGID"; then
         _cleanup_runner_group "$RUNNER_PGID" || true
         return 1
@@ -703,6 +827,46 @@ MOCK
     RUNNER_PGID=""
 }
 
+@test "teardown retains workspace when a launch has unknown identity" {
+    RUNNER_LAUNCH_ATTEMPTED=1
+
+    local teardown_status=0
+    teardown || teardown_status=$?
+
+    [[ $teardown_status -ne 0 ]]
+    [[ -d "$WORK_DIR" ]]
+
+    # Bats invokes teardown again after this test.  Clear the launch marker
+    # only after observing that this teardown left the workspace intact.
+    RUNNER_LAUNCH_ATTEMPTED=0
+}
+
+@test "runner group state parses final parenthesis and lowercase state from fixture" {
+    # Force the initial signal probe to say absent so the test necessarily
+    # reads the fixture instead of returning early for a host process group.
+    _write_mock_kill_sequence 'absent'
+
+    local proc_fixture="$WORK_DIR/proc-fixture"
+    mkdir -p "$proc_fixture/991"
+    printf '%s\n' '991 (runner test) name) t 1 424242 1 1 0' > "$proc_fixture/991/stat"
+
+    RUNNER_PROC_ROOT="$proc_fixture" _runner_group_state 424242
+    [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
+}
+
+@test "runner group state reports absent when fixture contains no group member" {
+    _write_mock_kill_sequence 'absent'
+
+    local proc_fixture="$WORK_DIR/proc-fixture"
+    mkdir -p "$proc_fixture/991"
+    printf '%s\n' '991 (runner test) S 1 999999 1 1 0' > "$proc_fixture/991/stat"
+
+    local state_status=0
+    RUNNER_PROC_ROOT="$proc_fixture" _runner_group_state 424242 || state_status=$?
+    [[ $state_status -eq 1 ]]
+    [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
+}
+
 @test "cleanup fails and retains workspace when a probe is unknown" {
     _write_mock_kill_sequence 'unknown'
 
@@ -775,15 +939,13 @@ MOCK
 }
 
 # ---------------------------------------------------------------------------
-# Test 12: Root check → exit 1 when uid=0 and ALLOW_ROOT unset
+# Test 12: Root start → re-exec through gosu as runner
 # ---------------------------------------------------------------------------
 
-@test "running as root without ALLOW_ROOT exits 1" {
+@test "running as root re-execs entrypoint through gosu as runner" {
     export GITHUB_TOKEN="ghp_pattoken"
     export GITHUB_REPOSITORY="owner/repo"
-    unset ALLOW_ROOT
 
-    # Mock id to return uid=0
     cat > "$BIN_DIR/id" <<'MOCK'
 #!/usr/bin/env bash
 if [[ "$*" == *"-u"* ]] || [[ "$1" == "-u" ]] || [[ $# -eq 0 ]]; then
@@ -793,18 +955,33 @@ else
 fi
 MOCK
     chmod +x "$BIN_DIR/id"
+    cat > "$BIN_DIR/gosu" <<MOCK
+#!/usr/bin/env bash
+printf '%s\\n' "\$\$" > "$WORK_DIR/gosu-pid.log"
+printf '%s\\n' "\$@" > "$WORK_DIR/gosu-args.log"
+MOCK
+    chmod +x "$BIN_DIR/gosu"
+    cat > "$RUNNER_WORK/config.sh" <<MOCK
+#!/usr/bin/env bash
+touch "$WORK_DIR/entrypoint-continued-after-gosu"
+exit 0
+MOCK
+    chmod +x "$RUNNER_WORK/config.sh"
 
-    run bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT' 2>&1"
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"root"* ]]
+    run bash -c "cd '$RUNNER_WORK' && printf '%s\\n' \"\$\$\" > '$WORK_DIR/entrypoint-pid.log'; exec bash '$ENTRYPOINT' 2>&1"
+    [ "$status" -eq 0 ]
+    printf '%s\n' runner "$ENTRYPOINT" > "$WORK_DIR/expected-gosu-args.log"
+    cmp -s "$WORK_DIR/expected-gosu-args.log" "$WORK_DIR/gosu-args.log"
+    # exec replaces the entrypoint shell with gosu, preserving its PID.  A
+    # plain `gosu ...; exit $?` runs the mock as a child with a different PID.
+    cmp -s "$WORK_DIR/entrypoint-pid.log" "$WORK_DIR/gosu-pid.log"
+    [[ ! -e "$WORK_DIR/entrypoint-continued-after-gosu" ]]
 }
 
-@test "running as root with ALLOW_ROOT=true continues startup" {
+@test "running as root carries original arguments through gosu" {
     export GITHUB_TOKEN="ghp_pattoken"
     export GITHUB_REPOSITORY="owner/repo"
-    export ALLOW_ROOT=true
 
-    # Mock id to return uid=0
     cat > "$BIN_DIR/id" <<'MOCK'
 #!/usr/bin/env bash
 if [[ "$*" == *"-u"* ]] || [[ "$1" == "-u" ]] || [[ $# -eq 0 ]]; then
@@ -814,35 +991,35 @@ else
 fi
 MOCK
     chmod +x "$BIN_DIR/id"
+    cat > "$BIN_DIR/gosu" <<MOCK
+#!/usr/bin/env bash
+printf '%s\\n' "\$\$" > "$WORK_DIR/gosu-pid.log"
+printf '%s\\n' "\$@" > "$WORK_DIR/gosu-args.log"
+MOCK
+    chmod +x "$BIN_DIR/gosu"
 
-    run bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT' 2>&1"
-    # Should NOT fail with exit 1 due to root check
-    # (may fail due to other reasons in test env, but not the root check)
-    [[ "$output" != *"Running as root is not supported"* ]]
+    run bash -c "cd '$RUNNER_WORK' && printf '%s\\n' \"\$\$\" > '$WORK_DIR/entrypoint-pid.log'; exec bash '$ENTRYPOINT' --ephemeral --labels 'linux x' '*' 2>&1"
+    [ "$status" -eq 0 ]
+    # The space and literal glob ensure an unquoted $@ is rejected as well.
+    printf '%s\n' runner "$ENTRYPOINT" --ephemeral --labels 'linux x' '*' > "$WORK_DIR/expected-gosu-args.log"
+    cmp -s "$WORK_DIR/expected-gosu-args.log" "$WORK_DIR/gosu-args.log"
+    cmp -s "$WORK_DIR/entrypoint-pid.log" "$WORK_DIR/gosu-pid.log"
 }
 
 # ---------------------------------------------------------------------------
-# Test 13: DooD socket — docker group membership check
+# Test 13: environment validation still registers a configured repo scope
 # ---------------------------------------------------------------------------
 
-@test "DooD: validate_env succeeds when docker socket would be mounted" {
+@test "configured Docker host does not alter registration validation" {
     export GITHUB_TOKEN="ghp_pattoken"
     export GITHUB_REPOSITORY="owner/repo"
+    export DOCKER_HOST="unix:///var/run/docker.sock"
 
-    # Source just validate_env to check RUNNER_SCOPE is set correctly
-    run bash -c "
-        source '$ENTRYPOINT' 2>/dev/null || true
-        export GITHUB_TOKEN='ghp_pattoken'
-        export GITHUB_REPOSITORY='owner/repo'
-        validate_env 2>&1
-        echo \"SCOPE=\$RUNNER_SCOPE\"
-        echo \"URL=\$RUNNER_URL\"
-    " 2>&1 || true
-
-    # If sourcing works, validate it set the expected vars.
-    # This test verifies the env setup doesn't break when socket path differs.
-    # The scope should be repo.
-    true  # this test documents the DooD scenario; full E2E requires a running container
+    run bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT' 2>&1"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Scope: repo"* ]]
+    grep -q "repos/owner/repo/actions/runners/registration-token" \
+        "$WORK_DIR/curl-urls.log"
 }
 
 # ---------------------------------------------------------------------------
