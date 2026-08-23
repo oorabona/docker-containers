@@ -539,7 +539,15 @@ list_extension_status() {
     printf "%-15s %-10s %-12s %s\n" "Extension" "Version" "Status" "Image"
     printf "%-15s %-10s %-12s %s\n" "---------" "-------" "------" "-----"
 
-    for ext in $(list_extensions_by_priority "$config_file" "$major_ver"); do
+    local ext_list
+    if ! ext_list=$(list_extensions_by_priority "$config_file" "$major_ver"); then
+        log_error "extension enumeration for status listing failed — aborting (fail-closed)"
+        return 1
+    fi
+
+    local ext
+    while IFS= read -r ext; do
+        [[ -z "$ext" ]] && continue
         local ceiling version_set_json
         ceiling=$(ext_config "$ext" "version" "$config_file")
 
@@ -566,7 +574,7 @@ list_extension_status() {
             echo -e "$status"
             printf "%-39s %s\n" "" "$image"
         done < <(echo "$version_set_json" | jq -r '.[]')
-    done
+    done <<< "$ext_list"
 
     echo ""
 }
@@ -716,7 +724,7 @@ pull_extension() {
 
 # --- Helpers extracted from main() for readability ---
 
-# Validate container dir, config, and yq are available. Exits on failure.
+# Validate container dir, config, yq, and jq are available. Exits on failure.
 validate_prerequisites() {
     local container_dir="$ROOT_DIR/$CONTAINER"
     if [[ ! -d "$container_dir" ]]; then
@@ -731,6 +739,10 @@ validate_prerequisites() {
         log_error "yq is required for YAML parsing. Install with: brew install yq"
         exit 1
     fi
+    if ! command -v jq &>/dev/null; then
+        log_error "jq is required for JSON parsing. Install with: brew install jq"
+        exit 1
+    fi
 }
 
 # Pull-only mode: pull extensions from registry, build missing ones locally.
@@ -743,18 +755,26 @@ handle_pull_only_mode() {
 
     local extensions_to_pull=()
     local extensions_to_build=()
+    local ext ext_ver
 
     if [[ -n "$EXTENSION" ]]; then
         extensions_to_pull=("$EXTENSION")
     else
+        local ext_list
+        if ! ext_list=$(list_extensions_by_priority "$config_file" "$major_ver"); then
+            log_error "extension enumeration for pull-only mode failed — aborting (fail-closed)"
+            return 1
+        fi
+
         while IFS= read -r ext; do
+            [[ -z "$ext" ]] && continue
             local dockerfile="$container_dir/extensions/build/${ext}.Dockerfile"
             if [[ ! -f "$dockerfile" ]]; then
                 log_warning "$ext: no Dockerfile (skipped)"
                 continue
             fi
             extensions_to_pull+=("$ext")
-        done < <(list_extensions_by_priority "$config_file" "$major_ver")
+        done <<< "$ext_list"
     fi
 
     for ext in "${extensions_to_pull[@]}"; do
@@ -1418,7 +1438,7 @@ _resolve_cached() {
     local cache_file="${_RESOLVER_CACHE_DIR}/${ext}-${major}.json"
 
     if [[ -f "$cache_file" ]]; then
-        cat "$cache_file"
+        cat "$cache_file" || return 1
         return 0
     fi
 
@@ -1814,7 +1834,10 @@ _emit_final_versionset_pass() {
     if [[ -n "${EXTENSION:-}" ]]; then
         ext_list="$EXTENSION"
     else
-        ext_list=$(list_extensions_by_priority "$config_file" "$major_ver")
+        if ! ext_list=$(list_extensions_by_priority "$config_file" "$major_ver"); then
+            log_error "extension enumeration for final versionset pass failed — aborting (fail-closed)"
+            return 1
+        fi
     fi
 
     local ext
@@ -2176,7 +2199,10 @@ finalize_multiarch_manifests() {
     if [[ -n "${EXTENSION:-}" ]]; then
         ext_list="$EXTENSION"
     else
-        ext_list=$(list_extensions_by_priority "$config_file" "$major_ver")
+        if ! ext_list=$(list_extensions_by_priority "$config_file" "$major_ver"); then
+            log_error "extension enumeration for multi-arch manifest finalization failed — aborting (fail-closed)"
+            return 1
+        fi
     fi
 
     local _failed=false
@@ -2643,6 +2669,15 @@ main() {
 
     # Build mode — determine which extensions to build.
     local extensions_to_build=()
+    local ext _pre_clean_ext _btpe_ext _mixed_clean_ext
+    local ext_list=""
+
+    if [[ -z "$EXTENSION" ]]; then
+        if ! ext_list=$(list_extensions_by_priority "$config_file" "$major_ver"); then
+            log_error "extension enumeration for build mode failed — aborting (fail-closed)"
+            exit 1
+        fi
+    fi
 
     if [[ -n "$EXTENSION" ]]; then
         # Strict typo check: explicit --extension must have a real Dockerfile
@@ -2660,6 +2695,7 @@ main() {
         esac
     else
         while IFS= read -r ext; do
+            [[ -z "$ext" ]] && continue
             local _rc=0
             _should_build_extension "$ext" "$config_file" "$major_ver" "$container_dir" || _rc=$?
             case "$_rc" in
@@ -2667,7 +2703,7 @@ main() {
                 1) : ;;
                 *) log_error "$ext: version-set resolver failed — aborting (fail-closed)"; _record_rotation_build_status infra; return 1 ;;
             esac
-        done < <(list_extensions_by_priority "$config_file" "$major_ver")
+        done <<< "$ext_list"
     fi
 
     if [[ ${#extensions_to_build[@]} -eq 0 ]]; then
@@ -2690,11 +2726,10 @@ main() {
         if [[ -n "$EXTENSION" ]]; then
             _cleanup_stale_duration_files "$EXTENSION" "$major_ver"
         else
-            local _pre_clean_ext
             while IFS= read -r _pre_clean_ext; do
                 [[ -z "$_pre_clean_ext" ]] && continue
                 _cleanup_stale_duration_files "$_pre_clean_ext" "$major_ver"
-            done < <(list_extensions_by_priority "$config_file" "$major_ver")
+            done <<< "$ext_list"
         fi
 
         # Write versionset artifacts for all in-scope resolver-backed extensions.
@@ -2726,13 +2761,12 @@ main() {
         for _btpe_ext in "${extensions_to_build[@]}"; do
             _btpe_set["$_btpe_ext"]=1
         done
-        local _mixed_clean_ext
         while IFS= read -r _mixed_clean_ext; do
             [[ -z "$_mixed_clean_ext" ]] && continue
             # Skip extensions that will be cleaned inside build_tag_push_extensions.
             [[ -n "${_btpe_set[$_mixed_clean_ext]:-}" ]] && continue
             _cleanup_stale_duration_files "$_mixed_clean_ext" "$major_ver"
-        done < <(list_extensions_by_priority "$config_file" "$major_ver")
+        done <<< "$ext_list"
     fi
 
     build_tag_push_extensions "$config_file" "$major_ver" "$container_dir" "$do_push" "${extensions_to_build[@]}"

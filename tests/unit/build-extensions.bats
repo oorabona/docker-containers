@@ -1,9 +1,7 @@
 #!/usr/bin/env bats
 
-# Unit tests for _should_build_extension() in scripts/build-extensions.sh
-#
-# 8-case truth table covering LOCAL_ONLY, FORCE, docker-inspect result,
-# registry presence, and missing Dockerfile.
+# Unit tests for _should_build_extension() truth table plus CLI entry-point,
+# enumeration, cache-read, and prerequisite coverage in scripts/build-extensions.sh
 #
 # Mocking strategy:
 #   - docker()           : bash function override (exits 0 = image found, 1 = not found)
@@ -15,15 +13,13 @@
 load "../test_helper"
 
 # ---------------------------------------------------------------------------
-# Source helper: push to scripts/ so SCRIPT_DIR/ROOT_DIR resolve correctly.
+# Source helper: build-extensions.sh resolves its own SCRIPT_DIR/ROOT_DIR.
 # build-extensions.sh has a BASH_SOURCE guard so main() is NOT called when
 # the script is sourced rather than executed directly.
 # ---------------------------------------------------------------------------
 _source_build_extensions() {
-    pushd "$SCRIPTS_DIR" > /dev/null 2>&1
     # shellcheck disable=SC1091
-    source "./build-extensions.sh"
-    popd > /dev/null 2>&1
+    source "$SCRIPTS_DIR/build-extensions.sh"
 }
 
 # ---------------------------------------------------------------------------
@@ -61,10 +57,6 @@ EOF
     export LOCAL_ONLY=false
     export CONTAINER="postgres"
 
-    # Override ROOT_DIR so that build-extensions.sh path resolution doesn't
-    # point at the real repo (we re-assign after sourcing below)
-    export ROOT_DIR="$TEST_TEMP_DIR"
-
     _source_build_extensions
 
     # Install mocks AFTER sourcing — build-extensions.sh sources
@@ -89,6 +81,10 @@ teardown() {
             cleanup_failed=1
         fi
     done
+    # Sourcing the script creates both per-run directories; it installs no EXIT
+    # trap when sourced, so each test would otherwise leave two behind.
+    [[ -z "${_RESOLVER_CACHE_DIR:-}" ]] || rm -rf -- "$_RESOLVER_CACHE_DIR"
+    [[ -z "${_BUILT_THIS_RUN_DIR:-}" ]] || rm -rf -- "$_BUILT_THIS_RUN_DIR"
     teardown_temp_dir
     unset FORCE LOCAL_ONLY CONTAINER ROOT_DIR
     return "$cleanup_failed"
@@ -307,7 +303,8 @@ EOF
         echo "FAIL: --extension -foo must remain option-shaped rather than grammar-valid"
         return 1
     }
-    ! [[ '-foo' =~ ^[A-Za-z0-9_][A-Za-z0-9_-]*$ ]] || {
+    local option_shaped_extension='-foo'
+    ! [[ "$option_shaped_extension" =~ ^[A-Za-z0-9_][A-Za-z0-9_-]*$ ]] || {
         echo "FAIL: extension diagnostic grammar must not describe -foo as valid"
         return 1
     }
@@ -471,4 +468,170 @@ _setup_default_mocks() {
     run _should_build_extension "pgvector" "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
     [ "$status" -eq 0 ]
     [ ! -e "$TEST_TEMP_DIR/registry_probe_called" ]
+}
+
+# ---------------------------------------------------------------------------
+# Fail-closed extension enumeration
+# ---------------------------------------------------------------------------
+
+_mock_failed_extension_enumeration() {
+    list_extensions_by_priority() {
+        return 1
+    }
+}
+
+_malformed_config_yq_path() {
+    local test_path="$TEST_TEMP_DIR/malformed-config-bin"
+    local malformed_config="$TEST_TEMP_DIR/malformed-config.yaml"
+    local real_yq
+    real_yq="$(command -v yq)"
+
+    mkdir -p "$test_path"
+    printf 'extensions: [\n' > "$malformed_config"
+    cat > "$test_path/yq" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *'.extensions | to_entries[]'* ]]; then
+    printf 'pgvector\\n'
+    exit 0
+fi
+set -- "\${@:1:\$#-1}" "$malformed_config"
+exec "$real_yq" "\$@"
+EOF
+    chmod +x "$test_path/yq"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$test_path/docker"
+    chmod +x "$test_path/docker"
+    printf '%s' "$test_path"
+}
+
+@test "pull-only mode fails closed when extension enumeration fails" {
+    EXTENSION=""
+    _mock_failed_extension_enumeration
+
+    run handle_pull_only_mode "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    [ "$status" -ne 0 ]
+    assert_output_not_contains "All extensions pulled successfully"
+    assert_output_contains "extension enumeration for pull-only mode failed — aborting (fail-closed)"
+}
+
+@test "pull-only entry point fails closed when config access fails after enumeration" {
+    local malformed_yq_path
+    malformed_yq_path="$(_malformed_config_yq_path)"
+    unset -f docker
+
+    run env CI=true PATH="$malformed_yq_path:$PATH" "$SCRIPTS_DIR/build-extensions.sh" postgres --major-version "$MAJOR_VER" --pull-only
+    [ "$status" -ne 0 ]
+    assert_output_not_contains "All extensions pulled successfully"
+}
+
+@test "status listing fails closed when extension enumeration fails" {
+    export EXTENSION=""
+    _mock_failed_extension_enumeration
+
+    run list_extension_status "$CONFIG_FILE" "$MAJOR_VER"
+    [ "$status" -ne 0 ]
+    assert_output_contains "extension enumeration for status listing failed — aborting (fail-closed)"
+}
+
+@test "list entry point fails closed when config access fails after enumeration" {
+    local malformed_yq_path
+    malformed_yq_path="$(_malformed_config_yq_path)"
+
+    run env PATH="$malformed_yq_path:$PATH" "$SCRIPTS_DIR/build-extensions.sh" postgres --major-version "$MAJOR_VER" --list
+    [ "$status" -ne 0 ]
+    assert_output_not_contains "ghcr.io/"
+}
+
+@test "build entry point fails closed when extension enumeration cannot parse config" {
+    local test_path="$TEST_TEMP_DIR/malformed-enumeration-bin"
+    local malformed_config="$TEST_TEMP_DIR/malformed-enumeration.yaml"
+    local real_yq
+    real_yq="$(command -v yq)"
+    mkdir -p "$test_path"
+    printf 'extensions: [\n' > "$malformed_config"
+    cat > "$test_path/yq" <<EOF
+#!/usr/bin/env bash
+set -- "\${@:1:\$#-1}" "$malformed_config"
+exec "$real_yq" "\$@"
+EOF
+    chmod +x "$test_path/yq"
+
+    run env PATH="$test_path:$PATH" "$SCRIPTS_DIR/build-extensions.sh" postgres --major-version "$MAJOR_VER" --local-only
+
+    [ "$status" -ne 0 ]
+    assert_output_not_contains "All extensions are up to date"
+    assert_output_contains "extension enumeration for build mode failed — aborting (fail-closed)"
+}
+
+@test "final versionset and multi-arch passes fail closed when extension enumeration fails" {
+    export EXTENSION=""
+    export DRY_RUN=false
+    _mock_failed_extension_enumeration
+
+    run _emit_final_versionset_pass "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+    [ "$status" -ne 0 ]
+    assert_output_contains "extension enumeration for final versionset pass failed — aborting (fail-closed)"
+
+    run finalize_multiarch_manifests "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+    [ "$status" -ne 0 ]
+    assert_output_contains "extension enumeration for multi-arch manifest finalization failed — aborting (fail-closed)"
+}
+
+@test "an empty extension enumeration selects nothing rather than an empty name" {
+    export EXTENSION=""
+    export LIST_ONLY=false
+    export FINALIZE_MULTIARCH=false
+    export LOCAL_ONLY=true
+    export PULL_ONLY=false
+    export DRY_RUN=false
+    export MAJOR_VERSION="$MAJOR_VER"
+    # Succeeds, emits nothing: every extension disabled, or none reaching this major.
+    list_extensions_by_priority() { return 0; }
+    _should_build_extension() { printf 'CALLED[%s]\n' "$1"; return 1; }
+    validate_extension_package_suffix() { return 0; }
+    validate_prerequisites() { return 0; }
+    log_dry_run_cache_mode() { :; }
+    _emit_final_versionset_pass() { return 0; }
+
+    run main postgres
+
+    [ "$status" -eq 0 ]
+    assert_output_not_contains "CALLED["
+}
+
+@test "cached resolver fails when its cache entry cannot be read" {
+    # The cache entry is a regular file this run wrote itself, so no filesystem
+    # state makes `cat` fail for a root test runner. Mock the read instead.
+    printf '["1.2.3"]\n' > "${_RESOLVER_CACHE_DIR}/pgvector-${MAJOR_VER}.json"
+    cat() { return 1; }
+
+    run _resolve_cached pgvector "$MAJOR_VER" "$CONFIG_FILE"
+
+    [ "$status" -ne 0 ]
+}
+
+@test "cached resolver returns a readable cache entry" {
+    printf '["1.2.3"]\n' > "${_RESOLVER_CACHE_DIR}/pgvector-${MAJOR_VER}.json"
+
+    run _resolve_cached pgvector "$MAJOR_VER" "$CONFIG_FILE"
+
+    [ "$status" -eq 0 ]
+    assert_equals '["1.2.3"]' "$output"
+}
+
+@test "prerequisites require jq as well as yq" {
+    local test_path="$TEST_TEMP_DIR/bin"
+    mkdir -p "$test_path"
+    printf '#!/bin/bash\nexit 0\n' > "$test_path/yq"
+    chmod +x "$test_path/yq"
+
+    ROOT_DIR="$TEST_TEMP_DIR" CONTAINER="postgres" PATH="$test_path" run validate_prerequisites
+    [ "$status" -ne 0 ]
+    assert_output_contains "jq is required for JSON parsing"
+
+    printf '#!/bin/bash\nexit 0\n' > "$test_path/jq"
+    chmod +x "$test_path/jq"
+
+    ROOT_DIR="$TEST_TEMP_DIR" CONTAINER="postgres" PATH="$test_path" run validate_prerequisites
+    [ "$status" -eq 0 ]
 }
