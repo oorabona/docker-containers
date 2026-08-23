@@ -573,6 +573,76 @@ MOCK
 # Test 10: SIGTERM cleanup → deregistration call before exit
 # ---------------------------------------------------------------------------
 
+@test "job-controlled launch records the child-owned runner process group" {
+    export GITHUB_TOKEN="ghp_pattoken"
+    export GITHUB_REPOSITORY="owner/repo"
+
+    # This is the case that makes parent-side $! unusable: Bash gives the
+    # background job its own group, so setsid forks and the PID it returns dies.
+    set -m
+    [[ "$-" == *m* ]]
+
+    cat > "$RUNNER_WORK/run.sh" <<MOCK
+#!/usr/bin/env bash
+touch "$WORK_DIR/runner-started"
+command "$REAL_SLEEP" 5
+MOCK
+    chmod +x "$RUNNER_WORK/run.sh"
+
+    export RUNNER_WORK ENTRYPOINT RUNNER_IDENTITY_FILE
+    RUNNER_LAUNCH_ATTEMPTED=1
+    command setsid bash -c '
+        identity_pid=$BASHPID
+        identity_pgid=$(ps -o pgid= -p "$identity_pid") || exit 1
+        identity_pgid=${identity_pgid//[[:space:]]/}
+        identity_tmp="${RUNNER_IDENTITY_FILE}.tmp"
+        printf "%s %s\\n" "$identity_pid" "$identity_pgid" > "$identity_tmp" &&
+            mv -f "$identity_tmp" "$RUNNER_IDENTITY_FILE" || exit 1
+        cd "$RUNNER_WORK" || exit 1
+        exec bash "$ENTRYPOINT"
+    ' 2>"$LOG_FILE" &
+    local launch_pid=$!
+
+    local identity_waited=0
+    while [[ ! -f "$RUNNER_IDENTITY_FILE" ]] && [[ $identity_waited -lt 50 ]]; do
+        _real_sleep 0.1 || return 1
+        identity_waited=$((identity_waited + 1))
+    done
+
+    local reported_pid=""
+    local reported_pgid=""
+    local identity_extra=""
+    [[ -f "$RUNNER_IDENTITY_FILE" ]]
+    IFS=' ' read -r reported_pid reported_pgid identity_extra < "$RUNNER_IDENTITY_FILE"
+    [[ "$reported_pid" =~ ^[1-9][0-9]*$ ]]
+    [[ "$reported_pgid" =~ ^[1-9][0-9]*$ ]]
+    [[ -z "$identity_extra" ]]
+
+    # setsid's child owns the new session, so its PID and PGID agree.  Neither
+    # may be the transient PID returned by the parent-side background launch.
+    [[ "$reported_pid" == "$reported_pgid" ]]
+    [[ "$reported_pgid" != "$launch_pid" ]]
+    RUNNER_PGID="$reported_pgid"
+
+    local bats_pgid
+    bats_pgid=$(ps -o pgid= -p "$BASHPID") || return 1
+    bats_pgid=${bats_pgid//[[:space:]]/}
+    [[ "$RUNNER_PGID" != "$bats_pgid" ]]
+
+    local waited=0
+    while [[ ! -f "$WORK_DIR/runner-started" ]] && [[ $waited -lt 50 ]]; do
+        _real_sleep 0.1 || return 1
+        waited=$((waited + 1))
+    done
+    [[ -f "$WORK_DIR/runner-started" ]]
+
+    if ! _cleanup_runner_group "$RUNNER_PGID"; then
+        return 1
+    fi
+    RUNNER_PGID=""
+    RUNNER_LAUNCH_ATTEMPTED=0
+}
+
 @test "SIGTERM triggers cleanup deregistration before exit" {
     export GITHUB_TOKEN="ghp_pattoken"
     export GITHUB_REPOSITORY="owner/repo"
@@ -601,9 +671,6 @@ exit 0
 MOCK
     chmod +x "$RUNNER_WORK/config.sh"
 
-    if [[ "${RUNNER_TEST_ENABLE_JOB_CONTROL:-0}" == "1" ]]; then
-        set -m
-    fi
     export RUNNER_WORK ENTRYPOINT RUNNER_IDENTITY_FILE
     RUNNER_LAUNCH_ATTEMPTED=1
     command setsid bash -c '
@@ -691,14 +758,6 @@ MOCK
     [[ -f "$WORK_DIR/runner-deregistered" ]]
     grep -q "Runner deregistered\." "$LOG_FILE"
 
-    # A comm may itself contain spaces and parentheses.  The final ')' marks
-    # the start of the fields where pgrp is the third value.  Lowercase process
-    # states such as tracing stop are legal and must not invalidate the probe.
-    local proc_fixture="$WORK_DIR/proc-fixture"
-    mkdir -p "$proc_fixture/991"
-    printf '%s\n' '991 (runner test) name) t 1 424242 1 1 0' > "$proc_fixture/991/stat"
-    RUNNER_PROC_ROOT="$proc_fixture" _runner_group_state 424242
-
 }
 
 # The decision table below exercises cleanup state transitions without real
@@ -748,6 +807,22 @@ MOCK
     grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
 }
 
+@test "teardown retains workspace when cleanup cannot prove group extinction" {
+    _write_mock_kill_sequence 'present'
+    RUNNER_REAL_SLEEP="$BIN_DIR/sleep"
+    RUNNER_PGID=424242
+
+    local teardown_status=0
+    teardown || teardown_status=$?
+
+    [[ $teardown_status -ne 0 ]]
+    [[ -d "$WORK_DIR" ]]
+
+    # Bats invokes teardown again after this test.  Clear the synthetic group
+    # only after observing that this teardown left the workspace intact.
+    RUNNER_PGID=""
+}
+
 @test "teardown retains workspace when a launch has unknown identity" {
     RUNNER_LAUNCH_ATTEMPTED=1
 
@@ -760,6 +835,19 @@ MOCK
     # Bats invokes teardown again after this test.  Clear the launch marker
     # only after observing that this teardown left the workspace intact.
     RUNNER_LAUNCH_ATTEMPTED=0
+}
+
+@test "runner group state parses final parenthesis and lowercase state from fixture" {
+    # Force the initial signal probe to say absent so the test necessarily
+    # reads the fixture instead of returning early for a host process group.
+    _write_mock_kill_sequence 'absent'
+
+    local proc_fixture="$WORK_DIR/proc-fixture"
+    mkdir -p "$proc_fixture/991"
+    printf '%s\n' '991 (runner test) name) t 1 424242 1 1 0' > "$proc_fixture/991/stat"
+
+    RUNNER_PROC_ROOT="$proc_fixture" _runner_group_state 424242
+    [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
 }
 
 @test "cleanup fails and retains workspace when a probe is unknown" {
@@ -855,11 +943,20 @@ MOCK
 printf '%s\\n' "\$@" > "$WORK_DIR/gosu-args.log"
 MOCK
     chmod +x "$BIN_DIR/gosu"
+    cat > "$RUNNER_WORK/config.sh" <<MOCK
+#!/usr/bin/env bash
+touch "$WORK_DIR/entrypoint-continued-after-gosu"
+exit 0
+MOCK
+    chmod +x "$RUNNER_WORK/config.sh"
 
     run bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT' 2>&1"
     [ "$status" -eq 0 ]
     [ "$(sed -n '1p' "$WORK_DIR/gosu-args.log")" = "runner" ]
     [ "$(sed -n '2p' "$WORK_DIR/gosu-args.log")" = "$ENTRYPOINT" ]
+    # A returning gosu mock is the last process.  If exec is dropped, the
+    # entrypoint reaches config.sh and creates this marker.
+    [[ ! -e "$WORK_DIR/entrypoint-continued-after-gosu" ]]
 }
 
 @test "running as root carries original arguments through gosu" {
