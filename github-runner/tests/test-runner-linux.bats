@@ -7,6 +7,11 @@
 # Setup / Teardown
 # ---------------------------------------------------------------------------
 
+# Linux process IDs, and therefore process groups, cannot exceed this kernel
+# limit.  Keeping the accepted value below it also makes every later Bash
+# arithmetic operation safe.
+RUNNER_PGID_MAX=4194304
+
 setup() {
     TEST_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
     RUNNER_DIR="$(cd "$TEST_DIR/.." && pwd)"
@@ -222,6 +227,13 @@ _real_sleep() {
     command "${RUNNER_REAL_SLEEP:-$REAL_SLEEP}" "$@"
 }
 
+_runner_pgid_is_valid() {
+    local candidate="${1:-}"
+
+    [[ "$candidate" =~ ^[1-9][0-9]{0,6}$ ]] || return 1
+    ((10#$candidate <= RUNNER_PGID_MAX))
+}
+
 # Return one of three states for a process group: 0 present, 1 absent, or 2
 # unknown.  A failed signal probe alone is never evidence of extinction: an
 # EPERM result has the same shell status as ESRCH.  /proc is available on the
@@ -231,8 +243,9 @@ _runner_group_state() {
     local pgid="${1:-}"
     local probe_status=0
     local stat_file stat_line state ppid stat_pgid ignored rest
+    local -a stat_lines
 
-    [[ "$pgid" =~ ^[1-9][0-9]*$ ]] || return 2
+    _runner_pgid_is_valid "$pgid" || return 2
 
     # Use env so the decision table can mock kill in BIN_DIR despite Bash's
     # kill builtin taking precedence over PATH.
@@ -245,7 +258,19 @@ _runner_group_state() {
 
     for stat_file in "${RUNNER_PROC_ROOT:-/proc}"/[0-9]*/stat; do
         [[ -e "$stat_file" ]] || continue
-        stat_line=$(<"$stat_file") || return 2
+        # Tests use this hook to deterministically model a process exiting
+        # after globbing /proc and before stat can be read.
+        if [[ -n "${RUNNER_PROC_BEFORE_STAT_READ:-}" ]]; then
+            "$RUNNER_PROC_BEFORE_STAT_READ" "$stat_file" || return 2
+        fi
+        stat_lines=()
+        if ! mapfile -t stat_lines < "$stat_file"; then
+            # A process can normally exit in this small window.  The vanished
+            # entry is absence, unlike a stat file that remains unreadable.
+            [[ -e "$stat_file" ]] || continue
+            return 2
+        fi
+        stat_line=$(printf '%s\n' "${stat_lines[@]}")
         # Fields after the final ')' are: state (3), ppid (4), pgrp (5), ... .
         rest="${stat_line##*) }"
         read -r state ppid stat_pgid ignored <<<"$rest"
@@ -257,39 +282,55 @@ _runner_group_state() {
 }
 
 # A group proven absent cannot contain a running leader, so wait can only reap
-# the already-dead child.  The watchdog makes that invariant an actual one-
-# second deadline rather than relying on wait's expected immediate return.
+# the already-dead child.  The watchdog interrupts that reap after one second;
+# if its sleep fails, it reports the failure, interrupts the reap, and fails
+# closed rather than silently removing the watchdog.
 _reap_absent_runner_leader() {
     local pgid="$1"
     local timed_out=0
     local parent_pid="$BASHPID"
     local watchdog_pid
+    local watchdog_status=0
+    local watchdog_cancelled=0
     local saved_usr1_trap
 
     saved_usr1_trap=$(trap -p USR1 || true)
     trap 'timed_out=1' USR1
-    ( command "$REAL_SLEEP" 1 && kill -USR1 "$parent_pid" 2>/dev/null ) &
+    (
+        if ! command "$REAL_SLEEP" 1; then
+            echo "Runner reap watchdog sleep failed" >&2
+            kill -USR1 "$parent_pid" 2>/dev/null || true
+            exit 1
+        fi
+        kill -USR1 "$parent_pid" 2>/dev/null || exit 1
+    ) &
     watchdog_pid=$!
 
     wait "$pgid" 2>/dev/null || true
-    kill "$watchdog_pid" 2>/dev/null || true
-    wait "$watchdog_pid" 2>/dev/null || true
+    if kill "$watchdog_pid" 2>/dev/null; then
+        watchdog_cancelled=1
+    fi
+    wait "$watchdog_pid" 2>/dev/null || watchdog_status=$?
     if [[ -n "$saved_usr1_trap" ]]; then
         eval "$saved_usr1_trap"
     else
         trap - USR1
     fi
 
-    [[ $timed_out -eq 0 ]]
+    [[ $timed_out -eq 0 && ( $watchdog_cancelled -eq 1 || $watchdog_status -eq 0 ) ]]
 }
 
 # Stop a runner session without deleting its workspace while a descendant may
-# still be using it.  The six-second TERM grace exceeds the five-second
-# readiness window; KILL confirmation is limited to one second.
+# still be using it.  After TERM there are at most 60 state probes, including
+# the final confirmation, and after KILL there are at most 10.  Each loop sleeps
+# 0.1 between probes that find a present group.  On an unloaded host each phase
+# is approximately its sleep count times that delay; a busy host takes longer
+# because probes take time.  The fixed counts prevent unbounded polling loops,
+# but a probe that never returns can still hang teardown regardless of them.
 _cleanup_runner_group() {
     local pgid="${1:-}"
-    local term_waited=0
-    local kill_waited=0
+    local term_polls=0
+    local kill_polls=0
     local group_state=0
     local grace_failed=0
 
@@ -303,7 +344,7 @@ _cleanup_runner_group() {
     [[ $group_state -eq 0 ]] || return 1
 
     env kill -TERM -- "-$pgid" 2>/dev/null || true
-    while [[ $term_waited -lt 60 ]]; do
+    while [[ $term_polls -lt 59 ]]; do
         if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
         [[ $group_state -eq 1 ]] && break
         [[ $group_state -eq 0 ]] || return 1
@@ -311,15 +352,20 @@ _cleanup_runner_group() {
             grace_failed=1
             break
         fi
-        term_waited=$((term_waited + 1))
+        term_polls=$((term_polls + 1))
     done
 
     if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
-    if [[ $grace_failed -eq 1 || $group_state -ne 1 ]]; then
-        env kill -KILL -- "-$pgid" 2>/dev/null || true
+    if [[ $group_state -eq 1 ]]; then
+        _reap_absent_runner_leader "$pgid" || return 1
+        [[ $grace_failed -eq 0 ]]
+        return
     fi
+    # Escalation requires positive evidence that the group still exists.
+    [[ $group_state -eq 0 ]] || return 1
+    env kill -KILL -- "-$pgid" 2>/dev/null || true
 
-    while [[ $kill_waited -lt 10 ]]; do
+    while [[ $kill_polls -lt 9 ]]; do
         if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
         [[ $group_state -eq 1 ]] && break
         [[ $group_state -eq 0 ]] || return 1
@@ -327,7 +373,7 @@ _cleanup_runner_group() {
             grace_failed=1
             break
         fi
-        kill_waited=$((kill_waited + 1))
+        kill_polls=$((kill_polls + 1))
     done
 
     if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
@@ -335,6 +381,20 @@ _cleanup_runner_group() {
     _reap_absent_runner_leader "$pgid" || return 1
 
     [[ $grace_failed -eq 0 ]]
+}
+
+# Keep RUNNER_PGID empty until the child-reported group is known not to be the
+# Bats harness group.  Teardown relies on that empty value to preserve rather
+# than signal a workspace whose session identity was rejected.
+_record_validated_runner_pgid() {
+    local reported_pgid="$1"
+    local bats_pgid="$2"
+    local destination="$3"
+
+    _runner_pgid_is_valid "$reported_pgid" || return 1
+    _runner_pgid_is_valid "$bats_pgid" || return 1
+    [[ "$reported_pgid" != "$bats_pgid" ]] || return 1
+    printf -v "$destination" '%s' "$reported_pgid"
 }
 
 # ---------------------------------------------------------------------------
@@ -622,12 +682,11 @@ MOCK
     # may be the transient PID returned by the parent-side background launch.
     [[ "$reported_pid" == "$reported_pgid" ]]
     [[ "$reported_pgid" != "$launch_pid" ]]
-    RUNNER_PGID="$reported_pgid"
 
     local bats_pgid
     bats_pgid=$(ps -o pgid= -p "$BASHPID") || return 1
     bats_pgid=${bats_pgid//[[:space:]]/}
-    [[ "$RUNNER_PGID" != "$bats_pgid" ]]
+    _record_validated_runner_pgid "$reported_pgid" "$bats_pgid" RUNNER_PGID || return 1
 
     local waited=0
     while [[ ! -f "$WORK_DIR/runner-started" ]] && [[ $waited -lt 50 ]]; do
@@ -640,6 +699,44 @@ MOCK
         return 1
     fi
     RUNNER_PGID=""
+    RUNNER_LAUNCH_ATTEMPTED=0
+}
+
+@test "rejecting Bats' process group leaves runner identity empty for teardown" {
+    RUNNER_LAUNCH_ATTEMPTED=1
+
+    local bats_pgid validator_status=0
+    bats_pgid=$(ps -o pgid= -p "$BASHPID") || return 1
+    bats_pgid=${bats_pgid//[[:space:]]/}
+    [[ "$bats_pgid" =~ ^[1-9][0-9]*$ ]]
+
+    # Use the production destination: teardown must receive no group when the
+    # validator rejects Bats' own process group.
+    _record_validated_runner_pgid "$bats_pgid" "$bats_pgid" RUNNER_PGID || validator_status=$?
+    [[ $validator_status -ne 0 && -z "$RUNNER_PGID" ]]
+
+    local teardown_status=0
+    teardown || teardown_status=$?
+    [[ $teardown_status -ne 0 && -d "$WORK_DIR" ]]
+
+    # Bats invokes teardown again after this test; now allow normal removal.
+    RUNNER_LAUNCH_ATTEMPTED=0
+}
+
+@test "validator rejects an arithmetic-hostile PGID before teardown" {
+    RUNNER_LAUNCH_ATTEMPTED=1
+
+    local bats_pgid validator_status=0 validated_pgid=""
+    bats_pgid=$(ps -o pgid= -p "$BASHPID") || return 1
+    bats_pgid=${bats_pgid//[[:space:]]/}
+
+    _record_validated_runner_pgid '9999999999999999999999999999999999999999' "$bats_pgid" validated_pgid || validator_status=$?
+    [[ $validator_status -ne 0 && -z "$validated_pgid" && -z "$RUNNER_PGID" ]]
+
+    local teardown_status=0
+    teardown || teardown_status=$?
+    [[ $teardown_status -ne 0 && -d "$WORK_DIR" ]]
+
     RUNNER_LAUNCH_ATTEMPTED=0
 }
 
@@ -720,12 +817,7 @@ MOCK
     if [[ ! "$bats_pgid" =~ ^[1-9][0-9]*$ || "$reported_pgid" == "$bats_pgid" ]]; then
         return 1
     fi
-    RUNNER_PGID="$reported_pgid"
-    if [[ "$RUNNER_PGID" == "$bats_pgid" ]]; then
-        # Do not let teardown signal Bats' own group if this guard regresses.
-        RUNNER_PGID=""
-        return 1
-    fi
+    _record_validated_runner_pgid "$reported_pgid" "$bats_pgid" RUNNER_PGID || return 1
 
     # Wait for runner to start (max 5s).
     local waited=0
@@ -854,6 +946,19 @@ MOCK
     [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
 }
 
+@test "runner group state parses a newline in comm from the whole stat file" {
+    # A line read would stop before the closing parenthesis and reject this
+    # valid record.  Rejoining every mapfile element retains the embedded newline.
+    _write_mock_kill_sequence 'absent'
+
+    local proc_fixture="$WORK_DIR/proc-fixture"
+    mkdir -p "$proc_fixture/991"
+    printf '%s\n' '991 (runner' 'test) S 1 424242 1 1 0' > "$proc_fixture/991/stat"
+
+    RUNNER_PROC_ROOT="$proc_fixture" _runner_group_state 424242
+    [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
+}
+
 @test "runner group state reports absent when fixture contains no group member" {
     _write_mock_kill_sequence 'absent'
 
@@ -867,18 +972,93 @@ MOCK
     [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
 }
 
-@test "cleanup fails and retains workspace when a probe is unknown" {
-    _write_mock_kill_sequence 'unknown'
+@test "runner group state treats a stat entry that vanishes during enumeration as absent" {
+    _write_mock_kill_sequence 'absent'
+
+    local proc_fixture="$WORK_DIR/proc-fixture"
+    mkdir -p "$proc_fixture/991"
+    printf '%s\n' '991 (runner test) S 1 424242 1 1 0' > "$proc_fixture/991/stat"
+    cat > "$BIN_DIR/remove-stat-before-read" <<'MOCK'
+#!/usr/bin/env bash
+rm -f -- "$1"
+MOCK
+    chmod +x "$BIN_DIR/remove-stat-before-read"
+
+    local state_status=0
+    RUNNER_PROC_ROOT="$proc_fixture" \
+        RUNNER_PROC_BEFORE_STAT_READ="$BIN_DIR/remove-stat-before-read" \
+        _runner_group_state 424242 || state_status=$?
+    [[ $state_status -eq 1 ]]
+    [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
+}
+
+@test "runner group state treats a persistent stat read failure as unknown" {
+    _write_mock_kill_sequence 'absent'
+
+    local proc_fixture="$WORK_DIR/proc-fixture"
+    # A directory at stat's path is permanently unreadable as a stat record,
+    # while still existing after cat fails.
+    mkdir -p "$proc_fixture/991/stat"
+
+    local state_status=0
+    RUNNER_PROC_ROOT="$proc_fixture" _runner_group_state 424242 || state_status=$?
+    [[ $state_status -eq 2 ]]
+    [[ -d "$proc_fixture/991/stat" ]]
+    [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
+}
+
+@test "cleanup does not KILL when final group confirmation is unknown" {
+    _write_mock_kill_sequence $'present\nabsent\nunknown'
 
     local cleanup_status=0
     _cleanup_runner_group 424242 || cleanup_status=$?
 
     [[ $cleanup_status -ne 0 ]]
     [[ -d "$WORK_DIR" ]]
+    grep -q -- '-TERM' "$WORK_DIR/kill-signals.log"
+    [[ ! -f "$WORK_DIR/kill-signals.log" ]] || ! grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
+}
+
+@test "cleanup does not KILL when a TERM-grace probe is unknown" {
+    _write_mock_kill_sequence $'present\nunknown'
+
+    local cleanup_status=0
+    _cleanup_runner_group 424242 || cleanup_status=$?
+
+    [[ $cleanup_status -ne 0 ]]
+    grep -q -- '-TERM' "$WORK_DIR/kill-signals.log"
+    [[ ! -f "$WORK_DIR/kill-signals.log" ]] || ! grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
+}
+
+@test "cleanup fails closed when its initial group probe is unknown" {
+    _write_mock_kill_sequence 'unknown'
+
+    local cleanup_status=0
+    _cleanup_runner_group 424242 || cleanup_status=$?
+
+    [[ $cleanup_status -ne 0 ]]
     [[ ! -f "$WORK_DIR/kill-signals.log" ]]
 }
 
-@test "cleanup fails after a failed grace period even when KILL proves absence" {
+@test "cleanup retains the workspace when a KILL-confirmation probe is unknown" {
+    local states="present"
+    local poll
+    for ((poll = 1; poll < 61; poll++)); do
+        states+=$'\npresent'
+    done
+    states+=$'\nunknown'
+    _write_mock_kill_sequence "$states"
+    RUNNER_REAL_SLEEP="$BIN_DIR/sleep"
+
+    local cleanup_status=0
+    _cleanup_runner_group 424242 || cleanup_status=$?
+
+    [[ $cleanup_status -ne 0 ]]
+    grep -q -- '-TERM' "$WORK_DIR/kill-signals.log"
+    grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
+}
+
+@test "cleanup fails after a failed grace period when a later probe proves absence" {
     _write_mock_kill_sequence $'present\npresent\nabsent'
     cat > "$BIN_DIR/failing-real-sleep" <<'MOCK'
 #!/usr/bin/env bash
@@ -892,7 +1072,28 @@ MOCK
 
     [[ $cleanup_status -ne 0 ]]
     [[ -d "$WORK_DIR" ]]
-    grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
+    [[ ! -f "$WORK_DIR/kill-signals.log" ]] || ! grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
+}
+
+@test "reap watchdog reports and fails closed when its sleep fails" {
+    local actual_sleep="$REAL_SLEEP"
+    "$actual_sleep" 5 &
+    local child_pid=$!
+
+    cat > "$BIN_DIR/failing-watchdog-sleep" <<'MOCK'
+#!/usr/bin/env bash
+exit 1
+MOCK
+    chmod +x "$BIN_DIR/failing-watchdog-sleep"
+    REAL_SLEEP="$BIN_DIR/failing-watchdog-sleep"
+
+    local reap_status=0
+    _reap_absent_runner_leader "$child_pid" 2>"$WORK_DIR/reap-watchdog.log" || reap_status=$?
+    kill "$child_pid" 2>/dev/null || true
+    wait "$child_pid" 2>/dev/null || true
+
+    [[ $reap_status -ne 0 ]]
+    grep -q 'Runner reap watchdog sleep failed' "$WORK_DIR/reap-watchdog.log"
 }
 
 # ---------------------------------------------------------------------------
