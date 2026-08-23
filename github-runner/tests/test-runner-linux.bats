@@ -91,8 +91,6 @@ MOCK
     # Log file captures all stderr output from the entrypoint
     LOG_FILE="$WORK_DIR/entrypoint.log"
 
-    # Common env: always run as non-root for tests that don't check root
-    export ALLOW_ROOT=false
     # Prevent auto-update noise
     export RUNNER_DISABLE_AUTO_UPDATE=1
     # Point cache dirs into temp space
@@ -213,6 +211,27 @@ _run_entrypoint() {
 # its retry backoff through the mocked sleep on PATH.
 _real_sleep() {
     command "${RUNNER_REAL_SLEEP:-$REAL_SLEEP}" "$@"
+}
+
+# Read the process group from procfs.  The comm field (between the first '('
+# and the final ')') may contain spaces and parentheses, so discard it before
+# counting the fields that follow it.
+_runner_pgid_from_proc() {
+    local pid="${1:-}"
+    local proc_root="${RUNNER_PROC_ROOT:-/proc}"
+    local stat_file stat_line rest state ppid pgid ignored
+
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    stat_file="$proc_root/$pid/stat"
+    [[ -r "$stat_file" ]] || return 1
+    stat_line=$(<"$stat_file") || return 1
+
+    # Fields after the final ')' are: state (3), ppid (4), pgrp (5), ... .
+    rest="${stat_line##*) }"
+    read -r state ppid pgid ignored <<<"$rest"
+    [[ "$state" =~ ^[A-Z]$ && "$ppid" =~ ^[0-9]+$ && "$pgid" =~ ^[1-9][0-9]*$ && -n "$ignored" ]] || return 1
+
+    printf '%s\n' "$pgid"
 }
 
 # Return one of three states for a process group: 0 present, 1 absent, or 2
@@ -594,10 +613,17 @@ exit 0
 MOCK
     chmod +x "$RUNNER_WORK/config.sh"
 
+    if [[ "${RUNNER_TEST_ENABLE_JOB_CONTROL:-0}" == "1" ]]; then
+        set -m
+    fi
     command setsid bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT'" 2>"$LOG_FILE" &
     local ep_pid=$!
-    RUNNER_PGID="$ep_pid"
-    if [[ -z "$RUNNER_PGID" ]]; then
+    if [[ "${RUNNER_TEST_ENABLE_JOB_CONTROL:-0}" == "1" ]]; then
+        # With job control, setsid may have already forked and exited.
+        _real_sleep 0.1 || return 1
+    fi
+    if ! RUNNER_PGID=$(_runner_pgid_from_proc "$ep_pid"); then
+        echo "Could not establish runner process group from /proc/$ep_pid/stat" >&2
         _cleanup_runner_group "$ep_pid" || true
         return 1
     fi
@@ -610,8 +636,7 @@ MOCK
     done
     [[ -f "$WORK_DIR/runner-started" ]]
 
-    # The entrypoint is the session and process-group leader, so its PID names
-    # the group.  Prove the group exists before signalling all its members.
+    # Prove the procfs-derived group exists before signalling all its members.
     if ! kill -0 -- "-$RUNNER_PGID"; then
         _cleanup_runner_group "$RUNNER_PGID" || true
         return 1
@@ -637,6 +662,15 @@ MOCK
     grep -q "repos/owner/repo/actions/runners/remove-token" "$WORK_DIR/curl-urls.log"
     [[ -f "$WORK_DIR/runner-deregistered" ]]
     grep -q "Runner deregistered\." "$LOG_FILE"
+
+    # A comm may itself contain spaces and parentheses.  The final ')' marks
+    # the start of the fields where pgrp is the third value.
+    local proc_fixture="$WORK_DIR/proc-fixture"
+    mkdir -p "$proc_fixture/991"
+    printf '%s\n' '991 (runner test) name) S 1 4242 1 1 0' > "$proc_fixture/991/stat"
+    local fixture_pgid
+    fixture_pgid=$(RUNNER_PROC_ROOT="$proc_fixture" _runner_pgid_from_proc 991)
+    [ "$fixture_pgid" = "4242" ]
 
 }
 
@@ -775,15 +809,13 @@ MOCK
 }
 
 # ---------------------------------------------------------------------------
-# Test 12: Root check → exit 1 when uid=0 and ALLOW_ROOT unset
+# Test 12: Root start → re-exec through gosu as runner
 # ---------------------------------------------------------------------------
 
-@test "running as root without ALLOW_ROOT exits 1" {
+@test "running as root re-execs entrypoint through gosu as runner" {
     export GITHUB_TOKEN="ghp_pattoken"
     export GITHUB_REPOSITORY="owner/repo"
-    unset ALLOW_ROOT
 
-    # Mock id to return uid=0
     cat > "$BIN_DIR/id" <<'MOCK'
 #!/usr/bin/env bash
 if [[ "$*" == *"-u"* ]] || [[ "$1" == "-u" ]] || [[ $# -eq 0 ]]; then
@@ -793,18 +825,22 @@ else
 fi
 MOCK
     chmod +x "$BIN_DIR/id"
+    cat > "$BIN_DIR/gosu" <<MOCK
+#!/usr/bin/env bash
+printf '%s\\n' "\$@" > "$WORK_DIR/gosu-args.log"
+MOCK
+    chmod +x "$BIN_DIR/gosu"
 
     run bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT' 2>&1"
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"root"* ]]
+    [ "$status" -eq 0 ]
+    [ "$(sed -n '1p' "$WORK_DIR/gosu-args.log")" = "runner" ]
+    [ "$(sed -n '2p' "$WORK_DIR/gosu-args.log")" = "$ENTRYPOINT" ]
 }
 
-@test "running as root with ALLOW_ROOT=true continues startup" {
+@test "running as root carries original arguments through gosu" {
     export GITHUB_TOKEN="ghp_pattoken"
     export GITHUB_REPOSITORY="owner/repo"
-    export ALLOW_ROOT=true
 
-    # Mock id to return uid=0
     cat > "$BIN_DIR/id" <<'MOCK'
 #!/usr/bin/env bash
 if [[ "$*" == *"-u"* ]] || [[ "$1" == "-u" ]] || [[ $# -eq 0 ]]; then
@@ -814,11 +850,19 @@ else
 fi
 MOCK
     chmod +x "$BIN_DIR/id"
+    cat > "$BIN_DIR/gosu" <<MOCK
+#!/usr/bin/env bash
+printf '%s\\n' "\$@" > "$WORK_DIR/gosu-args.log"
+MOCK
+    chmod +x "$BIN_DIR/gosu"
 
-    run bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT' 2>&1"
-    # Should NOT fail with exit 1 due to root check
-    # (may fail due to other reasons in test env, but not the root check)
-    [[ "$output" != *"Running as root is not supported"* ]]
+    run bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT' --ephemeral --labels linux 2>&1"
+    [ "$status" -eq 0 ]
+    [ "$(sed -n '1p' "$WORK_DIR/gosu-args.log")" = "runner" ]
+    [ "$(sed -n '2p' "$WORK_DIR/gosu-args.log")" = "$ENTRYPOINT" ]
+    [ "$(sed -n '3p' "$WORK_DIR/gosu-args.log")" = "--ephemeral" ]
+    [ "$(sed -n '4p' "$WORK_DIR/gosu-args.log")" = "--labels" ]
+    [ "$(sed -n '5p' "$WORK_DIR/gosu-args.log")" = "linux" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -828,21 +872,13 @@ MOCK
 @test "DooD: validate_env succeeds when docker socket would be mounted" {
     export GITHUB_TOKEN="ghp_pattoken"
     export GITHUB_REPOSITORY="owner/repo"
+    export DOCKER_HOST="unix:///var/run/docker.sock"
 
-    # Source just validate_env to check RUNNER_SCOPE is set correctly
-    run bash -c "
-        source '$ENTRYPOINT' 2>/dev/null || true
-        export GITHUB_TOKEN='ghp_pattoken'
-        export GITHUB_REPOSITORY='owner/repo'
-        validate_env 2>&1
-        echo \"SCOPE=\$RUNNER_SCOPE\"
-        echo \"URL=\$RUNNER_URL\"
-    " 2>&1 || true
-
-    # If sourcing works, validate it set the expected vars.
-    # This test verifies the env setup doesn't break when socket path differs.
-    # The scope should be repo.
-    true  # this test documents the DooD scenario; full E2E requires a running container
+    run bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT' 2>&1"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Scope: repo"* ]]
+    grep -q "repos/owner/repo/actions/runners/registration-token" \
+        "$WORK_DIR/curl-urls.log"
 }
 
 # ---------------------------------------------------------------------------
