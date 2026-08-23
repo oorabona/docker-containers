@@ -110,6 +110,26 @@ teardown() {
     }
 }
 
+@test "EXIT cleanup failure records infra instead of a success verdict" {
+    local bin_dir="$TEST_TEMP_DIR/cleanup-failure-bin"
+    local status_file="$TEST_TEMP_DIR/cleanup-failure-status"
+    mkdir -p "$bin_dir"
+    cat > "$bin_dir/rm" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -rf ]]; then
+    exit 1
+fi
+exec /bin/rm "$@"
+EOF
+    chmod +x "$bin_dir/rm"
+
+    run env PATH="$bin_dir:$PATH" ROTATION_STATUS_FILE="$status_file" \
+        "$SCRIPTS_DIR/build-extensions.sh" --help
+
+    [ "$status" -ne 0 ]
+    [ "$(<"$status_file")" = infra ]
+}
+
 @test "entry point refuses missing and option-shaped option values" {
     run bash -c '"$@" 2>&1' _ "$SCRIPTS_DIR/build-extensions.sh" postgres --major-version --dry-run
     [ "$status" -eq 2 ] || {

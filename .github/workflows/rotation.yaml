@@ -173,13 +173,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize failure attribution
+      - name: Initialize build producer state
         shell: bash
         env:
           ARCH: ${{ matrix.arch }}
         run: |
           mkdir -p rotation-artifacts
-          printf 'false\n' > "rotation-artifacts/build-${ARCH}"
+          printf 'infra\n' > "rotation-artifacts/build-${ARCH}"
 
       - name: Install yq
         shell: bash
@@ -252,18 +252,16 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           EXTENSION: ${{ needs.select.outputs.extension }}
           PG_MAJOR: ${{ needs.select.outputs.major }}
+          ROTATION_STATUS_FILE: rotation-artifacts/build-${{ matrix.arch }}
         run: |
           set -euo pipefail
           EXTENSION_PACKAGE_SUFFIX=-staging ARCH_SUFFIX="$ARCH" BUILD_PLATFORM="$PLATFORM" \
             scripts/build-extensions.sh postgres --major-version "$PG_MAJOR" --extension "$EXTENSION" --force --no-cache
 
-      - name: Fail an attributable extension compile
+      - name: Fail extension build result
         if: steps.compile.outcome == 'failure'
         shell: bash
-        env:
-          ARCH: ${{ matrix.arch }}
         run: |
-          printf 'true\n' > "rotation-artifacts/build-${ARCH}"
           exit 1
 
       - name: Freeze and validate staging manifest digest
@@ -355,12 +353,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize failure attribution
-        shell: bash
-        run: |
-          mkdir -p rotation-artifacts
-          printf 'false\n' > rotation-artifacts/test-amd64
-
       - name: Build loadable PostgreSQL full image
         id: build-e2e-image
         continue-on-error: true
@@ -379,12 +371,10 @@ jobs:
           push: 'false'
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fail attributable candidate image build result
+      - name: Fail candidate image build result
         if: steps.build-e2e-image.outcome == 'failure'
         shell: bash
-        run: |
-          printf 'true\n' > rotation-artifacts/test-amd64
-          exit 1
+        run: exit 1
 
       - name: Resolve loaded e2e image ID
         shell: bash
@@ -408,20 +398,10 @@ jobs:
         run: |
           E2E_IMAGE="$E2E_IMAGE_ID" tests/e2e-test.sh postgres
 
-      - name: Fail attributable e2e suite result
+      - name: Fail e2e suite result
         if: steps.e2e.outcome == 'failure'
         shell: bash
-        run: |
-          printf 'true\n' > rotation-artifacts/test-amd64
-          exit 1
-
-      - name: Upload test attribution
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
-        with:
-          name: rotation-status-test-amd64
-          path: rotation-artifacts/test-amd64
-          if-no-files-found: error
+        run: exit 1
 
   test-arm64:
     needs: [select, freeze-digests]
@@ -438,12 +418,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Initialize failure attribution
-        shell: bash
-        run: |
-          mkdir -p rotation-artifacts
-          printf 'false\n' > rotation-artifacts/test-arm64
 
       - name: Build loadable PostgreSQL full image
         id: build-e2e-image
@@ -463,12 +437,10 @@ jobs:
           push: 'false'
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fail attributable candidate image build result
+      - name: Fail candidate image build result
         if: steps.build-e2e-image.outcome == 'failure'
         shell: bash
-        run: |
-          printf 'true\n' > rotation-artifacts/test-arm64
-          exit 1
+        run: exit 1
 
       - name: Resolve loaded e2e image ID
         shell: bash
@@ -492,20 +464,10 @@ jobs:
         run: |
           E2E_IMAGE="$E2E_IMAGE_ID" tests/e2e-test.sh postgres
 
-      - name: Fail attributable e2e suite result
+      - name: Fail e2e suite result
         if: steps.e2e.outcome == 'failure'
         shell: bash
-        run: |
-          printf 'true\n' > rotation-artifacts/test-arm64
-          exit 1
-
-      - name: Upload test attribution
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
-        with:
-          name: rotation-status-test-arm64
-          path: rotation-artifacts/test-arm64
-          if-no-files-found: error
+        run: exit 1
 
   promote:
     needs: [select, build, freeze-digests, test-amd64, test-arm64]
@@ -633,43 +595,90 @@ jobs:
           path: rotation-artifacts/status
           merge-multiple: true
 
-      - name: Decide whether a failure is attributable
+      - name: Decide whether producer evidence warrants quarantine
         id: attribution
         shell: bash
-        env:
-          TEST_AMD64_RESULT: ${{ needs.test-amd64.result }}
-          TEST_ARM64_RESULT: ${{ needs.test-arm64.result }}
         run: |
           set -euo pipefail
-          attributable=false
-          expected_statuses=(build-amd64 build-arm64)
-          if [[ "$TEST_AMD64_RESULT" == success || "$TEST_AMD64_RESULT" == failure ]]; then
-            expected_statuses+=(test-amd64)
-          fi
-          if [[ "$TEST_ARM64_RESULT" == success || "$TEST_ARM64_RESULT" == failure ]]; then
-            expected_statuses+=(test-arm64)
-          fi
-          failed_statuses=()
-          for status_name in "${expected_statuses[@]}"; do
-            status_file="rotation-artifacts/status/${status_name}"
+          # A missing, damaged, or unknown producer record is absence of
+          # evidence, not evidence that the pair is broken.  The destructive
+          # action below therefore defaults every such record to infra.
+          remove_canonical_file() {
+            local canonical_file="$1"
+            if ! rm -f -- "$canonical_file"; then
+              printf '::warning::Could not remove temporary producer-state file; continuing with the determined state\n' >&2
+            fi
+          }
+
+          read_rotation_status() {
+            local status_name="$1"
+            local status_file="rotation-artifacts/status/${status_name}"
+            local state canonical_file
+
             if [[ ! -f "$status_file" ]]; then
-              printf '::error::Missing failure attribution from completed producer: %s\n' "$status_name" >&2
-              exit 1
+              printf '::warning::Missing producer state from %s; treating it as infra\n' "$status_name" >&2
+              printf 'infra\n'
+              return 0
             fi
-            status=$(<"$status_file")
-            if [[ "$status" != true && "$status" != false ]]; then
-              printf '::error::Invalid failure attribution from %s: %s\n' "$status_name" "$status" >&2
-              exit 1
+            canonical_file=$(mktemp) || {
+              printf '::warning::Could not validate producer state from %s; treating it as infra\n' "$status_name" >&2
+              printf 'infra\n'
+              return 0
+            }
+            for state in success build-failed infra; do
+              if ! printf '%s\n' "$state" > "$canonical_file"; then
+                remove_canonical_file "$canonical_file"
+                printf '::warning::Could not validate producer state from %s; treating it as infra\n' "$status_name" >&2
+                printf 'infra\n'
+                return 0
+              fi
+              if cmp -s "$canonical_file" "$status_file"; then
+                remove_canonical_file "$canonical_file"
+                printf 'Producer state %s=%s\n' "$status_name" "$state" >&2
+                printf '%s\n' "$state"
+                return 0
+              fi
+            done
+            remove_canonical_file "$canonical_file"
+            printf '::warning::Invalid producer state from %s; treating it as infra\n' "$status_name" >&2
+            printf 'infra\n'
+          }
+
+          status_names=(build-amd64 build-arm64)
+          declare -A states=()
+          for status_name in "${status_names[@]}"; do
+            states["$status_name"]=$(read_rotation_status "$status_name")
+          done
+
+          quarantine_evidence_warrants_action() {
+            create=false
+            reasons=()
+            # buildx itself cannot distinguish a rejected recipe from a pull,
+            # fetch, clone, or compilation failure. Independent runners both
+            # exhausting retries is the cheapest available discriminator.
+            if [[ "${states[build-amd64]}" == build-failed && "${states[build-arm64]}" == build-failed ]]; then
+              create=true
+              reasons+=("both architectures exhausted their build retries")
             fi
-            if [[ "$status" == true ]]; then
-              attributable=true
-              failed_statuses+=("$status_name")
-            fi
+            # A test failure cannot quarantine: the shared full suite names
+            # the suite, not the candidate. Cost: an extension that compiles
+            # then fails runtime checks is not quarantined automatically.
+          }
+
+          quarantine_evidence_warrants_action
+
+          state_lines=()
+          for status_name in "${status_names[@]}"; do
+            state_lines+=("${status_name}=${states[$status_name]}")
           done
           IFS=,
-          printf -v failed_statuses_csv '%s' "${failed_statuses[*]}"
-          printf 'create=%s\n' "$attributable" >> "$GITHUB_OUTPUT"
-          printf 'failed_statuses=%s\n' "$failed_statuses_csv" >> "$GITHUB_OUTPUT"
+          printf -v state_lines_csv '%s' "${state_lines[*]}"
+          printf -v reasons_csv '%s' "${reasons[*]}"
+          {
+            printf 'create=%s\n' "$create"
+            printf 'states=%s\n' "$state_lines_csv"
+            printf 'reasons=%s\n' "$reasons_csv"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Quarantine failing extension pair
         if: steps.attribution.outputs.create == 'true'
@@ -683,17 +692,25 @@ jobs:
           AMD64_DIGEST: ${{ needs.freeze-digests.outputs.amd64_digest }}
           ARM64_DIGEST: ${{ needs.freeze-digests.outputs.arm64_digest }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
-          FAILED_STATUSES: ${{ steps.attribution.outputs.failed_statuses }}
+          PRODUCER_STATES: ${{ steps.attribution.outputs.states }}
+          QUARANTINE_REASONS: ${{ steps.attribution.outputs.reasons }}
         run: |
           set -euo pipefail
           printf -v body 'rotation-pair: %s pg%s %s\n\nFailed run: %s\n' "$EXTENSION" "$PG_MAJOR" "$VERSION" "$RUN_URL"
-          IFS=, read -r -a failed_statuses <<< "$FAILED_STATUSES"
-          for status_name in "${failed_statuses[@]}"; do
-            phase="${status_name%%-*}"
-            arch="${status_name#*-}"
-            printf -v line 'Failed phase: %s; architecture: %s\n' "$phase" "$arch"
+          body+=$'\nProducer states:\n'
+          IFS=, read -r -a producer_states <<< "$PRODUCER_STATES"
+          for producer_state in "${producer_states[@]}"; do
+            printf -v line -- '- %s\n' "$producer_state"
             body+="$line"
           done
+          IFS=, read -r -a quarantine_reasons <<< "$QUARANTINE_REASONS"
+          if [[ ${#quarantine_reasons[@]} -gt 0 ]]; then
+            body+=$'\nQuarantine evidence:\n'
+            for quarantine_reason in "${quarantine_reasons[@]}"; do
+              printf -v line -- '- %s\n' "$quarantine_reason"
+              body+="$line"
+            done
+          fi
           if [[ -n "$AMD64_DIGEST" ]]; then
             printf -v line 'amd64 digest: %s\n' "$AMD64_DIGEST"
             body+="$line"

@@ -83,7 +83,7 @@ _scoped_tag() {
 
 
 # Override build_ext_image from extension-utils.sh for the CI buildx per-arch
-# path: explicit --platform builds, asymmetric cache refs, separate compile/push
+# path: explicit --platform builds, asymmetric cache refs, separate build-phase/push
 # handling, and rc=2 for push failures. It also injects REMOTE_CR into extension
 # builder stages. Do not delete this override merely by upstreaming REMOTE_CR;
 # extension-utils.sh would need the whole buildx/cache/push path first.
@@ -107,12 +107,11 @@ build_ext_image() {
 
     if [[ -n "${BUILD_PLATFORM:-}" ]]; then
         # CI per-arch leg: build for the specific platform using buildx.
-        # Build and push are intentionally SEPARATE steps so their failure modes
-        # are distinguishable:
-        #   - compile (--load) failure → rc=1 (musl incompatibility tolerated for
-        #     non-ceiling versions by the caller).
-        #   - push failure (infra/auth/network) → rc=2 (FATAL for ALL versions,
-        #     ceiling AND non-ceiling, because it is not a compile incompatibility).
+        # A successful local build is pushed separately, so a push failure is
+        # rc=2.  A buildx --load failure is rc=1, but is an ambiguous build-phase
+        # result: it can be a rejected recipe, a FROM pull, an apk fetch, a git
+        # clone, or compilation.  Rotation attributes rc=1 only when both
+        # independent architecture legs agree.
         #
         # BA-1: pushing extension images from same-repo PRs is a deliberate
         # accepted trade-off. PR-scoped images let the PR's own smoke consume and
@@ -158,8 +157,8 @@ build_ext_image() {
         [[ "${NO_PUSH:-false}" == "true" ]] && _do_push_ext=false
         [[ "${LOCAL_ONLY:-false}" == "true" ]] && _do_push_ext=false
 
-        # Step 1: compile — always use --load (loads image into the local docker
-        # store of the native runner).  rc=1 on failure (compile / musl error).
+        # Step 1: build — always use --load (loads image into the local docker
+        # store of the native runner).  rc=1 is an ambiguous build-phase failure.
         # Cache imports are intentionally asymmetric: a PR reads the canonical
         # cache plus its own scoped cache, while its export remains PR-scoped.
         # A missing importer is non-fatal to buildx, so extensions with no
@@ -170,10 +169,9 @@ build_ext_image() {
         # disables layer-result reuse and omits external registry cache imports and exports.
         # The cache export must not be able to fail the build: a cache-to write
         # error (registry/auth/network) would otherwise surface as a non-zero
-        # buildx exit and be misread as a compile/musl failure, silently dropping
-        # a retained non-ceiling version. ignore-error=true makes the export
-        # best-effort so only a genuine compile failure returns non-zero here;
-        # real infra failures are caught by the separate push step (rc=2, fatal).
+        # buildx exit with the same ambiguous rc=1 as a rejected recipe, pull,
+        # fetch, clone, or compilation. ignore-error=true makes the export
+        # best-effort; the later push still reports its own rc=2 failure.
         local _cache_flags=()
         if [[ "${NO_CACHE:-false}" != "true" ]]; then
             local _canonical_cache_ref
@@ -200,8 +198,8 @@ build_ext_image() {
             --build-arg EXT_REPO="$ext_repo" \
             "${_rust_args[@]}" \
             "$context_dir"; then
-            log_error "Docker buildx build (compile) failed for $ext_name $ext_version (pg${pg_major})"
-            return 1  # compile failure
+            log_error "Docker buildx build failed for $ext_name $ext_version (pg${pg_major})"
+            return 1  # ambiguous build-phase failure
         fi
 
         if [[ "$_do_push_ext" == "false" ]]; then
@@ -209,8 +207,8 @@ build_ext_image() {
             return 0
         fi
 
-        # Step 2: push — separate from compile so push/auth/network failures are
-        # distinct from musl compile incompatibilities.  rc=2 on failure (infra).
+        # Step 2: push a successful local build. rc=2 is an infra/auth/network
+        # failure; it does not make rc=1 a compiler diagnosis.
         if ! $DOCKER push "$_ver_tag"; then
             log_error "Docker push failed for $ext_name $ext_version (pg${pg_major}) — infra/auth/network error"
             return 2  # push failure (infra — FATAL for all versions, not just ceiling)
@@ -249,6 +247,102 @@ PULL_ONLY=false
 DRY_RUN=false
 FINALIZE_MULTIARCH=false
 NO_CACHE="${DOCKER_NO_CACHE:-false}"
+
+# ROTATION_STATUS_FILE is an optional producer-owned status channel used by the
+# scheduled extension rotation.  An unset variable keeps every other caller on
+# its historical boolean-only exit-code contract.  A set empty path is refused:
+# it is almost certainly a caller that meant to request attribution but would
+# otherwise silently lose it.
+_rotation_status_file_is_valid() {
+    if [[ -z "${ROTATION_STATUS_FILE+x}" ]]; then
+        return 0
+    fi
+    if [[ -z "$ROTATION_STATUS_FILE" ]]; then
+        log_error "ROTATION_STATUS_FILE must be unset or name a status file"
+        return 1
+    fi
+    local status_dir
+    status_dir=$(dirname -- "$ROTATION_STATUS_FILE") || return 1
+    if [[ ! -d "$status_dir" ]]; then
+        log_error "ROTATION_STATUS_FILE parent does not exist: $status_dir"
+        return 1
+    fi
+    if [[ -L "$ROTATION_STATUS_FILE" || ( -e "$ROTATION_STATUS_FILE" && ! -f "$ROTATION_STATUS_FILE" ) ]]; then
+        log_error "ROTATION_STATUS_FILE must name a regular file: $ROTATION_STATUS_FILE"
+        return 1
+    fi
+    return 0
+}
+
+# Write one complete state with an atomic rename.  The caller creates the
+# initial infra file before invoking a producer, so an unexpected death before
+# this function runs remains infra rather than becoming an invented verdict.
+_write_rotation_status() {
+    local state="$1"
+
+    if [[ -z "${ROTATION_STATUS_FILE+x}" ]]; then
+        return 0
+    fi
+    _rotation_status_file_is_valid || return 1
+
+    local status_dir status_base status_tmp
+    status_dir=$(dirname -- "$ROTATION_STATUS_FILE") || return 1
+    status_base=$(basename -- "$ROTATION_STATUS_FILE") || return 1
+    if [[ ! -d "$status_dir" ]]; then
+        log_error "ROTATION_STATUS_FILE parent does not exist: $status_dir"
+        return 1
+    fi
+    if [[ -L "$ROTATION_STATUS_FILE" || ( -e "$ROTATION_STATUS_FILE" && ! -f "$ROTATION_STATUS_FILE" ) ]]; then
+        log_error "ROTATION_STATUS_FILE must name a regular file: $ROTATION_STATUS_FILE"
+        return 1
+    fi
+    status_tmp=$(mktemp "$status_dir/.${status_base}.tmp.XXXXXX") || {
+        log_error "Could not create temporary rotation status file in $status_dir"
+        return 1
+    }
+    printf '%s\n' "$state" > "$status_tmp" || {
+        rm -f -- "$status_tmp" || true
+        return 1
+    }
+    mv -f -- "$status_tmp" "$ROTATION_STATUS_FILE" || {
+        rm -f -- "$status_tmp" || true
+        return 1
+    }
+    if [[ ! -f "$ROTATION_STATUS_FILE" ]]; then
+        log_error "ROTATION_STATUS_FILE was not written as a regular file: $ROTATION_STATUS_FILE"
+        return 1
+    fi
+}
+
+# This is intentionally a build-phase result, not a compiler diagnosis:
+# buildx can fail while pulling, fetching, cloning, or compiling.  The only
+# positive evidence available here is that this build phase exhausted retries.
+_ROTATION_BUILD_STATUS=infra
+_ROTATION_BUILD_HAS_INFRA=false
+_ROTATION_BUILD_PENDING=infra
+_record_rotation_build_status() {
+    local state="$1"
+    case "$state" in
+        build-failed)
+            # A later unclassified/infra failure removes attribution.  Positive
+            # evidence must survive only when nothing contradicts its scope.
+            if [[ "$_ROTATION_BUILD_HAS_INFRA" != true ]]; then
+                _ROTATION_BUILD_PENDING=build-failed
+            fi
+            ;;
+        infra)
+            _ROTATION_BUILD_STATUS=infra
+            _ROTATION_BUILD_PENDING=infra
+            _ROTATION_BUILD_HAS_INFRA=true
+            ;;
+        *)
+            log_error "Unknown rotation build status: $state"
+            _ROTATION_BUILD_STATUS=infra
+            _ROTATION_BUILD_PENDING=infra
+            return 1
+            ;;
+    esac
+}
 
 usage() {
     local exit_code="${1:-0}"
@@ -488,14 +582,15 @@ build_extension() {
 
     # Retry loop for transient failures (network blips on FROM pull, apk add, git clone).
     # EXT_BUILD_RETRIES defaults to 3; set to a lower value in tests.
-    # Persistent failures (real musl incompatibility, auth error) fail all attempts
-    # and propagate the original rc so the caller can distinguish compile (rc=1)
-    # from push (rc=2) failures. Retries reduce — but do not eliminate — the
-    # transient-vs-incompatibility ambiguity: a version excluded after N persistent
-    # failures is treated as a genuine build miss.
+    # Any non-rc=1 attempt makes the exhausted sequence infrastructure: the final
+    # rc alone cannot erase an earlier transport failure, and an unknown rc is not
+    # positive evidence of a candidate defect. Only all-rc=1 failures remain an
+    # ambiguous build-phase result. Retries reduce but do not eliminate that
+    # ambiguity, so rotation requires agreement from both architecture legs.
     local _max_attempts="${EXT_BUILD_RETRIES:-3}"
     local _attempt=0
     local _build_rc=0
+    local _saw_infra=false
     while [[ "$_attempt" -lt "$_max_attempts" ]]; do
         _attempt=$(( _attempt + 1 ))
         _build_rc=0
@@ -504,14 +599,25 @@ build_extension() {
         if [[ "$_build_rc" -eq 0 ]]; then
             return 0
         fi
+        if [[ "$_build_rc" -ne 1 ]]; then
+            _saw_infra=true
+        fi
         if [[ "$_attempt" -lt "$_max_attempts" ]]; then
             local _backoff=$(( _attempt * 3 ))
             log_warning "build_ext_image attempt $_attempt/$_max_attempts failed (rc=$_build_rc) for $ext_name $ext_version — retrying in ${_backoff}s"
             sleep "$_backoff"
         fi
     done
-    log_error "build_ext_image failed after $_max_attempts attempt(s) (rc=$_build_rc) for $ext_name $ext_version — persistent failure"
-    return "$_build_rc"
+    if [[ "$_attempt" -eq 0 ]]; then
+        log_error "build_ext_image made no attempts for $ext_name $ext_version — treating it as infrastructure"
+        return 2
+    fi
+    if [[ "$_saw_infra" == true ]]; then
+        log_error "build_ext_image failed after $_max_attempts attempt(s) for $ext_name $ext_version — at least one attempt was infrastructure or unclassified"
+        return 2
+    fi
+    log_error "build_ext_image failed after $_max_attempts attempt(s) (rc=$_build_rc) for $ext_name $ext_version — ambiguous build-phase failure"
+    return 1
 }
 
 # Tag extension with registry name (always needed for COPY --from= to work)
@@ -1002,6 +1108,7 @@ build_tag_push_extensions() {
                 version_set_json="[\"$ceiling\"]"
             else
                 log_error "$ext: version-set resolver failed — skipping build"
+                _record_rotation_build_status infra
                 failed+=("$ext")
                 continue
             fi
@@ -1037,6 +1144,7 @@ build_tag_push_extensions() {
                     set_size=1
                 else
                     log_error "$ext: semver/ceiling validation failed — skipping build (fail-closed)"
+                    _record_rotation_build_status infra
                     failed+=("$ext")
                     continue
                 fi
@@ -1099,26 +1207,29 @@ build_tag_push_extensions() {
 
             # Attempt build for this version.
             # build_extension returns:
-            #   0  — success (compile + push, or local build)
-            #   1  — compile failure (musl incompatibility or Dockerfile error)
+            #   0  — success (build + push, or local build)
+            #   1  — build phase failure after retries (cause is ambiguous)
             #   2  — push failure (infra/auth/network; only on BUILD_PLATFORM path)
             local _build_rc=0
             build_extension "$ext" "$config_file" "$major_ver" "$container_dir" "$version" || _build_rc=$?
 
             if [[ "$_build_rc" -eq 2 ]]; then
                 # Push failure (infra/auth/network) is FATAL for ALL versions —
-                # ceiling AND non-ceiling.  It is not a compile incompatibility and
-                # must never be silently excluded from the version set.
+                # ceiling AND non-ceiling. It must never be silently excluded
+                # from the version set.
                 log_error "$ext $version push failed (infra error) — fatal regardless of ceiling"
+                _record_rotation_build_status infra
                 failed+=("$ext@$version")
                 continue
             fi
 
             if [[ "$_build_rc" -ne 0 ]]; then
-                # Compile failure (rc=1 or any other non-zero, non-2 code):
-                # ceiling is fatal; non-ceiling is tolerated (musl compat).
+                # An all-rc=1 build-phase failure is fatal for the ceiling and
+                # tolerated for non-ceiling versions. It is not a compiler
+                # diagnosis: exhausted retries are the only attribution.
                 if [[ "$version" == "$ceiling" ]]; then
                     log_error "$ext $version (ceiling) build failed"
+                    _record_rotation_build_status build-failed
                     failed+=("$ext@$version")
                 else
                     log_warning "$ext $version build failed (non-ceiling, skipping)"
@@ -1134,6 +1245,7 @@ build_tag_push_extensions() {
                 # Tag failure is always fatal — it is a registry/infra error, not musl.
                 if ! tag_extension "$ext" "$config_file" "$major_ver" "$version"; then
                     log_error "$ext $version tag failed (infra error)"
+                    _record_rotation_build_status infra
                     failed+=("$ext@$version")
                     continue
                 fi
@@ -1142,6 +1254,7 @@ build_tag_push_extensions() {
                 if [[ "$do_push" == "true" ]]; then
                     if ! push_extension "$ext" "$config_file" "$major_ver" "$version"; then
                         log_error "$ext $version push failed"
+                        _record_rotation_build_status infra
                         failed+=("$ext@$version")
                         continue
                     fi
@@ -1220,6 +1333,7 @@ build_tag_push_extensions() {
                 local _ba_rc=0
                 _bundle_and_write_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling" "$do_push" || _ba_rc=$?
                 if [[ "$_ba_rc" -ne 0 ]]; then
+                    _record_rotation_build_status infra
                     failed+=("$ext@artifact")
                     continue
                 fi
@@ -1231,7 +1345,13 @@ build_tag_push_extensions() {
     echo ""
     if [[ ${#failed[@]} -gt 0 ]]; then
         log_error "Failed extensions: ${failed[*]}"
-        exit 1
+        # Commit a build-failed verdict only after the complete build loop has
+        # ended in its known failure path.  A shell error before this point
+        # leaves the trap's default infra in place.
+        if [[ "$_ROTATION_BUILD_PENDING" == build-failed ]]; then
+            _ROTATION_BUILD_STATUS=build-failed
+        fi
+        return 1
     else
         if [[ "$do_push" == "true" ]]; then
             log_success "All extensions built and pushed successfully"
@@ -2425,6 +2545,7 @@ main() {
     # Validate the optional package axis before any prerequisite, registry, or
     # build action. A malformed suffix must never influence a reference.
     validate_extension_package_suffix || return 1
+    _rotation_status_file_is_valid || return 1
 
     validate_prerequisites
 
@@ -2439,7 +2560,8 @@ main() {
     # Handle list mode
     if [[ "$LIST_ONLY" == "true" ]]; then
         list_extension_status "$config_file" "$major_ver"
-        exit 0
+        _ROTATION_BUILD_STATUS=success
+        return 0
     fi
 
     # Handle finalize-multiarch mode (stage B: merge per-arch manifests, write artifact).
@@ -2447,11 +2569,15 @@ main() {
     if [[ "$FINALIZE_MULTIARCH" == "true" ]]; then
         if [[ "$DRY_RUN" == "true" ]]; then
             log_info "[DRY-RUN] Would merge per-arch manifests into multi-arch manifests for pg${major_ver}"
-            exit 0
+            _ROTATION_BUILD_STATUS=success
+            return 0
         fi
         local _fm_rc=0
         finalize_multiarch_manifests "$config_file" "$major_ver" "$container_dir" || _fm_rc=$?
-        exit "$_fm_rc"
+        if [[ "$_fm_rc" -eq 0 ]]; then
+            _ROTATION_BUILD_STATUS=success
+        fi
+        return "$_fm_rc"
     fi
 
     # Check registry auth (unless local-only or dry-run)
@@ -2477,7 +2603,10 @@ main() {
         handle_pull_only_mode "$config_file" "$major_ver" "$container_dir"
         local _fp_rc=0
         _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" "$do_push" || _fp_rc=$?
-        exit "$_fp_rc"
+        if [[ "$_fp_rc" -eq 0 ]]; then
+            _ROTATION_BUILD_STATUS=success
+        fi
+        return "$_fp_rc"
     fi
 
     # Build mode — determine which extensions to build.
@@ -2488,14 +2617,14 @@ main() {
         local _explicit_dockerfile="$container_dir/extensions/build/${EXTENSION}.Dockerfile"
         if [[ ! -f "$_explicit_dockerfile" ]]; then
             log_error "Extension '$EXTENSION': no Dockerfile at $_explicit_dockerfile"
-            exit 1
+            return 1
         fi
         local _rc=0
         _should_build_extension "$EXTENSION" "$config_file" "$major_ver" "$container_dir" || _rc=$?
         case "$_rc" in
             0) extensions_to_build=("$EXTENSION") ;;
             1) : ;;
-            *) log_error "$EXTENSION: version-set resolver failed — aborting (fail-closed)"; exit 1 ;;
+            *) log_error "$EXTENSION: version-set resolver failed — aborting (fail-closed)"; _record_rotation_build_status infra; return 1 ;;
         esac
     else
         while IFS= read -r ext; do
@@ -2504,7 +2633,7 @@ main() {
             case "$_rc" in
                 0) extensions_to_build+=("$ext") ;;
                 1) : ;;
-                *) log_error "$ext: version-set resolver failed — aborting (fail-closed)"; exit 1 ;;
+                *) log_error "$ext: version-set resolver failed — aborting (fail-closed)"; _record_rotation_build_status infra; return 1 ;;
             esac
         done < <(list_extensions_by_priority "$config_file" "$major_ver")
     fi
@@ -2543,7 +2672,10 @@ main() {
         local _fp_rc=0
         _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" "$do_push" || _fp_rc=$?
 
-        exit "$_fp_rc"
+        if [[ "$_fp_rc" -eq 0 ]]; then
+            _ROTATION_BUILD_STATUS=success
+        fi
+        return "$_fp_rc"
     fi
 
     log_info "Extensions to build: ${extensions_to_build[*]}"
@@ -2582,8 +2714,10 @@ main() {
     local _fp_rc=0
     _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" "$do_push" || _fp_rc=$?
     if [[ "$_fp_rc" -ne 0 ]]; then
-        exit "$_fp_rc"
+        return "$_fp_rc"
     fi
+    _ROTATION_BUILD_STATUS=success
+    return 0
 }
 
 # Only run main when executed directly, not when sourced (e.g. by unit tests)
@@ -2591,7 +2725,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     # Install EXIT cleanup only when executing as a program. When sourced (e.g.
     # by unit tests) no trap is installed here so the caller's EXIT trap is
     # never clobbered. _RESOLVER_CACHE_DIR is already set at source time above.
-    # shellcheck disable=SC2064
-    trap "rm -rf \"${_RESOLVER_CACHE_DIR}\" \"${_BUILT_THIS_RUN_DIR}\"" EXIT
+    _rotation_status_file_is_valid || exit 1
+    # shellcheck disable=SC2064,SC2154
+    trap '_exit_status=$?; _cleanup_status=0; rm -rf "${_RESOLVER_CACHE_DIR}" "${_BUILT_THIS_RUN_DIR}" || _cleanup_status=$?; if [[ "$_exit_status" -eq 0 && "$_cleanup_status" -ne 0 ]]; then _exit_status=$_cleanup_status; _ROTATION_BUILD_STATUS=infra; fi; _write_rotation_status "$_ROTATION_BUILD_STATUS" || { _write_status=$?; [[ "$_exit_status" -eq 0 ]] && _exit_status=$_write_status; }; exit "$_exit_status"' EXIT
     main "$@"
 fi
