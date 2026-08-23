@@ -2,6 +2,15 @@
 # Purge container images whose tags are not in the current valid build set.
 # Required env vars: GH_TOKEN, OWNER
 
+_cleanup_outdated_tags_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../helpers/version-record-validation.sh
+if ! source "$_cleanup_outdated_tags_root/helpers/version-record-validation.sh"; then
+  echo "Failed to source version record validation helper: $_cleanup_outdated_tags_root/helpers/version-record-validation.sh" >&2
+  unset _cleanup_outdated_tags_root
+  return 1 2>/dev/null || exit 1
+fi
+unset _cleanup_outdated_tags_root
+
 script_root() {
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
@@ -13,7 +22,28 @@ build_valid_tags() {
   if ! builds_json=$("$ROOT_DIR/make" list-builds "$container" 2>/dev/null); then
     return 1
   fi
-  if ! jq -e 'type == "array" and length > 0' >/dev/null <<< "$builds_json"; then
+  if ! jq -e '
+    def valid_tag:
+      # jq ^ is a true start anchor; \z, rather than $, rejects a final newline.
+      if type == "string" then test("^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}\\z") else false end;
+    type == "array" and length > 0
+    and all(.[];
+      type == "object"
+      and (.tag | valid_tag)
+      and (.variant | type == "string" and (. == "" or valid_tag))
+      and (.flavor | type == "string" and (. == "" or valid_tag))
+      and (.os == "linux" or .os == "windows")
+      and (.is_default | type == "boolean")
+      and (.is_latest_version | type == "boolean")
+      and (if .variant != "" and .is_latest_version == true
+           then ("latest-" + .variant | valid_tag)
+           else true
+           end)
+      and (if .os == "windows" and .is_default != true and .flavor != "" and .is_latest_version == true
+           then ("latest-" + .flavor | valid_tag)
+           else true
+           end))
+  ' >/dev/null <<< "$builds_json"; then
     return 1
   fi
   if ! tags=$(jq -r '.[].tag' <<< "$builds_json"); then
@@ -63,11 +93,12 @@ is_valid_tag() {
 
 purge_ghcr() {
   # 10 listing failure, 11 processing failure, 12 delete failure, 13 failure
-  # after complete assessment, and 15 protection failure.  Replaying either
-  # completed deletion list is execution, so a replay failure returns 13.
+  # after complete assessment, 14 uninterpretable record, and 15 protection
+  # failure. Replaying either completed deletion list is execution, so a replay
+  # failure returns 13.
   local container="$1" valid_tags="$2"
   local versions version_count versions_file="" obsolete_file="" protected_file=""
-  local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 deletion_read_error=0
+  local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 deletion_read_error=0 validation_error validation_status
   local record_b64 record_json
   local protected_digests="" ghcr_token manifest children
   local -a kept_digests=()
@@ -99,6 +130,19 @@ purge_ghcr() {
       return "$PROCESSING_FAILURE"
     fi
     return 0
+  fi
+  if validation_error=$(jq -er "$VERSION_RECORD_VALIDATION_JQ
+    validate_outdated_tags_versions" <<< "$versions" 2>&1 >/dev/null); then
+    :
+  else
+    validation_status=$?
+    if [[ "$validation_status" -eq 5 ]]; then
+      validation_error="${validation_error##*validation failed: }"
+      echo "  ✗ GHCR version validation failed: validation failed: $validation_error; skipping $container" >&2
+      return "$UNINTERPRETABLE_RECORD_FAILURE"
+    fi
+    echo "  ✗ GHCR version validator could not run: $validation_error; skipping $container" >&2
+    return "$PROCESSING_FAILURE"
   fi
   if ! versions_file=$(mktemp) || ! obsolete_file=$(mktemp); then
     cleanup_files
@@ -324,10 +368,9 @@ main() {
   ROOT_DIR=$(script_root) || return 1
   export ROOT_DIR
 
-  # 14 is reserved for a distinct uninterpretable-record producer.  Current
-  # decoding failures are processing failures (11).  16 is reserved for a
-  # future partial-assessment producer; this plan-then-delete implementation
-  # deliberately has none, and replay failures are post-complete (13).
+  # 16 is reserved for a future partial-assessment producer; this plan-then-
+  # delete implementation deliberately has none, and replay failures are
+  # post-complete (13).
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
   local containers container valid_tags valid_count result ghcr_status dh_result dh_status
   local kept obsolete orphans delete_failures dh_assessed dh_deleted package_assessed skip_dockerhub

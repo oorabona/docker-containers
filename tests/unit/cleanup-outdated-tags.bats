@@ -99,6 +99,23 @@ assert_prepared_decode_preserves_delete_totals() {
     fi
 }
 
+@test "sourcing fails closed when the version validation helper is absent" {
+    local missing_root="$BATS_TEST_TMPDIR/missing-helper"
+    mkdir -p "$missing_root/scripts"
+    cp "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh" "$missing_root/scripts/cleanup-outdated-tags.sh"
+
+    run env -u VERSION_RECORD_VALIDATION_JQ bash -c '
+        set +e
+        source "$1"
+        source_status=$?
+        ! declare -F purge_ghcr >/dev/null
+        [[ "$source_status" -ne 0 ]]
+    ' _ "$missing_root/scripts/cleanup-outdated-tags.sh"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Failed to source version record validation helper: $missing_root/helpers/version-record-validation.sh"* ]]
+}
+
 assert_dockerhub_called_after_complete_ghcr_plan() {
     local call_file="$1"
     if [[ ! -s "$call_file" ]]; then
@@ -323,8 +340,8 @@ assert_dockerhub_called_after_complete_ghcr_plan() {
             build_valid_tags() { printf "%s\\n" "latest"; }
             purge_dockerhub() { printf "%s\\n" "0|0"; }
             gh() {
-                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:first\",\"metadata\":{\"container\":{\"tags\":[\"stale-first\"]}}}]"
-                printf "%s\\n" "[{\"id\":102,\"name\":\"sha256:second\",\"metadata\":{\"container\":{\"tags\":[\"stale-second\"]}}}]"
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale-first\"]}}}]"
+                printf "%s\\n" "[{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"stale-second\"]}}}]"
             }
             main stale
         '
@@ -460,7 +477,7 @@ assert_dockerhub_called_after_complete_ghcr_plan() {
                     echo "gh: delete denied" >&2
                     return 1
                 fi
-                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:stale\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
             }
             main stale
         '
@@ -507,7 +524,7 @@ EOF
                 if [[ "$*" == *"--method DELETE"* ]]; then
                     return 0
                 fi
-                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:stale\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
             }
             main stale
         '
@@ -538,7 +555,7 @@ EOF
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
-                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:protected\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}}]"
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}}]"
             }
             jq() {
                 if [[ "${!#}" == ".tags[]" ]]; then echo "jq: tag decode exhausted" >&2; return 1; fi
@@ -572,7 +589,7 @@ EOF
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
-                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:first\",\"metadata\":{\"container\":{\"tags\":[\"stale-first\"]}}},{\"id\":102,\"name\":\"sha256:second\",\"metadata\":{\"container\":{\"tags\":[\"stale-second\"]}}}]"
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale-first\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"stale-second\"]}}}]"
             }
             base64() {
                 calls=0; [[ -f "$BASE64_CALLS" ]] && calls=$(<"$BASE64_CALLS")
@@ -589,4 +606,230 @@ EOF
     [[ "$(<"$gh_log")" != *"/versions/102"* ]]
     assert_prepared_decode_preserves_delete_totals
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+}
+
+run_outdated_validation_case() {
+    local response_json="$1"
+    local expected_field="$2"
+    local gh_log="$_STUB_DIR/validation-gh.log"
+    local dockerhub_calls="$_STUB_DIR/validation-dockerhub.log"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        RESPONSE_JSON="$response_json" \
+        GH_LOG="$gh_log" \
+        DOCKERHUB_CALLS="$dockerhub_calls" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\n" "latest"; }
+            purge_dockerhub() { printf "%s\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\n" "1|0"; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "%s\n" "$*" >> "$GH_LOG"; return 0; fi
+                printf "%s\n" "$RESPONSE_JSON"
+            }
+            main malformed
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"validation failed: $expected_field"* ]]
+    [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+    [[ ! -s "$gh_log" ]]
+    [[ ! -s "$dockerhub_calls" ]]
+}
+
+@test "outdated-tag cleanup maps jq exit 5 to 14 and jq exit 137 to 11" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15
+            gh() { printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{}}}]"; }
+            purge_ghcr malformed latest
+        '
+
+    [[ "$status" -eq 14 ]]
+
+    local real_jq
+    real_jq="$(command -v jq)"
+    cat > "$_STUB_DIR/jq" <<'EOF'
+#!/usr/bin/env bash
+for argument in "$@"; do
+    [[ "$argument" == *"validate_outdated_tags_versions"* ]] && exit 137
+done
+exec "$REAL_JQ" "$@"
+EOF
+    chmod +x "$_STUB_DIR/jq"
+
+    run env \
+        PATH="$_STUB_DIR:$PATH" \
+        REAL_JQ="$real_jq" \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15
+            gh() { printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}}}]"; }
+            purge_ghcr validator-killed latest
+        '
+
+    [[ "$status" -eq 11 ]]
+    [[ "$output" == *"GHCR version validator could not run"* ]]
+}
+
+@test "outdated-tag validation entry point rejects non-arrays and accepts an empty array" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" bash -c '
+        set -euo pipefail
+        source "$PROJECT_ROOT/helpers/version-record-validation.sh"
+        for versions in null "{}" "\"\""; do
+            if validation_error=$(jq -er "$VERSION_RECORD_VALIDATION_JQ validate_outdated_tags_versions" <<< "$versions" 2>&1 >/dev/null); then
+                exit 1
+            else
+                validation_status=$?
+            fi
+            [[ "$validation_status" -eq 5 ]]
+            [[ "$validation_error" == *"validation failed: versions must be an array"* ]]
+        done
+        jq -er "$VERSION_RECORD_VALIDATION_JQ validate_outdated_tags_versions" <<< "[]" | grep -qx true
+    '
+
+    [[ "$status" -eq 0 ]]
+}
+
+@test "outdated-tag cleanup accepts an observed empty GHCR tags array" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="true" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\n" "latest"; }
+            gh() {
+                [[ "$*" == *"--method DELETE"* ]] && return 1
+                printf "%s\n" "[{\"id\":\"101\",\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
+            }
+            main untagged
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Packages skipped (processing failed): 0"* ]]
+}
+
+@test "outdated-tag cleanup rejects absent GHCR tags before any deletion" {
+    run_outdated_validation_case \
+        '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{}}}]' \
+        'versions[0].metadata.container.tags is missing'
+}
+
+@test "outdated-tag cleanup rejects null GHCR tags before any deletion" {
+    run_outdated_validation_case \
+        '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":null}}}]' \
+        'versions[0].metadata.container.tags is invalid'
+}
+
+@test "outdated-tag cleanup rejects a non-array GHCR tags field before any deletion" {
+    run_outdated_validation_case \
+        '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":"latest"}}}]' \
+        'versions[0].metadata.container.tags is invalid'
+}
+
+@test "outdated-tag cleanup rejects pipe and comma GHCR tags before any deletion" {
+    run_outdated_validation_case \
+        '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["bad|tag"]}}}]' \
+        'versions[0].metadata.container.tags[0] is invalid'
+    run_outdated_validation_case \
+        '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["bad,tag"]}}}]' \
+        'versions[0].metadata.container.tags[0] is invalid'
+}
+
+@test "outdated-tag cleanup rejects trailing newlines in tags, digests, and IDs" {
+    run_outdated_validation_case \
+        '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["latest\n"]}}}]' \
+        'versions[0].metadata.container.tags[0] is invalid'
+    run_outdated_validation_case \
+        '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n","metadata":{"container":{"tags":["latest"]}}}]' \
+        'versions[0].name is invalid'
+    run_outdated_validation_case \
+        '[{"id":"101\n","name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["latest"]}}}]' \
+        'versions[0].id is invalid'
+}
+
+@test "build_valid_tags accepts a Linux build with an empty flavor" {
+    local root_dir="$BATS_TEST_TMPDIR/build-empty-flavor-root"
+    mkdir -p "$root_dir"
+    export ROOT_DIR="$root_dir"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        'printf "%s\n" '\''[{"tag":"1.2.3","variant":"debian","flavor":"","os":"linux","is_default":true,"is_latest_version":true}]'\''' \
+        > "$root_dir/make"
+    chmod +x "$root_dir/make"
+
+    run build_valid_tags example
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"latest-debian"* ]]
+}
+
+run_invalid_build_case() {
+    local build_json="$1"
+    local root_dir="$BATS_TEST_TMPDIR/build-invalid-element-root"
+    mkdir -p "$root_dir"
+    export ROOT_DIR="$root_dir"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        "printf '%s\\n' '$build_json'" \
+        > "$root_dir/make"
+    chmod +x "$root_dir/make"
+
+    run build_valid_tags example
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" != *"latest-"* ]]
+}
+
+@test "build_valid_tags rejects os darwin without emitting latest-" {
+    run_invalid_build_case '[{"tag":"1.2.3","variant":"","flavor":"","os":"darwin","is_default":true,"is_latest_version":true}]'
+}
+
+@test "build_valid_tags rejects a string is_default without emitting latest-" {
+    run_invalid_build_case '[{"tag":"1.2.3","variant":"","flavor":"","os":"linux","is_default":"false","is_latest_version":true}]'
+}
+
+@test "build_valid_tags rejects an empty tag without emitting latest-" {
+    run_invalid_build_case '[{"tag":"","variant":"","flavor":"","os":"linux","is_default":true,"is_latest_version":true}]'
+}
+
+@test "build_valid_tags rejects a null variant without emitting latest-" {
+    run_invalid_build_case '[{"tag":"1.2.3","variant":null,"flavor":"","os":"linux","is_default":true,"is_latest_version":true}]'
+}
+
+@test "build_valid_tags rejects trailing newlines in emitted and component tags" {
+    run_invalid_build_case '[{"tag":"release\n","variant":"","flavor":"","os":"linux","is_default":true,"is_latest_version":true}]'
+    run_invalid_build_case '[{"tag":"release","variant":"release\n","flavor":"","os":"linux","is_default":true,"is_latest_version":true}]'
+    run_invalid_build_case '[{"tag":"release","variant":"","flavor":"release\n","os":"windows","is_default":false,"is_latest_version":true}]'
+}
+
+@test "build_valid_tags validates the full emitted latest alias length" {
+    local variant_121 variant_122 root_dir build_json
+    variant_121=$(printf '%*s' 121 '' | tr ' ' a)
+    variant_122=$(printf '%*s' 122 '' | tr ' ' a)
+    root_dir="$BATS_TEST_TMPDIR/build-alias-length-root"
+    mkdir -p "$root_dir"
+    export ROOT_DIR="$root_dir"
+    build_json="[{\"tag\":\"release\",\"variant\":\"$variant_121\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":true,\"is_latest_version\":true}]"
+    printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' '$build_json'" > "$root_dir/make"
+    chmod +x "$root_dir/make"
+
+    run build_valid_tags example
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"latest-$variant_121"* ]]
+
+    run_invalid_build_case "[{\"tag\":\"release\",\"variant\":\"$variant_122\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":true,\"is_latest_version\":true}]"
 }

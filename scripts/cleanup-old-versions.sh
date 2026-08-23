@@ -4,6 +4,15 @@
 # Required env vars: GH_TOKEN, OWNER
 # Optional env vars: DRY_RUN (default: false), KEEP_LATEST_COUNT (default: 10), KEEP_MONTHS (default: 6)
 
+_cleanup_old_versions_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../helpers/version-record-validation.sh
+if ! source "$_cleanup_old_versions_root/helpers/version-record-validation.sh"; then
+  echo "Failed to source version record validation helper: $_cleanup_old_versions_root/helpers/version-record-validation.sh" >&2
+  unset _cleanup_old_versions_root
+  return 1 2>/dev/null || exit 1
+fi
+unset _cleanup_old_versions_root
+
 script_root() {
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
@@ -24,13 +33,14 @@ print_banner() {
 # Write kept|deleted|delete_failures to stdout once a package was completely
 # assessed.  Its return status, rather than that record, communicates failure:
 # 10 listing failure, 11 processing failure, 12 one or more delete failures,
-# and 13 a failure after every record was assessed.  Deletion-plan replay is
-# execution, not assessment, so a replay failure also returns 13.
+# 13 a failure after every record was assessed, and 14 an uninterpretable
+# record. Deletion-plan replay is execution, not assessment, so a replay
+# failure also returns 13.
 purge_container() {
   local container="$1"
   local versions version_count versions_file="" deletions_file=""
   local position=0 kept=0 deleted=0 delete_failures=0
-  local version_id tags created_at keep_reason tag tag_list major version_ts cutoff_ts processing_error=0 deletion_read_error=0
+  local version_id tags created_at keep_reason tag tag_list major version_ts cutoff_ts processing_error=0 deletion_read_error=0 validation_error validation_status
   local record_b64 record_json
   declare -A major_seen=()
 
@@ -66,6 +76,20 @@ purge_container() {
     return 0
   fi
 
+  if validation_error=$(jq -er "$VERSION_RECORD_VALIDATION_JQ
+    validate_old_versions" <<< "$versions" 2>&1 >/dev/null); then
+    :
+  else
+    validation_status=$?
+    if [[ "$validation_status" -eq 5 ]]; then
+      validation_error="${validation_error##*validation failed: }"
+      echo "  ✗ Version validation failed: validation failed: $validation_error; skipping $container" >&2
+      return "$UNINTERPRETABLE_RECORD_FAILURE"
+    fi
+    echo "  ✗ Version validator could not run: $validation_error; skipping $container" >&2
+    return "$PROCESSING_FAILURE"
+  fi
+
   if ! cutoff_ts=$(date -d "$CUTOFF_DATE" +%s); then
     echo "  ✗ Failed to parse cutoff date; skipping $container" >&2
     return "$PROCESSING_FAILURE"
@@ -87,8 +111,10 @@ purge_container() {
     return "$PROCESSING_FAILURE"
   fi
 
-  # Decide every record before deleting any of them.  A malformed date in a
-  # later record must leave earlier obsolete records untouched.
+  # Decide every record before deleting any of them.  The shared age contract
+  # has checked every field read below; #1301 owns timestamp parsing and
+  # ordering semantics.  A malformed date in a later record must leave earlier
+  # obsolete records untouched.
   while IFS= read -r record_b64; do
     [[ -z "$record_b64" ]] && continue
     if ! record_json=$(printf '%s' "$record_b64" | base64 -d) \
@@ -210,7 +236,7 @@ main() {
   : "${KEEP_LATEST_COUNT:=10}"
   : "${KEEP_MONTHS:=6}"
 
-  local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 INCOMPLETE_DELETION_FAILURE=16
+  local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 INCOMPLETE_DELETION_FAILURE=16
   local root_dir containers container result status
   local kept deleted delete_failures
   root_dir=$(script_root) || return 1
@@ -252,7 +278,7 @@ main() {
         [[ "$status" -ne "$POST_DELETE_PROCESSING_FAILURE" ]] || total_processing_failures=$((total_processing_failures + 1))
         ;;
       "$LISTING_FAILURE") total_listing_failures=$((total_listing_failures + 1)) ;;
-      "$PROCESSING_FAILURE") total_processing_failures=$((total_processing_failures + 1)) ;;
+      "$PROCESSING_FAILURE"|"$UNINTERPRETABLE_RECORD_FAILURE") total_processing_failures=$((total_processing_failures + 1)) ;;
       # Reserved: planning is complete before deletion begins, so this script
       # does not produce 16.  Keep it fail-closed for an explicit future
       # partial-assessment producer rather than treating it as execution.

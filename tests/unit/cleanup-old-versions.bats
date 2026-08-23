@@ -36,12 +36,12 @@ if [[ "${GH_MODE:-}" == "empty-listing" && "$*" == *"/container/broken/versions"
 fi
 
 if [[ "${GH_MODE:-}" == "malformed-record" && "$*" == *"/container/broken/versions"* ]]; then
-    printf '%s\n' '[{"id":101,"metadata":{"container":{"tags":"not-an-array"}},"created_at":"2000-01-01T00:00:00Z"}]'
+    printf '%s\n' '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":"not-an-array"}},"created_at":"2000-01-01T00:00:00Z"}]'
     exit 0
 fi
 
 if [[ "${GH_MODE:-}" == "delete-failure" || "${GH_MODE:-}" == "cleanup-failure" ]]; then
-    printf '%s\n' '[{"id":101,"metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]'
+    printf '%s\n' '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]'
 else
     printf '%s\n' '[]'
 fi
@@ -65,8 +65,8 @@ assert_no_delete_attempts() {
     fi
 }
 
-assert_output_reports_invalid_date() {
-    if [[ "$output" != *"Failed to parse version date; skipping stale"* ]]; then
+assert_output_reports_invalid_created_at() {
+    if [[ "$output" != *"validation failed: versions[1].created_at is invalid"* ]]; then
         echo "ASSERTION FAILED: expected invalid later date to stop the package before DELETE" >&2
         return 1
     fi
@@ -137,8 +137,8 @@ assert_prepared_decode_preserves_delete_totals() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-printf '%s\n' '[{"id":101,"metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]'
-printf '%s\n' '[{"id":102,"metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]'
+printf '%s\n' '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]'
+printf '%s\n' '[{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]'
 EOF
     chmod +x "$STUB_DIR/gh"
 
@@ -182,7 +182,7 @@ EOF
     [[ "$output" == *"Packages skipped (listing failed): 1"* ]]
 }
 
-@test "a JSON record that jq cannot prepare is unassessed, cleans its temporary file, and does not abandon later packages" {
+@test "an invalid version record is unassessed, attempts no deletion, and does not abandon later packages" {
     cat > "$STUB_DIR/mktemp" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -204,10 +204,11 @@ EOF
         bash "$PROJECT_ROOT/scripts/cleanup-old-versions.sh" broken healthy
 
     [[ "$status" -eq 1 ]]
-    [[ "$output" == *"Failed to read version record; skipping broken"* ]]
+    [[ "$output" == *"validation failed: versions[0].metadata.container.tags is invalid"* ]]
     [[ "$output" == *"Processing: healthy"* ]]
     [[ "$output" == *"Packages assessed: 1"* ]]
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+    [[ ! -s "$GH_LOG" ]]
     [[ ! -e "$temp_file" ]]
 }
 
@@ -224,6 +225,23 @@ EOF
 
     [[ "$status" -eq 0 ]]
     [[ -z "$output" ]]
+}
+
+@test "sourcing fails closed when the version validation helper is absent" {
+    local missing_root="$BATS_TEST_TMPDIR/missing-helper"
+    mkdir -p "$missing_root/scripts"
+    cp "$PROJECT_ROOT/scripts/cleanup-old-versions.sh" "$missing_root/scripts/cleanup-old-versions.sh"
+
+    run env -u VERSION_RECORD_VALIDATION_JQ bash -c '
+        set +e
+        source "$1"
+        source_status=$?
+        ! declare -F purge_container >/dev/null
+        [[ "$source_status" -ne 0 ]]
+    ' _ "$missing_root/scripts/cleanup-old-versions.sh"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Failed to source version record validation helper: $missing_root/helpers/version-record-validation.sh"* ]]
 }
 
 teardown() {
@@ -272,7 +290,7 @@ teardown() {
     [[ "$(<"$GH_LOG")" == *"/versions/101"* ]]
 }
 
-@test "an invalid later date attempts no DELETE for the package" {
+@test "an invalid later created_at attempts no DELETE for the package" {
     cat > "$STUB_DIR/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -283,8 +301,8 @@ if [[ "$*" == *"--method DELETE"* ]]; then
 fi
 
 printf '%s\n' '[
-  {"id":101,"metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"},
-  {"id":102,"metadata":{"container":{"tags":[]}},"created_at":"not-a-date"}
+  {"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"},
+  {"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}},"created_at":"not-a-date"}
 ]'
 EOF
     chmod +x "$STUB_DIR/gh"
@@ -301,7 +319,7 @@ EOF
 
     assert_no_delete_attempts "$GH_LOG"
     [[ "$status" -eq 1 ]]
-    assert_output_reports_invalid_date
+    assert_output_reports_invalid_created_at
     [[ "$output" == *"Packages assessed: 0"* ]]
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
 }
@@ -359,7 +377,7 @@ EOF
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
-                printf "%s\\n" "[{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"v1.2.3\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"v1.2.3\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
             }
             jq() {
                 if [[ "${!#}" == ".tags[]" ]]; then echo "jq: tag decode exhausted" >&2; return 1; fi
@@ -388,7 +406,7 @@ EOF
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
-                printf "%s\\n" "[{\"id\":101,\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
             }
             base64() {
                 calls=0; [[ -f "$BASE64_CALLS" ]] && calls=$(<"$BASE64_CALLS")
@@ -404,4 +422,185 @@ EOF
     [[ "$(<"$GH_LOG")" != *"/versions/102"* ]]
     assert_prepared_decode_preserves_delete_totals
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+}
+
+run_old_version_validation_case() {
+    local response_json="$1"
+    local expected_field="$2"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        RESPONSE_JSON="$response_json" \
+        GH_LOG="$GH_LOG" \
+        GH_TOKEN="test-token" \
+        OWNER="test-owner" \
+        DRY_RUN="false" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "%s\n" "$*" >> "$GH_LOG"; return 0; fi
+                printf "%s\n" "$RESPONSE_JSON"
+            }
+            main malformed
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"validation failed: $expected_field"* ]]
+    [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+    [[ ! -s "$GH_LOG" ]]
+}
+
+@test "age cleanup maps jq exit 5 to 14 and jq exit 137 to 11" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="test-token" \
+        OWNER="test-owner" \
+        CUTOFF_DATE="2000-01-01T00:00:00Z" \
+        bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
+            gh() { printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"; }
+            purge_container malformed
+        '
+
+    [[ "$status" -eq 14 ]]
+
+    local real_jq
+    real_jq="$(command -v jq)"
+    cat > "$STUB_DIR/jq" <<'EOF'
+#!/usr/bin/env bash
+for argument in "$@"; do
+    [[ "$argument" == *"validate_old_versions"* ]] && exit 137
+done
+exec "$REAL_JQ" "$@"
+EOF
+    chmod +x "$STUB_DIR/jq"
+
+    run env \
+        PATH="$STUB_DIR:$PATH" \
+        REAL_JQ="$real_jq" \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="test-token" \
+        OWNER="test-owner" \
+        CUTOFF_DATE="2000-01-01T00:00:00Z" \
+        bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
+            gh() { printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"; }
+            purge_container validator-killed
+        '
+
+    [[ "$status" -eq 11 ]]
+    [[ "$output" == *"Version validator could not run"* ]]
+}
+
+@test "age cleanup validation entry point rejects non-arrays and accepts an empty array" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" bash -c '
+        set -euo pipefail
+        source "$PROJECT_ROOT/helpers/version-record-validation.sh"
+        for versions in null "{}" "\"\""; do
+            if validation_error=$(jq -er "$VERSION_RECORD_VALIDATION_JQ validate_old_versions" <<< "$versions" 2>&1 >/dev/null); then
+                exit 1
+            else
+                validation_status=$?
+            fi
+            [[ "$validation_status" -eq 5 ]]
+            [[ "$validation_error" == *"validation failed: versions must be an array"* ]]
+        done
+        jq -er "$VERSION_RECORD_VALIDATION_JQ validate_old_versions" <<< "[]" | grep -qx true
+    '
+
+    [[ "$status" -eq 0 ]]
+}
+
+@test "age cleanup accepts canonical numeric and string IDs with empty tags" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="test-token" \
+        OWNER="test-owner" \
+        DRY_RUN="true" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            gh() {
+                [[ "$*" == *"--method DELETE"* ]] && return 1
+                printf "%s\n" "[{\"id\":1,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":\"2\",\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+            }
+            main valid
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Packages skipped (processing failed): 0"* ]]
+}
+
+@test "age cleanup rejects invalid digest and IDs before any deletion" {
+    run_old_version_validation_case \
+        '[{"id":101,"name":"sha256:not-a-digest","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]' \
+        'versions[0].name is invalid'
+    run_old_version_validation_case \
+        '[{"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]' \
+        'versions[0].id is missing'
+    run_old_version_validation_case \
+        '[{"id":0,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]' \
+        'versions[0].id is invalid'
+    run_old_version_validation_case \
+        '[{"id":-1,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]' \
+        'versions[0].id is invalid'
+    run_old_version_validation_case \
+        '[{"id":"abc","name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]' \
+        'versions[0].id is invalid'
+    run_old_version_validation_case \
+        '[{"id":"01","name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]' \
+        'versions[0].id is invalid'
+    run_old_version_validation_case \
+        '[{"id":1.0,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]' \
+        'versions[0].id is invalid'
+    run_old_version_validation_case \
+        '[{"id":1e3,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]' \
+        'versions[0].id is invalid'
+}
+
+@test "age cleanup rejects duplicate normalized IDs before any deletion" {
+    run_old_version_validation_case \
+        '[{"id":1,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"},{"id":"1","name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]' \
+        'versions[1].id duplicates an earlier value at versions[0]'
+    run_old_version_validation_case \
+        '[{"id":1,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"},{"id":"01","name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]' \
+        'versions[1].id is invalid'
+}
+
+@test "age cleanup rejects malformed and trailing-newline RFC3339 timestamps before any deletion" {
+    run_old_version_validation_case \
+        '[{"id":1,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"1 year ago"}]' \
+        'versions[0].created_at is invalid'
+    run_old_version_validation_case \
+        '[{"id":1,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"not-a-date"}]' \
+        'versions[0].created_at is invalid'
+    run_old_version_validation_case \
+        '[{"id":1,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":""}]' \
+        'versions[0].created_at is invalid'
+    run_old_version_validation_case \
+        '[{"id":1,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2026-08-22T08:01:12"}]' \
+        'versions[0].created_at is invalid'
+    run_old_version_validation_case \
+        '[{"id":1,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2026-08-22T08:01:12Z\n"}]' \
+        'versions[0].created_at is invalid'
+}
+
+@test "age cleanup accepts the measured RFC3339 created_at shape" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" bash -c '
+        set -euo pipefail
+        source "$PROJECT_ROOT/helpers/version-record-validation.sh"
+        jq -e "$VERSION_RECORD_VALIDATION_JQ validate_old_versions" <<'\''JSON'\''
+[{"id":1,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2026-08-22T08:01:12Z"}]
+JSON
+    '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "true" ]]
 }
