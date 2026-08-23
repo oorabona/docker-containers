@@ -701,6 +701,7 @@ MOCK
         ! IFS=' ' read -r reported_pid reported_pgid identity_extra < "$RUNNER_IDENTITY_FILE" || \
         [[ ! "$reported_pid" =~ ^[1-9][0-9]*$ ]] || \
         [[ ! "$reported_pgid" =~ ^[1-9][0-9]*$ ]] || \
+        [[ "$reported_pid" != "$reported_pgid" ]] || \
         [[ -n "$identity_extra" ]]; then
         echo "Could not establish runner process group from its session handshake" >&2
         local teardown_status=0
@@ -708,8 +709,11 @@ MOCK
         [[ $teardown_status -ne 0 && -d "$WORK_DIR" ]] || return 1
         return 1
     fi
-    # The recorded group must not be Bats' group.  This catches any regression
-    # that reintroduces parent-side process-group discovery.
+    # A Linux setsid session leader owns its process group, so the handshake
+    # must report matching PID and PGID.  Reject non-POSIX setsid behaviour
+    # rather than signal a positive group the child does not own.
+    # The recorded group must also not be Bats' group.  This catches any
+    # regression that reintroduces parent-side process-group discovery.
     local bats_pgid
     bats_pgid=$(ps -o pgid= -p "$BASHPID") || return 1
     bats_pgid=${bats_pgid//[[:space:]]/}
@@ -850,6 +854,19 @@ MOCK
     [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
 }
 
+@test "runner group state reports absent when fixture contains no group member" {
+    _write_mock_kill_sequence 'absent'
+
+    local proc_fixture="$WORK_DIR/proc-fixture"
+    mkdir -p "$proc_fixture/991"
+    printf '%s\n' '991 (runner test) S 1 999999 1 1 0' > "$proc_fixture/991/stat"
+
+    local state_status=0
+    RUNNER_PROC_ROOT="$proc_fixture" _runner_group_state 424242 || state_status=$?
+    [[ $state_status -eq 1 ]]
+    [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
+}
+
 @test "cleanup fails and retains workspace when a probe is unknown" {
     _write_mock_kill_sequence 'unknown'
 
@@ -940,6 +957,7 @@ MOCK
     chmod +x "$BIN_DIR/id"
     cat > "$BIN_DIR/gosu" <<MOCK
 #!/usr/bin/env bash
+printf '%s\\n' "\$\$" > "$WORK_DIR/gosu-pid.log"
 printf '%s\\n' "\$@" > "$WORK_DIR/gosu-args.log"
 MOCK
     chmod +x "$BIN_DIR/gosu"
@@ -950,12 +968,13 @@ exit 0
 MOCK
     chmod +x "$RUNNER_WORK/config.sh"
 
-    run bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT' 2>&1"
+    run bash -c "cd '$RUNNER_WORK' && printf '%s\\n' \"\$\$\" > '$WORK_DIR/entrypoint-pid.log'; exec bash '$ENTRYPOINT' 2>&1"
     [ "$status" -eq 0 ]
-    [ "$(sed -n '1p' "$WORK_DIR/gosu-args.log")" = "runner" ]
-    [ "$(sed -n '2p' "$WORK_DIR/gosu-args.log")" = "$ENTRYPOINT" ]
-    # A returning gosu mock is the last process.  If exec is dropped, the
-    # entrypoint reaches config.sh and creates this marker.
+    printf '%s\n' runner "$ENTRYPOINT" > "$WORK_DIR/expected-gosu-args.log"
+    cmp -s "$WORK_DIR/expected-gosu-args.log" "$WORK_DIR/gosu-args.log"
+    # exec replaces the entrypoint shell with gosu, preserving its PID.  A
+    # plain `gosu ...; exit $?` runs the mock as a child with a different PID.
+    cmp -s "$WORK_DIR/entrypoint-pid.log" "$WORK_DIR/gosu-pid.log"
     [[ ! -e "$WORK_DIR/entrypoint-continued-after-gosu" ]]
 }
 
@@ -974,17 +993,17 @@ MOCK
     chmod +x "$BIN_DIR/id"
     cat > "$BIN_DIR/gosu" <<MOCK
 #!/usr/bin/env bash
+printf '%s\\n' "\$\$" > "$WORK_DIR/gosu-pid.log"
 printf '%s\\n' "\$@" > "$WORK_DIR/gosu-args.log"
 MOCK
     chmod +x "$BIN_DIR/gosu"
 
-    run bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT' --ephemeral --labels linux 2>&1"
+    run bash -c "cd '$RUNNER_WORK' && printf '%s\\n' \"\$\$\" > '$WORK_DIR/entrypoint-pid.log'; exec bash '$ENTRYPOINT' --ephemeral --labels 'linux x' '*' 2>&1"
     [ "$status" -eq 0 ]
-    [ "$(sed -n '1p' "$WORK_DIR/gosu-args.log")" = "runner" ]
-    [ "$(sed -n '2p' "$WORK_DIR/gosu-args.log")" = "$ENTRYPOINT" ]
-    [ "$(sed -n '3p' "$WORK_DIR/gosu-args.log")" = "--ephemeral" ]
-    [ "$(sed -n '4p' "$WORK_DIR/gosu-args.log")" = "--labels" ]
-    [ "$(sed -n '5p' "$WORK_DIR/gosu-args.log")" = "linux" ]
+    # The space and literal glob ensure an unquoted $@ is rejected as well.
+    printf '%s\n' runner "$ENTRYPOINT" --ephemeral --labels 'linux x' '*' > "$WORK_DIR/expected-gosu-args.log"
+    cmp -s "$WORK_DIR/expected-gosu-args.log" "$WORK_DIR/gosu-args.log"
+    cmp -s "$WORK_DIR/entrypoint-pid.log" "$WORK_DIR/gosu-pid.log"
 }
 
 # ---------------------------------------------------------------------------
