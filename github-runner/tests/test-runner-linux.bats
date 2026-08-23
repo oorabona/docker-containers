@@ -7,6 +7,11 @@
 # Setup / Teardown
 # ---------------------------------------------------------------------------
 
+# These are the production-equivalent defaults.  Individual tests can shorten
+# the waits with RUNNER_TERM_GRACE_SECONDS and RUNNER_KILL_CONFIRMATION_SECONDS.
+RUNNER_TERM_GRACE_SECONDS_DEFAULT=6
+RUNNER_KILL_CONFIRMATION_SECONDS_DEFAULT=1
+
 setup() {
     TEST_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
     RUNNER_DIR="$(cd "$TEST_DIR/.." && pwd)"
@@ -245,7 +250,17 @@ _runner_group_state() {
 
     for stat_file in "${RUNNER_PROC_ROOT:-/proc}"/[0-9]*/stat; do
         [[ -e "$stat_file" ]] || continue
-        stat_line=$(<"$stat_file") || return 2
+        # Tests use this hook to deterministically model a process exiting
+        # after globbing /proc and before stat can be read.
+        if [[ -n "${RUNNER_PROC_BEFORE_STAT_READ:-}" ]]; then
+            "$RUNNER_PROC_BEFORE_STAT_READ" "$stat_file" || return 2
+        fi
+        if ! stat_line=$(command cat -- "$stat_file" 2>/dev/null); then
+            # A process can normally exit in this small window.  The vanished
+            # entry is absence, unlike a stat file that remains unreadable.
+            [[ -e "$stat_file" ]] || continue
+            return 2
+        fi
         # Fields after the final ')' are: state (3), ppid (4), pgrp (5), ... .
         rest="${stat_line##*) }"
         read -r state ppid stat_pgid ignored <<<"$rest"
@@ -284,16 +299,25 @@ _reap_absent_runner_leader() {
 }
 
 # Stop a runner session without deleting its workspace while a descendant may
-# still be using it.  The six-second TERM grace exceeds the five-second
-# readiness window; KILL confirmation is limited to one second.
+# still be using it.  The six-second TERM grace and one-second KILL
+# confirmation are requested-wait budgets, not fixed poll counts.  Tests may
+# inject shorter deadlines without changing the production defaults.
 _cleanup_runner_group() {
     local pgid="${1:-}"
-    local term_waited=0
-    local kill_waited=0
+    local term_grace_seconds="${RUNNER_TERM_GRACE_SECONDS:-$RUNNER_TERM_GRACE_SECONDS_DEFAULT}"
+    local kill_confirmation_seconds="${RUNNER_KILL_CONFIRMATION_SECONDS:-$RUNNER_KILL_CONFIRMATION_SECONDS_DEFAULT}"
+    local term_grace_tenths=0
+    local kill_confirmation_tenths=0
+    local term_waited_tenths=0
+    local kill_waited_tenths=0
     local group_state=0
     local grace_failed=0
 
     [[ -z "$pgid" ]] && return 0
+    [[ "$term_grace_seconds" =~ ^[0-9]+$ ]] || return 1
+    [[ "$kill_confirmation_seconds" =~ ^[0-9]+$ ]] || return 1
+    term_grace_tenths=$((term_grace_seconds * 10))
+    kill_confirmation_tenths=$((kill_confirmation_seconds * 10))
 
     if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
     if [[ $group_state -eq 1 ]]; then
@@ -303,7 +327,7 @@ _cleanup_runner_group() {
     [[ $group_state -eq 0 ]] || return 1
 
     env kill -TERM -- "-$pgid" 2>/dev/null || true
-    while [[ $term_waited -lt 60 ]]; do
+    while [[ $term_waited_tenths -lt $term_grace_tenths ]]; do
         if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
         [[ $group_state -eq 1 ]] && break
         [[ $group_state -eq 0 ]] || return 1
@@ -311,15 +335,20 @@ _cleanup_runner_group() {
             grace_failed=1
             break
         fi
-        term_waited=$((term_waited + 1))
+        term_waited_tenths=$((term_waited_tenths + 1))
     done
 
     if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
-    if [[ $grace_failed -eq 1 || $group_state -ne 1 ]]; then
-        env kill -KILL -- "-$pgid" 2>/dev/null || true
+    if [[ $group_state -eq 1 ]]; then
+        _reap_absent_runner_leader "$pgid" || return 1
+        [[ $grace_failed -eq 0 ]]
+        return
     fi
+    # Escalation requires positive evidence that the group still exists.
+    [[ $group_state -eq 0 ]] || return 1
+    env kill -KILL -- "-$pgid" 2>/dev/null || true
 
-    while [[ $kill_waited -lt 10 ]]; do
+    while [[ $kill_waited_tenths -lt $kill_confirmation_tenths ]]; do
         if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
         [[ $group_state -eq 1 ]] && break
         [[ $group_state -eq 0 ]] || return 1
@@ -327,7 +356,7 @@ _cleanup_runner_group() {
             grace_failed=1
             break
         fi
-        kill_waited=$((kill_waited + 1))
+        kill_waited_tenths=$((kill_waited_tenths + 1))
     done
 
     if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
@@ -335,6 +364,17 @@ _cleanup_runner_group() {
     _reap_absent_runner_leader "$pgid" || return 1
 
     [[ $grace_failed -eq 0 ]]
+}
+
+# Keep RUNNER_PGID empty until the child-reported group is known not to be the
+# Bats harness group.  Teardown relies on that empty value to preserve rather
+# than signal a workspace whose session identity was rejected.
+_record_validated_runner_pgid() {
+    local reported_pgid="$1"
+    local bats_pgid="$2"
+
+    [[ "$reported_pgid" != "$bats_pgid" ]] || return 1
+    RUNNER_PGID="$reported_pgid"
 }
 
 # ---------------------------------------------------------------------------
@@ -622,12 +662,11 @@ MOCK
     # may be the transient PID returned by the parent-side background launch.
     [[ "$reported_pid" == "$reported_pgid" ]]
     [[ "$reported_pgid" != "$launch_pid" ]]
-    RUNNER_PGID="$reported_pgid"
 
     local bats_pgid
     bats_pgid=$(ps -o pgid= -p "$BASHPID") || return 1
     bats_pgid=${bats_pgid//[[:space:]]/}
-    [[ "$RUNNER_PGID" != "$bats_pgid" ]]
+    _record_validated_runner_pgid "$reported_pgid" "$bats_pgid" || return 1
 
     local waited=0
     while [[ ! -f "$WORK_DIR/runner-started" ]] && [[ $waited -lt 50 ]]; do
@@ -640,6 +679,33 @@ MOCK
         return 1
     fi
     RUNNER_PGID=""
+    RUNNER_LAUNCH_ATTEMPTED=0
+}
+
+@test "rejecting Bats' process group leaves runner identity empty for teardown" {
+    RUNNER_LAUNCH_ATTEMPTED=1
+
+    local bats_pgid
+    bats_pgid=$(ps -o pgid= -p "$BASHPID") || return 1
+    bats_pgid=${bats_pgid//[[:space:]]/}
+    [[ "$bats_pgid" =~ ^[1-9][0-9]*$ ]]
+
+    if _record_validated_runner_pgid "$bats_pgid" "$bats_pgid"; then
+        return 1
+    fi
+    # Clear only for the deliberately-mutated refusal path, before Bats runs
+    # teardown; the production invariant itself is that this is already empty.
+    if [[ -n "$RUNNER_PGID" ]]; then
+        RUNNER_PGID=""
+        RUNNER_LAUNCH_ATTEMPTED=0
+        return 1
+    fi
+
+    local teardown_status=0
+    teardown || teardown_status=$?
+    [[ $teardown_status -ne 0 && -d "$WORK_DIR" ]]
+
+    # Bats invokes teardown again after this test; now allow normal removal.
     RUNNER_LAUNCH_ATTEMPTED=0
 }
 
@@ -720,12 +786,7 @@ MOCK
     if [[ ! "$bats_pgid" =~ ^[1-9][0-9]*$ || "$reported_pgid" == "$bats_pgid" ]]; then
         return 1
     fi
-    RUNNER_PGID="$reported_pgid"
-    if [[ "$RUNNER_PGID" == "$bats_pgid" ]]; then
-        # Do not let teardown signal Bats' own group if this guard regresses.
-        RUNNER_PGID=""
-        return 1
-    fi
+    _record_validated_runner_pgid "$reported_pgid" "$bats_pgid" || return 1
 
     # Wait for runner to start (max 5s).
     local waited=0
@@ -801,7 +862,6 @@ MOCK
 
 @test "cleanup fails and retains workspace when probes stay present" {
     _write_mock_kill_sequence 'present'
-    RUNNER_REAL_SLEEP="$BIN_DIR/sleep"
 
     local cleanup_status=0
     _cleanup_runner_group 424242 || cleanup_status=$?
@@ -813,7 +873,6 @@ MOCK
 
 @test "teardown retains workspace when cleanup cannot prove group extinction" {
     _write_mock_kill_sequence 'present'
-    RUNNER_REAL_SLEEP="$BIN_DIR/sleep"
     RUNNER_PGID=424242
 
     local teardown_status=0
@@ -867,18 +926,39 @@ MOCK
     [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
 }
 
-@test "cleanup fails and retains workspace when a probe is unknown" {
-    _write_mock_kill_sequence 'unknown'
+@test "runner group state treats a stat entry that vanishes during enumeration as absent" {
+    _write_mock_kill_sequence 'absent'
+
+    local proc_fixture="$WORK_DIR/proc-fixture"
+    mkdir -p "$proc_fixture/991"
+    printf '%s\n' '991 (runner test) S 1 424242 1 1 0' > "$proc_fixture/991/stat"
+    cat > "$BIN_DIR/remove-stat-before-read" <<'MOCK'
+#!/usr/bin/env bash
+rm -f -- "$1"
+MOCK
+    chmod +x "$BIN_DIR/remove-stat-before-read"
+
+    local state_status=0
+    RUNNER_PROC_ROOT="$proc_fixture" \
+        RUNNER_PROC_BEFORE_STAT_READ="$BIN_DIR/remove-stat-before-read" \
+        _runner_group_state 424242 || state_status=$?
+    [[ $state_status -eq 1 ]]
+    [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
+}
+
+@test "cleanup does not KILL when final group confirmation is unknown" {
+    _write_mock_kill_sequence $'present\nabsent\nunknown'
 
     local cleanup_status=0
     _cleanup_runner_group 424242 || cleanup_status=$?
 
     [[ $cleanup_status -ne 0 ]]
     [[ -d "$WORK_DIR" ]]
-    [[ ! -f "$WORK_DIR/kill-signals.log" ]]
+    grep -q -- '-TERM' "$WORK_DIR/kill-signals.log"
+    [[ ! -f "$WORK_DIR/kill-signals.log" ]] || ! grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
 }
 
-@test "cleanup fails after a failed grace period even when KILL proves absence" {
+@test "cleanup fails after a failed grace period when a later probe proves absence" {
     _write_mock_kill_sequence $'present\npresent\nabsent'
     cat > "$BIN_DIR/failing-real-sleep" <<'MOCK'
 #!/usr/bin/env bash
@@ -892,6 +972,48 @@ MOCK
 
     [[ $cleanup_status -ne 0 ]]
     [[ -d "$WORK_DIR" ]]
+    [[ ! -f "$WORK_DIR/kill-signals.log" ]] || ! grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
+}
+
+@test "cleanup deadline defaults remain the documented grace periods" {
+    unset RUNNER_TERM_GRACE_SECONDS RUNNER_KILL_CONFIRMATION_SECONDS
+
+    [[ $RUNNER_TERM_GRACE_SECONDS_DEFAULT -eq 6 ]]
+    [[ $RUNNER_KILL_CONFIRMATION_SECONDS_DEFAULT -eq 1 ]]
+}
+
+@test "cleanup TERM grace requests the injected duration rather than a fixed poll count" {
+    cat > "$BIN_DIR/recording-real-sleep" <<MOCK
+#!/usr/bin/env bash
+printf '%s\\n' "\$1" >> "$WORK_DIR/requested-sleeps.log"
+MOCK
+    chmod +x "$BIN_DIR/recording-real-sleep"
+    RUNNER_REAL_SLEEP="$BIN_DIR/recording-real-sleep"
+    RUNNER_KILL_CONFIRMATION_SECONDS=1
+
+    cat > "$BIN_DIR/kill-until-kill" <<MOCK
+#!/usr/bin/env bash
+if [[ "\$1" == "-0" ]]; then
+    [[ -f "$WORK_DIR/kill-seen" ]] && exit 1
+    exit 0
+fi
+echo "\$1" >> "$WORK_DIR/kill-signals.log"
+[[ "\$1" == "-KILL" ]] && touch "$WORK_DIR/kill-seen"
+exit 0
+MOCK
+    chmod +x "$BIN_DIR/kill-until-kill"
+    mv "$BIN_DIR/kill-until-kill" "$BIN_DIR/kill"
+
+    local term_grace_seconds requested_tenths
+    for term_grace_seconds in 1 2; do
+        rm -f "$WORK_DIR/kill-seen" "$WORK_DIR/requested-sleeps.log"
+        RUNNER_TERM_GRACE_SECONDS="$term_grace_seconds"
+        _cleanup_runner_group 424242
+
+        requested_tenths=$(awk -F. '{ tenths += ($1 * 10) + substr(($2 "0"), 1, 1) } END { print tenths + 0 }' "$WORK_DIR/requested-sleeps.log")
+        [[ $requested_tenths -eq $((term_grace_seconds * 10)) ]]
+    done
+    grep -q -- '-TERM' "$WORK_DIR/kill-signals.log"
     grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
 }
 
