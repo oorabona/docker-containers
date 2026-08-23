@@ -243,6 +243,7 @@ _runner_group_state() {
     local pgid="${1:-}"
     local probe_status=0
     local stat_file stat_line state ppid stat_pgid ignored rest
+    local -a stat_lines
 
     _runner_pgid_is_valid "$pgid" || return 2
 
@@ -262,13 +263,14 @@ _runner_group_state() {
         if [[ -n "${RUNNER_PROC_BEFORE_STAT_READ:-}" ]]; then
             "$RUNNER_PROC_BEFORE_STAT_READ" "$stat_file" || return 2
         fi
-        stat_line=""
-        if ! IFS= read -r stat_line < "$stat_file" && [[ -z "$stat_line" ]]; then
+        stat_lines=()
+        if ! mapfile -t stat_lines < "$stat_file"; then
             # A process can normally exit in this small window.  The vanished
             # entry is absence, unlike a stat file that remains unreadable.
             [[ -e "$stat_file" ]] || continue
             return 2
         fi
+        stat_line=$(printf '%s\n' "${stat_lines[@]}")
         # Fields after the final ')' are: state (3), ppid (4), pgrp (5), ... .
         rest="${stat_line##*) }"
         read -r state ppid stat_pgid ignored <<<"$rest"
@@ -280,39 +282,51 @@ _runner_group_state() {
 }
 
 # A group proven absent cannot contain a running leader, so wait can only reap
-# the already-dead child.  The watchdog caps that reap instead of relying on
-# wait's expected immediate return.
+# the already-dead child.  The watchdog interrupts that reap after one second;
+# if its sleep fails, it reports the failure, interrupts the reap, and fails
+# closed rather than silently removing the watchdog.
 _reap_absent_runner_leader() {
     local pgid="$1"
     local timed_out=0
     local parent_pid="$BASHPID"
     local watchdog_pid
+    local watchdog_status=0
+    local watchdog_cancelled=0
     local saved_usr1_trap
 
     saved_usr1_trap=$(trap -p USR1 || true)
     trap 'timed_out=1' USR1
-    ( command "$REAL_SLEEP" 1 && kill -USR1 "$parent_pid" 2>/dev/null ) &
+    (
+        if ! command "$REAL_SLEEP" 1; then
+            echo "Runner reap watchdog sleep failed" >&2
+            kill -USR1 "$parent_pid" 2>/dev/null || true
+            exit 1
+        fi
+        kill -USR1 "$parent_pid" 2>/dev/null || exit 1
+    ) &
     watchdog_pid=$!
 
     wait "$pgid" 2>/dev/null || true
-    kill "$watchdog_pid" 2>/dev/null || true
-    wait "$watchdog_pid" 2>/dev/null || true
+    if kill "$watchdog_pid" 2>/dev/null; then
+        watchdog_cancelled=1
+    fi
+    wait "$watchdog_pid" 2>/dev/null || watchdog_status=$?
     if [[ -n "$saved_usr1_trap" ]]; then
         eval "$saved_usr1_trap"
     else
         trap - USR1
     fi
 
-    [[ $timed_out -eq 0 ]]
+    [[ $timed_out -eq 0 && ( $watchdog_cancelled -eq 1 || $watchdog_status -eq 0 ) ]]
 }
 
 # Stop a runner session without deleting its workspace while a descendant may
-# still be using it.  TERM makes at most 60 polls and KILL confirmation at most
-# 10, sleeping 0.1 between polls that find a present group.  On an unloaded
-# host each phase is approximately its poll count times that sleep; a busy host
-# takes longer because probes take time.  These loose limits prevent teardown
-# from hanging: the cost is that a developer can wait a little longer, so no
-# precise wall-clock cutoff is built here.
+# still be using it.  After TERM there are at most 60 state probes, including
+# the final confirmation, and after KILL there are at most 10.  Each loop sleeps
+# 0.1 between probes that find a present group.  On an unloaded host each phase
+# is approximately its sleep count times that delay; a busy host takes longer
+# because probes take time.  The fixed counts prevent unbounded polling loops,
+# but a probe that never returns can still hang teardown regardless of them.
 _cleanup_runner_group() {
     local pgid="${1:-}"
     local term_polls=0
@@ -330,7 +344,7 @@ _cleanup_runner_group() {
     [[ $group_state -eq 0 ]] || return 1
 
     env kill -TERM -- "-$pgid" 2>/dev/null || true
-    while [[ $term_polls -lt 60 ]]; do
+    while [[ $term_polls -lt 59 ]]; do
         if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
         [[ $group_state -eq 1 ]] && break
         [[ $group_state -eq 0 ]] || return 1
@@ -351,7 +365,7 @@ _cleanup_runner_group() {
     [[ $group_state -eq 0 ]] || return 1
     env kill -KILL -- "-$pgid" 2>/dev/null || true
 
-    while [[ $kill_polls -lt 10 ]]; do
+    while [[ $kill_polls -lt 9 ]]; do
         if _runner_group_state "$pgid"; then group_state=0; else group_state=$?; fi
         [[ $group_state -eq 1 ]] && break
         [[ $group_state -eq 0 ]] || return 1
@@ -691,16 +705,15 @@ MOCK
 @test "rejecting Bats' process group leaves runner identity empty for teardown" {
     RUNNER_LAUNCH_ATTEMPTED=1
 
-    local bats_pgid validator_status=0 validated_pgid=""
+    local bats_pgid validator_status=0
     bats_pgid=$(ps -o pgid= -p "$BASHPID") || return 1
     bats_pgid=${bats_pgid//[[:space:]]/}
     [[ "$bats_pgid" =~ ^[1-9][0-9]*$ ]]
 
-    # Keep the rejected value local from the start: teardown never receives a
-    # group that a validator is still deciding whether to accept.
-    readonly RUNNER_PGID
-    _record_validated_runner_pgid "$bats_pgid" "$bats_pgid" validated_pgid || validator_status=$?
-    [[ $validator_status -ne 0 && -z "$validated_pgid" && -z "$RUNNER_PGID" ]]
+    # Use the production destination: teardown must receive no group when the
+    # validator rejects Bats' own process group.
+    _record_validated_runner_pgid "$bats_pgid" "$bats_pgid" RUNNER_PGID || validator_status=$?
+    [[ $validator_status -ne 0 && -z "$RUNNER_PGID" ]]
 
     local teardown_status=0
     teardown || teardown_status=$?
@@ -933,6 +946,19 @@ MOCK
     [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
 }
 
+@test "runner group state parses a newline in comm from the whole stat file" {
+    # A line read would stop before the closing parenthesis and reject this
+    # valid record.  Rejoining every mapfile element retains the embedded newline.
+    _write_mock_kill_sequence 'absent'
+
+    local proc_fixture="$WORK_DIR/proc-fixture"
+    mkdir -p "$proc_fixture/991"
+    printf '%s\n' '991 (runner' 'test) S 1 424242 1 1 0' > "$proc_fixture/991/stat"
+
+    RUNNER_PROC_ROOT="$proc_fixture" _runner_group_state 424242
+    [[ "$(cat "$WORK_DIR/kill-probe-count")" -eq 1 ]]
+}
+
 @test "runner group state reports absent when fixture contains no group member" {
     _write_mock_kill_sequence 'absent'
 
@@ -1004,10 +1030,20 @@ MOCK
     [[ ! -f "$WORK_DIR/kill-signals.log" ]] || ! grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
 }
 
+@test "cleanup fails closed when its initial group probe is unknown" {
+    _write_mock_kill_sequence 'unknown'
+
+    local cleanup_status=0
+    _cleanup_runner_group 424242 || cleanup_status=$?
+
+    [[ $cleanup_status -ne 0 ]]
+    [[ ! -f "$WORK_DIR/kill-signals.log" ]]
+}
+
 @test "cleanup retains the workspace when a KILL-confirmation probe is unknown" {
     local states="present"
     local poll
-    for ((poll = 1; poll < 62; poll++)); do
+    for ((poll = 1; poll < 61; poll++)); do
         states+=$'\npresent'
     done
     states+=$'\nunknown'
@@ -1037,6 +1073,27 @@ MOCK
     [[ $cleanup_status -ne 0 ]]
     [[ -d "$WORK_DIR" ]]
     [[ ! -f "$WORK_DIR/kill-signals.log" ]] || ! grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
+}
+
+@test "reap watchdog reports and fails closed when its sleep fails" {
+    local actual_sleep="$REAL_SLEEP"
+    "$actual_sleep" 5 &
+    local child_pid=$!
+
+    cat > "$BIN_DIR/failing-watchdog-sleep" <<'MOCK'
+#!/usr/bin/env bash
+exit 1
+MOCK
+    chmod +x "$BIN_DIR/failing-watchdog-sleep"
+    REAL_SLEEP="$BIN_DIR/failing-watchdog-sleep"
+
+    local reap_status=0
+    _reap_absent_runner_leader "$child_pid" 2>"$WORK_DIR/reap-watchdog.log" || reap_status=$?
+    kill "$child_pid" 2>/dev/null || true
+    wait "$child_pid" 2>/dev/null || true
+
+    [[ $reap_status -ne 0 ]]
+    grep -q 'Runner reap watchdog sleep failed' "$WORK_DIR/reap-watchdog.log"
 }
 
 # ---------------------------------------------------------------------------
