@@ -32,7 +32,7 @@ teardown() {
     PATH="$ORIGINAL_PATH"
     export PATH
     rm -rf "${_STUB_DIR:-}"
-    unset GH_TOKEN OWNER DRY_RUN _STUB_DIR ORIGINAL_PATH
+    unset GH_TOKEN OWNER DRY_RUN _STUB_DIR ORIGINAL_PATH ROOT_DIR
 }
 
 # ---------------------------------------------------------------------------
@@ -40,6 +40,40 @@ teardown() {
 # ---------------------------------------------------------------------------
 make_valid_tags() {
     printf '%s\n' "$@"
+}
+
+@test "build_valid_tags mirrors rolling aliases from Linux variants and Windows flavors" {
+    local root_dir="$BATS_TEST_TMPDIR/build-valid-tags-root"
+    mkdir -p "$root_dir"
+    export ROOT_DIR="$root_dir"
+    printf '%s\n' \
+        '#!/bin/bash' \
+        'if [[ "$1" == "list-builds" && "$2" == "github-runner" ]]; then' \
+        '  printf "%s\\n" '\''[{"version":"2.334.0","os":"windows","variant":"windows-ltsc2022-dev","tag":"2.334.0-windows-ltsc2022-dev","flavor":"windows-ltsc2022","is_default":false,"is_latest_version":true},{"version":"2.334.0","os":"linux","variant":"debian-trixie-base","tag":"2.334.0-debian-trixie-base","flavor":"debian-trixie","is_default":false,"is_latest_version":true},{"version":"2.334.0","os":"windows","variant":"","tag":"2.334.0","flavor":"windows-ltsc2025","is_default":true,"is_latest_version":true},{"version":"2.333.0","os":"windows","variant":"windows-ltsc2019-dev","tag":"2.333.0-windows-ltsc2019-dev","flavor":"windows-ltsc2019","is_default":false,"is_latest_version":false}]'\'' ' \
+        'fi' > "$root_dir/make"
+    chmod +x "$root_dir/make"
+
+    local valid_tags expected_tags
+    valid_tags=$(build_valid_tags "github-runner")
+    expected_tags=$(make_valid_tags \
+        "2.333.0-windows-ltsc2019-dev" \
+        "2.334.0" \
+        "2.334.0-debian-trixie-base" \
+        "2.334.0-windows-ltsc2022-dev" \
+        "buildcache" \
+        "latest" \
+        "latest-debian-trixie-base" \
+        "latest-windows-ltsc2022" \
+        "latest-windows-ltsc2022-dev")
+
+    [[ "$valid_tags" == "$expected_tags" ]]
+    is_valid_tag "latest-windows-ltsc2022" "$valid_tags"
+    is_valid_tag "latest-windows-ltsc2022-dev" "$valid_tags"
+    is_valid_tag "latest-debian-trixie-base" "$valid_tags"
+    ! is_valid_tag "latest-debian-trixie" "$valid_tags"
+    ! is_valid_tag "latest-windows-ltsc2025" "$valid_tags"
+    ! is_valid_tag "latest-nonexistent" "$valid_tags"
+    ! is_valid_tag "latest-windows-ltsc2019" "$valid_tags"
 }
 
 assert_tag_decode_failure_stops_before_delete() {
