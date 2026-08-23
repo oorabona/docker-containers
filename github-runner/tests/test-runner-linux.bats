@@ -15,11 +15,13 @@ setup() {
     # shell functions, and the resulting pathname does not depend on PATH.
     REAL_SLEEP="$(type -P sleep)"
     RUNNER_PGID=""
+    RUNNER_LAUNCH_ATTEMPTED=0
 
     # Temp workspace — every test gets an isolated directory
     WORK_DIR="$(mktemp -d)"
     BIN_DIR="$WORK_DIR/bin"
     RUNNER_WORK="$WORK_DIR/actions-runner"
+    RUNNER_IDENTITY_FILE="$WORK_DIR/runner-identity"
     mkdir -p "$BIN_DIR" "$RUNNER_WORK"
 
     # Prepend mock bin dir to PATH so our fakes win
@@ -99,6 +101,13 @@ MOCK
 }
 
 teardown() {
+    # An attempted launch without a validated group identity may still have a
+    # detached session using this workspace.  Retain it rather than guessing
+    # which group to signal or deleting files below a live runner.
+    if [[ "${RUNNER_LAUNCH_ATTEMPTED:-0}" == "1" && -z "${RUNNER_PGID:-}" ]]; then
+        echo "Runner session identity is unknown; preserving workspace: $WORK_DIR" >&2
+        return 1
+    fi
     if ! _cleanup_runner_group "${RUNNER_PGID:-}"; then
         return 1
     fi
@@ -213,27 +222,6 @@ _real_sleep() {
     command "${RUNNER_REAL_SLEEP:-$REAL_SLEEP}" "$@"
 }
 
-# Read the process group from procfs.  The comm field (between the first '('
-# and the final ')') may contain spaces and parentheses, so discard it before
-# counting the fields that follow it.
-_runner_pgid_from_proc() {
-    local pid="${1:-}"
-    local proc_root="${RUNNER_PROC_ROOT:-/proc}"
-    local stat_file stat_line rest state ppid pgid ignored
-
-    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-    stat_file="$proc_root/$pid/stat"
-    [[ -r "$stat_file" ]] || return 1
-    stat_line=$(<"$stat_file") || return 1
-
-    # Fields after the final ')' are: state (3), ppid (4), pgrp (5), ... .
-    rest="${stat_line##*) }"
-    read -r state ppid pgid ignored <<<"$rest"
-    [[ "$state" =~ ^[A-Z]$ && "$ppid" =~ ^[0-9]+$ && "$pgid" =~ ^[1-9][0-9]*$ && -n "$ignored" ]] || return 1
-
-    printf '%s\n' "$pgid"
-}
-
 # Return one of three states for a process group: 0 present, 1 absent, or 2
 # unknown.  A failed signal probe alone is never evidence of extinction: an
 # EPERM result has the same shell status as ESRCH.  /proc is available on the
@@ -261,7 +249,7 @@ _runner_group_state() {
         # Fields after the final ')' are: state (3), ppid (4), pgrp (5), ... .
         rest="${stat_line##*) }"
         read -r state ppid stat_pgid ignored <<<"$rest"
-        [[ "$state" =~ ^[A-Z]$ && "$ppid" =~ ^[0-9]+$ && "$stat_pgid" =~ ^[0-9]+$ && -n "$ignored" ]] || return 2
+        [[ "$state" =~ ^[RSDZTWXxKWPIt]$ && "$ppid" =~ ^[0-9]+$ && "$stat_pgid" =~ ^[0-9]+$ && -n "$ignored" ]] || return 2
         [[ "$stat_pgid" == "$pgid" ]] && return 0
     done
 
@@ -616,15 +604,55 @@ MOCK
     if [[ "${RUNNER_TEST_ENABLE_JOB_CONTROL:-0}" == "1" ]]; then
         set -m
     fi
-    command setsid bash -c "cd '$RUNNER_WORK' && bash '$ENTRYPOINT'" 2>"$LOG_FILE" &
-    local ep_pid=$!
-    if [[ "${RUNNER_TEST_ENABLE_JOB_CONTROL:-0}" == "1" ]]; then
-        # With job control, setsid may have already forked and exited.
+    export RUNNER_WORK ENTRYPOINT RUNNER_IDENTITY_FILE
+    RUNNER_LAUNCH_ATTEMPTED=1
+    command setsid bash -c '
+        identity_pid=$BASHPID
+        identity_pgid=$(ps -o pgid= -p "$identity_pid") || exit 1
+        identity_pgid=${identity_pgid//[[:space:]]/}
+        identity_tmp="${RUNNER_IDENTITY_FILE}.tmp"
+        printf "%s %s\\n" "$identity_pid" "$identity_pgid" > "$identity_tmp" &&
+            mv -f "$identity_tmp" "$RUNNER_IDENTITY_FILE" || exit 1
+        cd "$RUNNER_WORK" || exit 1
+        exec bash "$ENTRYPOINT"
+    ' 2>"$LOG_FILE" &
+
+    # The session-owning shell writes this atomically before it execs the
+    # entrypoint.  In particular, never infer a group from the parent-side
+    # launch PID: setsid may fork, and the parent can otherwise observe Bats'
+    # own process group.
+    local identity_waited=0
+    while [[ ! -f "$RUNNER_IDENTITY_FILE" ]] && [[ $identity_waited -lt 50 ]]; do
         _real_sleep 0.1 || return 1
+        identity_waited=$((identity_waited + 1))
+    done
+
+    local reported_pid=""
+    local reported_pgid=""
+    local identity_extra=""
+    if [[ ! -f "$RUNNER_IDENTITY_FILE" ]] || \
+        ! IFS=' ' read -r reported_pid reported_pgid identity_extra < "$RUNNER_IDENTITY_FILE" || \
+        [[ ! "$reported_pid" =~ ^[1-9][0-9]*$ ]] || \
+        [[ ! "$reported_pgid" =~ ^[1-9][0-9]*$ ]] || \
+        [[ -n "$identity_extra" ]]; then
+        echo "Could not establish runner process group from its session handshake" >&2
+        local teardown_status=0
+        teardown || teardown_status=$?
+        [[ $teardown_status -ne 0 && -d "$WORK_DIR" ]] || return 1
+        return 1
     fi
-    if ! RUNNER_PGID=$(_runner_pgid_from_proc "$ep_pid"); then
-        echo "Could not establish runner process group from /proc/$ep_pid/stat" >&2
-        _cleanup_runner_group "$ep_pid" || true
+    # The recorded group must not be Bats' group.  This catches any regression
+    # that reintroduces parent-side process-group discovery.
+    local bats_pgid
+    bats_pgid=$(ps -o pgid= -p "$BASHPID") || return 1
+    bats_pgid=${bats_pgid//[[:space:]]/}
+    if [[ ! "$bats_pgid" =~ ^[1-9][0-9]*$ || "$reported_pgid" == "$bats_pgid" ]]; then
+        return 1
+    fi
+    RUNNER_PGID="$reported_pgid"
+    if [[ "$RUNNER_PGID" == "$bats_pgid" ]]; then
+        # Do not let teardown signal Bats' own group if this guard regresses.
+        RUNNER_PGID=""
         return 1
     fi
 
@@ -636,7 +664,7 @@ MOCK
     done
     [[ -f "$WORK_DIR/runner-started" ]]
 
-    # Prove the procfs-derived group exists before signalling all its members.
+    # Prove the child-reported group exists before signalling all its members.
     if ! kill -0 -- "-$RUNNER_PGID"; then
         _cleanup_runner_group "$RUNNER_PGID" || true
         return 1
@@ -664,13 +692,12 @@ MOCK
     grep -q "Runner deregistered\." "$LOG_FILE"
 
     # A comm may itself contain spaces and parentheses.  The final ')' marks
-    # the start of the fields where pgrp is the third value.
+    # the start of the fields where pgrp is the third value.  Lowercase process
+    # states such as tracing stop are legal and must not invalidate the probe.
     local proc_fixture="$WORK_DIR/proc-fixture"
     mkdir -p "$proc_fixture/991"
-    printf '%s\n' '991 (runner test) name) S 1 4242 1 1 0' > "$proc_fixture/991/stat"
-    local fixture_pgid
-    fixture_pgid=$(RUNNER_PROC_ROOT="$proc_fixture" _runner_pgid_from_proc 991)
-    [ "$fixture_pgid" = "4242" ]
+    printf '%s\n' '991 (runner test) name) t 1 424242 1 1 0' > "$proc_fixture/991/stat"
+    RUNNER_PROC_ROOT="$proc_fixture" _runner_group_state 424242
 
 }
 
@@ -721,10 +748,8 @@ MOCK
     grep -q -- '-KILL' "$WORK_DIR/kill-signals.log"
 }
 
-@test "teardown retains workspace when cleanup cannot prove group extinction" {
-    _write_mock_kill_sequence 'present'
-    RUNNER_REAL_SLEEP="$BIN_DIR/sleep"
-    RUNNER_PGID=424242
+@test "teardown retains workspace when a launch has unknown identity" {
+    RUNNER_LAUNCH_ATTEMPTED=1
 
     local teardown_status=0
     teardown || teardown_status=$?
@@ -732,9 +757,9 @@ MOCK
     [[ $teardown_status -ne 0 ]]
     [[ -d "$WORK_DIR" ]]
 
-    # Bats invokes teardown again after this test.  Clear the synthetic group
+    # Bats invokes teardown again after this test.  Clear the launch marker
     # only after observing that this teardown left the workspace intact.
-    RUNNER_PGID=""
+    RUNNER_LAUNCH_ATTEMPTED=0
 }
 
 @test "cleanup fails and retains workspace when a probe is unknown" {
@@ -866,10 +891,10 @@ MOCK
 }
 
 # ---------------------------------------------------------------------------
-# Test 13: DooD socket — docker group membership check
+# Test 13: environment validation still registers a configured repo scope
 # ---------------------------------------------------------------------------
 
-@test "DooD: validate_env succeeds when docker socket would be mounted" {
+@test "configured Docker host does not alter registration validation" {
     export GITHUB_TOKEN="ghp_pattoken"
     export GITHUB_REPOSITORY="owner/repo"
     export DOCKER_HOST="unix:///var/run/docker.sock"
