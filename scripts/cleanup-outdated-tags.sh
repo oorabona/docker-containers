@@ -94,11 +94,12 @@ is_valid_tag() {
 purge_ghcr() {
   # 10 listing failure, 11 processing failure, 12 delete failure, 13 failure
   # after complete assessment, 14 uninterpretable record, and 15 protection
-  # failure. Replaying either completed deletion list is execution, so a replay
-  # failure returns 13.
+  # failure. 16 means an untagged record required the orphan assessment but it
+  # did not run. Replaying a completed deletion list is execution, so a replay
+  # failure otherwise returns 13.
   local container="$1" valid_tags="$2"
-  local versions version_count versions_file="" obsolete_file="" protected_file=""
-  local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 deletion_read_error=0 validation_error validation_status
+  local versions package_metadata version_count reported_version_count versions_file="" obsolete_file="" protected_file=""
+  local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 deletion_read_error=0 orphan_assessment_required=false incomplete_orphan_assessment=false validation_error validation_status
   local record_b64 record_json
   local protected_digests="" ghcr_token manifest children protection_result
   local -a kept_digests=()
@@ -121,7 +122,21 @@ purge_ghcr() {
   fi
   if ! version_count=$(jq -er 'length' <<< "$versions"); then
     echo "  ✗ Failed to count GHCR versions; skipping $container" >&2
-    return "$PROCESSING_FAILURE"
+    return "$LISTING_FAILURE"
+  fi
+  if ! package_metadata=$(gh api -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+      "/users/${OWNER}/packages/container/${container}"); then
+    echo "  ✗ Failed to get GHCR version count; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+  if ! reported_version_count=$(jq -c '.version_count' <<< "$package_metadata"); then
+    echo "  ✗ Failed to read GHCR package version_count; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+  if ! validation_error=$(jq -er --argjson reported_version_count "$reported_version_count" "$VERSION_RECORD_VALIDATION_JQ
+    validate_versions_listing_count(\$reported_version_count)" <<< "$versions" 2>&1 >/dev/null); then
+    echo "  ✗ GHCR version listing count does not agree with package version_count or version_count was invalid: ${validation_error##*validation failed: }; skipping $container" >&2
+    return "$LISTING_FAILURE"
   fi
   echo "  Found $version_count GHCR versions" >&2
   if [[ "$version_count" -eq 0 ]]; then
@@ -170,7 +185,10 @@ purge_ghcr() {
       echo "  ✗ Failed to read GHCR version record; skipping $container" >&2
       return "$PROCESSING_FAILURE"
     fi
-    [[ -z "$tags" ]] && continue
+    if [[ -z "$tags" ]]; then
+      orphan_assessment_required=true
+      continue
+    fi
     has_valid=false
     if ! tag_list=$(jq -r '.tags[]' <<< "$record_json"); then
       cleanup_files
@@ -213,8 +231,10 @@ purge_ghcr() {
         echo "  ✗ Failed to fetch manifest for ${digest:0:19}; skipping $container" >&2
         return "$PROTECTION_FAILURE"
       fi
-      if ! protection_result=$(jq -ce "$VERSION_RECORD_VALIDATION_JQ
-        manifest_protection_contract" <<< "$manifest" 2>&1); then
+      if ! protection_result=$(jq -ce -s "$VERSION_RECORD_VALIDATION_JQ
+        if length == 1 then .[0] | manifest_protection_contract
+        else error(\"GHCR manifest response must contain exactly one JSON value\")
+        end" <<< "$manifest" 2>&1); then
         cleanup_files
         echo "  ✗ Refused manifest protection for ${digest:0:19}: $protection_result; skipping $container" >&2
         return "$PROTECTION_FAILURE"
@@ -269,9 +289,20 @@ purge_ghcr() {
       return "$PROCESSING_FAILURE"
     fi
     cleanup_files
+    if [[ "$orphan_assessment_required" == true ]]; then
+      echo "  ✗ Orphan assessment skipped: a required orphan phase did not run; skipping $container" >&2
+      return "$INCOMPLETE_DELETION_FAILURE"
+    fi
     return "$POST_DELETE_PROCESSING_FAILURE"
   fi
 
+  if [[ "$delete_failures" -gt 0 ]]; then
+    : # A surviving obsolete parent may still reference its untagged children.
+    if [[ "$orphan_assessment_required" == true ]]; then
+      incomplete_orphan_assessment=true
+      echo "  ✗ Orphan assessment skipped: a required orphan phase did not run; skipping $container" >&2
+    fi
+  else
   while IFS= read -r record_b64; do
     [[ -z "$record_b64" ]] && continue
     if ! record_json=$(printf '%s' "$record_b64" | base64 -d) \
@@ -298,6 +329,7 @@ purge_ghcr() {
       orphans=$((orphans + 1))
     fi
   done < "$versions_file"
+  fi
   if [[ "$deletion_read_error" -ne 0 ]]; then
     if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
       cleanup_files
@@ -311,8 +343,10 @@ purge_ghcr() {
   fi
   if ! cleanup_files; then
     echo "  ✗ Failed to remove GHCR work files after cleanup" >&2
+    [[ "$incomplete_orphan_assessment" == true ]] && return "$INCOMPLETE_DELETION_FAILURE"
     return "$POST_DELETE_PROCESSING_FAILURE"
   fi
+  [[ "$incomplete_orphan_assessment" == true ]] && return "$INCOMPLETE_DELETION_FAILURE"
   [[ "$delete_failures" -eq 0 ]] || return "$DELETE_FAILURE"
 }
 
@@ -369,9 +403,8 @@ main() {
   ROOT_DIR=$(script_root) || return 1
   export ROOT_DIR
 
-  # 16 is reserved for a future partial-assessment producer; this plan-then-
-  # delete implementation deliberately has none, and replay failures are
-  # post-complete (13).
+  # 16 is fail-closed when the listing required an orphan assessment but a
+  # prior deletion failure or replay abort prevented that phase from running.
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
   local containers container valid_tags valid_count result ghcr_status dh_result dh_status
   local kept obsolete orphans delete_failures dh_assessed dh_deleted package_assessed skip_dockerhub
@@ -401,14 +434,14 @@ main() {
         fi ;;
       "$LISTING_FAILURE") total_listing_failures=$((total_listing_failures + 1)); skip_dockerhub=true ;;
       "$PROCESSING_FAILURE"|"$UNINTERPRETABLE_RECORD_FAILURE"|"$PROTECTION_FAILURE") total_processing_failures=$((total_processing_failures + 1)); skip_dockerhub=true ;;
-      # Reserved fail-closed status; see the declaration above.  A status 16
-      # caller has not supplied a completed assessment, so Docker Hub stays off.
+      # A status 16 caller has not supplied a completed assessment, so Docker
+      # Hub stays off.
       "$INCOMPLETE_DELETION_FAILURE")
         if ! IFS='|' read -r kept obsolete orphans delete_failures <<< "$result"; then
           echo "  ✗ Failed to read incomplete GHCR cleanup result; skipping $container"
         else
-          total_kept=$((total_kept + kept)); total_obsolete=$((total_obsolete + obsolete)); total_orphans=$((total_orphans + orphans)); total_ghcr_delete_failures=$((total_ghcr_delete_failures + delete_failures))
-          echo "  GHCR summary: kept=$kept, obsolete=$obsolete, orphans=$orphans, delete_failures=$delete_failures"
+          total_kept=$((total_kept + kept)); total_obsolete=$((total_obsolete + obsolete)); total_ghcr_delete_failures=$((total_ghcr_delete_failures + delete_failures))
+          echo "  GHCR summary: kept=$kept, obsolete=$obsolete, orphan phase not assessed, delete_failures=$delete_failures"
         fi
         total_processing_failures=$((total_processing_failures + 1)); skip_dockerhub=true
         ;;

@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 
 # Unit tests for scripts/cleanup-outdated-tags.sh
-# Focus: is_valid_tag — bake cache tag validity derived from underlying base tag
+# Focus: is_valid_tag — bake cache tag validity derived from underlying base tag;
+# GHCR manifest-protection contract and end-to-end deletion assertions
 
 # Source is_valid_tag from the script.  Sourcing is intentionally inert: it
 # defines functions only, so these tests do not need to arrange a fake main.
@@ -145,6 +146,7 @@ run_manifest_protection_refusal() {
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "0|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
             }
             curl() {
@@ -168,6 +170,287 @@ run_manifest_protection_refusal() {
         echo "ASSERTION FAILED: manifest protection refusal attempted a registry deletion" >&2
         return 1
     fi
+}
+
+run_outdated_tags_safety_case() {
+    local listing_json="$1"
+    local package_json="$2"
+    local manifest_body="$3"
+    local delete_failure_id="$4"
+    local gh_log="$_STUB_DIR/outdated-tags-safety-gh.log"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        LISTING_JSON="$listing_json" \
+        PACKAGE_JSON="$package_json" \
+        MANIFEST_BODY="$manifest_body" \
+        DELETE_FAILURE_ID="$delete_failure_id" \
+        GH_LOG="$gh_log" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DOCKERHUB_USERNAME="" \
+        DOCKERHUB_TOKEN="" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then
+                    printf "DELETE:%s\\n" "$*" >> "$GH_LOG"
+                    [[ -z "$DELETE_FAILURE_ID" || "$*" != *"/versions/$DELETE_FAILURE_ID"* ]] || return 1
+                    return 0
+                elif [[ "$*" == *"/versions"* ]]; then
+                    printf "%s\\n" "$LISTING_JSON"
+                else
+                    printf "%s\\n" "$PACKAGE_JSON"
+                fi
+            }
+            curl() {
+                if [[ "$*" == *"/token?"* ]]; then printf "%s\\n" "{\"token\":\"registry-token\"}"
+                elif [[ "$*" == *"/manifests/"* ]]; then printf "%s" "$MANIFEST_BODY"
+                else echo "unexpected curl: $*" >&2; return 1
+                fi
+            }
+            main stale
+        '
+}
+
+run_orphan_phase_completion_case() {
+    local listing_json="$1"
+    local delete_failure_id="$2"
+    local base64_abort_at="$3"
+    local gh_log="$_STUB_DIR/orphan-phase-gh.log"
+    local dockerhub_calls="$_STUB_DIR/orphan-phase-dockerhub.log"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        LISTING_JSON="$listing_json" \
+        DELETE_FAILURE_ID="$delete_failure_id" \
+        BASE64_ABORT_AT="$base64_abort_at" \
+        GH_LOG="$gh_log" \
+        DOCKERHUB_CALLS="$dockerhub_calls" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then
+                    printf "DELETE:%s\\n" "$*" >> "$GH_LOG"
+                    [[ -z "$DELETE_FAILURE_ID" || "$*" != *"/versions/$DELETE_FAILURE_ID"* ]] || return 1
+                    return 0
+                fi
+                if [[ "$*" != *"/versions"* ]]; then
+                    printf "%s\\n" "{\"version_count\":$(command jq length <<< "$LISTING_JSON")}"
+                    return 0
+                fi
+                printf "%s\\n" "$LISTING_JSON"
+            }
+            base64() {
+                calls=0; [[ -f "$BASE64_CALLS" ]] && calls=$(<"$BASE64_CALLS")
+                calls=$((calls + 1)); printf "%s\\n" "$calls" > "$BASE64_CALLS"
+                [[ -z "$BASE64_ABORT_AT" || "$calls" -ne "$BASE64_ABORT_AT" ]] || { echo "base64: prepared record lost" >&2; return 1; }
+                command base64 "$@"
+            }
+            export BASE64_CALLS="$GH_LOG.base64-calls"
+            main stale
+        '
+}
+
+# ---------------------------------------------------------------------------
+# GHCR deletion safety: count-agreeing listing, completed parent deletion, one manifest
+# ---------------------------------------------------------------------------
+
+@test "an untagged record skipped after an obsolete DELETE failure is unassessed and skips Docker Hub" {
+    local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}}}]'
+    local gh_log="$_STUB_DIR/orphan-phase-gh.log"
+    local dockerhub_calls="$_STUB_DIR/orphan-phase-dockerhub.log"
+
+    run_orphan_phase_completion_case "$listing" 101 ''
+
+    [[ "$status" -eq 1 ]]
+    [[ "$(<"$gh_log")" == *"/versions/101"* ]]
+    [[ "$(<"$gh_log")" != *"/versions/102"* ]]
+    [[ ! -s "$dockerhub_calls" ]]
+    [[ "$output" == *"Orphan assessment skipped: a required orphan phase did not run"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=1"* ]]
+    [[ "$output" != *"GHCR summary: kept=0, obsolete=1, orphans="* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+    [[ "$output" == *"Docker Hub cleanup skipped: GHCR safety assessment was incomplete"* ]]
+}
+
+@test "an obsolete DELETE failure without an untagged record remains assessed and runs Docker Hub" {
+    local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}}}]'
+    local dockerhub_calls="$_STUB_DIR/orphan-phase-dockerhub.log"
+
+    run_orphan_phase_completion_case "$listing" 101 ''
+
+    [[ "$status" -eq 1 ]]
+    [[ -s "$dockerhub_calls" ]]
+    [[ "$output" != *"Orphan assessment skipped"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphans=0, delete_failures=1"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+}
+
+@test "an untagged record skipped after an obsolete replay abort is unassessed and skips Docker Hub" {
+    local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale-first"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":["stale-second"]}}},{"id":103,"name":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","metadata":{"container":{"tags":[]}}}]'
+    local gh_log="$_STUB_DIR/orphan-phase-gh.log"
+    local dockerhub_calls="$_STUB_DIR/orphan-phase-dockerhub.log"
+
+    run_orphan_phase_completion_case "$listing" '' 5
+
+    [[ "$status" -eq 1 ]]
+    [[ "$(<"$gh_log")" == *"/versions/101"* ]]
+    [[ "$(<"$gh_log")" != *"/versions/102"* ]]
+    [[ "$(<"$gh_log")" != *"/versions/103"* ]]
+    [[ ! -s "$dockerhub_calls" ]]
+    [[ "$output" == *"Orphan assessment skipped: a required orphan phase did not run"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=0"* ]]
+    [[ "$output" != *"GHCR summary: kept=0, obsolete=1, orphans="* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+}
+
+@test "an incomplete package does not add an unassessed orphan count to the run total" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DOCKERHUB_USERNAME="" \
+        DOCKERHUB_TOKEN="" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then
+                    [[ "$*" != *"/stale/versions/101"* ]]
+                    return
+                elif [[ "$*" == *"/stale/versions"* ]]; then
+                    printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
+                elif [[ "$*" == *"/complete/versions"* ]]; then
+                    printf "%s\\n" "[{\"id\":201,\"name\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}},{\"id\":202,\"name\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
+                else
+                    printf "%s\\n" "{\"version_count\":2}"
+                fi
+            }
+            main stale complete
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=1"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphans=1, delete_failures=0"* ]]
+    [[ "$output" == *"GHCR — kept: 0, obsolete: 2, orphans: 1"* ]]
+}
+
+@test "an obsolete replay abort without an untagged record remains assessed and runs Docker Hub" {
+    local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale-first"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":["stale-second"]}}}]'
+    local dockerhub_calls="$_STUB_DIR/orphan-phase-dockerhub.log"
+
+    run_orphan_phase_completion_case "$listing" '' 4
+
+    [[ "$status" -eq 1 ]]
+    [[ -s "$dockerhub_calls" ]]
+    [[ "$output" != *"Orphan assessment skipped"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphans=0, delete_failures=0"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+}
+
+@test "a completed GHCR assessment is assessed and runs Docker Hub" {
+    local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}}}]'
+    local dockerhub_calls="$_STUB_DIR/orphan-phase-dockerhub.log"
+
+    run_orphan_phase_completion_case "$listing" '' ''
+
+    [[ "$status" -eq 0 ]]
+    [[ -s "$dockerhub_calls" ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+}
+
+@test "purge_ghcr skips orphan deletion when an obsolete parent DELETE fails" {
+    local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}}}]'
+    local gh_log="$_STUB_DIR/outdated-tags-safety-gh.log"
+
+    run_outdated_tags_safety_case "$listing" '{"version_count":2}' '' 101
+
+    [[ "$status" -eq 1 ]]
+    [[ "$(<"$gh_log")" == *"/versions/101"* ]]
+    [[ "$(<"$gh_log")" != *"/versions/102"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=1"* ]]
+    [[ "$output" != *"GHCR summary: kept=0, obsolete=1, orphans="* ]]
+}
+
+@test "purge_ghcr deletes an orphan after all obsolete parent DELETEs succeed" {
+    local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}}}]'
+    local gh_log="$_STUB_DIR/outdated-tags-safety-gh.log"
+
+    run_outdated_tags_safety_case "$listing" '{"version_count":2}' '' ''
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(<"$gh_log")" == *"/versions/101"* ]]
+    [[ "$(<"$gh_log")" == *"/versions/102"* ]]
+}
+
+@test "purge_ghcr refuses a short listing before any deletion" {
+    local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}}}]'
+    local gh_log="$_STUB_DIR/outdated-tags-safety-gh.log"
+
+    run_outdated_tags_safety_case "$listing" '{"version_count":2}' '' ''
+
+    [[ "$status" -eq 1 ]]
+    [[ ! -s "$gh_log" ]]
+    [[ "$output" == *"GHCR version listing count does not agree with package version_count or version_count was invalid"* ]]
+}
+
+@test "purge_ghcr accepts a listing that matches the reported version_count" {
+    local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}}}]'
+    local gh_log="$_STUB_DIR/outdated-tags-safety-gh.log"
+
+    run_outdated_tags_safety_case "$listing" '{"version_count":2}' '' ''
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(<"$gh_log")" == *"/versions/101"* ]]
+    [[ "$(<"$gh_log")" == *"/versions/102"* ]]
+}
+
+@test "purge_ghcr refuses absent, null, and non-numeric package version_count values" {
+    local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}}}]'
+    local package_json gh_log
+
+    for package_json in '{}' '{"version_count":null}' '{"version_count":"1"}'; do
+        gh_log="$_STUB_DIR/outdated-tags-safety-gh.log"
+        run_outdated_tags_safety_case "$listing" "$package_json" '' ''
+        [[ "$status" -eq 1 ]]
+        [[ ! -s "$gh_log" ]]
+        [[ "$output" == *"GHCR version listing count does not agree with package version_count or version_count was invalid"* ]]
+    done
+}
+
+@test "purge_ghcr refuses a manifest response containing two JSON documents before DELETE" {
+    local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["latest"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":["stale"]}}}]'
+    local gh_log="$_STUB_DIR/outdated-tags-safety-gh.log"
+
+    run_outdated_tags_safety_case "$listing" '{"version_count":2}' '{"mediaType":"application/vnd.oci.image.manifest.v1+json"}
+{"mediaType":"application/vnd.oci.image.manifest.v1+json"}' ''
+
+    [[ "$status" -eq 1 ]]
+    [[ ! -s "$gh_log" ]]
+    [[ "$output" == *"must contain exactly one JSON value"* ]]
+}
+
+@test "purge_ghcr refuses an empty manifest response before DELETE" {
+    local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["latest"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":["stale"]}}}]'
+    local gh_log="$_STUB_DIR/outdated-tags-safety-gh.log"
+
+    run_outdated_tags_safety_case "$listing" '{"version_count":2}' '' ''
+
+    [[ "$status" -eq 1 ]]
+    [[ ! -s "$gh_log" ]]
+    [[ "$output" == *"must contain exactly one JSON value"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -246,6 +529,27 @@ run_manifest_protection_refusal() {
         "top-level Docker image manifest has a manifests field"
 }
 
+@test "purge_ghcr refuses a kept leaf manifest carrying a top-level subject object before DELETE" {
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.manifest.v1+json","subject":{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}' \
+        "top-level manifest has an unresolved subject"
+}
+
+@test "purge_ghcr refuses a kept index carrying a top-level subject before DELETE" {
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json","subject":{},"manifests":[]}' \
+        "top-level manifest has an unresolved subject"
+}
+
+@test "purge_ghcr refuses top-level subject strings and nulls before DELETE" {
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.manifest.v1+json","subject":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' \
+        "top-level manifest has an unresolved subject"
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.manifest.v1+json","subject":null}' \
+        "top-level manifest has an unresolved subject"
+}
+
 @test "purge_ghcr protects plain-manifest children and deletes only a genuinely unreferenced orphan" {
     local gh_log="$_STUB_DIR/manifest-protection-gh.log"
 
@@ -263,6 +567,7 @@ run_manifest_protection_refusal() {
             build_valid_tags() { printf "%s\\n" "latest"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":4}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}},{\"id\":103,\"name\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"metadata\":{\"container\":{\"tags\":[]}}},{\"id\":104,\"name\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
             }
             curl() {
@@ -280,7 +585,7 @@ run_manifest_protection_refusal() {
     [[ "$(<"$gh_log")" != *"/versions/103"* ]]
 }
 
-@test "purge_ghcr accepts a leaf manifest without manifests and completes normally" {
+@test "purge_ghcr accepts a leaf manifest without subject and deletes a genuinely unreferenced orphan" {
     local gh_log="$_STUB_DIR/manifest-protection-gh.log"
 
     run env \
@@ -297,7 +602,8 @@ run_manifest_protection_refusal() {
             build_valid_tags() { printf "%s\\n" "latest"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
-                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
             }
             curl() {
                 if [[ "$*" == *"/token?"* ]]; then printf "%s\\n" "{\"token\":\"registry-token\"}"
@@ -310,6 +616,7 @@ run_manifest_protection_refusal() {
 
     [[ "$status" -eq 0 ]]
     [[ "$(<"$gh_log")" == *"/versions/102"* ]]
+    [[ "$output" == *"GHCR summary: kept=1, obsolete=0, orphans=1, delete_failures=0"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -528,6 +835,7 @@ run_manifest_protection_refusal() {
             build_valid_tags() { printf "%s\\n" "latest"; }
             purge_dockerhub() { printf "%s\\n" "0|0"; }
             gh() {
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale-first\"]}}}]"
                 printf "%s\\n" "[{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"stale-second\"]}}}]"
             }
@@ -665,6 +973,7 @@ run_manifest_protection_refusal() {
                     echo "gh: delete denied" >&2
                     return 1
                 fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":1}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
             }
             main stale
@@ -712,6 +1021,7 @@ EOF
                 if [[ "$*" == *"--method DELETE"* ]]; then
                     return 0
                 fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":1}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
             }
             main stale
@@ -743,6 +1053,7 @@ EOF
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":1}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}}]"
             }
             jq() {
@@ -777,6 +1088,7 @@ EOF
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale-first\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"stale-second\"]}}}]"
             }
             base64() {
@@ -817,6 +1129,7 @@ run_outdated_validation_case() {
             purge_dockerhub() { printf "%s\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\n" "1|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "%s\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\n" "{\"version_count\":$(jq length <<< "$RESPONSE_JSON")}"; return 0; fi
                 printf "%s\n" "$RESPONSE_JSON"
             }
             main malformed
@@ -837,7 +1150,7 @@ run_outdated_validation_case() {
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15
-            gh() { printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{}}}]"; }
+            gh() { if [[ "$*" == *"/versions"* ]]; then printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{}}}]"; else printf "%s\\n" "{\"version_count\":1}"; fi; }
             purge_ghcr malformed latest
         '
 
@@ -848,7 +1161,7 @@ run_outdated_validation_case() {
     cat > "$_STUB_DIR/jq" <<'EOF'
 #!/usr/bin/env bash
 for argument in "$@"; do
-    [[ "$argument" == *"validate_outdated_tags_versions"* ]] && exit 137
+    [[ "$argument" == *$'\n    validate_outdated_tags_versions' ]] && exit 137
 done
 exec "$REAL_JQ" "$@"
 EOF
@@ -863,7 +1176,7 @@ EOF
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15
-            gh() { printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}}}]"; }
+            gh() { if [[ "$*" == *"/versions"* ]]; then printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}}}]"; else printf "%s\\n" "{\"version_count\":1}"; fi; }
             purge_ghcr validator-killed latest
         '
 
@@ -902,6 +1215,7 @@ EOF
             build_valid_tags() { printf "%s\n" "latest"; }
             gh() {
                 [[ "$*" == *"--method DELETE"* ]] && return 1
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\n" "{\"version_count\":1}"; return 0; fi
                 printf "%s\n" "[{\"id\":\"101\",\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
             }
             main untagged

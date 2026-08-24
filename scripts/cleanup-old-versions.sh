@@ -38,7 +38,7 @@ print_banner() {
 # failure also returns 13.
 purge_container() {
   local container="$1"
-  local versions version_count versions_file="" deletions_file=""
+  local versions package version_count reported_version_count versions_file="" deletions_file=""
   local position=0 kept=0 deleted=0 delete_failures=0
   local version_id tags created_at keep_reason tag tag_list major version_ts cutoff_ts processing_error=0 deletion_read_error=0 validation_error validation_status
   local record_b64 record_json
@@ -64,8 +64,25 @@ purge_container() {
   fi
 
   if ! version_count=$(jq -er 'length' <<< "$versions"); then
-    echo "  ✗ Failed to count versions; skipping $container" >&2
-    return "$PROCESSING_FAILURE"
+    echo "  ✗ Failed to count version listing; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+
+  if ! package=$(gh api \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "/users/${OWNER}/packages/container/${container}"); then
+    echo "  ✗ Failed to get package version total; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+  if ! reported_version_count=$(jq -c '.version_count' <<< "$package"); then
+    echo "  ✗ Failed to read package version_count; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+  if ! validation_error=$(jq -er --argjson reported_version_count "$reported_version_count" "$VERSION_RECORD_VALIDATION_JQ
+    validate_versions_listing_count(\$reported_version_count)" <<< "$versions" 2>&1 >/dev/null); then
+    echo "  ✗ Version listing count does not agree with package version_count or version_count was invalid: ${validation_error##*validation failed: }; skipping $container" >&2
+    return "$LISTING_FAILURE"
   fi
   echo "  Found $version_count versions" >&2
   if [[ "$version_count" -eq 0 ]]; then
