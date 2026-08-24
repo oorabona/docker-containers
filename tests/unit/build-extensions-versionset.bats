@@ -322,6 +322,29 @@ _setup_default_mocks() {
     # log_* pass-through (already sourced from extension-utils.sh chain)
 }
 
+_prepare_finalize_versionset_artifact() {
+    resolve_version_set() {
+        printf '%s\n' '["2.25.0","2.26.0","2.27.1"]'
+    }
+
+    list_extensions_by_priority() {
+        printf '%s\n' 'timescaledb'
+    }
+
+    # Every version already has a valid multi-arch manifest, so the finalizer
+    # takes its reuse path and reaches only the artifact write under test.
+    ext_ref_resolve() {
+        printf 'ghcr.io/test/ext-%s:pg%s-%s' "$1" "$3" "$2"
+    }
+
+    docker() {
+        if [[ "${1:-}" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "inspect" ]]; then
+            printf 'linux/amd64\nlinux/arm64\n'
+        fi
+        return 0
+    }
+}
+
 # ---------------------------------------------------------------------------
 # ext_ref_resolve — run-scoped forced extension refs
 #
@@ -4067,6 +4090,390 @@ EOF
     # GREEN after fix: file absent.
     [ "$status" -eq 0 ]
     [ ! -f "$artifact" ]
+}
+
+@test "cached resolver refuses mktemp failure without emitting or creating a cache entry" {
+    local cache_file="${_RESOLVER_CACHE_DIR}/cache-mktemp-${MAJOR_VER}.json"
+
+    resolve_version_set() { printf '%s\n' '["1.2.3"]'; }
+    mktemp() { return 70; }
+
+    run _resolve_cached cache-mktemp "$MAJOR_VER" "$CONFIG_FILE"
+
+    [ "$status" -ne 0 ]
+    [ ! -e "$cache_file" ]
+    [ -z "$output" ]
+}
+
+@test "cached resolver removes its temporary file when printf fails" {
+    local cache_file="${_RESOLVER_CACHE_DIR}/cache-printf-${MAJOR_VER}.json"
+    local temporary_file="${_RESOLVER_CACHE_DIR}/cache-printf-temporary"
+
+    resolve_version_set() { printf '%s\n' '["1.2.3"]'; }
+    mktemp() {
+        command touch "$temporary_file"
+        command printf '%s\n' "$temporary_file"
+    }
+    printf() {
+        if [[ "${1:-}" == '%s' && "${2:-}" == '["1.2.3"]' ]]; then
+            return 71
+        fi
+        command printf "$@"
+    }
+
+    run _resolve_cached cache-printf "$MAJOR_VER" "$CONFIG_FILE"
+
+    [ "$status" -ne 0 ]
+    [ ! -e "$cache_file" ]
+    [ ! -e "$temporary_file" ]
+    [ -z "$output" ]
+}
+
+@test "cached resolver preserves an existing cache entry when mv fails" {
+    local cache_file="${_RESOLVER_CACHE_DIR}/cache-mv-${MAJOR_VER}.json"
+    local temporary_file="${_RESOLVER_CACHE_DIR}/cache-mv-temporary"
+    local original_file="$TEST_TEMP_DIR/cache-mv-original"
+
+    printf '%s\n' 'previous complete entry' > "$original_file"
+    resolve_version_set() { printf '%s\n' '["1.2.3"]'; }
+    # Recreate the pre-existing cache just before promotion. This makes the
+    # write path observable while proving a failed mv cannot replace it.
+    mktemp() {
+        command cp "$original_file" "$cache_file"
+        command touch "$temporary_file"
+        command printf '%s\n' "$temporary_file"
+    }
+    mv() { return 72; }
+
+    run _resolve_cached cache-mv "$MAJOR_VER" "$CONFIG_FILE"
+
+    [ "$status" -ne 0 ]
+    cmp -s "$original_file" "$cache_file"
+    [ ! -e "$temporary_file" ]
+    [ -z "$output" ]
+}
+
+@test "lineage artifact new destination follows umask 0002 like a direct redirection" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local artifact="$lineage_dir/new-versionset.json"
+    local redirected_file="$lineage_dir/direct-redirection.json"
+
+    mkdir -p "$lineage_dir"
+    (
+        umask 0002
+        printf '%s\n' 'reference' > "$redirected_file"
+        run _write_lineage_artifact "$artifact" printf '%s\n' '{"complete":true}'
+        [ "$status" -eq 0 ]
+        [ "$(<"$artifact")" = '{"complete":true}' ]
+        [ "$(stat -c '%a' "$artifact")" = "$(stat -c '%a' "$redirected_file")" ]
+        [ "$(stat -c '%a' "$artifact")" = '664' ]
+    )
+}
+
+@test "lineage artifact new destination follows umask 0077 like a direct redirection" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local artifact="$lineage_dir/new-private-versionset.json"
+    local redirected_file="$lineage_dir/direct-private-redirection.json"
+
+    mkdir -p "$lineage_dir"
+    (
+        umask 0077
+        printf '%s\n' 'reference' > "$redirected_file"
+        run _write_lineage_artifact "$artifact" printf '%s\n' '{"complete":true}'
+        [ "$status" -eq 0 ]
+        [ "$(<"$artifact")" = '{"complete":true}' ]
+        [ "$(stat -c '%a' "$artifact")" = "$(stat -c '%a' "$redirected_file")" ]
+        [ "$(stat -c '%a' "$artifact")" = '600' ]
+    )
+}
+
+@test "lineage artifact preserves an existing destination's mode and inode" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local artifact="$lineage_dir/existing-versionset.json"
+    local inode_before
+
+    mkdir -p "$lineage_dir"
+    printf '%s\n' 'previous complete artifact' > "$artifact"
+    chmod 0640 "$artifact"
+    inode_before=$(stat -c '%i' "$artifact")
+
+    run _write_lineage_artifact "$artifact" printf '%s\n' '{"complete":true}'
+
+    [ "$status" -eq 0 ]
+    [ "$(<"$artifact")" = '{"complete":true}' ]
+    [ "$(stat -c '%i' "$artifact")" = "$inode_before" ]
+    [ "$(stat -c '%a' "$artifact")" = '640' ]
+}
+
+@test "lineage artifact writes through a destination symlink" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local artifact="$lineage_dir/versionset-link.json"
+    local target="$lineage_dir/versionset-target.json"
+
+    mkdir -p "$lineage_dir"
+    printf '%s\n' 'previous complete artifact' > "$target"
+    ln -s "$(basename "$target")" "$artifact"
+
+    run _write_lineage_artifact "$artifact" printf '%s\n' '{"complete":true}'
+
+    [ "$status" -eq 0 ]
+    [ -L "$artifact" ]
+    [ "$(readlink "$artifact")" = "$(basename "$target")" ]
+    [ "$(<"$target")" = '{"complete":true}' ]
+}
+
+@test "lineage artifact preserves hard-link siblings" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local artifact="$lineage_dir/versionset.json"
+    local sibling="$lineage_dir/versionset-sibling.json"
+
+    mkdir -p "$lineage_dir"
+    printf '%s\n' 'previous complete artifact' > "$artifact"
+    ln "$artifact" "$sibling"
+
+    run _write_lineage_artifact "$artifact" printf '%s\n' '{"complete":true}'
+
+    [ "$status" -eq 0 ]
+    [ "$(<"$artifact")" = '{"complete":true}' ]
+    [ "$(<"$sibling")" = '{"complete":true}' ]
+    [ "$(stat -c '%h' "$artifact")" = '2' ]
+    [ "$(stat -c '%h' "$sibling")" = '2' ]
+}
+
+@test "lineage artifact basename destination uses the current directory" {
+    local work_dir="$TEST_TEMP_DIR/relative-lineage"
+
+    mkdir -p "$work_dir"
+    run bash -c 'cd "$1" && source "$2" && _write_lineage_artifact artifact.json printf "%s\\n" "{\"complete\":true}"' \
+        bash "$work_dir" "$SCRIPTS_DIR/build-extensions.sh"
+
+    [ "$status" -eq 0 ]
+    [ -f "$work_dir/artifact.json" ]
+    [ ! -d "$work_dir/artifact.json" ]
+    [ "$(<"$work_dir/artifact.json")" = '{"complete":true}' ]
+}
+
+@test "lineage artifact producer failure preserves the previous destination and cleans its temporary" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local artifact="$lineage_dir/failed-versionset.json"
+    local original_file="$TEST_TEMP_DIR/failed-versionset-original"
+
+    mkdir -p "$lineage_dir"
+    printf '%s\n' 'previous complete artifact' > "$artifact"
+    cp "$artifact" "$original_file"
+    failing_producer() { return 73; }
+
+    run _write_lineage_artifact "$artifact" failing_producer
+
+    [ "$status" -eq 73 ]
+    [[ "$output" == *"Lineage artifact write failed: $artifact (rc=73)"* ]]
+    cmp -s "$original_file" "$artifact"
+    [ -z "$(compgen -G "$lineage_dir/.failed-versionset.json.tmp.*" || true)" ]
+}
+
+@test "lineage artifact copy failure truncates the destination and cleans its temporary" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local artifact="$lineage_dir/copy-failed-versionset.json"
+
+    mkdir -p "$lineage_dir"
+    printf '%s\n' 'previous complete artifact' > "$artifact"
+    cat() { return 74; }
+
+    run _write_lineage_artifact "$artifact" printf '%s\n' '{"complete":true}'
+
+    [ "$status" -eq 74 ] || { echo "copy status=$status output=$output"; false; }
+    [[ "$output" == *"Lineage artifact copy failed: $artifact (rc=74)"* ]]
+    # Bash opens this redirection before invoking the failing cat function.
+    [ "$(wc -c < "$artifact")" -eq 0 ]
+    [ -z "$(compgen -G "$lineage_dir/.copy-failed-versionset.json.tmp.*" || true)" ]
+}
+
+_assert_lineage_writer_failure_at_caller() {
+    local caller="$1"
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local artifact original_file success_log
+
+    mkdir -p "$lineage_dir"
+    # These caller-policy tests stub the writer to verify that each caller
+    # propagates its failure and suppresses success reporting.  They do not
+    # cover the writer or its publication behavior.
+    _write_lineage_artifact() { return 76; }
+
+    case "$caller" in
+        bundle-no-push)
+            artifact="$lineage_dir/ext-timescaledb-pg${MAJOR_VER}-versionset.json"
+            success_log="Version-set lineage (build path, no-push"
+            LOCAL_ONLY=true
+            PULL_ONLY=false
+            image_exists_in_registry() { return 0; }
+            _image_present_3state() { return 0; }
+            ;;
+        bundle-pushed)
+            artifact="$lineage_dir/ext-timescaledb-pg${MAJOR_VER}-versionset.json"
+            success_log="Version-set lineage (build path, pushed"
+            LOCAL_ONLY=false
+            PULL_ONLY=false
+            image_exists_in_registry() { return 0; }
+            _image_present_3state() { return 0; }
+            ;;
+        per-version)
+            artifact="$lineage_dir/ext-timescaledb-pg${MAJOR_VER}-2.27.1.json"
+            success_log="Extension lineage: $artifact"
+            resolve_version_set() { printf '%s\n' '["2.27.1"]'; }
+            image_exists_in_registry() { return 1; }
+            _cleanup_stale_duration_files() { :; }
+            ;;
+        presence-based)
+            artifact="$lineage_dir/ext-timescaledb-pg${MAJOR_VER}-versionset.json"
+            success_log="Version-set lineage (presence-based):"
+            image_exists_in_registry() { return 0; }
+            _image_present_3state() { return 0; }
+            ;;
+        *)
+            echo "unknown caller fixture: $caller" >&2
+            return 1
+            ;;
+    esac
+
+    printf '%s\n' 'previous complete artifact' > "$artifact"
+    cp "$artifact" "$TEST_TEMP_DIR/${caller}-original"
+    original_file="$TEST_TEMP_DIR/${caller}-original"
+
+    # Rerun after seeding the old destination so the caller is the observed
+    # failure boundary rather than an artifact-setup path.
+    case "$caller" in
+        bundle-no-push)
+            run _bundle_and_write_artifact timescaledb "$CONFIG_FILE" "$MAJOR_VER" \
+                '["2.25.0","2.26.0","2.27.1"]' 2.27.1 false
+            ;;
+        bundle-pushed)
+            run _bundle_and_write_artifact timescaledb "$CONFIG_FILE" "$MAJOR_VER" \
+                '["2.25.0","2.26.0","2.27.1"]' 2.27.1 true
+            ;;
+        per-version)
+            run build_tag_push_extensions "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" true timescaledb
+            ;;
+        presence-based)
+            run _emit_versionset_artifact timescaledb "$CONFIG_FILE" "$MAJOR_VER" \
+                '["2.25.0","2.26.0","2.27.1"]' 2.27.1
+            ;;
+    esac
+
+    [ "$status" -ne 0 ] || { echo "caller=$caller status=$status output=$output"; false; }
+    [[ "$output" != *"$success_log"* ]] || { echo "caller=$caller reported success: $output"; false; }
+    cmp -s "$original_file" "$artifact" || { echo "caller=$caller changed the prior artifact: $output"; false; }
+}
+
+@test "bundle no-push propagates a lineage writer failure without a success log" {
+    _assert_lineage_writer_failure_at_caller bundle-no-push
+}
+
+@test "bundle pushed propagates a lineage writer failure without a success log" {
+    _assert_lineage_writer_failure_at_caller bundle-pushed
+}
+
+@test "per-version lineage caller propagates a writer failure without a success log" {
+    _assert_lineage_writer_failure_at_caller per-version
+}
+
+@test "presence-based versionset lineage caller propagates a writer failure without a success log" {
+    _assert_lineage_writer_failure_at_caller presence-based
+}
+
+@test "lineage artifact refuses zero arguments before creating anything" {
+    local lineage_dir="$TEST_TEMP_DIR/no-arguments-lineage"
+    local artifact="$lineage_dir/versionset.json"
+
+    run bash -u -c 'source "$1"; _write_lineage_artifact' \
+        bash "$SCRIPTS_DIR/build-extensions.sh"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Usage: _write_lineage_artifact <destination> <producer-command> [args...]"* ]]
+    [ ! -e "$artifact" ]
+    [ ! -d "$lineage_dir" ]
+}
+
+@test "lineage artifact refuses one argument before creating anything" {
+    local lineage_dir="$TEST_TEMP_DIR/no-producer-lineage"
+    local artifact="$lineage_dir/versionset.json"
+
+    run bash -u -c 'source "$1"; _write_lineage_artifact "$2"' \
+        bash "$SCRIPTS_DIR/build-extensions.sh" "$artifact"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Usage: _write_lineage_artifact <destination> <producer-command> [args...]"* ]]
+    [ ! -e "$artifact" ]
+    [ ! -d "$lineage_dir" ]
+}
+
+@test "finalize refuses a jq artifact write without logging success or replacing the artifact" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local artifact="$lineage_dir/ext-timescaledb-pg${MAJOR_VER}-versionset.json"
+    local original_file="$TEST_TEMP_DIR/finalize-artifact-original"
+
+    mkdir -p "$lineage_dir"
+    printf '%s\n' 'previous complete artifact' > "$artifact"
+    cp "$artifact" "$original_file"
+    _prepare_finalize_versionset_artifact
+    jq() {
+        if [[ "${1:-}" == '-nc' ]]; then
+            printf '%s\n' 'forced jq artifact failure' >&2
+            return 73
+        fi
+        command jq "$@"
+    }
+
+    run finalize_multiarch_manifests "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"Versionset artifact written:"* ]]
+    cmp -s "$original_file" "$artifact"
+}
+
+@test "finalize refuses an uncreatable artifact directory before jq writes" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local artifact="$lineage_dir/ext-timescaledb-pg${MAJOR_VER}-versionset.json"
+    local original_file="$TEST_TEMP_DIR/finalize-mkdir-artifact-original"
+    local write_marker="$TEST_TEMP_DIR/finalize-jq-was-called"
+
+    mkdir -p "$lineage_dir"
+    printf '%s\n' 'previous complete artifact' > "$artifact"
+    cp "$artifact" "$original_file"
+    _prepare_finalize_versionset_artifact
+    mkdir() {
+        if [[ "${1:-}" == '-p' && "${2:-}" == "$lineage_dir" ]]; then
+            printf '%s\n' 'forced artifact directory failure' >&2
+            return 74
+        fi
+        command mkdir "$@"
+    }
+    jq() {
+        if [[ "${1:-}" == '-nc' ]]; then
+            command touch "$write_marker"
+        fi
+        command jq "$@"
+    }
+
+    run finalize_multiarch_manifests "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"Versionset artifact written:"* ]]
+    [ ! -e "$write_marker" ]
+    cmp -s "$original_file" "$artifact"
+}
+
+@test "finalize still writes the same versionset artifact and logs success" {
+    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg${MAJOR_VER}-versionset.json"
+
+    _prepare_finalize_versionset_artifact
+
+    run finalize_multiarch_manifests "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Versionset artifact written: $artifact"* ]]
+    [ -f "$artifact" ]
+    [ "$(jq -r '.ceiling' "$artifact")" = '2.27.1' ]
+    [ "$(jq '.available | length' "$artifact")" -eq 3 ]
 }
 
 # ---------------------------------------------------------------------------
