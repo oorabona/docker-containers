@@ -22,6 +22,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$ROOT_DIR/helpers/extension-utils.sh"
 # shellcheck source=../helpers/version-set-resolver.sh
 source "$ROOT_DIR/helpers/version-set-resolver.sh"
+# shellcheck source=../helpers/hash-utils.sh
+source "$ROOT_DIR/helpers/hash-utils.sh"
 # shellcheck source=../helpers/retry.sh
 source "$ROOT_DIR/helpers/retry.sh"
 
@@ -628,9 +630,11 @@ list_extension_status() {
 
         # Resolve the full version set (cached). On resolver failure degrade
         # to the single ceiling so --list is never blocked by upstream outage.
-        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
+        if ! _resolve_cached "$ext" "$major_ver" "$config_file"; then
             log_warning "$ext: version-set resolver failed — showing ceiling only (LOCAL_ONLY)"
             version_set_json="[\"${ceiling}\"]"
+        else
+            version_set_json="$_RESOLVED_VERSION_SET_JSON"
         fi
 
         local ver
@@ -861,7 +865,7 @@ handle_pull_only_mode() {
         # (PULL_ONLY=true), where a transient resolver outage must not block a
         # local image fetch. Keep fail-closed for the true publish path (neither
         # flag set).
-        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
+        if ! _resolve_cached "$ext" "$major_ver" "$config_file"; then
             if [[ "$LOCAL_ONLY" == "true" || "$PULL_ONLY" == "true" ]]; then
                 log_warning "$ext: version-set resolver failed — degrading to ceiling $ceiling (recovery path)"
                 version_set_json="[\"${ceiling}\"]"
@@ -869,6 +873,8 @@ handle_pull_only_mode() {
                 log_error "$ext: version-set resolver failed — aborting pull-only (fail-closed)"
                 exit 1
             fi
+        else
+            version_set_json="$_RESOLVED_VERSION_SET_JSON"
         fi
 
         local ver
@@ -1222,7 +1228,7 @@ build_tag_push_extensions() {
         # transient upstream outage never blocks a manual rebuild.
         local ceiling version_set_json
         ceiling=$(ext_config "$ext" "version" "$config_file")
-        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
+        if ! _resolve_cached "$ext" "$major_ver" "$config_file"; then
             if [[ "$LOCAL_ONLY" == "true" ]]; then
                 log_warning "$ext: version-set resolver failed — degrading to ceiling $ceiling (LOCAL_ONLY)"
                 version_set_json="[\"$ceiling\"]"
@@ -1232,6 +1238,8 @@ build_tag_push_extensions() {
                 failed+=("$ext")
                 continue
             fi
+        else
+            version_set_json="$_RESOLVED_VERSION_SET_JSON"
         fi
 
         local set_size
@@ -1485,10 +1493,6 @@ build_tag_push_extensions() {
 }
 
 # File-backed memoisation for resolve_version_set.
-# In-memory variables cannot survive command-substitution subshells ($(...)), so
-# each resolved JSON is written to a per-run temp directory keyed by
-# "<ext>-<major>". The cache directory is created at source time so that every
-# $(...) subshell inherits the path via the exported variable.
 #
 # For direct execution, validate the status target before allocating either
 # directory, then install the EXIT trap immediately before the first allocation.
@@ -1503,6 +1507,8 @@ fi
 _RESOLVER_CACHE_DIR="$(mktemp -d)"
 export _RESOLVER_CACHE_DIR
 
+_RESOLVED_VERSION_SET_JSON=""
+
 # Per-run tracking of successfully built+pushed versions to guard against
 # GHCR/Docker Hub propagation lag: a version whose push succeeded this run
 # is counted available regardless of what the post-push registry probe sees.
@@ -1513,17 +1519,50 @@ _BUILT_THIS_RUN_DIR="$(mktemp -d)"
 export _BUILT_THIS_RUN_DIR
 
 _resolve_cached() {
-    local ext="$1" major="$2" config_file="${3:-}"
-    local cache_file="${_RESOLVER_CACHE_DIR}/${ext}-${major}.json"
+    # Resolve a version set for (config identity, extension, major).
+    # stdout is unspecified; on success the validated result is available only
+    # through _RESOLVED_VERSION_SET_JSON.
+    #
+    # A successful resolution is memoized for one main() invocation when its
+    # local _RESOLVED_VERSION_SETS map is dynamically visible. Failures are not
+    # memoized: later stages deliberately retry them as transient-outage recovery.
+    # Without that map (for example, a sourced direct caller), this degrades to
+    # the file cache rather than failing.
+    # The SHA-256 covers the complete config content, so every configuration
+    # input that can affect resolve_version_set is part of the identity.
+    _RESOLVED_VERSION_SET_JSON=""
+
+    local ext="$1" major="$2" effective_config_file="${3:-${_EXT_CONFIG}}"
+    local config_identity cache_key cache_file
     local result cache_hit=false
     local _resolver_path_cached="" _ceiling_cached=""
+    local memoization_available=false
+    local memoization_declaration=""
+
+    # The map is local to main(). declare -p avoids subscript expansion against
+    # an unset array under set -u when this script was sourced from a function.
+    if memoization_declaration=$(declare -p _RESOLVED_VERSION_SETS 2> /dev/null) \
+        && [[ "$memoization_declaration" == "declare -A "* ]]; then
+        memoization_available=true
+    fi
+
+    config_identity=$(sha256_file "$effective_config_file") || return 1
+    cache_key="${config_identity}:${ext}:${major}"
+    cache_file="${_RESOLVER_CACHE_DIR}/${ext}-${major}-${config_identity}.json"
+
+    if [[ "$memoization_available" == "true" ]]; then
+        if [[ -n "${_RESOLVED_VERSION_SETS["$cache_key"]+x}" ]]; then
+            _RESOLVED_VERSION_SET_JSON="${_RESOLVED_VERSION_SETS["$cache_key"]}"
+            return 0
+        fi
+    fi
 
     # Resolver-backed extensions require a strict semver/ceiling validation.
     # Read that configuration once so cache and resolver results use the same gate.
-    if [[ -n "${config_file:-}" ]]; then
-        _resolver_path_cached=$(yq -r ".extensions.${ext}.version_set.resolver // \"\"" "${config_file}" 2>/dev/null || true)
+    if [[ -n "${effective_config_file:-}" ]]; then
+        _resolver_path_cached=$(yq -r ".extensions.${ext}.version_set.resolver // \"\"" "${effective_config_file}" 2>/dev/null || true)
         if [[ -n "$_resolver_path_cached" ]]; then
-            _ceiling_cached=$(yq -r ".extensions.${ext}.version" "${config_file}" 2>/dev/null || true)
+            _ceiling_cached=$(yq -r ".extensions.${ext}.version" "${effective_config_file}" 2>/dev/null || true)
         fi
     fi
 
@@ -1542,7 +1581,7 @@ _resolve_cached() {
     # this function only after these shared validations pass.
     while true; do
         if [[ "$cache_hit" != "true" ]]; then
-            result=$(resolve_version_set "$ext" "$major" "${config_file}") || return 1
+            result=$(resolve_version_set "$ext" "$major" "${effective_config_file}") || return 1
         fi
 
         # Validate: must be a non-empty JSON array where every element is a string.
@@ -1578,9 +1617,17 @@ _resolve_cached() {
     done
 
     if [[ "$cache_hit" == "true" ]]; then
-        echo "$result"
+        if [[ "$memoization_available" == "true" ]]; then
+            _RESOLVED_VERSION_SETS["$cache_key"]="$result"
+        fi
+        _RESOLVED_VERSION_SET_JSON="$result"
         return 0
     fi
+
+    if [[ "$memoization_available" == "true" ]]; then
+        _RESOLVED_VERSION_SETS["$cache_key"]="$result"
+    fi
+    _RESOLVED_VERSION_SET_JSON="$result"
 
     # Write atomically so a concurrent subshell never reads a partial file.
     # The validated result remains usable even when cache persistence fails.
@@ -1599,7 +1646,7 @@ _resolve_cached() {
         fi
     fi
 
-    echo "$result"
+    return 0
 }
 
 # _image_needs_build <image>
@@ -1785,7 +1832,7 @@ _should_build_extension() {
     # local recovery path (LOCAL_ONLY=true), degrade to the single ceiling version
     # so a transient upstream outage never blocks a manual rebuild.
     local version_set_json
-    if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
+    if ! _resolve_cached "$ext" "$major_ver" "$config_file"; then
         if [[ "$LOCAL_ONLY" == "true" ]]; then
             log_warning "$ext: version-set resolver failed — degrading to ceiling $version (LOCAL_ONLY)"
             version_set_json="[\"$version\"]"
@@ -1793,6 +1840,8 @@ _should_build_extension() {
             log_error "$ext: version-set resolver failed in pre-filter check"
             return 2
         fi
+    else
+        version_set_json="$_RESOLVED_VERSION_SET_JSON"
     fi
 
     # Single-version path: preserve exact existing log strings for the 8-case tests.
@@ -1969,7 +2018,7 @@ _emit_final_versionset_pass() {
 
         # Use the cache — resolver was already called during the build/filter phase.
         # If not in cache yet (e.g. pull-only path or scoped run), resolve now.
-        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
+        if ! _resolve_cached "$ext" "$major_ver" "$config_file"; then
             # Resolver failure in the final pass: distinguish publish vs recovery.
             # - Publish path (NOT LOCAL_ONLY and NOT PULL_ONLY): fail-closed —
             #   a required retention artifact cannot be produced; the run must
@@ -1992,6 +2041,7 @@ _emit_final_versionset_pass() {
             fi
             continue
         fi
+        version_set_json="$_RESOLVED_VERSION_SET_JSON"
 
         local set_size
         set_size=$(echo "$version_set_json" | jq 'length')
@@ -2422,11 +2472,12 @@ finalize_multiarch_manifests() {
 
         # Resolver-backed extension: resolve version set, validate, then merge.
         local version_set_json
-        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
+        if ! _resolve_cached "$ext" "$major_ver" "$config_file"; then
             log_error "$ext: resolver failed in finalize-multiarch — cannot produce multi-arch manifests (fail-closed)"
             _failed=true
             continue
         fi
+        version_set_json="$_RESOLVED_VERSION_SET_JSON"
 
         # Validate: must be semver + ceiling present.
         if ! validate_semver_set_json "$version_set_json" "$ceiling"; then
@@ -2714,6 +2765,10 @@ finalize_multiarch_manifests() {
 }
 
 main() {
+    # Successful resolver results live for exactly this main() invocation.
+    # Bash dynamic scoping makes this map available to every helper main() calls.
+    local -A _RESOLVED_VERSION_SETS=()
+
     parse_args "$@"
     log_dry_run_cache_mode
 
