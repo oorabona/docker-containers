@@ -4092,24 +4092,31 @@ EOF
     [ ! -f "$artifact" ]
 }
 
-@test "cached resolver refuses mktemp failure without emitting or creating a cache entry" {
+@test "cached resolver returns the validated result when mktemp fails" {
     local cache_file="${_RESOLVER_CACHE_DIR}/cache-mktemp-${MAJOR_VER}.json"
+    local stdout_file="$TEST_TEMP_DIR/cache-mktemp.stdout"
+    local stderr_file="$TEST_TEMP_DIR/cache-mktemp.stderr"
+    local rc=0
 
-    resolve_version_set() { printf '%s\n' '["1.2.3"]'; }
+    resolve_version_set() { command printf '%s\n' '["1.2.3"]'; }
     mktemp() { return 70; }
 
-    run _resolve_cached cache-mktemp "$MAJOR_VER" "$CONFIG_FILE"
+    _resolve_cached cache-mktemp "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
 
-    [ "$status" -ne 0 ]
+    [ "$rc" -eq 0 ]
+    [ "$(<"$stdout_file")" = '["1.2.3"]' ]
+    [[ "$(<"$stderr_file")" == *"cache-mktemp (PG $MAJOR_VER) at $cache_file: mktemp failed"* ]]
     [ ! -e "$cache_file" ]
-    [ -z "$output" ]
 }
 
-@test "cached resolver removes its temporary file when printf fails" {
+@test "cached resolver returns the validated result and removes its temporary when printf fails" {
     local cache_file="${_RESOLVER_CACHE_DIR}/cache-printf-${MAJOR_VER}.json"
     local temporary_file="${_RESOLVER_CACHE_DIR}/cache-printf-temporary"
+    local stdout_file="$TEST_TEMP_DIR/cache-printf.stdout"
+    local stderr_file="$TEST_TEMP_DIR/cache-printf.stderr"
+    local rc=0
 
-    resolve_version_set() { printf '%s\n' '["1.2.3"]'; }
+    resolve_version_set() { command printf '%s\n' '["1.2.3"]'; }
     mktemp() {
         command touch "$temporary_file"
         command printf '%s\n' "$temporary_file"
@@ -4121,21 +4128,25 @@ EOF
         command printf "$@"
     }
 
-    run _resolve_cached cache-printf "$MAJOR_VER" "$CONFIG_FILE"
+    _resolve_cached cache-printf "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
 
-    [ "$status" -ne 0 ]
+    [ "$rc" -eq 0 ]
+    [ "$(<"$stdout_file")" = '["1.2.3"]' ]
+    [[ "$(<"$stderr_file")" == *"cache-printf (PG $MAJOR_VER) at $cache_file: printf failed"* ]]
     [ ! -e "$cache_file" ]
     [ ! -e "$temporary_file" ]
-    [ -z "$output" ]
 }
 
-@test "cached resolver preserves an existing cache entry when mv fails" {
+@test "cached resolver returns the validated result and preserves an existing entry when mv fails" {
     local cache_file="${_RESOLVER_CACHE_DIR}/cache-mv-${MAJOR_VER}.json"
     local temporary_file="${_RESOLVER_CACHE_DIR}/cache-mv-temporary"
     local original_file="$TEST_TEMP_DIR/cache-mv-original"
+    local stdout_file="$TEST_TEMP_DIR/cache-mv.stdout"
+    local stderr_file="$TEST_TEMP_DIR/cache-mv.stderr"
+    local rc=0
 
-    printf '%s\n' 'previous complete entry' > "$original_file"
-    resolve_version_set() { printf '%s\n' '["1.2.3"]'; }
+    command printf '%s\n' '["1.2.2"]' > "$original_file"
+    resolve_version_set() { command printf '%s\n' '["1.2.3"]'; }
     # Recreate the pre-existing cache just before promotion. This makes the
     # write path observable while proving a failed mv cannot replace it.
     mktemp() {
@@ -4145,12 +4156,109 @@ EOF
     }
     mv() { return 72; }
 
-    run _resolve_cached cache-mv "$MAJOR_VER" "$CONFIG_FILE"
+    _resolve_cached cache-mv "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
 
-    [ "$status" -ne 0 ]
+    [ "$rc" -eq 0 ]
+    [ "$(<"$stdout_file")" = '["1.2.3"]' ]
+    [[ "$(<"$stderr_file")" == *"cache-mv (PG $MAJOR_VER) at $cache_file: mv failed"* ]]
     cmp -s "$original_file" "$cache_file"
     [ ! -e "$temporary_file" ]
-    [ -z "$output" ]
+}
+
+@test "cached resolver returns a valid cache entry without invoking the resolver" {
+    local cache_file="${_RESOLVER_CACHE_DIR}/timescaledb-${MAJOR_VER}.json"
+    local stdout_file="$TEST_TEMP_DIR/cache-hit.stdout"
+    local stderr_file="$TEST_TEMP_DIR/cache-hit.stderr"
+    local resolver_log="$TEST_TEMP_DIR/cache-hit-resolver.log"
+    local rc=0
+
+    command printf '%s' '["2.26.0"]' > "$cache_file"
+    resolve_version_set() {
+        command printf 'called\n' >> "$resolver_log"
+        command printf '%s\n' '["2.27.1"]'
+    }
+
+    _resolve_cached timescaledb "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
+
+    [ "$rc" -eq 0 ]
+    [ "$(<"$stdout_file")" = '["2.26.0"]' ]
+    [ ! -e "$resolver_log" ]
+    [ ! -s "$stderr_file" ]
+}
+
+@test "cached resolver treats an unreadable cache entry as a miss" {
+    local cache_file="${_RESOLVER_CACHE_DIR}/timescaledb-${MAJOR_VER}.json"
+    local stdout_file="$TEST_TEMP_DIR/cache-read.stdout"
+    local stderr_file="$TEST_TEMP_DIR/cache-read.stderr"
+    local resolver_log="$TEST_TEMP_DIR/cache-read-resolver.log"
+    local rc=0
+
+    command printf '%s' '["2.26.0"]' > "$cache_file"
+    resolve_version_set() {
+        command printf 'called\n' >> "$resolver_log"
+        command printf '%s\n' '["2.27.1"]'
+    }
+    cat() { return 74; }
+
+    _resolve_cached timescaledb "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
+
+    [ "$rc" -eq 0 ]
+    [ "$(<"$stdout_file")" = '["2.27.1"]' ]
+    [ "$(wc -l < "$resolver_log")" -eq 1 ]
+    [[ "$(<"$stderr_file")" == *"timescaledb (PG $MAJOR_VER) at $cache_file: read failed"* ]]
+}
+
+@test "cached resolver treats invalid cache entries as misses" {
+    local cache_file="${_RESOLVER_CACHE_DIR}/timescaledb-${MAJOR_VER}.json"
+    local stdout_file="$TEST_TEMP_DIR/cache-invalid.stdout"
+    local stderr_file="$TEST_TEMP_DIR/cache-invalid.stderr"
+    local resolver_log="$TEST_TEMP_DIR/cache-invalid-resolver.log"
+    local invalid_entry rc
+
+    resolve_version_set() {
+        command printf 'called\n' >> "$resolver_log"
+        command printf '%s\n' '["2.27.1"]'
+    }
+
+    for invalid_entry in '{}' '[]' '["1.0",2]' '["2.28.0"]'; do
+        command printf '%s' "$invalid_entry" > "$cache_file"
+        rm -f "$resolver_log"
+        rc=0
+
+        _resolve_cached timescaledb "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
+
+        [ "$rc" -eq 0 ]
+        [ "$(<"$stdout_file")" = '["2.27.1"]' ]
+        [ "$(wc -l < "$resolver_log")" -eq 1 ]
+        [[ "$(<"$stderr_file")" == *"timescaledb (PG $MAJOR_VER) at $cache_file"* ]]
+    done
+}
+
+@test "cached resolver fails without output when the resolver fails" {
+    local stdout_file="$TEST_TEMP_DIR/cache-resolver-failure.stdout"
+    local stderr_file="$TEST_TEMP_DIR/cache-resolver-failure.stderr"
+    local rc=0
+
+    resolve_version_set() { return 75; }
+
+    _resolve_cached timescaledb "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
+
+    [ "$rc" -ne 0 ]
+    [ ! -s "$stdout_file" ]
+}
+
+@test "cached resolver fails without output when the resolver fails the ceiling guard" {
+    local stdout_file="$TEST_TEMP_DIR/cache-resolver-ceiling.stdout"
+    local stderr_file="$TEST_TEMP_DIR/cache-resolver-ceiling.stderr"
+    local rc=0
+
+    resolve_version_set() { command printf '%s\n' '["2.28.0"]'; }
+
+    _resolve_cached timescaledb "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
+
+    [ "$rc" -ne 0 ]
+    [ ! -s "$stdout_file" ]
+    [[ "$(<"$stderr_file")" == *"injection guard"* ]]
 }
 
 @test "lineage artifact new destination follows umask 0002 like a direct redirection" {

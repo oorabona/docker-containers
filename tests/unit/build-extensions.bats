@@ -599,15 +599,23 @@ EOF
     assert_output_not_contains "CALLED["
 }
 
-@test "cached resolver fails when its cache entry cannot be read" {
+@test "cached resolver treats an unreadable cache entry as a miss" {
     # The cache entry is a regular file this run wrote itself, so no filesystem
     # state makes `cat` fail for a root test runner. Mock the read instead.
-    printf '["1.2.3"]\n' > "${_RESOLVER_CACHE_DIR}/pgvector-${MAJOR_VER}.json"
+    printf '["9.9.9"]\n' > "${_RESOLVER_CACHE_DIR}/pgvector-${MAJOR_VER}.json"
     cat() { return 1; }
+    resolve_version_set() { printf '["1.2.3"]\n'; }
+    local stderr_file="$TEST_TEMP_DIR/resolver-cache-read.stderr"
+    _resolve_cached_with_stderr() {
+        _resolve_cached pgvector "$MAJOR_VER" "$CONFIG_FILE" 2> "$stderr_file"
+    }
 
-    run _resolve_cached pgvector "$MAJOR_VER" "$CONFIG_FILE"
+    run _resolve_cached_with_stderr
 
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 0 ]
+    assert_equals '["1.2.3"]' "$output"
+    output=$(< "$stderr_file")
+    assert_output_contains "resolver cache for pgvector (PG $MAJOR_VER) at ${_RESOLVER_CACHE_DIR}/pgvector-${MAJOR_VER}.json: read failed; resolving normally"
 }
 
 @test "cached resolver returns a readable cache entry" {

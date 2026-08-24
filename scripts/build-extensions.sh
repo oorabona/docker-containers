@@ -1515,63 +1515,88 @@ export _BUILT_THIS_RUN_DIR
 _resolve_cached() {
     local ext="$1" major="$2" config_file="${3:-}"
     local cache_file="${_RESOLVER_CACHE_DIR}/${ext}-${major}.json"
+    local result cache_hit=false
+    local _resolver_path_cached="" _ceiling_cached=""
 
-    if [[ -f "$cache_file" ]]; then
-        cat "$cache_file" || return 1
-        return 0
-    fi
-
-    local result
-    result=$(resolve_version_set "$ext" "$major" "${config_file}") || return 1
-
-    # Validate: must be a non-empty JSON array where every element is a string.
-    # If the resolver exits 0 but emits malformed output or an empty array,
-    # treat it as a resolver failure (fail-closed) and do NOT cache the bad value.
-    if ! echo "$result" | jq -e 'type == "array" and length > 0 and (all(.[]; type == "string"))' > /dev/null 2>&1; then
-        log_error "resolver for $ext returned invalid version set (not a non-empty string array): $(_sanitize_for_log "$result")"
-        return 1
-    fi
-
-    # For RESOLVER-BACKED extensions only: apply strict whole-string semver +
-    # ceiling validation at the chokepoint BEFORE caching.
-    # This prevents the embedded-newline bypass where jq -r '.[]' would split a
-    # single element "2.27.1\n9.9.9" into two apparent versions, each passing a
-    # per-line semver check in every downstream consumer.
-    #
-    # Non-resolver single-version extensions (e.g. pg_ivm "1.14") return a
-    # single-element array from a config-controlled value — they are NOT resolver-
-    # backed and must NOT be subjected to this check (their format may not be 3-part
-    # semver). Detection: check for a non-empty version_set.resolver in config_file.
+    # Resolver-backed extensions require a strict semver/ceiling validation.
+    # Read that configuration once so cache and resolver results use the same gate.
     if [[ -n "${config_file:-}" ]]; then
-        local _resolver_path_cached
         _resolver_path_cached=$(yq -r ".extensions.${ext}.version_set.resolver // \"\"" "${config_file}" 2>/dev/null || true)
         if [[ -n "$_resolver_path_cached" ]]; then
-            # Read the ceiling for the clamp check.
-            local _ceiling_cached
             _ceiling_cached=$(yq -r ".extensions.${ext}.version" "${config_file}" 2>/dev/null || true)
-            if ! validate_semver_set_json "$result" "$_ceiling_cached"; then
-                log_error "resolver for $ext returned set that fails whole-string semver/ceiling validation (injection guard): $(_sanitize_for_log "$result")"
-                return 1
+        fi
+    fi
+
+    if [[ -f "$cache_file" ]]; then
+        if result=$(cat "$cache_file"); then
+            cache_hit=true
+        else
+            log_warning "resolver cache for $ext (PG $major) at $cache_file: read failed; resolving normally"
+            if ! rm -f "$cache_file"; then
+                log_warning "resolver cache for $ext (PG $major) at $cache_file: removal after read failure failed"
             fi
         fi
     fi
 
+    # A value, regardless of whether it came from the cache or resolver, leaves
+    # this function only after these shared validations pass.
+    while true; do
+        if [[ "$cache_hit" != "true" ]]; then
+            result=$(resolve_version_set "$ext" "$major" "${config_file}") || return 1
+        fi
+
+        # Validate: must be a non-empty JSON array where every element is a string.
+        if ! echo "$result" | jq -e 'type == "array" and length > 0 and (all(.[]; type == "string"))' > /dev/null 2>&1; then
+            if [[ "$cache_hit" == "true" ]]; then
+                log_warning "resolver cache for $ext (PG $major) at $cache_file: invalid version-set shape; resolving normally"
+                if ! rm -f "$cache_file"; then
+                    log_warning "resolver cache for $ext (PG $major) at $cache_file: removal after validation failure failed"
+                fi
+                cache_hit=false
+                continue
+            fi
+            log_error "resolver for $ext returned invalid version set (not a non-empty string array): $(_sanitize_for_log "$result")"
+            return 1
+        fi
+
+        # For resolver-backed extensions, reject whole-string semver and ceiling
+        # bypasses before either returning or caching the set.
+        if [[ -n "$_resolver_path_cached" ]] && ! validate_semver_set_json "$result" "$_ceiling_cached"; then
+            if [[ "$cache_hit" == "true" ]]; then
+                log_warning "resolver cache for $ext (PG $major) at $cache_file: semver/ceiling validation failed; resolving normally"
+                if ! rm -f "$cache_file"; then
+                    log_warning "resolver cache for $ext (PG $major) at $cache_file: removal after validation failure failed"
+                fi
+                cache_hit=false
+                continue
+            fi
+            log_error "resolver for $ext returned set that fails whole-string semver/ceiling validation (injection guard): $(_sanitize_for_log "$result")"
+            return 1
+        fi
+
+        break
+    done
+
+    if [[ "$cache_hit" == "true" ]]; then
+        echo "$result"
+        return 0
+    fi
+
     # Write atomically so a concurrent subshell never reads a partial file.
+    # The validated result remains usable even when cache persistence fails.
     local tmp_file
     if ! tmp_file="$(mktemp "${_RESOLVER_CACHE_DIR}/${ext}-${major}.XXXXXX")"; then
-        return 1
-    fi
-    if ! printf '%s' "$result" > "$tmp_file"; then
+        log_warning "resolver cache for $ext (PG $major) at $cache_file: mktemp failed; using validated result without caching"
+    elif ! printf '%s' "$result" > "$tmp_file"; then
+        log_warning "resolver cache for $ext (PG $major) at $cache_file: printf failed; using validated result without caching"
         if ! rm -f "$tmp_file"; then
-            return 1
+            log_warning "resolver cache for $ext (PG $major) at $cache_file: temporary removal after printf failure failed"
         fi
-        return 1
-    fi
-    if ! mv -fT "$tmp_file" "$cache_file"; then
+    elif ! mv -fT "$tmp_file" "$cache_file"; then
+        log_warning "resolver cache for $ext (PG $major) at $cache_file: mv failed; using validated result without caching"
         if ! rm -f "$tmp_file"; then
-            return 1
+            log_warning "resolver cache for $ext (PG $major) at $cache_file: temporary removal after mv failure failed"
         fi
-        return 1
     fi
 
     echo "$result"
