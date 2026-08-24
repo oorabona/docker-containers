@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Shared jq validation contracts for GHCR package-version records used by the
-# destructive registry pruners.  Callers deliberately choose one of the three
-# named contracts below; they cannot supply their own field list.
+# destructive registry pruners.  Callers deliberately choose one of the named
+# contracts below; they cannot supply their own field list.
 
 # `created_at` is only checked for RFC3339 string shape here.  #1301 owns
 # timestamp parsing and ordering semantics.
-# shellcheck disable=SC2089
+# shellcheck disable=SC2034,SC2089,SC2090
 VERSION_RECORD_VALIDATION_JQ='
 def valid_tag:
   # jq ^ is a true start anchor; use \z rather than $ so a final newline is
@@ -90,11 +90,13 @@ def first_manifest_child_error:
 # document from the metadata that document reports: its top-level mediaType,
 # the presence and type of its manifests field, and the declared mediaType of
 # each direct descriptor.  It does not fetch a child to confirm the media type
-# declared by its descriptor or follow subject; both cost one request per node,
-# the cost of a transitive walk.
-# oorabona/docker-containers#1338 owns that walk.
+# declared by its descriptor.  A top-level subject is refused: adding only its
+# digest to children would leave that subject document unfetched, so any child
+# references it contains could not be classified.  The transitive walk needed
+# to resolve subjects belongs to oorabona/docker-containers#1338.
 def manifest_protection_contract:
   if type != "object" then error("top-level manifest is not an object")
+  elif has("subject") then error("top-level manifest has an unresolved subject")
   elif has("mediaType") | not then error("top-level manifest has no mediaType")
   elif has("mediaType") and ((.mediaType | type) != "string") then error("top-level manifest has a non-string mediaType")
   elif has("mediaType") and (.mediaType | named_manifest_media_type | not) then error("top-level manifest has unsupported mediaType \(.mediaType | @json)")
@@ -141,6 +143,20 @@ def duplicate_id_error:
         end)
   | .error;
 
+# The package endpoint supplies a total to compare with a paginated versions
+# listing.  This detects cardinality drift, not every omission: with 200
+# records, deleting one from page 1 before page 2 shifts an offset so page 2
+# skips a live record; the 199 collected records can then agree with a later
+# package total of 199.  Duplicate IDs are checked separately.  This entry
+# point is intentionally separate from validate_old_versions.
+def validate_versions_listing_count($reported_count):
+  versions_collection_contract as $collection_error
+  | if $collection_error != null then error("validation failed: \($collection_error)")
+    elif (($reported_count | type) != "number" or ($reported_count | floor) != $reported_count or $reported_count < 0 or length != $reported_count) then
+      error("validation failed: package version_count is invalid or does not match the versions listing")
+    else true
+    end;
+
 def validate_outdated_tags_versions:
   versions_collection_contract as $collection_error
   | if $collection_error != null then error("validation failed: \($collection_error)")
@@ -161,5 +177,3 @@ def validate_old_versions:
       | if $error == null then true else error("validation failed: \($error)") end
     end;
 '
-# shellcheck disable=SC2090
-export VERSION_RECORD_VALIDATION_JQ

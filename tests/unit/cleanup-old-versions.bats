@@ -21,6 +21,18 @@ if [[ "$*" == *"--method DELETE"* ]]; then
     exit 0
 fi
 
+if [[ "$*" != *"/versions"* ]]; then
+    case "${GH_MODE:-}" in
+        delete-failure|cleanup-failure) package_version_count=1 ;;
+        malformed-record)
+            [[ "$*" == *"/container/broken"* ]] && package_version_count=1 || package_version_count=0
+            ;;
+        *) package_version_count=0 ;;
+    esac
+    printf '{"version_count":%s}\n' "$package_version_count"
+    exit 0
+fi
+
 if [[ "${GH_MODE:-}" == "listing-failure" && "$*" == *"/container/broken/versions"* ]]; then
     echo "gh: API rate limit exceeded" >&2
     exit 1
@@ -137,6 +149,11 @@ assert_prepared_decode_preserves_delete_totals() {
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "$*" != *"/versions"* ]]; then
+    printf '%s\n' '{"version_count":2}'
+    exit 0
+fi
+
 printf '%s\n' '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]'
 printf '%s\n' '[{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]'
 EOF
@@ -159,10 +176,114 @@ EOF
     [[ "$output" == *"Found 2 versions"* ]]
 }
 
+@test "a short version listing is unassessed, attempts no deletion, and does not abandon later packages" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$GH_LOG" \
+        GH_TOKEN="test-token" \
+        OWNER="test-owner" \
+        DRY_RUN="false" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" == *"/versions"* ]]; then
+                    [[ "$*" == *"/container/short/versions"* ]] && printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]" || printf "%s\\n" "[]"
+                elif [[ "$*" == *"/container/short"* ]]; then
+                    printf "%s\\n" "{\"version_count\":2}"
+                else
+                    printf "%s\\n" "{\"version_count\":0}"
+                fi
+            }
+            main short healthy
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"Version listing count does not agree with package version_count or version_count was invalid: package version_count is invalid or does not match the versions listing; skipping short"* ]]
+    [[ "$output" == *"Processing: healthy"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+    [[ "$output" == *"Packages skipped (listing failed): 1"* ]]
+    [[ ! -s "$GH_LOG" ]]
+}
+
+@test "a listing matching its package total keeps the normal retention and deletion behavior" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$GH_LOG" \
+        GH_TOKEN="test-token" \
+        OWNER="test-owner" \
+        DRY_RUN="false" \
+        KEEP_LATEST_COUNT="1" \
+        KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" == *"/versions"* ]]; then
+                    printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+                else
+                    printf "%s\\n" "{\"version_count\":2}"
+                fi
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(<"$GH_LOG")" == *"/versions/102"* ]]
+    [[ "$output" == *"Summary: kept=1, deleted=1, delete_failures=0"* ]]
+}
+
+@test "an absent or non-numeric package version total refuses the listing" {
+    local package_response
+    for package_response in '{}' '{"version_count":"two"}'; do
+        : > "$GH_LOG"
+        run env \
+            PROJECT_ROOT="$PROJECT_ROOT" \
+            GH_LOG="$GH_LOG" \
+            PACKAGE_RESPONSE="$package_response" \
+            GH_TOKEN="test-token" \
+            OWNER="test-owner" \
+            DRY_RUN="false" \
+            KEEP_LATEST_COUNT="0" \
+            KEEP_MONTHS="0" \
+            bash -c '
+                set -euo pipefail
+                source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+                gh() {
+                    if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                    if [[ "$*" == *"/versions"* ]]; then
+                        [[ "$*" == *"/container/broken/versions"* ]] && printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]" || printf "%s\\n" "[]"
+                    elif [[ "$*" == *"/container/broken"* ]]; then
+                        printf "%s\\n" "$PACKAGE_RESPONSE"
+                    else
+                        printf "%s\\n" "{\"version_count\":0}"
+                    fi
+                }
+                main broken healthy
+            '
+
+        [[ "$status" -eq 1 ]]
+        [[ "$output" == *"Version listing count does not agree with package version_count or version_count was invalid: package version_count is invalid or does not match the versions listing; skipping broken"* ]]
+        [[ "$output" == *"Processing: healthy"* ]]
+        [[ "$output" == *"Packages assessed: 1"* ]]
+        [[ "$output" == *"Packages skipped (listing failed): 1"* ]]
+        [[ ! -s "$GH_LOG" ]]
+    done
+}
+
 @test "a non-array first paginated page is rejected even when a later page is valid" {
     cat > "$STUB_DIR/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [[ "$*" != *"/versions"* ]]; then
+    printf '%s\n' '{"version_count":1}'
+    exit 0
+fi
 
 printf '%s\n' '{}'
 printf '%s\n' '[]'
@@ -210,6 +331,76 @@ EOF
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
     [[ ! -s "$GH_LOG" ]]
     [[ ! -e "$temp_file" ]]
+}
+
+@test "a preparation failure removes both work files and does not abandon later packages" {
+    local versions_file="$STUB_DIR/versions-file"
+    local deletions_file="$STUB_DIR/deletions-file"
+    local observed_file="$STUB_DIR/work-files-observed"
+    local mktemp_calls="$STUB_DIR/mktemp-calls"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$GH_LOG" \
+        PRUNER_VERSIONS_FILE="$versions_file" \
+        PRUNER_DELETIONS_FILE="$deletions_file" \
+        PRUNER_WORK_FILES_OBSERVED="$observed_file" \
+        PRUNER_MKTEMP_CALLS="$mktemp_calls" \
+        GH_TOKEN="test-token" \
+        OWNER="test-owner" \
+        DRY_RUN="false" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" == *"/versions"* ]]; then
+                    [[ "$*" == *"/container/broken/versions"* ]] && printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]" || printf "%s\\n" "[]"
+                elif [[ "$*" == *"/container/broken"* ]]; then
+                    printf "%s\\n" "{\"version_count\":1}"
+                else
+                    printf "%s\\n" "{\"version_count\":0}"
+                fi
+            }
+            mktemp() {
+                calls=0; [[ -f "$PRUNER_MKTEMP_CALLS" ]] && calls=$(<"$PRUNER_MKTEMP_CALLS")
+                calls=$((calls + 1)); printf "%s\\n" "$calls" > "$PRUNER_MKTEMP_CALLS"
+                case "$calls" in
+                    1) temp_path="$PRUNER_VERSIONS_FILE" ;;
+                    2) temp_path="$PRUNER_DELETIONS_FILE" ;;
+                    *) return 1 ;;
+                esac
+                : > "$temp_path"
+                printf "%s\\n" "$temp_path"
+            }
+            jq() {
+                local argument
+                for argument in "$@"; do
+                    case "$argument" in
+                        ".[] | {id: "*)
+                            [[ -e "$PRUNER_VERSIONS_FILE" && -e "$PRUNER_DELETIONS_FILE" ]] || return 97
+                            printf "both work files existed\\n" > "$PRUNER_WORK_FILES_OBSERVED"
+                            echo "jq: preparation failed" >&2
+                            return 1
+                            ;;
+                    esac
+                done
+                command jq "$@"
+            }
+            main broken healthy
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$(<"$observed_file")" == "both work files existed" ]]
+    [[ ! -e "$versions_file" ]]
+    [[ ! -e "$deletions_file" ]]
+    [[ ! -s "$GH_LOG" ]]
+    [[ "$output" == *"Failed to prepare version list; skipping broken"* ]]
+    [[ "$output" == *"Processing: healthy"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+    [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
 }
 
 @test "sourcing is inert and script_root uses BASH_SOURCE rather than the caller directory" {
@@ -300,6 +491,11 @@ if [[ "$*" == *"--method DELETE"* ]]; then
     exit 0
 fi
 
+if [[ "$*" != *"/versions"* ]]; then
+    printf '%s\n' '{"version_count":2}'
+    exit 0
+fi
+
 printf '%s\n' '[
   {"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"},
   {"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}},"created_at":"not-a-date"}
@@ -377,6 +573,7 @@ EOF
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":1}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"v1.2.3\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
             }
             jq() {
@@ -406,6 +603,7 @@ EOF
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
             }
             base64() {
@@ -442,6 +640,7 @@ run_old_version_validation_case() {
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "%s\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then command jq -c "{version_count: length}" <<< "$RESPONSE_JSON"; return 0; fi
                 printf "%s\n" "$RESPONSE_JSON"
             }
             main malformed
@@ -462,7 +661,7 @@ run_old_version_validation_case() {
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
-            gh() { printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"; }
+            gh() { [[ "$*" != *"/versions"* ]] && { printf "%s\\n" "{\"version_count\":1}"; return; }; printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"; }
             purge_container malformed
         '
 
@@ -473,7 +672,7 @@ run_old_version_validation_case() {
     cat > "$STUB_DIR/jq" <<'EOF'
 #!/usr/bin/env bash
 for argument in "$@"; do
-    [[ "$argument" == *"validate_old_versions"* ]] && exit 137
+    [[ "$argument" == *$'\n    validate_old_versions' ]] && exit 137
 done
 exec "$REAL_JQ" "$@"
 EOF
@@ -489,7 +688,7 @@ EOF
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
-            gh() { printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"; }
+            gh() { [[ "$*" != *"/versions"* ]] && { printf "%s\\n" "{\"version_count\":1}"; return; }; printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"; }
             purge_container validator-killed
         '
 
@@ -529,6 +728,7 @@ EOF
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
             gh() {
                 [[ "$*" == *"--method DELETE"* ]] && return 1
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\n" "{\"version_count\":2}"; return 0; fi
                 printf "%s\n" "[{\"id\":1,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":\"2\",\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
             }
             main valid
