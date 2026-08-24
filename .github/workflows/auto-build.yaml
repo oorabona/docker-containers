@@ -535,7 +535,7 @@ jobs:
           image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         timeout-minutes: 10
         with:
           # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
@@ -810,7 +810,7 @@ jobs:
           image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         timeout-minutes: 10
         with:
           # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
@@ -1042,7 +1042,7 @@ jobs:
           image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
           driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
@@ -1600,7 +1600,7 @@ jobs:
           image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
           driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
@@ -1881,7 +1881,7 @@ jobs:
           image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         timeout-minutes: 10
         with:
           driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
@@ -2377,7 +2377,7 @@ jobs:
           image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         timeout-minutes: 10
         with:
           driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
@@ -2806,7 +2806,7 @@ jobs:
         id: upload_sarif_bake
         if: steps.trivy-scan.outcome != 'skipped'
         continue-on-error: true  # SARIF upload is advisory — never gates the build
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'container-${{ matrix.build.container }}-${{ matrix.build.tag }}-linux/${{ matrix.arch }}'
@@ -2815,7 +2815,7 @@ jobs:
       - name: Upload SARIF to GitHub Security (retry on transient failure)
         if: always() && steps.upload_sarif_bake.outcome == 'failure'
         continue-on-error: true  # SARIF upload is advisory — never gates the build
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'container-${{ matrix.build.container }}-${{ matrix.build.tag }}-linux/${{ matrix.arch }}'
@@ -2903,7 +2903,7 @@ jobs:
           image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         timeout-minutes: 10
         with:
           driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
