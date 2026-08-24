@@ -152,7 +152,7 @@ runs:
 
     - name: Set up Docker Buildx
       if: runner.os != 'Windows'
-      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       with:
         # docker-container driver: supports --push and multi-platform builds.
         driver: docker-container
@@ -691,7 +691,7 @@ runs:
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' }}
       id: sarif-upload
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+      uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
       with:
         sarif_file: 'trivy-results.sarif'
         category: 'container-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}-${{ inputs.platform }}'
@@ -706,7 +706,7 @@ runs:
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' && steps.sarif-upload.outcome == 'failure' }}
       id: sarif-upload-retry
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+      uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
       with:
         sarif_file: 'trivy-results.sarif'
         category: 'container-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}-${{ inputs.platform }}'
