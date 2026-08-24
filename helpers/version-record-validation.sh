@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared jq validation contracts for GHCR package-version records used by the
-# destructive registry pruners.  Callers deliberately choose one of the two
+# destructive registry pruners.  Callers deliberately choose one of the three
 # named contracts below; they cannot supply their own field list.
 
 # `created_at` is only checked for RFC3339 string shape here.  #1301 owns
@@ -18,13 +18,16 @@ def valid_id:
   else false
   end;
 
+def valid_digest:
+  if type == "string" then test("^sha256:[0-9a-f]{64}\\z") else false end;
+
 def version_base($index):
   if type != "object" then "versions[\($index)]"
   elif has("id") | not then "versions[\($index)].id is missing"
   elif (.id | valid_id | not) then "versions[\($index)].id is invalid"
   elif has("name") | not then "versions[\($index)].name is missing"
   elif (.name | type) != "string" then "versions[\($index)].name is invalid"
-  elif (.name | test("^sha256:[0-9a-f]{64}\\z") | not) then "versions[\($index)].name is invalid"
+  elif (.name | valid_digest | not) then "versions[\($index)].name is invalid"
   elif has("metadata") | not then "versions[\($index)].metadata is missing"
   elif (.metadata | type) != "object" then "versions[\($index)].metadata is invalid"
   elif (.metadata | has("container") | not) then "versions[\($index)].metadata.container is missing"
@@ -48,6 +51,80 @@ def version_old_versions_contract($index):
    elif (.created_at | type) != "string" or (.created_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})\\z") | not) then "versions[\($index)].created_at is invalid"
    else null
    end);
+
+# A kept version may report an index.  Only direct descriptors that declare a
+# plain image manifest are accepted without walking a further level of the graph.
+def named_manifest_media_type:
+  type == "string" and (
+    . == "application/vnd.oci.image.index.v1+json" or
+    . == "application/vnd.docker.distribution.manifest.list.v2+json" or
+    . == "application/vnd.oci.image.manifest.v1+json" or
+    . == "application/vnd.docker.distribution.manifest.v2+json"
+  );
+
+# This validates only the metadata each direct descriptor reports; its declared
+# media type is not confirmed against the document at its digest.
+def manifest_child_error($index):
+  if type != "object" then "child descriptor \($index) is not an object"
+  elif has("mediaType") | not then "child descriptor \($index) has no mediaType"
+  elif has("mediaType") and ((.mediaType | type) != "string") then "child descriptor \($index) has a non-string mediaType"
+  elif has("mediaType") and (.mediaType | named_manifest_media_type | not) then "child descriptor \($index) has unsupported mediaType \(.mediaType | @json)"
+  elif .mediaType == "application/vnd.oci.image.index.v1+json" then "child descriptor \($index) is a nested OCI index"
+  elif .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json" then "child descriptor \($index) is a nested Docker manifest list"
+  elif has("digest") | not then "child descriptor \($index) has no digest"
+  elif (.digest | valid_digest | not) then "child descriptor \($index) has a malformed digest"
+  else null
+  end;
+
+# `first` stops evaluating direct descriptors once the first refusal is found.
+# The caller reports only that refusal, so later descriptors are not inspected.
+def first_manifest_child_error:
+  first(
+    range(0; (.manifests | length)) as $index
+    | .manifests[$index]
+    | manifest_child_error($index)
+    | select(. != null)
+  ) // null;
+
+# This is deliberately a one-level protection contract.  It classifies a
+# document from the metadata that document reports: its top-level mediaType,
+# the presence and type of its manifests field, and the declared mediaType of
+# each direct descriptor.  It does not fetch a child to confirm the media type
+# declared by its descriptor or follow subject; both cost one request per node,
+# the cost of a transitive walk.
+# oorabona/docker-containers#1338 owns that walk.
+def manifest_protection_contract:
+  if type != "object" then error("top-level manifest is not an object")
+  elif has("mediaType") | not then error("top-level manifest has no mediaType")
+  elif has("mediaType") and ((.mediaType | type) != "string") then error("top-level manifest has a non-string mediaType")
+  elif has("mediaType") and (.mediaType | named_manifest_media_type | not) then error("top-level manifest has unsupported mediaType \(.mediaType | @json)")
+  elif .mediaType == "application/vnd.oci.image.index.v1+json" then
+    if has("manifests") | not then error("top-level OCI index has no manifests field")
+    elif (.manifests | type) != "array" then error("top-level OCI index has a non-array manifests field")
+    else first_manifest_child_error as $child_error
+    | if $child_error == null then
+        {children: [.manifests[].digest]}
+      else error($child_error)
+      end
+    end
+  elif .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json" then
+    if has("manifests") | not then error("top-level Docker manifest list has no manifests field")
+    elif (.manifests | type) != "array" then error("top-level Docker manifest list has a non-array manifests field")
+    else first_manifest_child_error as $child_error
+    | if $child_error == null then
+        {children: [.manifests[].digest]}
+      else error($child_error)
+      end
+    end
+  elif .mediaType == "application/vnd.oci.image.manifest.v1+json" then
+    if has("manifests") then error("top-level OCI image manifest has a manifests field")
+    else {children: []}
+    end
+  elif .mediaType == "application/vnd.docker.distribution.manifest.v2+json" then
+    if has("manifests") then error("top-level Docker image manifest has a manifests field")
+    else {children: []}
+    end
+  end;
 
 def versions_collection_contract:
   if type == "array" then null else "versions must be an array" end;
