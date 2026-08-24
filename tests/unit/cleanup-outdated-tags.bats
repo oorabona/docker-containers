@@ -124,6 +124,194 @@ assert_dockerhub_called_after_complete_ghcr_plan() {
     fi
 }
 
+run_manifest_protection_refusal() {
+    local manifest_json="$1"
+    local expected_reason="$2"
+    local gh_log="$_STUB_DIR/manifest-protection-gh.log"
+    local dockerhub_calls="$_STUB_DIR/manifest-protection-dockerhub.log"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        MANIFEST_JSON="$manifest_json" \
+        GH_LOG="$gh_log" \
+        DOCKERHUB_CALLS="$dockerhub_calls" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "0|0"; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
+            }
+            curl() {
+                if [[ "$*" == *"/token?"* ]]; then printf "%s\\n" "{\"token\":\"registry-token\"}"
+                elif [[ "$*" == *"/manifests/"* ]]; then printf "%s\\n" "$MANIFEST_JSON"
+                else echo "unexpected curl: $*" >&2; return 1
+                fi
+            }
+            main protected
+        '
+
+    if [[ "$status" -ne 1 ]]; then
+        echo "ASSERTION FAILED: manifest protection refusal was not returned" >&2
+        return 1
+    fi
+    if [[ "$output" != *"Refused manifest protection for sha256:aaaaaaaaaaaa"* || "$output" != *"$expected_reason"* ]]; then
+        echo "ASSERTION FAILED: refusal did not name the kept digest and reason" >&2
+        return 1
+    fi
+    if [[ -s "$gh_log" || -s "$dockerhub_calls" ]]; then
+        echo "ASSERTION FAILED: manifest protection refusal attempted a registry deletion" >&2
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# GHCR manifest-protection contract (#1338)
+# ---------------------------------------------------------------------------
+
+@test "purge_ghcr refuses a kept OCI index with a nested OCI index child before DELETE" {
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}' \
+        "nested OCI index"
+}
+
+@test "purge_ghcr refuses a kept OCI index with a nested Docker manifest list child before DELETE" {
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.docker.distribution.manifest.list.v2+json","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}' \
+        "nested Docker manifest list"
+}
+
+@test "purge_ghcr refuses an untyped sibling after a valid manifest child before DELETE" {
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}]}' \
+        "child descriptor 1 has no mediaType"
+}
+
+@test "purge_ghcr refuses a child with an unsupported mediaType before DELETE" {
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.example.unknown.v1+json","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}' \
+        "unsupported mediaType"
+}
+
+@test "purge_ghcr refuses children with missing or newline-tainted digests before DELETE" {
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json"}]}' \
+        "child descriptor 0 has no digest"
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"}]}' \
+        "child descriptor 0 has a malformed digest"
+}
+
+@test "purge_ghcr refuses top-level manifests with missing or unsupported mediaType before DELETE" {
+    run_manifest_protection_refusal \
+        '{"manifests":[]}' \
+        "top-level manifest has no mediaType"
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.example.unknown.v1+json","manifests":[]}' \
+        "top-level manifest has unsupported mediaType"
+}
+
+@test "purge_ghcr refuses a kept OCI index without manifests before DELETE" {
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json"}' \
+        "top-level OCI index has no manifests field"
+}
+
+@test "purge_ghcr refuses a kept Docker manifest list without manifests before DELETE" {
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.docker.distribution.manifest.list.v2+json"}' \
+        "top-level Docker manifest list has no manifests field"
+}
+
+@test "purge_ghcr refuses indexes whose manifests field is not an array before DELETE" {
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":null}' \
+        "top-level OCI index has a non-array manifests field"
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":{}}' \
+        "top-level OCI index has a non-array manifests field"
+}
+
+@test "purge_ghcr refuses leaf manifests that carry manifests before DELETE" {
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.oci.image.manifest.v1+json","manifests":[]}' \
+        "top-level OCI image manifest has a manifests field"
+    run_manifest_protection_refusal \
+        '{"mediaType":"application/vnd.docker.distribution.manifest.v2+json","manifests":[]}' \
+        "top-level Docker image manifest has a manifests field"
+}
+
+@test "purge_ghcr protects plain-manifest children and deletes only a genuinely unreferenced orphan" {
+    local gh_log="$_STUB_DIR/manifest-protection-gh.log"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$gh_log" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DOCKERHUB_USERNAME="" \
+        DOCKERHUB_TOKEN="" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}},{\"id\":103,\"name\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"metadata\":{\"container\":{\"tags\":[]}}},{\"id\":104,\"name\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
+            }
+            curl() {
+                if [[ "$*" == *"/token?"* ]]; then printf "%s\\n" "{\"token\":\"registry-token\"}"
+                elif [[ "$*" == *"/manifests/"* ]]; then printf "%s\\n" "{\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},{\"mediaType\":\"application/vnd.docker.distribution.manifest.v2+json\",\"digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}]}"
+                else echo "unexpected curl: $*" >&2; return 1
+                fi
+            }
+            main protected
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(<"$gh_log")" == *"/versions/104"* ]]
+    [[ "$(<"$gh_log")" != *"/versions/102"* ]]
+    [[ "$(<"$gh_log")" != *"/versions/103"* ]]
+}
+
+@test "purge_ghcr accepts a leaf manifest without manifests and completes normally" {
+    local gh_log="$_STUB_DIR/manifest-protection-gh.log"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$gh_log" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DOCKERHUB_USERNAME="" \
+        DOCKERHUB_TOKEN="" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" "latest"; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
+            }
+            curl() {
+                if [[ "$*" == *"/token?"* ]]; then printf "%s\\n" "{\"token\":\"registry-token\"}"
+                elif [[ "$*" == *"/manifests/"* ]]; then printf "%s\\n" "{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\"}"
+                else echo "unexpected curl: $*" >&2; return 1
+                fi
+            }
+            main protected
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(<"$gh_log")" == *"/versions/102"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Direct-match tests (regression: existing behaviour must be preserved)
 # ---------------------------------------------------------------------------

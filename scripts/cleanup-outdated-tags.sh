@@ -100,7 +100,7 @@ purge_ghcr() {
   local versions version_count versions_file="" obsolete_file="" protected_file=""
   local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 deletion_read_error=0 validation_error validation_status
   local record_b64 record_json
-  local protected_digests="" ghcr_token manifest children
+  local protected_digests="" ghcr_token manifest children protection_result
   local -a kept_digests=()
 
   cleanup_files() { rm -f "$versions_file" "$obsolete_file" "$protected_file"; }
@@ -213,14 +213,15 @@ purge_ghcr() {
         echo "  ✗ Failed to fetch manifest for ${digest:0:19}; skipping $container" >&2
         return "$PROTECTION_FAILURE"
       fi
-      if ! jq -e 'type == "object"' >/dev/null <<< "$manifest"; then
+      if ! protection_result=$(jq -ce "$VERSION_RECORD_VALIDATION_JQ
+        manifest_protection_contract" <<< "$manifest" 2>&1); then
         cleanup_files
-        echo "  ✗ Failed to parse manifest for ${digest:0:19}; skipping $container" >&2
+        echo "  ✗ Refused manifest protection for ${digest:0:19}: $protection_result; skipping $container" >&2
         return "$PROTECTION_FAILURE"
       fi
-      if ! children=$(jq -r '.manifests[]?.digest // empty' <<< "$manifest"); then
+      if ! children=$(jq -r '.children[]' <<< "$protection_result"); then
         cleanup_files
-        echo "  ✗ Failed to read manifest for ${digest:0:19}; skipping $container" >&2
+        echo "  ✗ Failed to read protected manifest children for ${digest:0:19}; skipping $container" >&2
         return "$PROTECTION_FAILURE"
       fi
       if [[ -n "$children" ]] && ! printf '%s\n' "$children" >> "$protected_file"; then
