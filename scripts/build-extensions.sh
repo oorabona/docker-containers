@@ -314,6 +314,81 @@ _write_rotation_status() {
     fi
 }
 
+# Write a complete lineage artifact without replacing the destination inode.
+# The producer writes only to a temporary file, so a producer failure leaves an
+# existing destination byte-identical.  The temporary does not reserve space
+# for the final copy: a successful producer does not prove there is room to
+# publish it.  The final copy writes through the destination (and a destination
+# symlink), which preserves its inode and metadata.  Its redirection can
+# truncate the destination before a copy failure, leaving it empty or partial,
+# just as the direct redirections this helper replaced could.  This helper does
+# not protect that final-write case; #1427 owns any change to that publication
+# strategy.
+# This helper is deliberately explicit about every command status: its callers
+# commonly run on the left of `||`, where errexit is disabled for the function
+# body.
+#
+# Usage: _write_lineage_artifact <destination> <producer-command> [args...]
+# The producer command writes the artifact body to stdout.
+_write_lineage_artifact() {
+    if [[ "$#" -lt 2 ]]; then
+        log_error "Usage: _write_lineage_artifact <destination> <producer-command> [args...]"
+        return 1
+    fi
+
+    local destination="$1"
+    shift
+    local destination_dir
+    local destination_base="${destination##*/}"
+    local tmp_file write_status cleanup_status
+
+    destination_dir=$(dirname -- "$destination")
+
+    if ! mkdir -p "$destination_dir"; then
+        log_error "Could not create lineage artifact directory: $destination_dir"
+        return 1
+    fi
+
+    if ! tmp_file=$(mktemp "${destination_dir}/.${destination_base}.tmp.XXXXXX"); then
+        log_error "Could not create temporary lineage artifact: $destination"
+        return 1
+    fi
+
+    if "$@" > "$tmp_file"; then
+        :
+    else
+        write_status=$?
+        if rm -f "$tmp_file"; then
+            log_error "Lineage artifact write failed: $destination (rc=$write_status)"
+        else
+            cleanup_status=$?
+            log_error "Lineage artifact write failed: $destination (rc=$write_status); temporary file retained: $tmp_file (cleanup rc=$cleanup_status)"
+        fi
+        return "$write_status"
+    fi
+
+    if cat "$tmp_file" > "$destination"; then
+        if rm -f "$tmp_file"; then
+            :
+        else
+            cleanup_status=$?
+            log_error "Lineage artifact temporary cleanup failed: $destination; temporary file retained: $tmp_file (cleanup rc=$cleanup_status)"
+            return "$cleanup_status"
+        fi
+        return 0
+    else
+        write_status=$?
+    fi
+
+    if rm -f "$tmp_file"; then
+        log_error "Lineage artifact copy failed: $destination (rc=$write_status)"
+    else
+        cleanup_status=$?
+        log_error "Lineage artifact copy failed: $destination (rc=$write_status); temporary file retained: $tmp_file (cleanup rc=$cleanup_status)"
+    fi
+    return "$write_status"
+}
+
 _rotation_build_exit() {
     local _exit_status="$1"
     local _cleanup_status=0
@@ -1043,7 +1118,6 @@ _bundle_and_write_artifact() {
     fi
 
     local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
-    mkdir -p "${ROOT_DIR}/.build-lineage"
 
     local _available_json _excluded_json _resolved_json
     _available_json=$(printf '%s\n' "${_confirmed_available[@]+"${_confirmed_available[@]}"}" | jq -Rsc 'split("\n") | map(select(. != ""))')
@@ -1051,21 +1125,22 @@ _bundle_and_write_artifact() {
     _resolved_json=$(echo "$version_set_json" | jq '.')
     if [[ "$_version_digests_json" == "null" ]]; then
         # No-push path: omit version_digests (local/no-push artifact).
-        jq -nc \
+        if ! _write_lineage_artifact "$_vs_lineage_file" jq -nc \
             --arg ext "$ext" \
             --arg pg_major "$major_ver" \
             --arg ceiling "$ceiling" \
             --argjson resolved "$_resolved_json" \
             --argjson available "$_available_json" \
             --argjson excluded "$_excluded_json" \
-            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded}' \
-            > "$_vs_lineage_file"
+            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded}'; then
+            return 1
+        fi
         log_info "Version-set lineage (build path, no-push — no version_digests): $_vs_lineage_file"
     else
         # Pushed path: include version_digests so consumer emits digest-pinned refs.
         local _version_digests_repository
         _version_digests_repository=$(ext_image_repository "$ext") || return 1
-        jq -nc \
+        if ! _write_lineage_artifact "$_vs_lineage_file" jq -nc \
             --arg ext "$ext" \
             --arg pg_major "$major_ver" \
             --arg ceiling "$ceiling" \
@@ -1074,8 +1149,9 @@ _bundle_and_write_artifact() {
             --argjson excluded "$_excluded_json" \
             --argjson version_digests "$_version_digests_json" \
             --arg version_digests_repository "$_version_digests_repository" \
-            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, version_digests:$version_digests, version_digests_repository:$version_digests_repository}' \
-            > "$_vs_lineage_file"
+            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, version_digests:$version_digests, version_digests_repository:$version_digests_repository}'; then
+            return 1
+        fi
         log_info "Version-set lineage (build path, pushed — with version_digests): $_vs_lineage_file"
     fi
     return 0
@@ -1332,16 +1408,19 @@ build_tag_push_extensions() {
                 local _ver_lineage_suffix=""
                 [[ -n "${ARCH_SUFFIX:-}" ]] && _ver_lineage_suffix="-${ARCH_SUFFIX}"
                 local _ver_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe}${_ver_lineage_suffix}.json"
-                mkdir -p "${ROOT_DIR}/.build-lineage"
-                jq -nc \
+                if ! _write_lineage_artifact "$_ver_lineage_file" jq -nc \
                     --arg ext "$ext" \
                     --arg version "$version" \
                     --arg pg_major "$major_ver" \
                     --arg image "$_ver_image" \
                     --argjson duration "$_ver_duration" \
                     --arg built_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-                    '{ext:$ext, version:$version, pg_major:$pg_major, image:$image, duration_seconds:$duration, built_at:$built_at}' \
-                    > "$_ver_lineage_file"
+                    '{ext:$ext, version:$version, pg_major:$pg_major, image:$image, duration_seconds:$duration, built_at:$built_at}'; then
+                    log_error "$ext $version: extension lineage artifact could not be written"
+                    _record_rotation_build_status infra
+                    failed+=("$ext@${version}:lineage")
+                    continue
+                fi
                 log_info "Extension lineage: $_ver_lineage_file (${_ver_duration}s)"
             fi
         done < <(echo "$version_set_json" | jq -r '.[]')
@@ -1479,9 +1558,21 @@ _resolve_cached() {
 
     # Write atomically so a concurrent subshell never reads a partial file.
     local tmp_file
-    tmp_file="$(mktemp "${_RESOLVER_CACHE_DIR}/${ext}-${major}.XXXXXX")"
-    printf '%s' "$result" > "$tmp_file"
-    mv "$tmp_file" "$cache_file"
+    if ! tmp_file="$(mktemp "${_RESOLVER_CACHE_DIR}/${ext}-${major}.XXXXXX")"; then
+        return 1
+    fi
+    if ! printf '%s' "$result" > "$tmp_file"; then
+        if ! rm -f "$tmp_file"; then
+            return 1
+        fi
+        return 1
+    fi
+    if ! mv -fT "$tmp_file" "$cache_file"; then
+        if ! rm -f "$tmp_file"; then
+            return 1
+        fi
+        return 1
+    fi
 
     echo "$result"
 }
@@ -2029,22 +2120,22 @@ _emit_versionset_artifact() {
     fi
 
     local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
-    mkdir -p "${ROOT_DIR}/.build-lineage"
 
     local available_json excluded_json resolved_json
     available_json=$(printf '%s\n' "${available_versions[@]+"${available_versions[@]}"}" | jq -Rsc 'split("\n") | map(select(. != ""))')
     excluded_json="[$(IFS=,; echo "${excluded_entries[*]+"${excluded_entries[*]}"}")]"
     resolved_json=$(echo "$version_set_json" | jq '.')
 
-    jq -nc \
+    if ! _write_lineage_artifact "$_vs_lineage_file" jq -nc \
         --arg ext "$ext" \
         --arg pg_major "$major_ver" \
         --arg ceiling "$ceiling" \
         --argjson resolved "$resolved_json" \
         --argjson available "$available_json" \
         --argjson excluded "$excluded_json" \
-        '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded}' \
-        > "$_vs_lineage_file"
+        '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded}'; then
+        return 1
+    fi
     log_info "Version-set lineage (presence-based): $_vs_lineage_file"
 }
 
@@ -2550,7 +2641,6 @@ finalize_multiarch_manifests() {
         # The consumer (generate_dockerfile) uses these digests to emit
         # digest-pinned COPY --from= lines in the collector stage.
         local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
-        mkdir -p "${ROOT_DIR}/.build-lineage"
 
         local _available_json _excluded_json _resolved_json _version_digests_json _version_digests_repository
         _available_json=$(printf '%s\n' "${_confirmed_available[@]+"${_confirmed_available[@]}"}" | jq -Rsc 'split("\n") | map(select(. != ""))')
@@ -2575,7 +2665,7 @@ finalize_multiarch_manifests() {
         _vd_obj+='}'
         _version_digests_json="$_vd_obj"
 
-        jq -nc \
+        if ! _write_lineage_artifact "$_vs_lineage_file" jq -nc \
             --arg ext "$ext" \
             --arg pg_major "$major_ver" \
             --arg ceiling "$ceiling" \
@@ -2584,8 +2674,10 @@ finalize_multiarch_manifests() {
             --argjson excluded "$_excluded_json" \
             --argjson version_digests "$_version_digests_json" \
             --arg version_digests_repository "$_version_digests_repository" \
-            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, version_digests:$version_digests, version_digests_repository:$version_digests_repository}' \
-            > "$_vs_lineage_file"
+            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, version_digests:$version_digests, version_digests_repository:$version_digests_repository}'; then
+            _failed=true
+            continue
+        fi
         log_success "Versionset artifact written: $_vs_lineage_file"
 
     done <<< "$ext_list"
