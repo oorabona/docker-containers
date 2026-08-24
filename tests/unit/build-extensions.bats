@@ -64,6 +64,9 @@ EOF
     # `ext_image_name`. Mocks declared before would be overwritten.
     _setup_default_mocks
 
+    unset -v _RESOLVED_VERSION_SETS
+    _RESOLVED_VERSION_SET_JSON=""
+
     # After sourcing, redirect ROOT_DIR to our temp tree
     ROOT_DIR="$TEST_TEMP_DIR"
 }
@@ -602,29 +605,29 @@ EOF
 @test "cached resolver treats an unreadable cache entry as a miss" {
     # The cache entry is a regular file this run wrote itself, so no filesystem
     # state makes `cat` fail for a root test runner. Mock the read instead.
-    printf '["9.9.9"]\n' > "${_RESOLVER_CACHE_DIR}/pgvector-${MAJOR_VER}.json"
+    local config_identity cache_file
+    config_identity=$(sha256_file "$CONFIG_FILE")
+    cache_file="${_RESOLVER_CACHE_DIR}/pgvector-${MAJOR_VER}-${config_identity}.json"
+    printf '["9.9.9"]\n' > "$cache_file"
     cat() { return 1; }
     resolve_version_set() { printf '["1.2.3"]\n'; }
     local stderr_file="$TEST_TEMP_DIR/resolver-cache-read.stderr"
-    _resolve_cached_with_stderr() {
-        _resolve_cached pgvector "$MAJOR_VER" "$CONFIG_FILE" 2> "$stderr_file"
-    }
+    _resolve_cached pgvector "$MAJOR_VER" "$CONFIG_FILE" 2> "$stderr_file"
 
-    run _resolve_cached_with_stderr
-
-    [ "$status" -eq 0 ]
-    assert_equals '["1.2.3"]' "$output"
+    assert_equals '["1.2.3"]' "$_RESOLVED_VERSION_SET_JSON"
     output=$(< "$stderr_file")
-    assert_output_contains "resolver cache for pgvector (PG $MAJOR_VER) at ${_RESOLVER_CACHE_DIR}/pgvector-${MAJOR_VER}.json: read failed; resolving normally"
+    assert_output_contains "resolver cache for pgvector (PG $MAJOR_VER) at $cache_file: read failed; resolving normally"
 }
 
 @test "cached resolver returns a readable cache entry" {
-    printf '["1.2.3"]\n' > "${_RESOLVER_CACHE_DIR}/pgvector-${MAJOR_VER}.json"
+    local config_identity cache_file
+    config_identity=$(sha256_file "$CONFIG_FILE")
+    cache_file="${_RESOLVER_CACHE_DIR}/pgvector-${MAJOR_VER}-${config_identity}.json"
+    printf '["1.2.3"]\n' > "$cache_file"
 
-    run _resolve_cached pgvector "$MAJOR_VER" "$CONFIG_FILE"
+    _resolve_cached pgvector "$MAJOR_VER" "$CONFIG_FILE"
 
-    [ "$status" -eq 0 ]
-    assert_equals '["1.2.3"]' "$output"
+    assert_equals '["1.2.3"]' "$_RESOLVED_VERSION_SET_JSON"
 }
 
 @test "prerequisites require jq as well as yq" {

@@ -26,6 +26,12 @@ _source_build_extensions() {
     popd > /dev/null 2>&1
 }
 
+_resolver_cache_file() {
+    local ext="$1" major="$2" config_file="$3" config_identity
+    config_identity=$(sha256_file "$config_file")
+    printf '%s/%s-%s-%s.json' "$_RESOLVER_CACHE_DIR" "$ext" "$major" "$config_identity"
+}
+
 _capture_rotation_build_status() {
     local rc=0
     if build_tag_push_extensions "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" true timescaledb; then
@@ -209,6 +215,9 @@ EOF
 
     # Install mocks AFTER sourcing
     _setup_default_mocks
+
+    unset -v _RESOLVED_VERSION_SETS
+    _RESOLVED_VERSION_SET_JSON=""
 
     ROOT_DIR="$TEST_TEMP_DIR"
 }
@@ -1091,7 +1100,7 @@ _count_log_lines() {
     [ "$build_count" -eq 0 ]
 }
 
-@test "resolver-call-count: resolve_version_set called exactly once per (ext,major) across filter+build" {
+@test "resolver-call-count: source inside a function still resolves once across filter+build" {
     local counter_file="$TEST_TEMP_DIR/resolver_call_count"
     printf '0' > "$counter_file"
 
@@ -1120,7 +1129,8 @@ _count_log_lines() {
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
         export counter_file=\"$counter_file\"
         cd \"$SCRIPTS_DIR\"
-        source ./build-extensions.sh
+        source_build_extensions() { source ./build-extensions.sh; }
+        source_build_extensions
         # Re-set ROOT_DIR after source — build-extensions.sh resets it to the real repo
         export ROOT_DIR=\"$TEST_TEMP_DIR\"
 
@@ -1162,10 +1172,20 @@ _count_log_lines() {
         CONFIG=\"$CONFIG_FILE\"
         CDIR=\"$CONTAINER_DIR\"
 
-        # Simulate the main() pattern: filter step then build step
-        if _should_build_extension timescaledb \"\$CONFIG\" 18 \"\$CDIR\"; then
-            build_tag_push_extensions \"\$CONFIG\" 18 \"\$CDIR\" true timescaledb
-        fi
+        # Match main()'s memoization lifetime: filter step then build step
+        # share a local associative map. Prove the first write succeeded, then
+        # remove its file: the second stage must retain the in-memory result.
+        filter_and_build() {
+            local -A _RESOLVED_VERSION_SETS=()
+            if _should_build_extension timescaledb \"\$CONFIG\" 18 \"\$CDIR\"; then
+                config_identity=\$(sha256_file \"\$CONFIG\")
+                cache_file=\"\${_RESOLVER_CACHE_DIR}/timescaledb-18-\${config_identity}.json\"
+                [[ -f \"\$cache_file\" ]]
+                rm -f -- \"\$cache_file\"
+                build_tag_push_extensions \"\$CONFIG\" 18 \"\$CDIR\" true timescaledb
+            fi
+        }
+        filter_and_build
     "
 
     [ "$status" -eq 0 ]
@@ -1173,7 +1193,163 @@ _count_log_lines() {
     local call_count
     call_count=$(cat "$counter_file")
     # Must be exactly 1 — the at-most-once invariant
-    [ "$call_count" -eq 1 ]
+    [ "$call_count" -eq 1 ] || {
+        echo "resolver calls observed: $call_count" >&2
+        false
+    }
+}
+
+@test "resolver-call-count: cache write failure still resolves once across filter+build" {
+    local counter_file="$TEST_TEMP_DIR/resolver_call_count"
+    local filtered_set expected_set='["2.25.0","2.26.0","2.27.1"]'
+    printf '0' > "$counter_file"
+
+    resolve_version_set() {
+        local n
+        n=$(cat "$counter_file")
+        printf '%d' $(( n + 1 )) > "$counter_file"
+        printf '%s\n' "$expected_set"
+    }
+    mktemp() {
+        if [[ "${1:-}" == "${_RESOLVER_CACHE_DIR}/"* ]]; then
+            return 70
+        fi
+        command mktemp "$@"
+    }
+
+    filter_and_build() {
+        local -A _RESOLVED_VERSION_SETS=()
+        if ! _should_build_extension timescaledb "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"; then
+            return 1
+        fi
+        filtered_set="$_RESOLVED_VERSION_SET_JSON"
+        build_tag_push_extensions "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" true timescaledb
+    }
+    filter_and_build
+
+    [ "$(<"$counter_file")" -eq 1 ] || {
+        echo "resolver calls observed: $(<"$counter_file")" >&2
+        false
+    }
+    [ "$filtered_set" = "$expected_set" ]
+    [ "$_RESOLVED_VERSION_SET_JSON" = "$expected_set" ]
+}
+
+@test "resolver-call-count: distinct config identities resolve independently" {
+    local counter_file="$TEST_TEMP_DIR/resolver_call_count"
+    local second_config="$TEST_TEMP_DIR/postgres/extensions/config-second.yaml"
+    local first_set second_set
+    printf '0' > "$counter_file"
+    cp "$CONFIG_FILE" "$second_config"
+    printf '\n# distinct resolver identity\n' >> "$second_config"
+
+    resolve_version_set() {
+        local n
+        n=$(cat "$counter_file")
+        printf '%d' $(( n + 1 )) > "$counter_file"
+        if [[ "$3" == "$CONFIG_FILE" ]]; then
+            printf '%s\n' '["2.27.1"]'
+        else
+            printf '%s\n' '["2.26.0"]'
+        fi
+    }
+
+    _resolve_cached timescaledb "$MAJOR_VER" "$CONFIG_FILE"
+    first_set="$_RESOLVED_VERSION_SET_JSON"
+    _resolve_cached timescaledb "$MAJOR_VER" "$second_config"
+    second_set="$_RESOLVED_VERSION_SET_JSON"
+    _resolve_cached timescaledb "$MAJOR_VER" "$CONFIG_FILE"
+    [ "$_RESOLVED_VERSION_SET_JSON" = "$first_set" ]
+    _resolve_cached timescaledb "$MAJOR_VER" "$second_config"
+    [ "$_RESOLVED_VERSION_SET_JSON" = "$second_set" ]
+
+    [ "$(<"$counter_file")" -eq 2 ] || {
+        echo "resolver calls observed: $(<"$counter_file")" >&2
+        false
+    }
+    [ "$first_set" = '["2.27.1"]' ]
+    [ "$second_set" = '["2.26.0"]' ]
+}
+
+@test "resolver-call-count: default config identities resolve independently" {
+    local counter_file="$TEST_TEMP_DIR/resolver_call_count"
+    local second_config="$TEST_TEMP_DIR/postgres/extensions/config-second.yaml"
+    local first_set second_set
+    printf '0' > "$counter_file"
+    cp "$CONFIG_FILE" "$second_config"
+    sed -i 's/2.27.1/2.26.0/' "$second_config"
+
+    resolve_version_set() {
+        local n
+        n=$(cat "$counter_file")
+        printf '%d' $(( n + 1 )) > "$counter_file"
+        if [[ "$3" == "$CONFIG_FILE" ]]; then
+            printf '%s\n' '["2.27.1"]'
+        else
+            printf '%s\n' '["2.26.0"]'
+        fi
+    }
+
+    _EXT_CONFIG="$CONFIG_FILE"
+    _resolve_cached timescaledb "$MAJOR_VER"
+    first_set="$_RESOLVED_VERSION_SET_JSON"
+    _EXT_CONFIG="$second_config"
+    _resolve_cached timescaledb "$MAJOR_VER"
+    second_set="$_RESOLVED_VERSION_SET_JSON"
+
+    [ "$(<"$counter_file")" -eq 2 ] || {
+        echo "resolver calls observed: $(<"$counter_file")" >&2
+        false
+    }
+    [ "$first_set" = '["2.27.1"]' ]
+    [ "$second_set" = '["2.26.0"]' ]
+}
+
+@test "resolver-call-count: re-source resets the file cache without a main lifetime" {
+    local counter_file="$TEST_TEMP_DIR/resolver_call_count"
+    printf '0' > "$counter_file"
+
+    run bash -c "
+        cd \"$SCRIPTS_DIR\"
+        source ./build-extensions.sh
+        resolve_version_set() {
+            local n; n=\$(cat \"$counter_file\")
+            printf '%d' \$(( n + 1 )) > \"$counter_file\"
+            printf '%s\\n' '[\"2.27.1\"]'
+        }
+        _resolve_cached timescaledb \"$MAJOR_VER\" \"$CONFIG_FILE\"
+        first_cache_dir=\"\$_RESOLVER_CACHE_DIR\"
+        source ./build-extensions.sh
+        resolve_version_set() {
+            local n; n=\$(cat \"$counter_file\")
+            printf '%d' \$(( n + 1 )) > \"$counter_file\"
+            printf '%s\\n' '[\"2.27.1\"]'
+        }
+        _resolve_cached timescaledb \"$MAJOR_VER\" \"$CONFIG_FILE\"
+        rm -rf -- \"\$first_cache_dir\" \"\$_RESOLVER_CACHE_DIR\"
+    "
+
+    [ "$status" -eq 0 ] || {
+        echo "resolver calls observed after re-source: $(<"$counter_file")" >&2
+        false
+    }
+    [ "$(<"$counter_file")" -eq 2 ] || {
+        echo "resolver calls observed: $(<"$counter_file")" >&2
+        false
+    }
+}
+
+@test "cached resolver direct call without main lifetime returns a validated result" {
+    run bash -c "
+        set -u
+        cd \"$SCRIPTS_DIR\"
+        source ./build-extensions.sh
+        resolve_version_set() { printf '%s\\n' '[\"2.27.1\"]'; }
+        _resolve_cached timescaledb \"$MAJOR_VER\" \"$CONFIG_FILE\"
+        [[ \"\$_RESOLVED_VERSION_SET_JSON\" == '[\"2.27.1\"]' ]]
+    "
+
+    [ "$status" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -4093,7 +4269,8 @@ EOF
 }
 
 @test "cached resolver returns the validated result when mktemp fails" {
-    local cache_file="${_RESOLVER_CACHE_DIR}/cache-mktemp-${MAJOR_VER}.json"
+    local cache_file
+    cache_file=$(_resolver_cache_file cache-mktemp "$MAJOR_VER" "$CONFIG_FILE")
     local stdout_file="$TEST_TEMP_DIR/cache-mktemp.stdout"
     local stderr_file="$TEST_TEMP_DIR/cache-mktemp.stderr"
     local rc=0
@@ -4104,13 +4281,15 @@ EOF
     _resolve_cached cache-mktemp "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
 
     [ "$rc" -eq 0 ]
-    [ "$(<"$stdout_file")" = '["1.2.3"]' ]
+    [ ! -s "$stdout_file" ]
+    [ "$_RESOLVED_VERSION_SET_JSON" = '["1.2.3"]' ]
     [[ "$(<"$stderr_file")" == *"cache-mktemp (PG $MAJOR_VER) at $cache_file: mktemp failed"* ]]
     [ ! -e "$cache_file" ]
 }
 
 @test "cached resolver returns the validated result and removes its temporary when printf fails" {
-    local cache_file="${_RESOLVER_CACHE_DIR}/cache-printf-${MAJOR_VER}.json"
+    local cache_file
+    cache_file=$(_resolver_cache_file cache-printf "$MAJOR_VER" "$CONFIG_FILE")
     local temporary_file="${_RESOLVER_CACHE_DIR}/cache-printf-temporary"
     local stdout_file="$TEST_TEMP_DIR/cache-printf.stdout"
     local stderr_file="$TEST_TEMP_DIR/cache-printf.stderr"
@@ -4131,14 +4310,16 @@ EOF
     _resolve_cached cache-printf "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
 
     [ "$rc" -eq 0 ]
-    [ "$(<"$stdout_file")" = '["1.2.3"]' ]
+    [ ! -s "$stdout_file" ]
+    [ "$_RESOLVED_VERSION_SET_JSON" = '["1.2.3"]' ]
     [[ "$(<"$stderr_file")" == *"cache-printf (PG $MAJOR_VER) at $cache_file: printf failed"* ]]
     [ ! -e "$cache_file" ]
     [ ! -e "$temporary_file" ]
 }
 
 @test "cached resolver returns the validated result and preserves an existing entry when mv fails" {
-    local cache_file="${_RESOLVER_CACHE_DIR}/cache-mv-${MAJOR_VER}.json"
+    local cache_file
+    cache_file=$(_resolver_cache_file cache-mv "$MAJOR_VER" "$CONFIG_FILE")
     local temporary_file="${_RESOLVER_CACHE_DIR}/cache-mv-temporary"
     local original_file="$TEST_TEMP_DIR/cache-mv-original"
     local stdout_file="$TEST_TEMP_DIR/cache-mv.stdout"
@@ -4159,14 +4340,16 @@ EOF
     _resolve_cached cache-mv "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
 
     [ "$rc" -eq 0 ]
-    [ "$(<"$stdout_file")" = '["1.2.3"]' ]
+    [ ! -s "$stdout_file" ]
+    [ "$_RESOLVED_VERSION_SET_JSON" = '["1.2.3"]' ]
     [[ "$(<"$stderr_file")" == *"cache-mv (PG $MAJOR_VER) at $cache_file: mv failed"* ]]
     cmp -s "$original_file" "$cache_file"
     [ ! -e "$temporary_file" ]
 }
 
 @test "cached resolver returns a valid cache entry without invoking the resolver" {
-    local cache_file="${_RESOLVER_CACHE_DIR}/timescaledb-${MAJOR_VER}.json"
+    local cache_file
+    cache_file=$(_resolver_cache_file timescaledb "$MAJOR_VER" "$CONFIG_FILE")
     local stdout_file="$TEST_TEMP_DIR/cache-hit.stdout"
     local stderr_file="$TEST_TEMP_DIR/cache-hit.stderr"
     local resolver_log="$TEST_TEMP_DIR/cache-hit-resolver.log"
@@ -4181,13 +4364,15 @@ EOF
     _resolve_cached timescaledb "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
 
     [ "$rc" -eq 0 ]
-    [ "$(<"$stdout_file")" = '["2.26.0"]' ]
+    [ ! -s "$stdout_file" ]
+    [ "$_RESOLVED_VERSION_SET_JSON" = '["2.26.0"]' ]
     [ ! -e "$resolver_log" ]
     [ ! -s "$stderr_file" ]
 }
 
 @test "cached resolver treats an unreadable cache entry as a miss" {
-    local cache_file="${_RESOLVER_CACHE_DIR}/timescaledb-${MAJOR_VER}.json"
+    local cache_file
+    cache_file=$(_resolver_cache_file timescaledb "$MAJOR_VER" "$CONFIG_FILE")
     local stdout_file="$TEST_TEMP_DIR/cache-read.stdout"
     local stderr_file="$TEST_TEMP_DIR/cache-read.stderr"
     local resolver_log="$TEST_TEMP_DIR/cache-read-resolver.log"
@@ -4203,13 +4388,15 @@ EOF
     _resolve_cached timescaledb "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
 
     [ "$rc" -eq 0 ]
-    [ "$(<"$stdout_file")" = '["2.27.1"]' ]
+    [ ! -s "$stdout_file" ]
+    [ "$_RESOLVED_VERSION_SET_JSON" = '["2.27.1"]' ]
     [ "$(wc -l < "$resolver_log")" -eq 1 ]
     [[ "$(<"$stderr_file")" == *"timescaledb (PG $MAJOR_VER) at $cache_file: read failed"* ]]
 }
 
 @test "cached resolver treats invalid cache entries as misses" {
-    local cache_file="${_RESOLVER_CACHE_DIR}/timescaledb-${MAJOR_VER}.json"
+    local cache_file
+    cache_file=$(_resolver_cache_file timescaledb "$MAJOR_VER" "$CONFIG_FILE")
     local stdout_file="$TEST_TEMP_DIR/cache-invalid.stdout"
     local stderr_file="$TEST_TEMP_DIR/cache-invalid.stderr"
     local resolver_log="$TEST_TEMP_DIR/cache-invalid-resolver.log"
@@ -4224,11 +4411,13 @@ EOF
         command printf '%s' "$invalid_entry" > "$cache_file"
         rm -f "$resolver_log"
         rc=0
+        unset -v _RESOLVED_VERSION_SETS
 
         _resolve_cached timescaledb "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
 
         [ "$rc" -eq 0 ]
-        [ "$(<"$stdout_file")" = '["2.27.1"]' ]
+        [ ! -s "$stdout_file" ]
+        [ "$_RESOLVED_VERSION_SET_JSON" = '["2.27.1"]' ]
         [ "$(wc -l < "$resolver_log")" -eq 1 ]
         [[ "$(<"$stderr_file")" == *"timescaledb (PG $MAJOR_VER) at $cache_file"* ]]
     done
@@ -4239,12 +4428,22 @@ EOF
     local stderr_file="$TEST_TEMP_DIR/cache-resolver-failure.stderr"
     local rc=0
 
-    resolve_version_set() { return 75; }
+    resolve_version_set() {
+        if [[ "$1" == cache-seed ]]; then
+            command printf '%s\n' '["1.2.3"]'
+        else
+            return 75
+        fi
+    }
+
+    _resolve_cached cache-seed "$MAJOR_VER" "$CONFIG_FILE"
+    [ "$_RESOLVED_VERSION_SET_JSON" = '["1.2.3"]' ]
 
     _resolve_cached timescaledb "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
 
     [ "$rc" -ne 0 ]
     [ ! -s "$stdout_file" ]
+    [ -z "$_RESOLVED_VERSION_SET_JSON" ]
 }
 
 @test "cached resolver fails without output when the resolver fails the ceiling guard" {
@@ -4252,13 +4451,23 @@ EOF
     local stderr_file="$TEST_TEMP_DIR/cache-resolver-ceiling.stderr"
     local rc=0
 
-    resolve_version_set() { command printf '%s\n' '["2.28.0"]'; }
+    resolve_version_set() {
+        if [[ "$1" == cache-seed ]]; then
+            command printf '%s\n' '["1.2.3"]'
+        else
+            command printf '%s\n' '["2.28.0"]'
+        fi
+    }
+
+    _resolve_cached cache-seed "$MAJOR_VER" "$CONFIG_FILE"
+    [ "$_RESOLVED_VERSION_SET_JSON" = '["1.2.3"]' ]
 
     _resolve_cached timescaledb "$MAJOR_VER" "$CONFIG_FILE" > "$stdout_file" 2> "$stderr_file" || rc=$?
 
     [ "$rc" -ne 0 ]
     [ ! -s "$stdout_file" ]
     [[ "$(<"$stderr_file")" == *"injection guard"* ]]
+    [ -z "$_RESOLVED_VERSION_SET_JSON" ]
 }
 
 @test "lineage artifact new destination follows umask 0002 like a direct redirection" {
