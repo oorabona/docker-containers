@@ -53,7 +53,7 @@ if [[ "${GH_MODE:-}" == "malformed-record" && "$*" == *"/container/broken/versio
 fi
 
 if [[ "${GH_MODE:-}" == "delete-failure" || "${GH_MODE:-}" == "cleanup-failure" ]]; then
-    printf '%s\n' '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":[]}},"created_at":"2000-01-01T00:00:00Z"}]'
+    printf '%s\n' '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["obsolete"]}},"created_at":"2000-01-01T00:00:00Z"}]'
 else
     printf '%s\n' '[]'
 fi
@@ -144,7 +144,7 @@ assert_prepared_decode_preserves_delete_totals() {
     [[ "$output" == *"Packages skipped (listing failed): 1"* ]]
 }
 
-@test "two paginated version arrays are flattened so a second-page version is classified" {
+@test "two paginated version arrays are flattened so a second-page untagged version is retained" {
     cat > "$STUB_DIR/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -169,8 +169,8 @@ EOF
         bash "$PROJECT_ROOT/scripts/cleanup-old-versions.sh" stale
 
     [[ "$status" -eq 0 ]]
-    if [[ "$output" != *"Would delete version 102"* ]]; then
-        echo "ASSERTION FAILED: expected second-page version 102 to be classified" >&2
+    if [[ "$output" == *"Would delete version 102"* || "$output" != *"Keep #2 (version 102; tags: untagged) - untagged; deferred to cleanup-outdated-tags.sh"* ]]; then
+        echo "ASSERTION FAILED: expected second-page untagged version 102 to be retained" >&2
         return 1
     fi
     [[ "$output" == *"Found 2 versions"* ]]
@@ -224,7 +224,7 @@ EOF
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
                 if [[ "$*" == *"/versions"* ]]; then
-                    printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+                    printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
                 else
                     printf "%s\\n" "{\"version_count\":2}"
                 fi
@@ -235,6 +235,60 @@ EOF
     [[ "$status" -eq 0 ]]
     [[ "$(<"$GH_LOG")" == *"/versions/102"* ]]
     [[ "$output" == *"Summary: kept=1, deleted=1, delete_failures=0"* ]]
+}
+
+@test "stale untagged records beyond the latest-count window never reach DELETE" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$GH_LOG" \
+        GH_TOKEN="test-token" \
+        OWNER="test-owner" \
+        DRY_RUN="false" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\n" "{\"version_count\":3}"; return 0; fi
+                printf "%s\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":103,\"name\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+            }
+            main stale-untagged
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ ! -s "$GH_LOG" ]]
+    [[ "$output" == *"Summary: kept=3, deleted=0, delete_failures=0"* ]]
+    [[ "$output" == *"Versions deleted: 0"* ]]
+}
+
+@test "age cleanup deletes a stale tagged record but not a stale untagged record" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$GH_LOG" \
+        GH_TOKEN="test-token" \
+        OWNER="test-owner" \
+        DRY_RUN="false" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\n" "{\"version_count\":2}"; return 0; fi
+                printf "%s\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+            }
+            main mixed-stale
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(<"$GH_LOG")" == *"/versions/101"* ]]
+    [[ "$(<"$GH_LOG")" != *"/versions/102"* ]]
+    [[ "$(wc -l < "$GH_LOG")" -eq 1 ]]
+    [[ "$output" == *"Summary: kept=1, deleted=1, delete_failures=0"* ]]
+    [[ "$output" == *"Versions deleted: 1"* ]]
 }
 
 @test "an absent or non-numeric package version total refuses the listing" {
@@ -604,7 +658,7 @@ EOF
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
-                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"obsolete-a\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"obsolete-b\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
             }
             base64() {
                 calls=0; [[ -f "$BASE64_CALLS" ]] && calls=$(<"$BASE64_CALLS")
