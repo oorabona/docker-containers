@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # validate-extensions-schema.sh
 # Static schema-validation guard for postgres/extensions/config.yaml.
 #

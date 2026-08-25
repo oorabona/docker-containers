@@ -201,6 +201,108 @@ teardown() {
     [ "$status" -ne 0 ]
 }
 
+@test "sha256_file: rejects non-ASCII digests regardless of locale glob ranges" {
+    local file="$TEST_TEMP_DIR/data.bin"
+    local bin_dir="$TEST_TEMP_DIR/bin"
+    local stdout="$TEST_TEMP_DIR/stdout"
+    local error_file="$TEST_TEMP_DIR/stderr"
+    local non_ascii_digest payload
+    printf 'data\n' > "$file"
+    mkdir -p "$bin_dir"
+    non_ascii_digest=$(printf 'ª%.0s' {1..64})
+    payload="$non_ascii_digest  -"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q\n' "$payload" > "$bin_dir/sha256sum"
+    chmod +x "$bin_dir/sha256sum"
+
+    run locale -a
+    [ "$status" -eq 0 ] || {
+        echo "FAIL: locale -a must succeed before testing en_US.utf8"
+        return 1
+    }
+    printf '%s\n' "$output" | grep -Fxq 'en_US.utf8' || {
+        echo "FAIL: en_US.utf8 locale is required to test locale-independent digest validation"
+        return 1
+    }
+
+    run env LC_ALL=en_US.utf8 bash -c '
+        shopt -u globasciiranges
+        [[ "$1" == *[!0-9A-Fa-f]* ]]
+    ' _ "$non_ascii_digest"
+    [ "$status" -ne 0 ] || {
+        echo "FAIL: en_US.utf8 control must accept ª in the old non-ASCII range predicate"
+        return 1
+    }
+
+    run env PATH="$bin_dir:$PATH" LC_ALL=en_US.utf8 bash -c '
+        shopt -u globasciiranges
+        source "$1"
+        sha256_file "$2" > "$3" 2> "$4"
+    ' bash "$HELPERS_DIR/hash-utils.sh" "$file" "$stdout" "$error_file"
+
+    [ "$status" -ne 0 ]
+    [ ! -s "$stdout" ]
+    [[ "$(<"$error_file")" == *"invalid digest"* ]]
+}
+
+@test "sha256_file: no or empty path returns to the sourced caller" {
+    local bin_dir="$TEST_TEMP_DIR/bin"
+    local stdout error_file
+    mkdir -p "$bin_dir"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q\n' "$(printf '%064d' 0)  -" > "$bin_dir/sha256sum"
+    chmod +x "$bin_dir/sha256sum"
+
+    for invocation in no-argument empty-argument; do
+        stdout="$TEST_TEMP_DIR/$invocation.stdout"
+        error_file="$TEST_TEMP_DIR/$invocation.stderr"
+        if [[ "$invocation" == no-argument ]]; then
+            run env PATH="$bin_dir:$PATH" bash -c '
+                source "$1"
+                if sha256_file > "$2" 2> "$3"; then
+                    exit 1
+                fi
+                printf "caller-reached\\n"
+            ' bash "$HELPERS_DIR/hash-utils.sh" "$stdout" "$error_file"
+        else
+            run env PATH="$bin_dir:$PATH" bash -c '
+                source "$1"
+                if sha256_file "" > "$2" 2> "$3"; then
+                    exit 1
+                fi
+                printf "caller-reached\\n"
+            ' bash "$HELPERS_DIR/hash-utils.sh" "$stdout" "$error_file"
+        fi
+
+        [ "$status" -eq 0 ]
+        [ "$output" = "caller-reached" ]
+        [ ! -s "$stdout" ]
+        [[ "$(<"$error_file")" == *"file path required"* ]]
+    done
+}
+
+@test "sha256_file: rejects extra path arguments without emitting a digest" {
+    local file="$TEST_TEMP_DIR/data.bin"
+    local bin_dir="$TEST_TEMP_DIR/bin"
+    local stdout="$TEST_TEMP_DIR/stdout"
+    local error_file="$TEST_TEMP_DIR/stderr"
+    printf 'data\n' > "$file"
+    mkdir -p "$bin_dir"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q\n' "$(printf '%064d' 0)  -" > "$bin_dir/sha256sum"
+    chmod +x "$bin_dir/sha256sum"
+
+    run env PATH="$bin_dir:$PATH" bash -c '
+        source "$1"
+        if sha256_file "$2" ignored > "$3" 2> "$4"; then
+            exit 1
+        fi
+        printf "caller-reached\\n"
+    ' bash "$HELPERS_DIR/hash-utils.sh" "$file" "$stdout" "$error_file"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "caller-reached" ]
+    [ ! -s "$stdout" ]
+    [[ "$(<"$error_file")" == *"one non-empty file path"* ]]
+}
+
 # A broken or incompatible sha256sum must not supply a cache identity.
 @test "sha256_file: refuses empty sha256sum output without emitting a digest" {
     local file="$TEST_TEMP_DIR/data.bin"
@@ -223,10 +325,12 @@ teardown() {
     local file="$TEST_TEMP_DIR/data.bin"
     local bin_dir="$TEST_TEMP_DIR/bin"
     local captured="$TEST_TEMP_DIR/captured"
+    local failing_payload
     printf 'data\n' > "$file"
     mkdir -p "$bin_dir"
-    # shellcheck disable=SC2183 # The generated stub, not this test, consumes %064d.
-    printf '#!/bin/bash\nprintf "%064d  -\\n" 0\nexit 9\n' > "$bin_dir/sha256sum"
+    # The outer printf consumes %064d here; %q quotes that payload for the generated stub.
+    failing_payload=$(printf '%064d  -\n' 0)
+    printf '#!/usr/bin/env bash\nprintf "%%s" %q\nexit 9\n' "$failing_payload" > "$bin_dir/sha256sum"
     chmod +x "$bin_dir/sha256sum"
 
     PATH="$bin_dir:$PATH"

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Generic Dockerfile template expansion utilities
 # Replaces @@MARKER@@ comment lines in a Dockerfile template with generated content.
 #

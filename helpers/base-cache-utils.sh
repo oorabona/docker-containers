@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Base image cache utilities
 # Reads base_image_cache from config.yaml and provides helpers for:
 # - Syncing Docker Hub base images to GHCR (CI sync job — sync_base_images_to_ghcr)

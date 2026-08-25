@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SBOM (Software Bill of Materials) utilities
 # Provides functions for SBOM generation, comparison, and build history tracking.
 #
