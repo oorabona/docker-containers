@@ -2,8 +2,9 @@
 
 # Unit tests for helpers/dependency-graph.sh
 #
-# All tests use _DEPGRAPH_CONTAINERS_OVERRIDE and _DEPGRAPH_LINEAGE_DIR to
+# Most tests use _DEPGRAPH_CONTAINERS_OVERRIDE and _DEPGRAPH_LINEAGE_DIR to
 # avoid touching the real project containers or .build-lineage directory.
+# Production-path cases use an isolated PROJECT_ROOT with a root-local ./make shim.
 #
 # Mutation guards:
 #   Remove internal-ref check → external library/php matches as php
@@ -257,36 +258,71 @@ _write_lineage() {
 # Defect B.2 fix: _depgraph_valid_containers fail-closed on './make list' failure
 # ---------------------------------------------------------------------------
 @test "depgraph: valid_containers — './make list' failure → non-zero exit (fail-closed)" {
-    # Unset the override so the code takes the ./make list path.
-    # Place a failing make stub in PATH.
+    # Mutation guard: restoring `2>/dev/null` on ./make list hides this reason
+    # and makes this test fail.
     unset _DEPGRAPH_CONTAINERS_OVERRIDE
-    mkdir -p "$TEST_TEMP_DIR/bin"
-    printf '#!/usr/bin/env bash\nexit 1\n' > "$TEST_TEMP_DIR/bin/make"
-    chmod +x "$TEST_TEMP_DIR/bin/make"
-    run env -u _DEPGRAPH_CONTAINERS_OVERRIDE PATH="$TEST_TEMP_DIR/bin:$PATH" \
+    local mock_root="$TEST_TEMP_DIR/failing_make_root"
+    mkdir -p "$mock_root"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        "printf '%s\\n' 'distinctive make-list failure reason' >&2" 'exit 1' > "$mock_root/make"
+    chmod +x "$mock_root/make"
+    run env -u _DEPGRAPH_CONTAINERS_OVERRIDE \
         bash -c "
-            PROJECT_ROOT='$TEST_TEMP_DIR'
+            PROJECT_ROOT='$mock_root'
             source '${HELPERS_DIR}/dependency-graph.sh'
             _depgraph_valid_containers
         "
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"::error::"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"distinctive make-list failure reason"* ]]
+    [[ "$output" == *"::error::Failed to enumerate project containers via './make list'"* ]]
+    local expected=$'distinctive make-list failure reason\n\n::error::Failed to enumerate project containers via \'./make list\''
+    [ "$output" = "$expected" ]
 }
 
 @test "depgraph: valid_containers — './make list' returns empty → non-zero exit (fail-closed)" {
-    # Place a stub that exits 0 but prints nothing.
+    # Mutation guard: deleting the empty-result guard returns success and makes
+    # this test fail. The diagnostic has no trailing newline to prove the static
+    # annotation begins a line regardless of the child command's final byte.
     unset _DEPGRAPH_CONTAINERS_OVERRIDE
-    mkdir -p "$TEST_TEMP_DIR/bin"
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_TEMP_DIR/bin/make"
-    chmod +x "$TEST_TEMP_DIR/bin/make"
-    run env -u _DEPGRAPH_CONTAINERS_OVERRIDE PATH="$TEST_TEMP_DIR/bin:$PATH" \
+    local mock_root="$TEST_TEMP_DIR/empty_make_root"
+    mkdir -p "$mock_root"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        "printf '%s' 'no containers found' >&2" 'exit 0' > "$mock_root/make"
+    chmod +x "$mock_root/make"
+    run env -u _DEPGRAPH_CONTAINERS_OVERRIDE \
         bash -c "
-            PROJECT_ROOT='$TEST_TEMP_DIR'
+            PROJECT_ROOT='$mock_root'
             source '${HELPERS_DIR}/dependency-graph.sh'
             _depgraph_valid_containers
         "
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"::error::"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no containers found"* ]]
+    [[ "$output" == *"::error::'./make list' returned empty container set"* ]]
+    local expected=$'no containers found\n::error::\'./make list\' returned empty container set'
+    [ "$output" = "$expected" ]
+}
+
+# ---------------------------------------------------------------------------
+# Stdout filtering must remain independent from the stderr-banner regression
+# test below. Removing the ASCII validator lets this invalid stdout line into
+# the set.
+# ---------------------------------------------------------------------------
+@test "depgraph: valid_containers — invalid stdout line excluded from container set" {
+    unset _DEPGRAPH_CONTAINERS_OVERRIDE
+    local mock_root="$TEST_TEMP_DIR/stdout_filter_root"
+    mkdir -p "$mock_root"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        "printf '%s\\n' php not/a-container debian" > "$mock_root/make"
+    chmod +x "$mock_root/make"
+
+    run env -u _DEPGRAPH_CONTAINERS_OVERRIDE \
+        bash -c "
+            PROJECT_ROOT='$mock_root'
+            source '${HELPERS_DIR}/dependency-graph.sh'
+            _depgraph_valid_containers
+        "
+    [ "$status" -eq 0 ]
+    [ "$output" = "php debian" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -299,19 +335,15 @@ _write_lineage() {
 # _depgraph_is_internal_ref would then wrongly classify an external ref like
 # "ghcr.io/oorabona/Found:latest" as internal, perturbing cascade gating.
 #
-# The fix (a) discards stderr (2>/dev/null) and (b) filters stdout to lines
-# matching ^[a-z0-9_-]+$ before joining.
+# The strict stdout filter keeps only lines matching ^[a-z0-9_-]+$ before
+# joining.
 #
 # This test creates a temp PROJECT_ROOT with a ./make shim that:
 #   - prints a banner on stderr ("✅ Found 'docker-compose', continuing.")
 #   - prints two container names on stdout ("php\ndebian\n")
-# It then asserts the result contains php and debian but NOT any banner token.
+# It then asserts the returned container list is exactly php and debian.
 #
-# Mutation guards:
-#   reverting 2>/dev/null → 2>&1: banner leaks into output; "Found"
-#            appears in the valid-container set and this test fails.
-#   removing the grep -E filter: banner tokens on stdout (if any)
-#            would not be stripped; test would catch future regressions.
+# The adjacent invalid-stdout test is the mutation guard for the grep -E filter.
 # ---------------------------------------------------------------------------
 
 @test "depgraph: valid_containers — stderr banner NOT captured into container set (FIX 2)" {
@@ -327,17 +359,44 @@ _write_lineage() {
         bash -c "
             PROJECT_ROOT='$mock_root'
             source '${HELPERS_DIR}/dependency-graph.sh'
-            _depgraph_valid_containers
+            _depgraph_valid_containers 2> /dev/null
         "
     [ "$status" -eq 0 ]
-    # Valid container names must be present
-    [[ "$output" == *"php"* ]]
-    [[ "$output" == *"debian"* ]]
-    # Banner tokens must NOT appear in the container set
-    [[ "$output" != *"Found"* ]]
-    [[ "$output" != *"docker-compose"* ]]
-    [[ "$output" != *"continuing"* ]]
-    [[ "$output" != *"✅"* ]]
+    [ "$output" = "php debian" ]
+}
+
+@test "depgraph: get_deps — make stderr banner stays out of caller container data" {
+    # The production caller must capture only stdout.  If it restores 2>&1,
+    # the banner's newline prefixes alpha and membership drops this dependency.
+    unset _DEPGRAPH_CONTAINERS_OVERRIDE
+    local mock_root="$TEST_TEMP_DIR/caller_banner_root's"
+    mkdir -p "$mock_root/web-shell"
+    printf 'base_image: "ghcr.io/oorabona/alpha:latest"\n' > "$mock_root/web-shell/config.yaml"
+    printf '#!/usr/bin/env bash\nprintf '"'"'warning from make list\\n'"'"' >&2\nprintf '"'"'alpha\\nbeta\\n'"'"'\n' \
+        > "$mock_root/make"
+    chmod +x "$mock_root/make"
+
+    run env -u _DEPGRAPH_CONTAINERS_OVERRIDE \
+        PROJECT_ROOT="$mock_root" HELPERS_DIR="$HELPERS_DIR" _DEPGRAPH_OWNER_OVERRIDE=oorabona \
+        bash -c 'source "$HELPERS_DIR/dependency-graph.sh"; _depgraph_get_deps web-shell'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"warning from make list"* ]]
+    [[ "$output" == *"alpha"* ]]
+    [[ "$output" != *"beta"* ]]
+}
+
+@test "depgraph: valid_containers — non-ASCII names rejected under en_US.utf8" {
+    unset _DEPGRAPH_CONTAINERS_OVERRIDE
+    local mock_root="$TEST_TEMP_DIR/ascii_container_root's"
+    mkdir -p "$mock_root"
+    printf '#!/usr/bin/env bash\nprintf '"'"'alpha\\ncafé\\nstraße\\nniño\\nbeta\\n'"'"'\n' > "$mock_root/make"
+    chmod +x "$mock_root/make"
+
+    run env -u _DEPGRAPH_CONTAINERS_OVERRIDE LC_ALL=en_US.utf8 \
+        PROJECT_ROOT="$mock_root" HELPERS_DIR="$HELPERS_DIR" \
+        bash -c 'source "$HELPERS_DIR/dependency-graph.sh"; _depgraph_valid_containers'
+    [ "$status" -eq 0 ]
+    [ "$output" = "alpha beta" ]
 }
 
 # ---------------------------------------------------------------------------
