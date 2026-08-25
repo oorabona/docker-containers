@@ -18,10 +18,10 @@
 # Producers used here return explicitly; `helpers/generate-utils.sh::list_distros`
 # is the one that had to be changed to.
 #
-# Bash 4.0 compatibility is deliberate: do not use local/declare -n namerefs
-# (they require Bash 4.3).  This covers array collection through mapfile/readarray
-# from process substitution.  It does not cover while-read process-substitution
-# consumers: 61 non-test sites remain and are tracked separately in #1117.
+# The helper supports array collection through mapfile/readarray from process
+# substitution.
+# It does not cover while-read process-substitution consumers: 61 non-test sites
+# remain and are tracked separately in #1117.
 # GHCR tag enumeration before a deletion decision is handled explicitly by its
 # caller.  The helper is intentionally a library function: it returns status and
 # never exits its caller.

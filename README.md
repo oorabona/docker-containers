@@ -126,8 +126,12 @@ That's it. The CI picks it up automatically on next push.
 ## Requirements
 
 - Docker Engine 20.10+ (or Podman)
-- Bash 4.0+
-- [yq](https://github.com/mikefarah/yq) (for variant containers)
+- Supported Bash baseline: 4.4+ — `mapfile -d` is used on the documented extension build path.
+- [yq](https://github.com/mikefarah/yq) (for variant containers and extension builds)
+- [jq](https://jqlang.org/) (for extension builds)
+- `sha256sum` (for extension-build resolver cache identities). GNU coreutils
+  provides it; on macOS, `brew install coreutils` and put its `libexec/gnubin`
+  on `PATH`.
 - A `timeout` accepting `-k`, for the e2e suite and registry helpers — it keeps
   container cleanup and registry operations from waiting forever on a child
   that ignores SIGTERM. GNU coreutils provides it and most Linux distributions
