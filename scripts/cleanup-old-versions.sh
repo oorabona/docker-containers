@@ -145,7 +145,13 @@ purge_container() {
     position=$((position + 1))
     keep_reason=""
 
-    if grep -q ",latest," <<< ",$tags,"; then
+    # Age cannot establish whether an untagged manifest is a live platform
+    # child of a retained index. Retain it here: cleanup-outdated-tags.sh is
+    # the only deletion authority. Its workflow sweep coverage is stated once
+    # in the run summary below.
+    if [[ -z "$tags" ]]; then
+      keep_reason="untagged; deferred to cleanup-outdated-tags.sh"
+    elif grep -q ",latest," <<< ",$tags,"; then
       keep_reason="has 'latest' tag"
     elif [[ "$position" -le "$KEEP_LATEST_COUNT" ]]; then
       keep_reason="in top $KEEP_LATEST_COUNT recent"
@@ -179,7 +185,7 @@ purge_container() {
     fi
 
     if [[ -n "$keep_reason" ]]; then
-      echo "  ✓ Keep #$position (tags: ${tags:-untagged}) - $keep_reason" >&2
+      echo "  ✓ Keep #$position (version $version_id; tags: ${tags:-untagged}) - $keep_reason" >&2
       kept=$((kept + 1))
     elif ! printf '%s|%s\n' "$position" "$record_b64" >> "$deletions_file"; then
       echo "  ✗ Failed to prepare deletion list; skipping $container" >&2
@@ -263,6 +269,14 @@ main() {
   if [[ $# -gt 0 ]]; then
     containers="$*"
   else
+    # The workflow's reference-aware sweep coverage is stated once in the run
+    # summary below. Untagged versions are retained here, not deleted.
+    # That sweep is the sole authority for deleting untagged versions: it protects
+    # .manifests[].digest children of kept manifests, but does not follow OCI
+    # referrers (attestations, SBOMs, signatures) or external digest pins.
+    # Keep the discovery paths aligned; otherwise untagged versions can only
+    # accumulate. If its obsolete-tag deletion fails, it skips orphan cleanup
+    # fail-closed, which deliberately retains untagged versions for that run.
     containers=$(find "$root_dir" -maxdepth 2 -name Dockerfile -exec dirname {} \; | sed "s|^$root_dir/||" | sort) || return 1
   fi
 
@@ -327,6 +341,8 @@ main() {
   echo "Versions kept: $total_kept"
   echo "Versions deleted: $total_deleted"
   echo "Delete failures: $total_delete_failures"
+  echo "Untagged versions: retained here; cleanup-outdated-tags.sh is their only deletion authority. Sweep coverage: scheduled runs and unfiltered purge dispatches sweep the whole discovered set; filtered purge dispatches sweep only the selected package; dispatches without purge_obsolete sweep nothing."
+  echo "If that sweep skips orphan cleanup after a deletion failure, retention is fail-closed for this run."
   echo "========================================"
 
   if [[ "$total_listing_failures" -gt 0 || "$total_processing_failures" -gt 0 || "$total_delete_failures" -gt 0 ]]; then
