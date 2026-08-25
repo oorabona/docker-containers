@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Build and push extension images for containers with compiled extensions
 # Images are pushed to registry (ghcr.io) for use with COPY --from=
 #
@@ -803,7 +803,7 @@ pull_extension() {
 
 # --- Helpers extracted from main() for readability ---
 
-# Validate container dir, config, yq, and jq are available. Exits on failure.
+# Validate prerequisites. Exits on failure.
 validate_prerequisites() {
     local container_dir="$ROOT_DIR/$CONTAINER"
     if [[ ! -d "$container_dir" ]]; then
@@ -815,11 +815,15 @@ validate_prerequisites() {
         exit 1
     fi
     if ! command -v yq &>/dev/null; then
-        log_error "yq is required for YAML parsing. Install with: brew install yq"
+        log_error "yq is required for YAML parsing; see README.md#requirements to install it and put yq on PATH."
         exit 1
     fi
     if ! command -v jq &>/dev/null; then
-        log_error "jq is required for JSON parsing. Install with: brew install jq"
+        log_error "jq is required for JSON parsing; see README.md#requirements to install it and put jq on PATH."
+        exit 1
+    fi
+    if ! command -v sha256sum &>/dev/null; then
+        log_error "sha256sum is required for resolver cache hashing; see README.md#requirements, including macOS PATH setup."
         exit 1
     fi
 }

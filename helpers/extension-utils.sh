@@ -1247,9 +1247,9 @@ _generate_flavor_initdb_block() {
 #
 # Caller captures stdout and splits on the delimiter to obtain stages_block and copies_block.
 #
-# Portable bash-4.0 pattern (no local -n namerefs, which require bash 4.3+):
+# Serialized version-to-ref input:
 #   <ver_ref_list> is a newline-delimited list of "<version>\t<ref>" pairs.
-#   Caller serializes its version→ref map as "<ver>\t<ref>\n..." and passes it.
+#   Caller constructs a serialized version→ref list as "<ver>\t<ref>\n..." and passes it.
 #
 # Args:
 #   $1  ext          extension name (e.g. "timescaledb")
@@ -1743,14 +1743,9 @@ generate_dockerfile() {
                     raw_versions=$(echo "$_versionset_json" | jq -r '.available[]' 2>/dev/null || true)
 
                     if [[ -n "$raw_versions" ]]; then
-                        # Build version→ref map for the emitter.
-                        # Use the global _ECS_REF_MAP (bash-4.0 portable; no local -n namerefs
-                        # which require bash 4.3+).  Reset before population to avoid stale
-                        # entries from a previous extension in the same generate_dockerfile call.
-                        # Build a serialized version→ref list (tab-delimited "<ver>\t<ref>" lines).
-                        # Portable bash-4.0 pattern: no local -n namerefs (require bash 4.3+);
-                        # no global associative arrays (unreliable across forked subshells when
-                        # sourced inside a function scope). Serializing as a string passes cleanly.
+                        # Build one serialized version→ref list (tab-delimited "<ver>\t<ref>" lines)
+                        # for both branches: self-heal has a resolved-ref map, while the artifact
+                        # branch constructs refs directly.
                         local _ecs_ver_ref_list=""
                         if [[ "$_versionset_from_selfheal" == "true" ]]; then
                             # Self-heal path: refs already resolved by the source gateway above.

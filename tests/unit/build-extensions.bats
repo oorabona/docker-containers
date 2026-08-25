@@ -630,18 +630,33 @@ EOF
     assert_equals '["1.2.3"]' "$_RESOLVED_VERSION_SET_JSON"
 }
 
-@test "prerequisites require jq as well as yq" {
+@test "prerequisites require yq, jq, and sha256sum" {
     local test_path="$TEST_TEMP_DIR/bin"
     mkdir -p "$test_path"
+
+    ROOT_DIR="$TEST_TEMP_DIR" CONTAINER="postgres" PATH="$test_path" run validate_prerequisites
+    [ "$status" -ne 0 ]
+    assert_output_contains "yq is required for YAML parsing; see README.md#requirements"
+    assert_output_contains "put yq on PATH"
+
     printf '#!/bin/bash\nexit 0\n' > "$test_path/yq"
     chmod +x "$test_path/yq"
 
     ROOT_DIR="$TEST_TEMP_DIR" CONTAINER="postgres" PATH="$test_path" run validate_prerequisites
     [ "$status" -ne 0 ]
-    assert_output_contains "jq is required for JSON parsing"
+    assert_output_contains "jq is required for JSON parsing; see README.md#requirements"
+    assert_output_contains "put jq on PATH"
 
     printf '#!/bin/bash\nexit 0\n' > "$test_path/jq"
     chmod +x "$test_path/jq"
+
+    ROOT_DIR="$TEST_TEMP_DIR" CONTAINER="postgres" PATH="$test_path" run validate_prerequisites
+    [ "$status" -ne 0 ]
+    assert_output_contains "sha256sum is required for resolver cache hashing; see README.md#requirements"
+    assert_output_contains "macOS PATH setup"
+
+    printf '#!/bin/bash\nexit 0\n' > "$test_path/sha256sum"
+    chmod +x "$test_path/sha256sum"
 
     ROOT_DIR="$TEST_TEMP_DIR" CONTAINER="postgres" PATH="$test_path" run validate_prerequisites
     [ "$status" -eq 0 ]
