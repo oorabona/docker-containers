@@ -60,19 +60,32 @@ _depgraph_valid_containers() {
         printf '%s' "$_DEPGRAPH_CONTAINERS_OVERRIDE"
     else
         local _make_out
-        if ! _make_out=$(cd "$PROJECT_ROOT" && ./make list 2>/dev/null); then
-            echo "::error::Failed to enumerate project containers via './make list'" >&2
+        # A successful `./make list` writes nothing to stderr today, so hiding
+        # stderr would only hide a failure's reason.
+        if ! _make_out=$(cd "$PROJECT_ROOT" && ./make list); then
+            printf '\n%s\n' "::error::Failed to enumerate project containers via './make list'" >&2 || :
             return 1
         fi
-        # Filter to strict container-name lines only (defense in depth: drops any
-        # banner/diagnostic output that may have leaked into stdout, same charset
-        # as the validator in cascade-resolver.yaml line 76).
-        _make_out=$(printf '%s' "$_make_out" | grep -E '^[a-z0-9_-]+$' || true)
-        if [[ -z "$_make_out" ]]; then
-            echo "::error::'./make list' returned empty container set" >&2
+        # Filter to strict ASCII container-name lines only (defense in depth:
+        # drops any banner/diagnostic output that may have leaked into stdout,
+        # same charset as the validator in cascade-resolver.yaml line 76).
+        # Spell out the bytes rather than using [a-z]: locale-collated ranges
+        # can accept non-ASCII letters.  Keeping this in Bash also means a
+        # missing or killed filter/join subprocess cannot become an empty or
+        # partial container set.
+        local _container
+        local -a _valid_container_names=()
+        while IFS= read -r _container || [[ -n "$_container" ]]; do
+            [[ -n "$_container" ]] || continue
+            [[ "$_container" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]] && continue
+            _valid_container_names+=("$_container")
+        done <<< "$_make_out"
+        if ((${#_valid_container_names[@]} == 0)); then
+            printf '\n%s\n' "::error::'./make list' returned empty container set" >&2 || :
             return 1
         fi
-        printf '%s' "$(printf '%s' "$_make_out" | tr '\n' ' ')"
+        local IFS=' '
+        printf '%s' "${_valid_container_names[*]}"
     fi
 }
 
@@ -204,11 +217,7 @@ _depgraph_get_deps() {
     # substitutions used as conditional operands (bash §3.7.5), so a simple
     # `if ! var=$(cmd)` or `var=$(cmd) || ...` will not propagate failures from
     # nested helpers.  We must check the exit code explicitly.
-    valid_containers="$(_depgraph_valid_containers 2>&1)" || {
-        # Re-emit the error (already contains ::error:: from _depgraph_valid_containers)
-        printf '%s\n' "$valid_containers" >&2
-        return 1
-    }
+    valid_containers="$(_depgraph_valid_containers)" || return 1
     local lineage_dir="${_DEPGRAPH_LINEAGE_DIR:-${PROJECT_ROOT}/.build-lineage}"
 
     # Glob lineage files FIRST — the active-tag filter only makes sense when files
