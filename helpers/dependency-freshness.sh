@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Dependency freshness resolvers for SBOM changelog enrichment.
 #
 # Public entry points:

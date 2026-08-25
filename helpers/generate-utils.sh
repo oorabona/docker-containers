@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Shared utilities for Dockerfile generators (template+generator pattern)
 # Used by: web-shell/generate-dockerfile.sh, github-runner/generate-dockerfile.sh
 #

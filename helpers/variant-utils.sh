@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Variant utilities for multi-image containers
 # Used by build-container.sh and generate-dashboard.sh
 #

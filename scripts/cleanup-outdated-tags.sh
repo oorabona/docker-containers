@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Purge container images whose tags are not in the current valid build set.
 # Required env vars: GH_TOKEN, OWNER
 

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Rotate versions in variants.yaml for automated version updates
 #
 # Usage: rotate-versions.sh <container_dir> <new_version> [major_line]

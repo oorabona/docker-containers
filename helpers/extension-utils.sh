@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Shared utilities for extension building and management
 # Used by scripts/build-extensions.sh
 # Works both locally and in GitHub Actions

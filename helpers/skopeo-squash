@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Containerized skopeo helper for squashing images in registries
 
 set -euo pipefail

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Age-based cleanup of GHCR container versions.
 #
 # Required env vars: GH_TOKEN, OWNER

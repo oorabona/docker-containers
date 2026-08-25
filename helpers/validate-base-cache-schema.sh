@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # validate-base-cache-schema.sh
 # Static schema-validation guard for base_image_cache entries in config.yaml files.
 #

@@ -14,18 +14,23 @@
 # sha256_file <path>
 # Prints the lowercase SHA-256 digest of the file at <path>.
 # Returns 1 if the file cannot be read or sha256sum does not produce a first
-# whitespace-delimited 64-hex field without an interior newline.  Text after
-# that field is accepted; command substitution discards trailing newlines.
+# whitespace-delimited ASCII 64-hex field without an interior newline. Text
+# after that field is accepted. Validation sees the text that survives command
+# substitution: raw NUL bytes and trailing newlines were already removed.
 sha256_file() {
-    local file="${1:?sha256_file: file path required}"
-    local sha256_output digest
+    local file sha256_output digest
+    if (($# != 1)) || [[ -z "$1" ]]; then
+        echo "sha256_file: exactly one non-empty file path required" >&2
+        return 1
+    fi
+    file="$1"
     [[ -r "$file" ]] || { echo "sha256_file: cannot read '$file'" >&2; return 1; }
     if ! sha256_output=$(sha256sum < "$file"); then
         echo "sha256_file: sha256sum failed for '$file'" >&2
         return 1
     fi
     digest="${sha256_output%%[[:space:]]*}"
-    if [[ "$sha256_output" == *$'\n'* || ${#digest} -ne 64 || "$digest" == *[!0-9A-Fa-f]* ]]; then
+    if [[ "$sha256_output" == *$'\n'* || ${#digest} -ne 64 || "$digest" == *[!0123456789abcdefABCDEF]* ]]; then
         echo "sha256_file: sha256sum returned an invalid digest for '$file'" >&2
         return 1
     fi
