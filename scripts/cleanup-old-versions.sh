@@ -30,8 +30,10 @@ print_banner() {
   echo "========================================"
 }
 
-# Write kept|deleted|delete_failures to stdout once a package was completely
-# assessed.  Its return status, rather than that record, communicates failure:
+# Write kept|decided|deleted|delete_failures to stdout once a package was
+# completely assessed. `decided` counts the completed deletion plan, while
+# `deleted` counts successful removal outcomes. Its return status, rather than
+# that record, communicates failure:
 # 10 listing failure, 11 processing failure, 12 one or more delete failures,
 # 13 a failure after every record was assessed, and 14 an uninterpretable
 # record. Deletion-plan replay is execution, not assessment, so a replay
@@ -39,7 +41,7 @@ print_banner() {
 purge_container() {
   local container="$1"
   local versions package version_count reported_version_count versions_file="" deletions_file=""
-  local position=0 kept=0 deleted=0 delete_failures=0
+  local position=0 kept=0 decided=0 deleted=0 delete_failures=0
   local version_id tags created_at keep_reason tag tag_list major version_ts cutoff_ts processing_error=0 deletion_read_error=0 validation_error validation_status
   local record_b64 record_json
   declare -A major_seen=()
@@ -87,7 +89,7 @@ purge_container() {
   echo "  Found $version_count versions" >&2
   if [[ "$version_count" -eq 0 ]]; then
     echo "  No versions found (might be new or private)" >&2
-    if ! printf '%s\n' "0|0|0"; then
+    if ! printf '%s\n' "0|0|0|0"; then
       return "$PROCESSING_FAILURE"
     fi
     return 0
@@ -191,6 +193,8 @@ purge_container() {
       echo "  ✗ Failed to prepare deletion list; skipping $container" >&2
       processing_error=1
       break
+    else
+      decided=$((decided + 1))
     fi
   done < "$versions_file"
 
@@ -221,16 +225,16 @@ purge_container() {
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
       "/users/${OWNER}/packages/container/${container}/versions/${version_id}"; then
-      echo "    ✓ Deleted" >&2
+      echo "    ✓ Deleted version $version_id" >&2
       deleted=$((deleted + 1))
     else
-      echo "    ✗ Failed to delete" >&2
+      echo "    ✗ Failed to delete version $version_id" >&2
       delete_failures=$((delete_failures + 1))
     fi
   done < "$deletions_file"
 
   if [[ "$deletion_read_error" -ne 0 ]]; then
-    if ! printf '%s\n' "$kept|$deleted|$delete_failures"; then
+    if ! printf '%s\n' "$kept|$decided|$deleted|$delete_failures"; then
       rm -f "$deletions_file"
       return "$PROCESSING_FAILURE"
     fi
@@ -238,7 +242,7 @@ purge_container() {
     return "$POST_DELETE_PROCESSING_FAILURE"
   fi
 
-  if ! printf '%s\n' "$kept|$deleted|$delete_failures"; then
+  if ! printf '%s\n' "$kept|$decided|$deleted|$delete_failures"; then
     return "$PROCESSING_FAILURE"
   fi
   if ! rm -f "$deletions_file"; then
@@ -261,7 +265,7 @@ main() {
 
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 INCOMPLETE_DELETION_FAILURE=16
   local root_dir containers container result status
-  local kept deleted delete_failures
+  local kept decided deleted delete_failures
   root_dir=$(script_root) || return 1
   CUTOFF_DATE=$(date -d "-${KEEP_MONTHS} months" +%Y-%m-%dT%H:%M:%SZ) || return 1
   print_banner
@@ -280,7 +284,7 @@ main() {
     containers=$(find "$root_dir" -maxdepth 2 -name Dockerfile -exec dirname {} \; | sed "s|^$root_dir/||" | sort) || return 1
   fi
 
-  local total_deleted=0 total_kept=0 total_assessed=0
+  local total_decided=0 total_deleted=0 total_kept=0 total_assessed=0
   local total_listing_failures=0 total_processing_failures=0 total_delete_failures=0
   for container in $containers; do
     echo ""
@@ -296,16 +300,17 @@ main() {
 
     case "$status" in
       0|"$DELETE_FAILURE"|"$POST_DELETE_PROCESSING_FAILURE")
-        if ! IFS='|' read -r kept deleted delete_failures <<< "$result"; then
+        if ! IFS='|' read -r kept decided deleted delete_failures <<< "$result"; then
           echo "  ✗ Failed to read cleanup result; skipping $container"
           total_processing_failures=$((total_processing_failures + 1))
           continue
         fi
         total_assessed=$((total_assessed + 1))
         total_kept=$((total_kept + kept))
+        total_decided=$((total_decided + decided))
         total_deleted=$((total_deleted + deleted))
         total_delete_failures=$((total_delete_failures + delete_failures))
-        echo "  Summary: kept=$kept, deleted=$deleted, delete_failures=$delete_failures"
+        echo "  Summary: kept=$kept, decided=$decided, deleted=$deleted, delete_failures=$delete_failures"
         [[ "$status" -ne "$POST_DELETE_PROCESSING_FAILURE" ]] || total_processing_failures=$((total_processing_failures + 1))
         ;;
       "$LISTING_FAILURE") total_listing_failures=$((total_listing_failures + 1)) ;;
@@ -314,13 +319,14 @@ main() {
       # does not produce 16.  Keep it fail-closed for an explicit future
       # partial-assessment producer rather than treating it as execution.
       "$INCOMPLETE_DELETION_FAILURE")
-        if ! IFS='|' read -r kept deleted delete_failures <<< "$result"; then
+        if ! IFS='|' read -r kept decided deleted delete_failures <<< "$result"; then
           echo "  ✗ Failed to read incomplete cleanup result; skipping $container"
         else
           total_kept=$((total_kept + kept))
+          total_decided=$((total_decided + decided))
           total_deleted=$((total_deleted + deleted))
           total_delete_failures=$((total_delete_failures + delete_failures))
-          echo "  Summary: kept=$kept, deleted=$deleted, delete_failures=$delete_failures"
+          echo "  Summary: kept=$kept, decided=$decided, deleted=$deleted, delete_failures=$delete_failures"
         fi
         total_processing_failures=$((total_processing_failures + 1))
         ;;
@@ -339,6 +345,7 @@ main() {
   echo "Packages skipped (listing failed): $total_listing_failures"
   echo "Packages skipped (processing failed): $total_processing_failures"
   echo "Versions kept: $total_kept"
+  echo "Versions decided for deletion: $total_decided"
   echo "Versions deleted: $total_deleted"
   echo "Delete failures: $total_delete_failures"
   echo "Untagged versions: retained here; cleanup-outdated-tags.sh is their only deletion authority. Sweep coverage: scheduled runs and unfiltered purge dispatches sweep the whole discovered set; filtered purge dispatches sweep only the selected package; dispatches without purge_obsolete sweep nothing."

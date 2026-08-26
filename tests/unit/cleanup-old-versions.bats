@@ -87,7 +87,7 @@ assert_output_reports_invalid_created_at() {
 }
 
 assert_summary_reports_successful_deletion() {
-    if [[ "$output" != *"Summary: kept=0, deleted=1, delete_failures=0"* ]]; then
+    if [[ "$output" != *"Summary: kept=0, decided=1, deleted=1, delete_failures=0"* ]]; then
         echo "ASSERTION FAILED: expected summary to report the successful deletion after cleanup failure" >&2
         return 1
     fi
@@ -102,7 +102,7 @@ assert_tag_decode_failure_stops_before_delete() {
 }
 
 assert_prepared_decode_preserves_delete_totals() {
-    if [[ "$output" != *"Summary: kept=0, deleted=1, delete_failures=0"* || "$output" != *"Packages assessed: 1"* ]]; then
+    if [[ "$output" != *"Summary: kept=0, decided=2, deleted=1, delete_failures=0"* || "$output" != *"Packages assessed: 1"* ]]; then
         echo "ASSERTION FAILED: a completed deletion plan must keep successful deletes in the totals and assess the package" >&2
         return 1
     fi
@@ -236,7 +236,7 @@ EOF
 
     [[ "$status" -eq 0 ]]
     [[ "$(<"$GH_LOG")" == *"/versions/102"* ]]
-    [[ "$output" == *"Summary: kept=1, deleted=1, delete_failures=0"* ]]
+    [[ "$output" == *"Summary: kept=1, decided=1, deleted=1, delete_failures=0"* ]]
 }
 
 @test "stale untagged records beyond the latest-count window never reach DELETE" {
@@ -261,7 +261,8 @@ EOF
 
     [[ "$status" -eq 0 ]]
     [[ ! -s "$GH_LOG" ]]
-    [[ "$output" == *"Summary: kept=3, deleted=0, delete_failures=0"* ]]
+    [[ "$output" == *"Summary: kept=3, decided=0, deleted=0, delete_failures=0"* ]]
+    [[ "$output" == *"Versions decided for deletion: 0"* ]]
     [[ "$output" == *"Versions deleted: 0"* ]]
 }
 
@@ -289,8 +290,37 @@ EOF
     [[ "$(<"$GH_LOG")" == *"/versions/101"* ]]
     [[ "$(<"$GH_LOG")" != *"/versions/102"* ]]
     [[ "$(wc -l < "$GH_LOG")" -eq 1 ]]
-    [[ "$output" == *"Summary: kept=1, deleted=1, delete_failures=0"* ]]
+    [[ "$output" == *"Summary: kept=1, decided=1, deleted=1, delete_failures=0"* ]]
+    [[ "$output" == *"Versions decided for deletion: 1"* ]]
     [[ "$output" == *"Versions deleted: 1"* ]]
+}
+
+@test "dry run reports a decided deletion without reporting a removal" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$GH_LOG" \
+        GH_TOKEN="test-token" \
+        OWNER="test-owner" \
+        DRY_RUN="true" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":1}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ ! -s "$GH_LOG" ]]
+    [[ "$output" == *"Summary: kept=0, decided=1, deleted=0, delete_failures=0"* ]]
+    [[ "$output" == *"Versions decided for deletion: 1"* ]]
+    [[ "$output" == *"Versions deleted: 0"* ]]
+    [[ "$output" == *"Delete failures: 0"* ]]
 }
 
 @test "an absent or non-numeric package version total refuses the listing" {
@@ -532,10 +562,11 @@ teardown() {
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *"gh: delete denied"* ]]
-    [[ "$output" == *"Failed to delete"* ]]
-    [[ "$output" == *"Summary: kept=0, deleted=0, delete_failures=1"* ]]
+    [[ "$output" == *"Failed to delete version 101"* ]]
+    [[ "$output" == *"Summary: kept=0, decided=1, deleted=0, delete_failures=1"* ]]
     [[ "$output" == *"Packages assessed: 1"* ]]
     [[ "$output" == *"Packages skipped (listing failed): 0"* ]]
+    [[ "$output" == *"Versions decided for deletion: 1"* ]]
     [[ "$output" == *"Delete failures: 1"* ]]
     [[ "$(<"$GH_LOG")" == *"/versions/101"* ]]
 }
