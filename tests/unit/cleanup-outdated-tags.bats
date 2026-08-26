@@ -49,6 +49,23 @@ teardown() {
     unset GH_TOKEN OWNER DRY_RUN _STUB_DIR ORIGINAL_PATH ROOT_DIR
 }
 
+@test "sourcing cleanup-outdated-tags leaves caller command and colour variables unset" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN="true" bash -c '
+        set -euo pipefail
+        unset DOCKER SKOPEO RED GREEN YELLOW BLUE NC
+        source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+        for variable in DOCKER SKOPEO RED GREEN YELLOW BLUE NC; do
+            if [[ -v "$variable" ]]; then
+                printf "%s was changed while sourcing\\n" "$variable" >&2
+                exit 1
+            fi
+        done
+    '
+
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
 # ---------------------------------------------------------------------------
 # Helper: build a newline-separated valid-tag list
 # ---------------------------------------------------------------------------
@@ -799,6 +816,66 @@ run_orphan_phase_completion_case() {
     [[ "$output" == *"GHCR — delete failures: 0"* ]]
 }
 
+@test "unfiltered main refuses an empty container discovery before making pruning decisions" {
+    local stub_root="$BATS_TEST_TMPDIR/empty-container-discovery"
+    local gh_calls="$BATS_TEST_TMPDIR/empty-container-discovery-gh-calls"
+    mkdir -p "$stub_root"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_root/make"
+    chmod +x "$stub_root/make"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        STUB_ROOT="$stub_root" \
+        GH_CALLS="$gh_calls" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            script_root() { printf "%s\\n" "$STUB_ROOT"; }
+            gh() { printf "%s\\n" "$*" >> "$GH_CALLS"; }
+            main
+        '
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Could not enumerate containers; refusing to make pruning decisions"* ]]
+    [[ "$output" != *"Purge Summary"* ]]
+    [ ! -e "$gh_calls" ]
+}
+
+@test "explicitly empty container selection refuses before making API calls" {
+    local stub_root="$BATS_TEST_TMPDIR/empty-explicit-container"
+    local gh_calls="$BATS_TEST_TMPDIR/empty-explicit-container-gh-calls"
+    mkdir -p "$stub_root"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        STUB_ROOT="$stub_root" \
+        GH_CALLS="$gh_calls" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            script_root() { printf "%s\\n" "$STUB_ROOT"; }
+            gh() { printf "%s\\n" "$*" >> "$GH_CALLS"; }
+            for selection in "" "   "; do
+                if main "$selection"; then
+                    printf "main accepted an empty or whitespace selection\\n" >&2
+                    exit 1
+                fi
+            done
+            [ ! -e "$GH_CALLS" ]
+        '
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Could not enumerate containers; refusing to make pruning decisions"* ]]
+    [[ "$output" != *"Purge Summary"* ]]
+    [ ! -e "$gh_calls" ]
+}
+
 @test "purge_ghcr treats a zero-status non-JSON body as a listing failure and leaves the package unassessed" {
     run env \
         PROJECT_ROOT="$PROJECT_ROOT" \
@@ -957,6 +1034,7 @@ run_orphan_phase_completion_case() {
     [[ "$purge_step" == *"continue-on-error: true"* ]]
     [[ "$purge_step" == *"always() && (github.event_name == 'schedule' || inputs.purge_obsolete == true)"* ]]
     [[ "$workflow" == *"steps.cleanup_old_versions.outcome }}\" == \"failure\" || \"\${{ steps.purge_obsolete_images.outcome"* ]]
+    [[ "$purge_step" == *"github.event_name == 'schedule' && 'true' || inputs.dry_run || 'false'"* ]]
 
     # This is the failure path that GitHub Actions evaluates: continue-on-error
     # preserves the age-pruner outcome while always() still starts the second

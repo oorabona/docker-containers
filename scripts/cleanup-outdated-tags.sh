@@ -406,11 +406,19 @@ main() {
   # 16 is fail-closed when the listing required an orphan assessment but a
   # prior deletion failure or replay abort prevented that phase from running.
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
-  local containers container valid_tags valid_count result ghcr_status dh_result dh_status
+  local containers container valid_tags valid_count result ghcr_status dh_result dh_status containers_discovered=true
   local kept obsolete orphans delete_failures dh_assessed dh_deleted package_assessed skip_dockerhub
   local total_assessed=0 total_build_failures=0 total_listing_failures=0 total_processing_failures=0 total_ghcr_delete_failures=0 total_dh_delete_failures=0
   local total_kept=0 total_obsolete=0 total_orphans=0 total_dh_deleted=0
-  if [[ $# -gt 0 ]]; then containers="$*"; else containers=$("$ROOT_DIR/make" list) || return 1; fi
+  if [[ $# -gt 0 ]]; then
+    containers="$*"
+  elif ! containers=$("$ROOT_DIR/make" list); then
+    containers_discovered=false
+  fi
+  if [[ "$containers_discovered" != true || -z "${containers//[[:space:]]/}" ]]; then
+    printf '%s\n' "Could not enumerate containers; refusing to make pruning decisions" >&2
+    return 1
+  fi
 
   for container in $containers; do
     echo ""; echo "========================================"; echo "Purging obsolete images: $container"; echo "========================================"

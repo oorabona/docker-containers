@@ -22,7 +22,7 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 # shellcheck source=../helpers/logging.sh
 source "$ROOT_DIR/helpers/logging.sh"
 
-# list_containers uses relative paths; run from repo root.
+# Anchor relative snapshot paths and no-argument container enumeration at the repository root.
 cd "$ROOT_DIR"
 
 NAMESPACE="${1:-oorabona}"
