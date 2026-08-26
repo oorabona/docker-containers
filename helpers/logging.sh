@@ -151,5 +151,9 @@ has_dockerfile() {
 # Usage: list_containers [base_dir]
 list_containers() {
     local base="${1:-.}"
-    find "$base" -maxdepth 2 \( -name "Dockerfile" -o -name "Dockerfile.*" \) | sed 's|^\./||' | cut -d'/' -f1 | sort -u
+    (
+        set -o pipefail
+        CDPATH='' cd -- "$base" >/dev/null || return 1
+        find . -maxdepth 2 \( -name "Dockerfile" -o -name "Dockerfile.*" \) | sed 's|^\./||' | cut -d'/' -f1 | sort -u
+    )
 }
