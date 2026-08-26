@@ -26,6 +26,190 @@ make_container() {
     printf '%s\n' "$dir"
 }
 
+assert_reported_component_version() {
+    local actual="$1" expected="$2"
+    local record
+    record=$(jq -cn --arg version "$expected" \
+        '{reference: "image:tag", tag: "tag", component_version: $version, kind: "single", variant: null, flavor: null}')
+
+    run bash -c '
+        source "$1/test-harness/test-harness.sh"
+        source "$1/test-harness/image-identity.sh"
+        E2E_IMAGE_IDENTITY="$3"
+        th_init --name "identity assertion" --report tap --no-color
+        e2e_assert_reported_component_version "$2"
+        th_summary
+    ' _ "$PROJECT_ROOT" "$actual" "$record"
+}
+
+@test "accepts numeric-dotted component releases with omitted zero segments" {
+    local actual expected
+    for actual in 7.1 7.1.0; do
+        if [[ "$actual" == "7.1" ]]; then
+            expected=7.1.0
+        else
+            expected=7.1
+        fi
+        assert_reported_component_version "$actual" "$expected"
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"ok 1 - the reported component version matches the resolved image release"* ]]
+    done
+}
+
+@test "refuses different numeric-dotted component releases" {
+    local expected
+    for expected in 7.2.0 7.11.0; do
+        assert_reported_component_version 7.1 "$expected"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"not ok 1 - the reported component version matches the resolved image release"* ]]
+    done
+}
+
+@test "keeps suffix-bearing component versions byte-for-byte exact" {
+    assert_reported_component_version 7.1.0-beta 7.1.0
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not ok 1 - the reported component version matches the resolved image release"* ]]
+}
+
+@test "fails closed for an unparseable component release" {
+    assert_reported_component_version release-candidate 7.1.0
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not ok 1 - the reported component version matches the resolved image release"* ]]
+}
+
+@test "uses its private numeric comparator despite a caller stub" {
+    local record
+    record=$(jq -cn --arg version 7.2.0 \
+        '{reference: "image:tag", tag: "tag", component_version: $version, kind: "single", variant: null, flavor: null}')
+
+    run bash -c '
+        source "$1/test-harness/test-harness.sh"
+        version_is_greater() { return 1; }
+        declare -F version_is_greater >/dev/null || exit 97
+        source "$1/test-harness/image-identity.sh"
+        declare -F version_is_greater >/dev/null || exit 98
+        E2E_IMAGE_IDENTITY="$2"
+        th_init --name "identity assertion" --report tap --no-color
+        e2e_assert_reported_component_version 7.1
+        th_summary
+        summary_status=$?
+        printf "caller-stub-defined\n"
+        exit "$summary_status"
+    ' _ "$PROJECT_ROOT" "$record"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"caller-stub-defined"* ]]
+    [[ "$output" == *"not ok 1 - the reported component version matches the resolved image release"* ]]
+}
+
+@test "does not export version utility names when sourced" {
+    run bash -c '
+        for name in version_is_greater DEFAULT_VERSION_PATTERN _version_numeric_tuple _version_normalize_numeric_component get_registry_pattern get_current_published_version; do
+            unset "$name"
+            unset -f "$name"
+        done
+        source "$1"
+        for name in version_is_greater DEFAULT_VERSION_PATTERN _version_numeric_tuple _version_normalize_numeric_component get_registry_pattern get_current_published_version; do
+            if declare -F "$name" >/dev/null || declare -p "$name" >/dev/null 2>&1; then
+                printf "%s is present\n" "$name"
+                exit 1
+            fi
+        done
+        printf "version utility names absent\n"
+    ' _ "$RESOLVER"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "version utility names absent" ]
+}
+
+@test "preserves a caller's BASH_REMATCH through numeric comparison" {
+    local record
+    record=$(jq -cn --arg version 7.1.0 \
+        '{reference: "image:tag", tag: "tag", component_version: $version, kind: "single", variant: null, flavor: null}')
+
+    run bash -c '
+        source "$1/test-harness/test-harness.sh"
+        source "$1/test-harness/image-identity.sh"
+        [[ alpha42 =~ ^([a-z]+)([0-9]+)$ ]]
+        E2E_IMAGE_IDENTITY="$2"
+        th_init --name "identity assertion" --report tap --no-color
+        e2e_assert_reported_component_version 7.1
+        th_summary
+        printf "captures=%s,%s\n" "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    ' _ "$PROJECT_ROOT" "$record"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"captures=alpha,42"* ]]
+}
+
+@test "leaves BASH_REMATCH unset when the caller had none" {
+    local record
+    record=$(jq -cn --arg version 7.1.0 \
+        '{reference: "image:tag", tag: "tag", component_version: $version, kind: "single", variant: null, flavor: null}')
+
+    run bash -c '
+        source "$1/test-harness/test-harness.sh"
+        source "$1/test-harness/image-identity.sh"
+        unset BASH_REMATCH
+        E2E_IMAGE_IDENTITY="$2"
+        th_init --name "identity assertion" --report tap --no-color
+        e2e_assert_reported_component_version 7.1
+        declare -p BASH_REMATCH >/dev/null 2>&1 && exit 1
+        th_summary
+    ' _ "$PROJECT_ROOT" "$record"
+
+    [ "$status" -eq 0 ]
+}
+
+@test "reports a missing version helper without aborting while sourced" {
+    local fixture_root fixture_resolver record
+    fixture_root="$TEST_TEMP_DIR/missing-helper"
+    fixture_resolver="$fixture_root/test-harness/image-identity.sh"
+    mkdir -p "$fixture_root/test-harness"
+    cp "$RESOLVER" "$fixture_resolver"
+    record=$(jq -cn --arg version 7.1.0 \
+        '{reference: "image:tag", tag: "tag", component_version: $version, kind: "single", variant: null, flavor: null}')
+
+    run bash -c '
+        set -e
+        source "$1/test-harness/test-harness.sh"
+        source "$2"
+        E2E_IMAGE_IDENTITY="$3"
+        th_init --name "identity assertion" --report tap --no-color
+        e2e_assert_reported_component_version 7.1
+        th_summary
+    ' _ "$PROJECT_ROOT" "$fixture_resolver" "$record"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"required helper version-utils.sh is unavailable"* ]]
+    [[ "$output" != *"expected: '7.1.0', got: '7.1'"* ]]
+}
+
+@test "reports a version helper that supplies no comparator without aborting while sourced" {
+    local fixture_root fixture_resolver record
+    fixture_root="$TEST_TEMP_DIR/no-comparator-helper"
+    fixture_resolver="$fixture_root/test-harness/image-identity.sh"
+    mkdir -p "$fixture_root/test-harness" "$fixture_root/helpers"
+    cp "$RESOLVER" "$fixture_resolver"
+    : > "$fixture_root/helpers/version-utils.sh"
+    record=$(jq -cn --arg version 7.1.0 \
+        '{reference: "image:tag", tag: "tag", component_version: $version, kind: "single", variant: null, flavor: null}')
+
+    run bash -c '
+        set -e
+        source "$1/test-harness/test-harness.sh"
+        source "$2"
+        E2E_IMAGE_IDENTITY="$3"
+        th_init --name "identity assertion" --report tap --no-color
+        e2e_assert_reported_component_version 7.1
+        th_summary
+    ' _ "$PROJECT_ROOT" "$fixture_resolver" "$record"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"required helper version-utils.sh is unavailable"* ]]
+    [[ "$output" != *"expected: '7.1.0', got: '7.1'"* ]]
+}
+
 @test "resolves a port-bearing reference" {
     local dir
     dir=$(make_container web-shell '
