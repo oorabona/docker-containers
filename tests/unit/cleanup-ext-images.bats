@@ -7,6 +7,8 @@
 #
 # They never hit the real network.
 
+bats_require_minimum_version 1.7.0
+
 load "../test_helper"
 
 setup() {
@@ -137,10 +139,10 @@ _run_cleanup_main_with_records() {
 }
 
 @test "_parse_ext_managed_tag rejects unparseable and foreign tags" {
-    ! _parse_ext_managed_tag "pg17-latest"
-    ! _parse_ext_managed_tag "pg17-2.27.1-windows"
-    ! _parse_ext_managed_tag "latest"
-    ! _parse_ext_managed_tag "other-image-tag"
+    run ! _parse_ext_managed_tag "pg17-latest"
+    run ! _parse_ext_managed_tag "pg17-2.27.1-windows"
+    run ! _parse_ext_managed_tag "latest"
+    run ! _parse_ext_managed_tag "other-image-tag"
 }
 
 @test "GHCR record contract keeps tags as an array and exposes whether they were observed" {

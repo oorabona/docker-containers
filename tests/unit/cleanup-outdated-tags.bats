@@ -4,6 +4,8 @@
 # Focus: is_valid_tag — bake cache tag validity derived from underlying base tag;
 # GHCR manifest-protection contract and end-to-end deletion assertions
 
+bats_require_minimum_version 1.7.0
+
 # Source is_valid_tag from the script.  Sourcing is intentionally inert: it
 # defines functions only, so these tests do not need to arrange a fake main.
 
@@ -24,7 +26,18 @@ setup() {
 
     # Source the script without triggering validation, output, or main.
     # shellcheck source=/dev/null
-    source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh" 2>/dev/null || true
+    if ! source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh" 2>/dev/null; then
+        echo "ASSERTION FAILED: required functions script_root, build_valid_tags, is_valid_tag, purge_ghcr, purge_dockerhub, and main are unavailable because cleanup-outdated-tags.sh could not be sourced" >&2
+        return 1
+    fi
+
+    local required_function
+    for required_function in script_root build_valid_tags is_valid_tag purge_ghcr purge_dockerhub main; do
+        if ! declare -F "$required_function" >/dev/null; then
+            echo "ASSERTION FAILED: $required_function must be defined after sourcing cleanup-outdated-tags.sh" >&2
+            return 1
+        fi
+    done
 
     export _STUB_DIR
 }
@@ -71,10 +84,10 @@ make_valid_tags() {
     is_valid_tag "latest-windows-ltsc2022" "$valid_tags"
     is_valid_tag "latest-windows-ltsc2022-dev" "$valid_tags"
     is_valid_tag "latest-debian-trixie-base" "$valid_tags"
-    ! is_valid_tag "latest-debian-trixie" "$valid_tags"
-    ! is_valid_tag "latest-windows-ltsc2025" "$valid_tags"
-    ! is_valid_tag "latest-nonexistent" "$valid_tags"
-    ! is_valid_tag "latest-windows-ltsc2019" "$valid_tags"
+    run ! is_valid_tag "latest-debian-trixie" "$valid_tags"
+    run ! is_valid_tag "latest-windows-ltsc2025" "$valid_tags"
+    run ! is_valid_tag "latest-nonexistent" "$valid_tags"
+    run ! is_valid_tag "latest-windows-ltsc2019" "$valid_tags"
 }
 
 assert_tag_decode_failure_stops_before_delete() {
@@ -109,7 +122,10 @@ assert_prepared_decode_preserves_delete_totals() {
         set +e
         source "$1"
         source_status=$?
-        ! declare -F purge_ghcr >/dev/null
+        if declare -F purge_ghcr >/dev/null; then
+            echo "ASSERTION FAILED: purge_ghcr must not exist after failed validation-helper source" >&2
+            exit 1
+        fi
         [[ "$source_status" -ne 0 ]]
     ' _ "$missing_root/scripts/cleanup-outdated-tags.sh"
 
@@ -632,7 +648,7 @@ run_orphan_phase_completion_case() {
 @test "is_valid_tag: unknown tag returns invalid" {
     local valid_tags
     valid_tags=$(make_valid_tags "2.334.0" "latest" "buildcache")
-    ! is_valid_tag "9.9.9" "$valid_tags"
+    run ! is_valid_tag "9.9.9" "$valid_tags"
 }
 
 @test "is_valid_tag: arch-specific of a valid base tag (amd64) returns valid" {
@@ -678,13 +694,13 @@ run_orphan_phase_completion_case() {
     # 1.0.0 is no longer in valid_tags (rotated out)
     local valid_tags
     valid_tags=$(make_valid_tags "2.334.0" "latest" "buildcache")
-    ! is_valid_tag "buildcache-1.0.0-amd64" "$valid_tags"
+    run ! is_valid_tag "buildcache-1.0.0-amd64" "$valid_tags"
 }
 
 @test "is_valid_tag: buildcache-<rotated-out-tag>-arm64 is purged when base tag is invalid" {
     local valid_tags
     valid_tags=$(make_valid_tags "2.334.0" "latest" "buildcache")
-    ! is_valid_tag "buildcache-1.0.0-arm64" "$valid_tags"
+    run ! is_valid_tag "buildcache-1.0.0-arm64" "$valid_tags"
 }
 
 @test "is_valid_tag: buildcache with variant suffix preserved when variant base is valid" {
@@ -698,7 +714,7 @@ run_orphan_phase_completion_case() {
     # 2.334.0-dev rotated out; only 2.334.0 remains
     local valid_tags
     valid_tags=$(make_valid_tags "2.334.0" "latest" "buildcache")
-    ! is_valid_tag "buildcache-2.334.0-dev-amd64" "$valid_tags"
+    run ! is_valid_tag "buildcache-2.334.0-dev-amd64" "$valid_tags"
 }
 
 @test "is_valid_tag: buildcache with distro-qualified tag (trixie) preserved when base valid" {
@@ -711,7 +727,7 @@ run_orphan_phase_completion_case() {
 @test "is_valid_tag: buildcache with distro-qualified tag purged when base invalid" {
     local valid_tags
     valid_tags=$(make_valid_tags "2.334.0" "latest" "buildcache")
-    ! is_valid_tag "buildcache-trixie-amd64" "$valid_tags"
+    run ! is_valid_tag "buildcache-trixie-amd64" "$valid_tags"
 }
 
 # ---------------------------------------------------------------------------
@@ -729,7 +745,7 @@ run_orphan_phase_completion_case() {
     local valid_tags
     valid_tags=$(make_valid_tags "foo-amd64" "latest" "buildcache")
     # buildcache-foo-amd64-bar-amd64 → base = foo-amd64-bar, NOT in valid_tags
-    ! is_valid_tag "buildcache-foo-amd64-bar-amd64" "$valid_tags"
+    run ! is_valid_tag "buildcache-foo-amd64-bar-amd64" "$valid_tags"
 }
 
 # ---------------------------------------------------------------------------
@@ -740,13 +756,13 @@ run_orphan_phase_completion_case() {
     # buildcache-2.334.0 (no -amd64/-arm64) → no recognised arch suffix → invalid
     local valid_tags
     valid_tags=$(make_valid_tags "2.334.0" "latest" "buildcache")
-    ! is_valid_tag "buildcache-2.334.0" "$valid_tags"
+    run ! is_valid_tag "buildcache-2.334.0" "$valid_tags"
 }
 
 @test "is_valid_tag: double-prefix buildcache-buildcache- is invalid" {
     local valid_tags
     valid_tags=$(make_valid_tags "2.334.0" "latest" "buildcache")
-    ! is_valid_tag "buildcache-buildcache-2.334.0-amd64" "$valid_tags"
+    run ! is_valid_tag "buildcache-buildcache-2.334.0-amd64" "$valid_tags"
 }
 
 @test "is_valid_tag: buildcache-amd64 is valid as arch-specific variant of bare buildcache" {
