@@ -2,6 +2,8 @@
 
 # Unit tests for scripts/cleanup-old-versions.sh fail-closed registry handling.
 
+bats_require_minimum_version 1.7.0
+
 setup() {
     TEST_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
     PROJECT_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
@@ -481,7 +483,10 @@ EOF
         set +e
         source "$1"
         source_status=$?
-        ! declare -F purge_container >/dev/null
+        if declare -F purge_container >/dev/null; then
+            echo "ASSERTION FAILED: purge_container must not exist after failed validation-helper source" >&2
+            exit 1
+        fi
         [[ "$source_status" -ne 0 ]]
     ' _ "$missing_root/scripts/cleanup-old-versions.sh"
 
