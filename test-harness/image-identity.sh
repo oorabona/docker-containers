@@ -189,17 +189,66 @@ _image_identity_record_field() {
     ' <<<"${E2E_IMAGE_IDENTITY:-}" 2>/dev/null
 }
 
+_image_identity_numeric_versions_equivalent() (
+    local actual="$1" expected="$2"
+    local numeric_dotted_pattern='^[0-9]+([.][0-9]+)*$'
+    local harness_dir helper actual_greater_status expected_greater_status
+
+    [[ "$actual" =~ $numeric_dotted_pattern && "$expected" =~ $numeric_dotted_pattern ]] || return 1
+
+    harness_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 2
+    helper="$harness_dir/../helpers/version-utils.sh"
+    [[ -r "$helper" ]] || return 2
+    # shellcheck source=../helpers/version-utils.sh
+    if ! source "$helper" >/dev/null 2>&1; then
+        return 2
+    fi
+    # This detects a helper that loaded but supplied no comparator only when no
+    # same-name function was already present; it does not establish provenance.
+    declare -F version_is_greater >/dev/null || return 2
+
+    if version_is_greater "$actual" "$expected"; then
+        actual_greater_status=0
+    else
+        actual_greater_status=$?
+    fi
+    if version_is_greater "$expected" "$actual"; then
+        expected_greater_status=0
+    else
+        expected_greater_status=$?
+    fi
+    (( actual_greater_status == 1 && expected_greater_status == 1 ))
+)
+
 # Harness assertions for container suites. Suites pass their observed value;
 # they never parse an image reference or the identity record themselves.
 e2e_assert_reported_component_version() {
-    local actual="$1" expected
+    local actual="$1" expected numeric_comparison_status
     if ! expected=$(_image_identity_record_field component_version); then
         th_fail "the reported component version has resolved image identity" \
             "the harness did not provide a valid resolved image identity"
         return 0
     fi
-    th_assert_eq "the reported component version matches the resolved image ($expected)" \
-        "$actual" "$expected"
+
+    if [[ "$actual" == "$expected" ]]; then
+        th_pass "the reported component version matches the resolved image release ($expected)"
+        return 0
+    fi
+
+    if _image_identity_numeric_versions_equivalent "$actual" "$expected"; then
+        th_pass "the reported component version matches the resolved image release ($expected)"
+        return 0
+    else
+        numeric_comparison_status=$?
+    fi
+    if (( numeric_comparison_status == 2 )); then
+        th_fail "the reported component version matches the resolved image release ($expected)" \
+            "required helper version-utils.sh is unavailable"
+        return 0
+    fi
+
+    th_fail "the reported component version matches the resolved image release ($expected)" \
+        "expected: '$expected', got: '$actual'"
 }
 
 e2e_assert_declared_variant() {
