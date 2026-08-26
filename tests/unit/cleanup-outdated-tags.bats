@@ -1024,6 +1024,26 @@ run_orphan_phase_completion_case() {
     [[ -z "$output" ]]
 }
 
+@test "cleanup workflow schedules weekly registry pruning" {
+    local workflow_path
+    workflow_path="$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml"
+
+    run yq -r '.on.schedule | length' "$workflow_path"
+    [ "$status" -eq 0 ]
+    if [ "$output" != '1' ]; then
+        printf "FAIL: expected exactly one cleanup schedule, got %s\n" "$output" >&2
+        return 1
+    fi
+
+    run yq -r '.on.schedule[0].cron' "$workflow_path"
+    [ "$status" -eq 0 ]
+    if [ "$output" != '17 3 * * 1' ]; then
+        printf "FAIL: expected weekly registry prune cron '17 3 * * 1', got %s\n" "$output" >&2
+        return 1
+    fi
+
+}
+
 @test "workflow attempts both registry pruners and fails after either failure" {
     local workflow purge_step
     workflow=$(<"$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml")
