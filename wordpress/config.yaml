@@ -9,7 +9,7 @@ build_args:
   # consumed as a --build-arg by the Dockerfile bake (exactly-one-key + fingerprint
   # assertion) AND read by the GPG key-lifecycle monitor (scripts/check-gpg-keys.sh).
   WPCLI_KEY_FPR: "63AF7AA15067C05616FDDD88A3A2E8F226F0BC06"
-  SQLITE_PLUGIN_VERSION: "3.0.0"
+  SQLITE_PLUGIN_VERSION: "3.0.1"
 dependency_sources:
   WPCLI_VERSION:
     lifecycle: tracked
