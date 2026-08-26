@@ -81,7 +81,7 @@ This document describes the complete CI/CD architecture: version detection, mult
 │  shellcheck.yaml          ─ Lint all .sh on push/PR           │
 │  validate-version-scripts ─ Test version.sh on PR             │
 │  sync-dockerhub-readme    ─ Sync README to Docker Hub         │
-│  cleanup-registry         ─ Monthly GHCR image cleanup        │
+│  cleanup-registry         ─ Weekly GHCR image cleanup         │
 │  update-dashboard         ─ Jekyll site → GitHub Pages        │
 └───────────────────────────────────────────────────────────────┘
 ```
@@ -164,7 +164,7 @@ gh workflow run recreate-manifests.yaml -f container=postgres
 | `shellcheck.yaml` | push, PR | Lint the build-system, version and test shell scripts with shellcheck, and the YAML config files with yamllint. Container runtime scripts are deliberately excluded |
 | `validate-version-scripts.yaml` | PR (version.sh changes) | Validate version.sh scripts can run |
 | `sync-dockerhub-readme.yaml` | push (README changes) | Sync README.md to Docker Hub descriptions |
-| `cleanup-registry.yaml` | schedule (monthly) | Delete old GHCR images per retention policy |
+| `cleanup-registry.yaml` | schedule (weekly) | Delete old GHCR images per retention policy |
 
 ## Composite Actions
 

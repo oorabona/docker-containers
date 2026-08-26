@@ -330,7 +330,7 @@ yq '.extensions.<name>.version' postgres/extensions/config.yaml
 | `auto-build.yaml` | Push, PR, manual | Build & push containers |
 | `upstream-monitor.yaml` | Schedule | Check for upstream updates |
 | `update-dashboard.yaml` | Schedule, manual | Regenerate status dashboard |
-| `cleanup-registry.yaml` | Manual | Clean old images |
+| `cleanup-registry.yaml` | Schedule, manual | Clean old images |
 
 ### Manual Workflow Trigger
 

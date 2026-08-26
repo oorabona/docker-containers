@@ -2,8 +2,8 @@ name: Cleanup Container Registry
 
 on:
   schedule:
-    # Run monthly on the 1st at 3:00 AM UTC
-    - cron: '0 3 1 * *'
+    # Run weekly every Monday at 3:17 AM UTC
+    - cron: '17 3 * * 1'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -88,7 +88,7 @@ jobs:
     # record. Nothing prevents a writer outside this workflow from changing it
     # between that re-read and DELETE.
     # Independent lifecycle job — not in any build/consume path.
-    # Runs monthly on schedule, or on operator dispatch with explicit opt-in.
+    # Runs weekly on schedule and on any operator dispatch. Default: dry-run.  Operator must set execute_ext_cleanup=true to delete.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
