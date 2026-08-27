@@ -211,7 +211,6 @@ All located in `.github/actions/`:
 | `docker-tags` | List all tags for a Docker image via skopeo |
 | `git-tags` | List available Git tags |
 | `python-tags` | Query PyPI for latest Python package versions |
-| `skopeo-squash` | Utility wrapper for skopeo operations |
 
 ## Version Source of Truth
 

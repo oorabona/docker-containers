@@ -25,7 +25,6 @@ setup() {
     unset MULTIPLATFORM_SUPPORTED
     unset GITHUB_ACTIONS
     unset GITHUB_REPOSITORY_OWNER
-    unset SQUASH_IMAGE
 }
 
 teardown() {
@@ -35,7 +34,6 @@ teardown() {
     unset MULTIPLATFORM_SUPPORTED
     unset GITHUB_ACTIONS
     unset GITHUB_REPOSITORY_OWNER
-    unset SQUASH_IMAGE
     unset NPROC
     unset CUSTOM_BUILD_ARGS
 }

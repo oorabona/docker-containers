@@ -207,14 +207,6 @@ push_ghcr() {
 
     log_success "GHCR push successful: $ghcr_image:$effective_tag"
 
-    # Handle squashing for non-platform-specific builds
-    if [[ "${SQUASH_IMAGE:-false}" == "true" && -z "$platform_suffix" && "${DRY_RUN:-false}" != "true" ]]; then
-        log_success "Squashing GHCR image..."
-        ../helpers/skopeo-squash "$ghcr_image:$effective_tag" "$ghcr_image:$effective_tag" ghcr || {
-            log_warning "GHCR squashing failed, keeping layered version"
-        }
-    fi
-
     return 0
 }
 
@@ -328,14 +320,6 @@ push_dockerhub() {
     }
 
     log_success "Docker Hub push successful: $dockerhub_image:$effective_tag"
-
-    # Handle squashing for non-platform-specific builds
-    if [[ "${SQUASH_IMAGE:-false}" == "true" && -z "$platform_suffix" && "${DRY_RUN:-false}" != "true" ]]; then
-        log_success "Squashing Docker Hub image..."
-        ../helpers/skopeo-squash "$dockerhub_image:$effective_tag" "$dockerhub_image:$effective_tag" dockerhub || {
-            log_warning "Docker Hub squashing failed, keeping layered version"
-        }
-    fi
 
     return 0
 }

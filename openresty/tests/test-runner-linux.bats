@@ -95,7 +95,9 @@ http {
 NGINX
 
     # Start the container with the custom nginx config
+    local invocation="${BATS_TEST_FILENAME##*/}:${BATS_TEST_NUMBER:-unknown}:$$"
     CONTAINER_ID=$(docker run -d \
+        --label "io.github.oorabona.openresty-smoke.invocation=$invocation" \
         -p 127.0.0.1::8080 \
         -v "${NGINX_CONF}:/usr/local/openresty/nginx/conf/nginx.conf:ro" \
         "$IMAGE")
@@ -104,6 +106,7 @@ NGINX
     port_mapping=$(docker port "$CONTAINER_ID" 8080/tcp)
     if [[ ! "$port_mapping" =~ ^127\.0\.0\.1:[0-9]+$ ]]; then
         printf 'ERROR: expected one 127.0.0.1:<port> mapping; docker port returned: %q\n' "$port_mapping" >&2
+        docker logs "$CONTAINER_ID" >&2 || true
         return 1
     fi
     PORT=${port_mapping#127.0.0.1:}
