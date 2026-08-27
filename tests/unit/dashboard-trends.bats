@@ -10,6 +10,7 @@ setup() {
     source "$ORIG_DIR/helpers/logging.sh" 2>/dev/null || true
     source "$ORIG_DIR/helpers/variant-utils.sh" 2>/dev/null || true
     source "$ORIG_DIR/generate-dashboard.sh" 2>/dev/null || true
+    eval "$(declare -f get_container_versions | sed '1s/get_container_versions/_real_get_container_versions/')"
     _SOURCED_TRIVY_CACHE="${TRIVY_CACHE_FILE:-}"
     if [[ -n "$_saved_exit_trap" ]]; then
         eval "$_saved_exit_trap" 2>/dev/null || true
@@ -27,7 +28,7 @@ setup() {
     TRIVY_CACHE_FILE=$(mktemp)
     export DATA_FILE CONTAINERS_DIR STATS_FILE TRIVY_CACHE_FILE
 
-    get_container_versions()             { echo "1.0.0|1.0.0|green|Up to date"; }
+    get_container_versions()             { echo "1.0.0|1.0.0|green|Up to date|true"; }
     get_container_description()          { echo "Alpha test container"; }
     get_container_build_status()         { echo "success"; }
     populate_container_build_status_cache() { :; }
@@ -122,6 +123,43 @@ capture_container_page() {
         local container="$1" container_json="$2"
         echo "$container_json" > "$TEST_DIR/captured-${container}.json"
     }
+}
+
+@test "dashboard: unconfirmed current version carries explicit absence and no image references" {
+    make_fixture_container "unconfirmed"
+
+    get_current_published_version() { echo ""; }
+    run _real_get_container_versions "unconfirmed"
+    [ "$status" -eq 0 ]
+    [[ "$(tail -n1 <<< "$output")" == "|1.0.0|warning|Publication information unavailable|false" ]]
+
+    capture_container_page
+    get_container_versions() { echo "|9.9.9|warning|Publication information unavailable|false"; }
+
+    run generate_data
+    [ "$status" -eq 0 ]
+
+    local record
+    record=$(cat "$TEST_DIR/captured-unconfirmed.json")
+    echo "$record" | jq -e '
+        .current_version == "" and
+        .current_version_confirmed == false and
+        .latest_version == "9.9.9" and
+        .status_text == "Publication information unavailable" and
+        .ghcr_image == "" and
+        .dockerhub_image == ""
+    ' >/dev/null
+
+    # Lexical, and deliberately so: no Ruby or Jekyll runs in this environment,
+    # so nothing here renders Liquid. These two greps assert only that the
+    # templates branch on the explicit field rather than on a string sentinel.
+    # They cannot show what the built page emits — that check is fetching the
+    # deployed site, which is where a Liquid quirk that survives a source grep
+    # has bitten this repository before.
+    grep -q 'include.current_version_confirmed == true' \
+        "$ORIG_DIR/docs/site/_includes/container-card.html"
+    grep -q 'page.current_version_confirmed == true' \
+        "$ORIG_DIR/docs/site/_layouts/container-detail.html"
 }
 
 # Creates a minimal container directory that satisfies generate_data()'s

@@ -127,7 +127,7 @@
     {% endif %}
 
     <!-- Pull command -->
-    {% if include.ghcr_image and include.dockerhub_image %}
+    {% if include.current_version_confirmed == true and include.ghcr_image and include.dockerhub_image %}
     <section>
       <h4>Pull command</h4>
       <div class="pull-section"
@@ -147,6 +147,12 @@
           </button>
         </div>
       </div>
+    </section>
+    {% elsif include.current_version_confirmed != true %}
+    <section>
+      <h4>Pull command</h4>
+      <p>Publication information is unavailable; no pull reference is shown.</p>
+      <p>Upstream version: {{ include.latest_version | default: "unknown" | escape }}</p>
     </section>
     {% endif %}
 

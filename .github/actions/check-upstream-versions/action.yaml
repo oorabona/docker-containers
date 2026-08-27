@@ -17,13 +17,13 @@ inputs:
 
 outputs:
   containers_with_updates:
-    description: 'JSON array of containers with upstream updates available'
+    description: 'JSON array of entries authorized to open a monitor PR'
     value: ${{ steps.check-versions.outputs.containers_with_updates }}
   update_count:
-    description: 'Number of containers with upstream updates'
+    description: 'Number of entries authorized to open a monitor PR'
     value: ${{ steps.check-versions.outputs.update_count }}
   version_info:
-    description: 'JSON object with version information for all checked containers'
+    description: 'JSON array of every version observation, including entries not authorized for monitor PRs'
     value: ${{ steps.check-versions.outputs.version_info }}
 
 runs:
@@ -61,7 +61,7 @@ runs:
           version_info=$(./make check-updates)
         fi
         
-        # Extract containers that need updates (make script already handles all logic)
+        # Extract entries authorized for monitor PRs (make script already handles all logic)
         containers_with_updates=()
         
         while IFS= read -r container_data; do
@@ -69,18 +69,23 @@ runs:
           current_version=$(echo "$container_data" | jq -r '.current_version')
           latest_version=$(echo "$container_data" | jq -r '.latest_version')
           update_available=$(echo "$container_data" | jq -r '.update_available')
+          actionable=$(echo "$container_data" | jq -r '.actionable == true')
           status=$(echo "$container_data" | jq -r '.status')
           
           echo "📋 $container: $current_version → $latest_version (update: $update_available)"
           
-          # Add to update list if make script determined update is available
-          if [ "$update_available" = "true" ]; then
+          # PR authorization is carried by make; absent fields fail closed.
+          if [ "$actionable" = "true" ]; then
             if [ "$status" = "new-container" ]; then
               echo "   🆕 New container ready for initial release"
             else
               echo "   🚀 Update needed: $latest_version"
             fi
             containers_with_updates+=("$container")
+          elif [ "$status" = "registry-lookup-failed" ]; then
+            echo "   ⚠️ Registry lookup did not conclude — no PR from this entry"
+          elif [ "$update_available" = "true" ]; then
+            echo "   ⏸️ Update available but this container declines monitor PRs"
           else
             echo "   ✅ Up to date"
           fi
@@ -91,12 +96,12 @@ runs:
         if [ ${#containers_with_updates[@]} -eq 0 ]; then
           echo "containers_with_updates=[]" >> $GITHUB_OUTPUT
           echo "update_count=0" >> $GITHUB_OUTPUT
-          echo "📋 No containers need builds"
+          echo "📋 No entries are authorized for monitor PRs"
         else
           container_json=$(printf '%s\n' "${containers_with_updates[@]}" | jq -R . | jq -s -c .)
           echo "containers_with_updates=$container_json" >> $GITHUB_OUTPUT
           echo "update_count=${#containers_with_updates[@]}" >> $GITHUB_OUTPUT
-          echo "📋 Containers needing builds: ${containers_with_updates[*]}"
+          echo "📋 Entries authorized for monitor PRs: ${containers_with_updates[*]}"
         fi
         
         # Output complete version info

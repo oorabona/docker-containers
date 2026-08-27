@@ -15,6 +15,9 @@ build:
   # Postgres builds all supported PG majors on every push (not just the latest line).
   # Rationale: each major is a long-lived supported release stream, not a rolling history.
   always_all_versions: true
+  # #1512 will migrate the registry matcher; until then this lookup must not
+  # authorize a monitor-created PR even when an upstream version is available.
+  upstream_monitor_actionable: false
   # Explicit bake opt-in for the FINAL image only. Extension compilation remains
   # owned by build-extensions; bake only consumes pre-built extension images.
   bake_final_build: true

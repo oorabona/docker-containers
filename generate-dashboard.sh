@@ -312,21 +312,22 @@ get_container_versions() {
         return 1
     }
 
-    local current_version latest_version status_color status_text
+    local current_version latest_version status_color status_text current_version_confirmed="false"
 
     local _t0_skopeo=${EPOCHREALTIME:-}
     current_version=$(get_current_published_version "oorabona/$container")
     log_latency "skopeo-list-tags oorabona/$container" "$_t0_skopeo" 60
-    # Handle empty result
-    [[ -z "$current_version" ]] && current_version="no-published-version"
+    if [[ -n "$current_version" ]]; then
+        current_version_confirmed="true"
+    fi
 
     latest_version=$(timeout 30 ./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "unknown")
 
     popd >/dev/null 2>&1
 
-    if [[ "$current_version" == "no-published-version" ]]; then
+    if [[ "$current_version_confirmed" != "true" ]]; then
         status_color="warning"
-        status_text="Not Published Yet"
+        status_text="Publication information unavailable"
     elif [[ "$current_version" == "unknown" || "$latest_version" == "unknown" ]]; then
         status_color="secondary"
         status_text="Unknown Status"
@@ -338,7 +339,7 @@ get_container_versions() {
         status_text="Update Available"
     fi
 
-    echo "${current_version}|${latest_version}|${status_color}|${status_text}"
+    echo "${current_version}|${latest_version}|${status_color}|${status_text}|${current_version_confirmed}"
 }
 
 # Get container description from README
@@ -616,7 +617,7 @@ variant_deps_for_flavor() {
 collect_variant_json() {
     local container="$1" container_dir="$2" variant_name="$3"
     local version="$4" current_version="$5" fallback_base_image="$6"
-    local is_versioned="${7:-false}"
+    local is_versioned="${7:-false}" current_version_confirmed="${8:-false}"
 
     local variant_tag variant_desc is_default
     variant_tag=$(variant_image_tag "$version" "$variant_name" "$container_dir")
@@ -646,7 +647,7 @@ collect_variant_json() {
 
     # Sizes — prefer lineage (post-#515 enriched fields), fall back to network
     local size_amd64="" size_arm64=""
-    if [[ "$current_version" != "no-published-version" ]]; then
+    if [[ "$current_version_confirmed" == "true" ]]; then
         local lineage_size_amd64 lineage_size_arm64
         lineage_size_amd64=$(echo "$lineage_json" | jq -r '.size_amd64_bytes // empty' 2>/dev/null) || lineage_size_amd64=""
         lineage_size_arm64=$(echo "$lineage_json" | jq -r '.size_arm64_bytes // empty' 2>/dev/null) || lineage_size_arm64=""
@@ -734,7 +735,7 @@ collect_variant_json() {
     local multi_arch_digests_json
     multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
 
-    if [[ "$current_version" != "no-published-version" ]]; then
+    if [[ "$current_version_confirmed" == "true" ]]; then
         local lineage_platforms lineage_index_digest lineage_amd64 lineage_arm64
         lineage_platforms=$(echo "$lineage_json" | jq -c '.multi_arch_platforms // empty' 2>/dev/null) || lineage_platforms=""
         lineage_index_digest=$(echo "$lineage_json" | jq -r '.multi_arch_index_digest // empty' 2>/dev/null) || lineage_index_digest=""
@@ -907,6 +908,7 @@ collect_variant_json() {
 # Handles both multi-version (postgres) and single-version (terraform) layouts
 collect_variants_json() {
     local container="$1" container_dir="$2" current_version="$3" base_image="$4"
+    local current_version_confirmed="${5:-false}"
 
     local ver_count
     ver_count=$(version_count "$container_dir")
@@ -924,7 +926,7 @@ collect_variants_json() {
                 [[ -z "$variant_name" ]] && continue
                 local var_json
                 var_json=$(collect_variant_json "$container" "$container_dir" "$variant_name" \
-                    "$ver_tag" "$current_version" "$base_image" "true")
+                    "$ver_tag" "$current_version" "$base_image" "true" "$current_version_confirmed")
                 variants_arr=$(printf '%s\n%s' "$variants_arr" "$var_json" | jq -s '.[0] + [.[1]]')
             done < <(list_variants "$container_dir" "$ver_tag")
 
@@ -948,7 +950,7 @@ collect_variants_json() {
                 && [[ -f "$SCRIPT_DIR/.build-lineage/${container}-${ver_tag}.json" ]]; then
                 local var_json
                 var_json=$(collect_variant_json "$container" "$container_dir" "" \
-                    "$ver_tag" "$current_version" "$base_image" "true")
+                    "$ver_tag" "$current_version" "$base_image" "true" "$current_version_confirmed")
                 variants_arr=$(printf '%s\n%s' "[]" "$var_json" | jq -s '.[0] + [.[1]]')
             fi
 
@@ -968,7 +970,7 @@ collect_variants_json() {
             [[ -z "$variant_name" ]] && continue
             local var_json
             var_json=$(collect_variant_json "$container" "$container_dir" "$variant_name" \
-                "$current_version" "$current_version" "$base_image" "false")
+                "$current_version" "$current_version" "$base_image" "false" "$current_version_confirmed")
             variants_arr=$(printf '%s\n%s' "$variants_arr" "$var_json" | jq -s '.[0] + [.[1]]')
         done < <(list_variants "$container_dir")
 
@@ -1589,7 +1591,9 @@ generate_data() {
         local version_info
         version_info=$(get_container_versions "$container")
 
-        IFS='|' read -r current_version latest_version status_color status_text <<< "$version_info"
+        local current_version_confirmed
+        IFS='|' read -r current_version latest_version status_color status_text current_version_confirmed <<< "$version_info"
+        [[ "$current_version_confirmed" == "true" ]] || current_version_confirmed="false"
 
         local description
         description=$(get_container_description "$container")
@@ -1600,7 +1604,7 @@ generate_data() {
 
         # Fallback logic if CI status is unknown
         if [[ "$build_status" == "unknown" ]]; then
-            if [[ "$current_version" == "no-published-version" ]]; then
+            if [[ "$current_version_confirmed" != "true" ]]; then
                 build_status="pending"
             else
                 build_status="success"  # Assume success if published but no recent CI data
@@ -1623,7 +1627,7 @@ generate_data() {
 
         # Get image sizes (only if published)
         local sizes_amd64="" sizes_arm64=""
-        if [[ "$current_version" != "no-published-version" ]]; then
+        if [[ "$current_version_confirmed" == "true" ]]; then
             local sizes_raw
             sizes_raw=$(get_ghcr_sizes "oorabona/$container" 2>/dev/null) || true
             if [[ -n "$sizes_raw" ]]; then
@@ -1641,16 +1645,18 @@ generate_data() {
         container_json=$(
             NAME="$container" \
             CV="$current_version" LV="$latest_version" \
+            CVC="$current_version_confirmed" \
             SC="$status_color" ST="$status_text" BS="$build_status" \
             DESC="$description" \
-            GHCR="ghcr.io/oorabona/$container:$current_version" \
-            DH="docker.io/oorabona/$container:$current_version" \
+            GHCR="$([[ "$current_version_confirmed" == "true" ]] && printf 'ghcr.io/oorabona/%s:%s' "$container" "$current_version")" \
+            DH="$([[ "$current_version_confirmed" == "true" ]] && printf 'docker.io/oorabona/%s:%s' "$container" "$current_version")" \
             BD="$build_digest" BI="$base_image" \
             PC="$pull_count" PCF="$pull_count_formatted" SC2="$star_count" \
             SA="$sizes_amd64" SR="$sizes_arm64" \
             yq -n -o json '
                 .name = strenv(NAME) |
                 .current_version = strenv(CV) | .latest_version = strenv(LV) |
+                .current_version_confirmed = (strenv(CVC) == "true") |
                 .status_color = strenv(SC) | .status_text = strenv(ST) | .build_status = strenv(BS) |
                 .description = strenv(DESC) |
                 .ghcr_image = strenv(GHCR) | .dockerhub_image = strenv(DH) |
@@ -1768,7 +1774,7 @@ generate_data() {
         local container_dir="./$container"
         if has_variants "$container_dir"; then
             local variants_data
-            variants_data=$(collect_variants_json "$container" "$container_dir" "$current_version" "$base_image")
+            variants_data=$(collect_variants_json "$container" "$container_dir" "$current_version" "$base_image" "$current_version_confirmed")
             # Multi-variant: per-variant digests are in variants_data, clear container-level digest
             container_json=$(printf '%s\n%s' "$container_json" "$variants_data" | jq -s '.[0] + .[1] | .build_digest = "per-variant"')
 
@@ -1846,7 +1852,7 @@ generate_data() {
         # Container-level multi_arch_platforms: derived from GHCR manifest for the
         # container's current published tag. Used by non-variant containers and
         # versions-only containers where per-variant platforms are not emitted.
-        if [[ "$current_version" != "no-published-version" ]]; then
+        if [[ "$current_version_confirmed" == "true" ]]; then
             local container_arch_list=""
             local container_raw_sizes _t0_ghcr_cv=${EPOCHREALTIME:-}
             container_raw_sizes=$(ghcr_get_manifest_sizes "oorabona/$container" "$current_version" 2>/dev/null) || true
