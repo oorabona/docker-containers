@@ -10,7 +10,7 @@ base_image_cache:
   # only the latest tag would 404 retained builds on the GHCR path.
   # rotate-versions.sh keeps this array in sync with variants.yaml on each bump.
   - source: hashicorp/terraform
-    tags: ["1.15.9", "1.15.8", "1.15.7"]
+    tags: ["1.16.0", "1.15.9", "1.15.8"]
   - source: library/alpine
     tags: ["latest"]
   - source: library/python
