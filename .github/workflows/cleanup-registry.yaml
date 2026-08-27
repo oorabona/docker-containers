@@ -34,6 +34,15 @@ env:
   KEEP_LATEST_COUNT: 10
   KEEP_MONTHS: 6
 
+# Never cancel a started cleanup: a half-replayed deletion plan leaves no summary. The key is
+# fixed rather than partitioned by container_filter, because cleanup-old-versions sweeps every
+# discovered container and cleanup-ext-images is workflow-global.
+# A newer dispatch supersedes a PENDING run, which shows up as cancelled. The obsolete-tag prune
+# it carried is not recovered by the schedule, which runs that pruner with DRY_RUN=true.
+concurrency:
+  group: cleanup-registry
+  cancel-in-progress: false
+
 jobs:
   cleanup:
     runs-on: ubuntu-latest
@@ -88,7 +97,7 @@ jobs:
     # record. Nothing prevents a writer outside this workflow from changing it
     # between that re-read and DELETE.
     # Independent lifecycle job — not in any build/consume path.
-    # Runs weekly on schedule and on any operator dispatch. Default: dry-run.  Operator must set execute_ext_cleanup=true to delete.
+    # Runs weekly on schedule and on every workflow_dispatch, including the automatic dispatch from upstream-monitor. Default: dry-run. Operator must set execute_ext_cleanup=true to delete.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout

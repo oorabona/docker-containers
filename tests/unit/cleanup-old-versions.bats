@@ -86,6 +86,20 @@ assert_output_reports_invalid_created_at() {
     fi
 }
 
+assert_output_has_line() {
+    local expected_line="$1"
+    local output_line
+
+    while IFS= read -r output_line; do
+        if [[ "$output_line" == "$expected_line" ]]; then
+            return 0
+        fi
+    done <<< "$output"
+
+    printf 'ASSERTION FAILED: expected output line: %s\n' "$expected_line" >&2
+    return 1
+}
+
 assert_summary_reports_successful_deletion() {
     if [[ "$output" != *"Summary: kept=0, decided=1, deleted=1, delete_failures=0"* ]]; then
         echo "ASSERTION FAILED: expected summary to report the successful deletion after cleanup failure" >&2
@@ -290,6 +304,7 @@ EOF
     [[ "$(<"$GH_LOG")" == *"/versions/101"* ]]
     [[ "$(<"$GH_LOG")" != *"/versions/102"* ]]
     [[ "$(wc -l < "$GH_LOG")" -eq 1 ]]
+    assert_output_has_line "    ✓ Deleted version 101"
     [[ "$output" == *"Summary: kept=1, decided=1, deleted=1, delete_failures=0"* ]]
     [[ "$output" == *"Versions decided for deletion: 1"* ]]
     [[ "$output" == *"Versions deleted: 1"* ]]
@@ -317,6 +332,7 @@ EOF
 
     [[ "$status" -eq 0 ]]
     [[ ! -s "$GH_LOG" ]]
+    assert_output_has_line "    [DRY RUN] Would delete version 101"
     [[ "$output" == *"Summary: kept=0, decided=1, deleted=0, delete_failures=0"* ]]
     [[ "$output" == *"Versions decided for deletion: 1"* ]]
     [[ "$output" == *"Versions deleted: 0"* ]]
@@ -562,7 +578,7 @@ teardown() {
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *"gh: delete denied"* ]]
-    [[ "$output" == *"Failed to delete version 101"* ]]
+    assert_output_has_line "    ✗ Failed to delete version 101"
     [[ "$output" == *"Summary: kept=0, decided=1, deleted=0, delete_failures=1"* ]]
     [[ "$output" == *"Packages assessed: 1"* ]]
     [[ "$output" == *"Packages skipped (listing failed): 0"* ]]
