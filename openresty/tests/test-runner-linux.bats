@@ -66,8 +66,7 @@ _find_image() {
 
 setup() {
     IMAGE=$(_find_image) || return 1
-    CONTAINER_NAME="openresty-bats-smoke-$$"
-    PORT=18080
+    CONTAINER_ID=""
 
     # Nginx config with a regex location that proves PCRE2 regex matching is functional.
     # location ~ ^/re/(\d+)$  uses a PCRE2 pattern; if PCRE2 is absent nginx
@@ -96,11 +95,18 @@ http {
 NGINX
 
     # Start the container with the custom nginx config
-    docker run -d \
-        --name "$CONTAINER_NAME" \
-        -p "${PORT}:8080" \
+    CONTAINER_ID=$(docker run -d \
+        -p 127.0.0.1::8080 \
         -v "${NGINX_CONF}:/usr/local/openresty/nginx/conf/nginx.conf:ro" \
-        "$IMAGE"
+        "$IMAGE")
+
+    local port_mapping
+    port_mapping=$(docker port "$CONTAINER_ID" 8080/tcp)
+    if [[ ! "$port_mapping" =~ ^127\.0\.0\.1:[0-9]+$ ]]; then
+        printf 'ERROR: expected one 127.0.0.1:<port> mapping; docker port returned: %q\n' "$port_mapping" >&2
+        return 1
+    fi
+    PORT=${port_mapping#127.0.0.1:}
 
     # Wait up to 15 s for nginx to become ready
     local waited=0
@@ -109,14 +115,16 @@ NGINX
         waited=$((waited + 1))
         if [[ $waited -ge 15 ]]; then
             echo "ERROR: openresty container did not become ready within 15s" >&2
-            docker logs "$CONTAINER_NAME" >&2 || true
+            docker logs "$CONTAINER_ID" >&2 || true
             return 1
         fi
     done
 }
 
 teardown() {
-    docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+    if [[ -n "${CONTAINER_ID:-}" ]]; then
+        docker rm -f "$CONTAINER_ID" 2>/dev/null || true
+    fi
     rm -f "$NGINX_CONF" 2>/dev/null || true
 }
 
@@ -143,14 +151,14 @@ teardown() {
 @test "nginx binary resolves libpcre2-8.so from /usr/local/openresty/pcre2/lib" {
     # Find the nginx binary path inside the container
     local nginx_bin
-    nginx_bin=$(docker exec "$CONTAINER_NAME" sh -c \
+    nginx_bin=$(docker exec "$CONTAINER_ID" sh -c \
         'command -v nginx || echo /usr/local/openresty/nginx/sbin/nginx')
 
     # ldd is the discriminating oracle here.
     # readelf/binutils is stripped from the runtime image (apk del .build-deps),
     # so readelf is never present at runtime — ldd (from musl libc) is always available.
     local ldd_output
-    ldd_output=$(docker exec "$CONTAINER_NAME" sh -c \
+    ldd_output=$(docker exec "$CONTAINER_ID" sh -c \
         "ldd \"$nginx_bin\" 2>/dev/null || true")
 
     echo "ldd output: $ldd_output"
@@ -173,7 +181,7 @@ teardown() {
 @test "nginx -V configure arguments reference /usr/local/openresty/pcre2/ (PCRE2 linked, not PCRE1)" {
     local version_output
     # nginx -V writes to stderr
-    version_output=$(docker exec "$CONTAINER_NAME" sh -c \
+    version_output=$(docker exec "$CONTAINER_ID" sh -c \
         'nginx -V 2>&1 || /usr/local/openresty/nginx/sbin/nginx -V 2>&1')
 
     echo "nginx -V output: $version_output"

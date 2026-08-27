@@ -1044,6 +1044,26 @@ run_orphan_phase_completion_case() {
 
 }
 
+@test "cleanup workflow serializes registry cleanup runs" {
+    local workflow_path
+    workflow_path="$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml"
+
+    run yq -r '.concurrency.group' "$workflow_path"
+    [ "$status" -eq 0 ]
+    if [ "$output" != 'cleanup-registry' ]; then
+        printf 'FAIL: expected cleanup concurrency group cleanup-registry, got %s\n' "$output" >&2
+        return 1
+    fi
+
+    run yq -r '.concurrency.cancel-in-progress' "$workflow_path"
+    [ "$status" -eq 0 ]
+    if [ "$output" != 'false' ]; then
+        printf 'FAIL: expected cleanup cancel-in-progress false, got %s\n' "$output" >&2
+        return 1
+    fi
+
+}
+
 @test "workflow attempts both registry pruners and fails after either failure" {
     local workflow purge_step
     workflow=$(<"$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml")
