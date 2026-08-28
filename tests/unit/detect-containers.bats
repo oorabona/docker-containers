@@ -8,7 +8,7 @@ setup() {
 }
 
 teardown() {
-    unset BASELINE_FAILED BASELINE_VALID CONTAINER_SCOPES_INPUT GITHUB_ACTION_PATH GITHUB_OUTPUT GITHUB_WORKSPACE RUNNER_TEMP TEST_BASE_SHA TEST_HEAD_SHA TEST_CHANGED_FILES
+    unset BASELINE_FAILED BASELINE_VALID CONTAINER_SCOPES_INPUT REQUESTED_CONTAINER REBUILD_MODE FORCE_REBUILD GITHUB_ACTION_PATH GITHUB_OUTPUT GITHUB_WORKSPACE HOSTILE_VERSION RUNNER_TEMP TEST_BASE_SHA TEST_HEAD_SHA TEST_CHANGED_FILES
     teardown_temp_dir
 }
 
@@ -61,6 +61,9 @@ run_find_containers_step() {
 
     export BASELINE_FAILED="[]"
     export BASELINE_VALID="false"
+    export REQUESTED_CONTAINER=""
+    export REBUILD_MODE="none"
+    export FORCE_REBUILD="false"
     export GITHUB_ACTION_PATH="$PROJECT_ROOT/.github/actions/detect-containers"
     export GITHUB_OUTPUT="$TEST_TEMP_DIR/github-output"
     export GITHUB_WORKSPACE="$workspace"
@@ -68,6 +71,83 @@ run_find_containers_step() {
     export TEST_CHANGED_FILES="$changed_files"
 
     run bash -c 'cd "$1" || exit 1; exec bash "$2"' _ "$workspace" "$script"
+}
+
+make_version_workspace() {
+    VERSION_WORKSPACE="$TEST_TEMP_DIR/version-workspace"
+    mkdir -p "$VERSION_WORKSPACE/hostile"
+    printf 'FROM scratch\n' > "$VERSION_WORKSPACE/hostile/Dockerfile"
+    cat > "$VERSION_WORKSPACE/make" << 'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "version" && "$2" == "hostile" ]]; then
+    printf '%s\n' "$HOSTILE_VERSION"
+fi
+EOF
+    chmod +x "$VERSION_WORKSPACE/make"
+}
+
+run_compute_versions_step() {
+    local containers_json="$1"
+    local workspace="$2"
+    local script="$TEST_TEMP_DIR/compute-versions.sh"
+
+    yq -r '.runs.steps[] | select(.id == "compute-versions") | .run' \
+        "$PROJECT_ROOT/.github/actions/detect-containers/action.yaml" > "$script"
+
+    # The runner renders find-containers' output before Bash parses this body.
+    FIND_CONTAINERS_OUTPUT="$containers_json" perl -0pi -e \
+        's/\$\{\{ steps\.find-containers\.outputs\.containers \}\}/$ENV{FIND_CONTAINERS_OUTPUT}/g' \
+        "$script"
+
+    COMPUTE_VERSIONS_OUTPUT="$TEST_TEMP_DIR/compute-versions-output"
+    : > "$COMPUTE_VERSIONS_OUTPUT"
+    GITHUB_OUTPUT="$COMPUTE_VERSIONS_OUTPUT" \
+        run bash -c 'cd "$1" || exit 1; exec bash "$2"' _ "$workspace" "$script"
+}
+
+# Drive compute-versions' actual GITHUB_OUTPUT into the real expand-variants
+# body. This is the same multi-hop path used by the workflow matrix: the
+# version is produced as a step output, bound as an environment value, then
+# expanded.
+run_expand_variants_step() {
+    local versions_json="$1"
+    local workspace="$2"
+    local containers_json="$3"
+    local script="$TEST_TEMP_DIR/expand-variants.sh"
+
+    yq -r '.runs.steps[] | select(.id == "expand-variants") | .run' \
+        "$PROJECT_ROOT/.github/actions/detect-containers/action.yaml" > "$script"
+
+    EXPAND_VARIANTS_OUTPUT="$TEST_TEMP_DIR/expand-variants-output"
+    : > "$EXPAND_VARIANTS_OUTPUT"
+    GITHUB_ACTION_PATH="$PROJECT_ROOT/.github/actions/detect-containers" \
+        GITHUB_OUTPUT="$EXPAND_VARIANTS_OUTPUT" \
+        SCOPE_VERSIONS="" \
+        SCOPE_FLAVORS="" \
+        BUILD_SCOPE="" \
+        EXPAND_RETAINED_MAP="{}" \
+        CONTAINER_SCOPES="" \
+        CONTAINERS_JSON="$containers_json" \
+        VERSIONS_JSON="$versions_json" \
+        run bash -c 'cd "$1" || exit 1; exec bash "$2"' _ "$workspace" "$script"
+}
+
+output_value_from() {
+    local output_file="$1"
+    local name="$2"
+    sed -n "s/^${name}=//p" "$output_file" | tail -1
+}
+
+assert_byte_for_byte() {
+    local expected="$1"
+    local actual="$2"
+    local assertion="$3"
+
+    if [[ "$actual" != "$expected" ]]; then
+        printf 'ASSERTION FAILED: %s\nExpected: %s\nActual: %s\n' \
+            "$assertion" "$expected" "$actual" >&2
+        return 1
+    fi
 }
 
 output_value() {
@@ -99,6 +179,29 @@ assert_extension_scope() {
 
 @test "changed extension recipe emits hypopg scope and forces compilation" {
     assert_extension_scope "postgres/extensions/build/hypopg.Dockerfile" "hypopg" "true"
+}
+
+@test "hostile upstream version remains data through compute output and matrix expansion" {
+    local hostile_version versions_json builds_json matrix_version
+    hostile_version='-v1'\''$(touch upstream-expression-executed)'\''`touch upstream-backtick-executed`; && | $IFS'
+    export HOSTILE_VERSION="$hostile_version"
+
+    make_version_workspace
+    run_compute_versions_step '["hostile"]' "$VERSION_WORKSPACE"
+
+    [ "$status" -eq 0 ]
+    versions_json=$(output_value_from "$COMPUTE_VERSIONS_OUTPUT" versions)
+
+    run_expand_variants_step "$versions_json" "$VERSION_WORKSPACE" '["hostile"]'
+
+    [ "$status" -eq 0 ]
+    builds_json=$(output_value_from "$EXPAND_VARIANTS_OUTPUT" builds)
+    matrix_version=$(jq -er '.[] | select(.container == "hostile") | .version' <<< "$builds_json")
+    assert_byte_for_byte "$hostile_version" "$matrix_version" "matrix entry version must preserve the hostile upstream value byte-for-byte"
+    [ ! -e "$VERSION_WORKSPACE/upstream-expression-executed" ]
+    [ ! -e "$VERSION_WORKSPACE/upstream-backtick-executed" ]
+    [ ! -e "$PROJECT_ROOT/upstream-expression-executed" ]
+    [ ! -e "$PROJECT_ROOT/upstream-backtick-executed" ]
 }
 
 @test "changed declared extension version scopes and forces that extension" {

@@ -44,6 +44,7 @@ runs:
         # Consumed by version.sh's GitHub helpers (latest-github-release/tag)
         # only when non-empty; empty = unauthenticated (previous behaviour).
         GITHUB_TOKEN: ${{ inputs.github_token }}
+        REQUESTED_CONTAINER: ${{ inputs.container }}
       run: |
         set -e
         
@@ -53,9 +54,9 @@ runs:
         echo "🔍 Using make script to check for upstream updates..."
         
         # Use make script to get version information
-        if [ -n "${{ inputs.container }}" ]; then
-          echo "🎯 Checking specific container: ${{ inputs.container }}"
-          version_info=$(./make check-updates "${{ inputs.container }}")
+        if [ -n "$REQUESTED_CONTAINER" ]; then
+          echo "🎯 Checking specific container: $REQUESTED_CONTAINER"
+          version_info=$(./make check-updates "$REQUESTED_CONTAINER")
         else
           echo "🔍 Checking all containers..."
           version_info=$(./make check-updates)

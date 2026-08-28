@@ -356,8 +356,11 @@ jobs:
 
       - name: Resolve loaded e2e image ID
         shell: bash
+        env:
+          E2E_CONTAINER: ${{ matrix.build.container }}
+          E2E_TAG: ${{ matrix.build.tag }}
         run: |
-          image_id=$(timeout -k 2 10 docker image inspect --format '{{.Id}}' "ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}:${{ matrix.build.tag }}")
+          image_id=$(timeout -k 2 10 docker image inspect --format '{{.Id}}' "ghcr.io/${{ github.repository_owner }}/$E2E_CONTAINER:$E2E_TAG")
           test -n "$image_id"
           echo "E2E_IMAGE_ID=$image_id" >> "$GITHUB_ENV"
 
@@ -1263,10 +1266,14 @@ jobs:
       - name: Handle build failure
         if: steps.build.outcome == 'failure'
         shell: bash
+        env:
+          BUILD_CONTAINER: ${{ matrix.build.container }}
+          BUILD_VARIANT: ${{ matrix.build.variant }}
+          BUILD_TAG: ${{ matrix.build.tag }}
         run: |
-          container="${{ matrix.build.container }}"
-          variant="${{ matrix.build.variant }}"
-          tag="${{ matrix.build.tag }}"
+          container="$BUILD_CONTAINER"
+          variant="$BUILD_VARIANT"
+          tag="$BUILD_TAG"
           display_name="$container${variant:+:$variant}"
 
           echo "❌ Build failed for $display_name"
@@ -1292,10 +1299,14 @@ jobs:
       - name: Report successful build
         if: steps.build.outcome == 'success'
         shell: bash
+        env:
+          BUILD_CONTAINER: ${{ matrix.build.container }}
+          BUILD_VARIANT: ${{ matrix.build.variant }}
+          BUILD_TAG: ${{ matrix.build.tag }}
         run: |
-          container="${{ matrix.build.container }}"
-          variant="${{ matrix.build.variant }}"
-          tag="${{ matrix.build.tag }}"
+          container="$BUILD_CONTAINER"
+          variant="$BUILD_VARIANT"
+          tag="$BUILD_TAG"
           display_name="$container${variant:+:$variant}"
 
           echo "✅ Build succeeded for $display_name"
@@ -1315,18 +1326,22 @@ jobs:
           # did not exit 1). failure/cancelled → fail-closed "failure" record.
           # Whole-run artifact absence is handled by the checkpoint's find/mapfile guard.
           JOB_STATUS: ${{ job.status }}
+          BUILD_CONTAINER: ${{ matrix.build.container }}
+          BUILD_VARIANT: ${{ matrix.build.variant }}
+          BUILD_TAG: ${{ matrix.build.tag }}
+          BUILD_ARCH: ${{ matrix.arch }}
         run: |
           result="failure"
           [[ "$JOB_STATUS" == "success" ]] && result="success"
           mkdir -p .build-lineage
           jq -cn \
-            --arg c "${{ matrix.build.container }}" \
-            --arg v "${{ matrix.build.variant }}" \
-            --arg t "${{ matrix.build.tag }}" \
-            --arg a "${{ matrix.arch }}" \
+            --arg c "$BUILD_CONTAINER" \
+            --arg v "$BUILD_VARIANT" \
+            --arg t "$BUILD_TAG" \
+            --arg a "$BUILD_ARCH" \
             --arg r "$result" \
             '{container:$c, variant:$v, tag:$t, arch:$a, result:$r}' \
-            > ".build-lineage/build-result-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}.json" || true
+            > ".build-lineage/build-result-$BUILD_CONTAINER-$BUILD_TAG-$BUILD_ARCH.json" || true
 
       - name: Upload build-result artifact
         id: upload_build_result
@@ -1389,17 +1404,24 @@ jobs:
       - name: Generate build summary
         if: always()
         shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          BUILD_CONTAINER: ${{ matrix.build.container }}
+          BUILD_VARIANT: ${{ matrix.build.variant }}
+          BUILD_TAG: ${{ matrix.build.tag }}
+          NEEDS_BUILD: ${{ steps.build.outputs.built }}
+          CURRENT_TAG: ${{ steps.build.outputs.tag }}
         run: |
-          container="${{ matrix.build.container }}"
-          variant="${{ matrix.build.variant }}"
-          tag="${{ matrix.build.tag }}"
-          needs_build="${{ steps.build.outputs.built }}"
-          current_tag="${{ steps.build.outputs.tag }}"
+          container="$BUILD_CONTAINER"
+          variant="$BUILD_VARIANT"
+          tag="$BUILD_TAG"
+          needs_build="$NEEDS_BUILD"
+          current_tag="$CURRENT_TAG"
           display_name="$container${variant:+:$variant}"
 
           # Construct image names to avoid secret masking
           github_username="${{ github.repository_owner }}"
-          dockerhub_username="${{ secrets.DOCKERHUB_USERNAME }}"
+          dockerhub_username="$DOCKERHUB_USERNAME"
 
           echo "## 📦 Build Summary for \`$display_name\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -1778,18 +1800,21 @@ jobs:
           # all completed without error. Upstream failure → fail-closed "failure" record.
           # Whole-run artifact absence is handled by the checkpoint's find/mapfile guard.
           JOB_STATUS: ${{ job.status }}
+          BUILD_CONTAINER: ${{ matrix.build.container }}
+          BUILD_VARIANT: ${{ matrix.build.variant }}
+          BUILD_TAG: ${{ matrix.build.tag }}
         run: |
           result="failure"
           [[ "$JOB_STATUS" == "success" ]] && result="success"
           mkdir -p .build-lineage
           jq -cn \
-            --arg c "${{ matrix.build.container }}" \
-            --arg v "${{ matrix.build.variant }}" \
-            --arg t "${{ matrix.build.tag }}" \
+            --arg c "$BUILD_CONTAINER" \
+            --arg v "$BUILD_VARIANT" \
+            --arg t "$BUILD_TAG" \
             --arg a "manifest" \
             --arg r "$result" \
             '{container:$c, variant:$v, tag:$t, arch:$a, result:$r}' \
-            > ".build-lineage/build-result-manifest-${{ matrix.build.container }}-${{ matrix.build.tag }}.json" || true
+            > ".build-lineage/build-result-manifest-$BUILD_CONTAINER-$BUILD_TAG.json" || true
 
       - name: Upload build-result artifact (manifest)
         id: upload_build_result_manifest
@@ -2673,9 +2698,12 @@ jobs:
         timeout-minutes: 10
         continue-on-error: true
         shell: bash
+        env:
+          BUILD_CONTAINER: ${{ matrix.build.container }}
+          BUILD_TAG: ${{ matrix.build.tag }}
         run: |
           set -euo pipefail
-          container="${{ matrix.build.container }}"
+          container="$BUILD_CONTAINER"
           if [[ ! -f "${container}/tests/test-runner-linux.bats" ]]; then
             echo "::notice::No Linux bats for ${container}; skipping"
             exit 0
@@ -2684,7 +2712,7 @@ jobs:
           # No eager pull: openresty's test `docker run`s it (auto-pull on demand);
           # github-runner's tests are pure unit tests that never touch the image, so
           # eagerly pulling its multi-GB image here would only waste time + risk hangs.
-          export OPENRESTY_IMAGE="ghcr.io/${{ github.repository_owner }}/${container}:${{ matrix.build.tag }}-amd64"
+          export OPENRESTY_IMAGE="ghcr.io/${{ github.repository_owner }}/${container}:$BUILD_TAG-amd64"
           bats "${container}/tests/test-runner-linux.bats"
 
   # ---------------------------------------------------------------------------

@@ -13,13 +13,6 @@ setup() {
     cp "$ORIG_DIR/.github/actions/check-upstream-versions/action.yaml" \
         .github/actions/check-upstream-versions/action.yaml
 
-    # GitHub evaluates inputs before Bash sees the run block. In this hermetic
-    # invocation, replace the optional container expression with an empty value
-    # and execute the composite action's otherwise-unmodified script.
-    yq -r '.runs.steps[] | select(.id == "check-versions") | .run' \
-        .github/actions/check-upstream-versions/action.yaml |
-        sed 's#${{ inputs.container }}##g' > run-check-versions.sh
-    chmod +x run-check-versions.sh
 }
 
 teardown() {
@@ -29,22 +22,60 @@ teardown() {
 
 write_make_result() {
     local result="$1"
+    MAKE_RESULT="$result"
+    export MAKE_RESULT
     cat > make <<EOF
 #!/usr/bin/env bash
 if [[ "\$1" == "check-updates" ]]; then
-  printf '%s\\n' '$result'
+  if [[ -n "\${EXPECTED_CONTAINER:-}" && "\${2:-}" != "\$EXPECTED_CONTAINER" ]]; then
+    printf 'unexpected requested container: %s\\n' "\${2:-}" >&2
+    exit 1
+  fi
+  printf '%s\\n' "\$MAKE_RESULT"
 fi
 EOF
     chmod +x make
 }
 
 run_action() {
+    local requested_container="${1:-}"
     local output_file="$TEST_DIR/github-output"
+    yq -r '.runs.steps[] | select(.id == "check-versions") | .run' \
+        .github/actions/check-upstream-versions/action.yaml > run-check-versions.sh
+    chmod +x run-check-versions.sh
     : > "$output_file"
-    GITHUB_OUTPUT="$output_file" bash ./run-check-versions.sh
+    REQUESTED_CONTAINER="$requested_container" \
+        EXPECTED_CONTAINER="$requested_container" \
+        GITHUB_OUTPUT="$output_file" bash ./run-check-versions.sh
     local action_status=$?
     cat "$output_file"
     return "$action_status"
+}
+
+version_info_output() {
+    sed -n '/^version_info<<EOF$/,/^EOF$/ { /^version_info<<EOF$/d; /^EOF$/d; p; }' \
+        "$TEST_DIR/github-output"
+}
+
+assert_byte_for_byte() {
+    local expected="$1"
+    local actual="$2"
+    local assertion="$3"
+
+    if [[ "$actual" != "$expected" ]]; then
+        printf 'ASSERTION FAILED: %s\nExpected: %s\nActual: %s\n' \
+            "$assertion" "$expected" "$actual" >&2
+        return 1
+    fi
+}
+
+@test "the check-versions step binds REQUESTED_CONTAINER from its container input" {
+    local container_binding
+    container_binding=$(yq -r '.runs.steps[] | select(.id == "check-versions") | .env.REQUESTED_CONTAINER // ""' \
+        .github/actions/check-upstream-versions/action.yaml)
+
+    assert_byte_for_byte '${{ inputs.container }}' "$container_binding" \
+        "REQUESTED_CONTAINER must bind from the container input"
 }
 
 @test "composite action excludes declared non-actionable updates" {
@@ -83,6 +114,26 @@ run_action() {
     [ "$status" -eq 0 ]
     [[ "$output" == *'containers_with_updates=["terraform"]'* ]]
     [[ "$output" == *"update_count=1"* ]]
+}
+
+@test "composite action treats hostile container and upstream version as data" {
+    local hostile_container hostile_version result
+    hostile_container='victim'\''$(touch container-expression-executed)'\''`touch container-backtick-executed`; && | $IFS'
+    hostile_version='-v1'\''$(touch upstream-expression-executed)'\''`touch upstream-backtick-executed`; && | $IFS'
+    result=$(jq -cn \
+        --arg container "$hostile_container" \
+        --arg version "$hostile_version" \
+        '[{container: $container, current_version: "1.0.0", latest_version: $version, update_available: true, actionable: true, registry_lookup: "matched", status: "update-available"}]')
+    write_make_result "$result"
+
+    run run_action "$hostile_container"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"update_count=1"* ]]
+    assert_byte_for_byte "$result" "$(version_info_output)" "version_info must preserve the hostile record byte-for-byte"
+    [ ! -e "$TEST_DIR/container-expression-executed" ]
+    [ ! -e "$TEST_DIR/container-backtick-executed" ]
+    [ ! -e "$TEST_DIR/upstream-expression-executed" ]
+    [ ! -e "$TEST_DIR/upstream-backtick-executed" ]
 }
 
 @test "composite action excludes an entry whose registry lookup failed" {

@@ -78,16 +78,17 @@ jobs:
           find . -name "version.sh" -exec chmod +x {} \;
 
       - name: Validate version scripts
+        env:
+          REQUESTED_CONTAINER: ${{ github.event.inputs.container }}
+          VERBOSE: ${{ github.event.inputs.verbose == 'true' && '1' || '0' }}
         run: |
-          if [[ -n "${{ github.event.inputs.container }}" ]]; then
-            echo "Validating specific container: ${{ github.event.inputs.container }}"
-            ./validate-version-scripts.sh "${{ github.event.inputs.container }}"
+          if [[ -n "$REQUESTED_CONTAINER" ]]; then
+            echo "Validating specific container: $REQUESTED_CONTAINER"
+            ./validate-version-scripts.sh "$REQUESTED_CONTAINER"
           else
             echo "Validating all version scripts"
             ./validate-version-scripts.sh
           fi
-        env:
-          VERBOSE: ${{ github.event.inputs.verbose == 'true' && '1' || '0' }}
 
       - name: Detect containers for testing
         id: detect-containers

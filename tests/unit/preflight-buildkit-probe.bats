@@ -44,9 +44,9 @@ _step_script() {
 }
 
 # Renders the probe script the way the runner does: the step's body is a
-# composite-action input, and the image ref reaches it by expression
-# substitution. A renamed expression leaves `${{` in the body and bash rejects
-# it, so this fails loudly rather than testing a script nobody runs.
+# composite-action input, and the image ref reaches it through the step's
+# environment. The docker stub below checks the complete invocation, so a
+# missing or renamed environment binding cannot turn into a probe of `""`.
 run_probe() {
     local stub_stderr="$1"
     local stub_rc="$2"
@@ -55,19 +55,31 @@ run_probe() {
     digest=$(printf '0%.0s' {1..64})
     image="ghcr.io/owner/buildkit@sha256:$digest"
 
-    _step_script probe | sed "s|\${{ inputs.image }}|$image|g" > "$script"
+    _step_script probe > "$script"
     [ -s "$script" ] || fail "no script extracted for the probe step"
 
     mkdir -p "$TEST_TEMP_DIR/bin"
-    cat > "$TEST_TEMP_DIR/bin/docker" <<STUB
+    cat > "$TEST_TEMP_DIR/bin/docker" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$stub_stderr" >&2
+if [[ "$#" -ne 3 || "$1" != "manifest" || "$2" != "inspect" || "$3" != "$EXPECTED_IMAGE" ]]; then
+    printf 'unexpected docker invocation:' >&2
+    printf ' <%s>' "$@" >&2
+    printf '\nexpected: docker manifest inspect <%s>\n' "$EXPECTED_IMAGE" >&2
+    exit 64
+fi
+printf '%s\n' "$STUB_STDERR" >&2
 printf 'a manifest nobody should see in the log\n'
-exit $stub_rc
+exit "$STUB_RC"
 STUB
     chmod +x "$TEST_TEMP_DIR/bin/docker"
 
-    PATH="$TEST_TEMP_DIR/bin:$PATH" run bash -e -o pipefail "$script"
+    run env \
+        IMAGE="$image" \
+        EXPECTED_IMAGE="$image" \
+        STUB_STDERR="$stub_stderr" \
+        STUB_RC="$stub_rc" \
+        PATH="$TEST_TEMP_DIR/bin:$PATH" \
+        bash -e -o pipefail "$script"
 }
 
 # The diagnosis step needs no docker: it runs only after the probe has failed,
@@ -161,6 +173,14 @@ run_diagnosis() {
 # ---------------------------------------------------------------------------
 # The wiring between the two, which no execution of either script can show.
 # ---------------------------------------------------------------------------
+
+@test "the probe binds IMAGE from its image input" {
+    local image_binding
+    image_binding=$(yq -r '.runs.steps[] | select(.id == "probe") | .env.IMAGE // ""' \
+        "$PROJECT_ROOT/.github/actions/preflight-buildkit/action.yaml")
+
+    [ "$image_binding" = '${{ inputs.image }}' ]
+}
 
 @test "the diagnosis runs only when this probe is what failed" {
     local guard

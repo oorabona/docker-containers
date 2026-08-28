@@ -37,12 +37,14 @@ runs:
     - name: Verify BuildKit image is present in GHCR (retry on transient)
       id: probe
       uses: ./.github/actions/retry-run
+      env:
+        IMAGE: ${{ inputs.image }}
       with:
         max-attempts: '4'
         delay: '5'
         timeout: '45s'
         run: |
-          if docker manifest inspect "${{ inputs.image }}" >/dev/null; then
+          if docker manifest inspect "$IMAGE" >/dev/null; then
             exit 0
           fi
           exit 1
