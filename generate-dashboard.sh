@@ -308,38 +308,99 @@ get_container_versions() {
     local container=$1
 
     pushd "$container" >/dev/null 2>&1 || {
-        echo "unknown|unknown|secondary|Unknown Status"
-        return 1
+        jq -nc '{
+            current_version: "", latest_version: "", status_color: "secondary",
+            status_text: "Unknown Status", current_version_confirmed: false,
+            upstream_lookup: "failed", comparison_concluded: false,
+            update_available: false, unpublished_release: false
+        }'
+        # The caller runs under set -e. The structured failed-lookup record is
+        # the handling for this error, so do not discard it by returning a
+        # failing status from the command substitution.
+        return 0
     }
 
     local current_version latest_version status_color status_text current_version_confirmed="false"
+    local publication_lookup publication_rc
+    local upstream_lookup="failed" upstream_output comparison_concluded="false"
+    local update_available="false" unpublished_release="false"
 
     local _t0_skopeo=${EPOCHREALTIME:-}
-    current_version=$(get_current_published_version "oorabona/$container")
+    if current_version=$(get_current_published_version "oorabona/$container"); then
+        publication_lookup="matched"
+    else
+        publication_rc=$?
+        current_version=""
+        case "$publication_rc" in
+            1) publication_lookup="no-match" ;;
+            *) publication_lookup="failed" ;;
+        esac
+    fi
     log_latency "skopeo-list-tags oorabona/$container" "$_t0_skopeo" 60
-    if [[ -n "$current_version" ]]; then
+    if [[ -n "$current_version" && "$current_version" != "unknown" ]]; then
         current_version_confirmed="true"
     fi
 
-    latest_version=$(timeout 30 ./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "unknown")
+    # Capture version.sh before selecting its display line.  A resolver that
+    # writes a version and then fails has not established a usable candidate.
+    if upstream_output=$(timeout 30 ./version.sh 2>/dev/null); then
+        if latest_version=$(version_lookup_candidate "$upstream_output"); then
+            upstream_lookup="matched"
+        else
+            local upstream_rc=$?
+            latest_version=""
+            case "$upstream_rc" in
+                1) upstream_lookup="no-match" ;;
+                *) upstream_lookup="failed" ;;
+            esac
+        fi
+    else
+        latest_version=""
+    fi
 
     popd >/dev/null 2>&1
 
     if [[ "$current_version_confirmed" != "true" ]]; then
         status_color="warning"
         status_text="Publication information unavailable"
-    elif [[ "$current_version" == "unknown" || "$latest_version" == "unknown" ]]; then
+        if [[ "$publication_lookup" == "no-match" && "$upstream_lookup" == "matched" ]]; then
+            unpublished_release="true"
+        fi
+    elif [[ "$upstream_lookup" != "matched" ]]; then
         status_color="secondary"
-        status_text="Unknown Status"
+        status_text="Upstream version unavailable"
     elif [[ "$current_version" == "$latest_version" ]]; then
         status_color="green"
         status_text="Up to Date"
+        comparison_concluded="true"
     else
         status_color="warning"
         status_text="Update Available"
+        comparison_concluded="true"
+        update_available="true"
     fi
 
-    echo "${current_version}|${latest_version}|${status_color}|${status_text}|${current_version_confirmed}"
+    jq -nc \
+        --arg current_version "$current_version" \
+        --arg latest_version "$latest_version" \
+        --arg status_color "$status_color" \
+        --arg status_text "$status_text" \
+        --arg upstream_lookup "$upstream_lookup" \
+        --argjson current_version_confirmed "$current_version_confirmed" \
+        --argjson comparison_concluded "$comparison_concluded" \
+        --argjson update_available "$update_available" \
+        --argjson unpublished_release "$unpublished_release" \
+        '{
+            current_version: $current_version,
+            latest_version: $latest_version,
+            status_color: $status_color,
+            status_text: $status_text,
+            current_version_confirmed: $current_version_confirmed,
+            upstream_lookup: $upstream_lookup,
+            comparison_concluded: $comparison_concluded,
+            update_available: $update_available,
+            unpublished_release: $unpublished_release
+        }'
 }
 
 # Get container description from README
@@ -883,6 +944,7 @@ collect_variant_json() {
         {
             name: $name, tag: $tag, description: $desc,
             is_default: $is_default,
+            reference_confirmed: (($multi_arch_digests.index_digest // "") | length > 0),
             size_amd64: $size_amd64, size_arm64: $size_arm64,
             build_digest: $lineage.build_digest,
             base_image: $lineage.base_image,
@@ -1451,11 +1513,11 @@ fetch_recent_activity() {
 }
 
 # Write dashboard stats YAML file
-# Args: total up_to_date updates_available build_success build_total build_success_rate activity_yaml
+# Args: total up_to_date updates_available unpublished_releases build_success build_total build_success_rate activity_yaml
 write_stats_file() {
-    local total="$1" up_to_date="$2" updates_available="$3"
-    local build_success="$4" build_total="$5" build_success_rate="$6"
-    local activity_yaml="$7"
+    local total="$1" up_to_date="$2" updates_available="$3" unpublished_releases="$4"
+    local build_success="$5" build_total="$6" build_success_rate="$7"
+    local activity_yaml="$8"
 
     cat > "$STATS_FILE" << EOF
 # Auto-generated dashboard statistics
@@ -1464,6 +1526,7 @@ write_stats_file() {
 total_containers: $total
 up_to_date: $up_to_date
 updates_available: $updates_available
+unpublished_releases: $unpublished_releases
 build_success_rate: $build_success_rate
 build_success_count: $build_success
 build_total_count: $build_total
@@ -1567,7 +1630,7 @@ generate_data() {
     populate_container_build_status_cache
     load_dockerhub_pull_trends >/dev/null
 
-    local total=0 up_to_date=0 updates_available=0
+    local total=0 up_to_date=0 updates_available=0 unpublished_releases=0
     local all_containers_json="[]"
 
     # Prepare containers collection directory
@@ -1591,9 +1654,17 @@ generate_data() {
         local version_info
         version_info=$(get_container_versions "$container")
 
-        local current_version_confirmed
-        IFS='|' read -r current_version latest_version status_color status_text current_version_confirmed <<< "$version_info"
-        [[ "$current_version_confirmed" == "true" ]] || current_version_confirmed="false"
+        local current_version latest_version status_color status_text current_version_confirmed
+        local upstream_lookup comparison_concluded update_available unpublished_release
+        current_version=$(jq -r '.current_version // ""' <<< "$version_info")
+        latest_version=$(jq -r '.latest_version // ""' <<< "$version_info")
+        status_color=$(jq -r '.status_color // "secondary"' <<< "$version_info")
+        status_text=$(jq -r '.status_text // "Unknown Status"' <<< "$version_info")
+        current_version_confirmed=$(jq -r '.current_version_confirmed == true' <<< "$version_info")
+        upstream_lookup=$(jq -r '.upstream_lookup // "failed"' <<< "$version_info")
+        comparison_concluded=$(jq -r '.comparison_concluded == true' <<< "$version_info")
+        update_available=$(jq -r '.update_available == true' <<< "$version_info")
+        unpublished_release=$(jq -r '.unpublished_release == true' <<< "$version_info")
 
         local description
         description=$(get_container_description "$container")
@@ -1612,10 +1683,9 @@ generate_data() {
         fi
 
         total=$((total + 1))
-        case "$status_color" in
-            "green") up_to_date=$((up_to_date + 1)) ;;
-            "warning") updates_available=$((updates_available + 1)) ;;
-        esac
+        [[ "$comparison_concluded" == "true" && "$status_color" == "green" ]] && up_to_date=$((up_to_date + 1))
+        [[ "$update_available" == "true" ]] && updates_available=$((updates_available + 1))
+        [[ "$unpublished_release" == "true" ]] && unpublished_releases=$((unpublished_releases + 1))
 
         # Get Docker Hub stats (pulls and stars)
         local dockerhub_stats pull_count pull_count_formatted star_count pull_trend_json
@@ -1641,15 +1711,19 @@ generate_data() {
         build_digest=$(get_build_lineage_field "$container" "build_digest")
         base_image=$(get_build_lineage_field "$container" "base_image_ref")
 
+        # The GHCR lookup above confirms this exact default reference. No
+        # equivalent per-reference Docker Hub evidence is collected here, so
+        # do not manufacture a mirror command from a naming convention.
         local container_json
         container_json=$(
             NAME="$container" \
             CV="$current_version" LV="$latest_version" \
             CVC="$current_version_confirmed" \
+            UL="$upstream_lookup" CC="$comparison_concluded" UA="$update_available" UR="$unpublished_release" \
             SC="$status_color" ST="$status_text" BS="$build_status" \
             DESC="$description" \
             GHCR="$([[ "$current_version_confirmed" == "true" ]] && printf 'ghcr.io/oorabona/%s:%s' "$container" "$current_version")" \
-            DH="$([[ "$current_version_confirmed" == "true" ]] && printf 'docker.io/oorabona/%s:%s' "$container" "$current_version")" \
+            DH="" \
             BD="$build_digest" BI="$base_image" \
             PC="$pull_count" PCF="$pull_count_formatted" SC2="$star_count" \
             SA="$sizes_amd64" SR="$sizes_arm64" \
@@ -1657,6 +1731,8 @@ generate_data() {
                 .name = strenv(NAME) |
                 .current_version = strenv(CV) | .latest_version = strenv(LV) |
                 .current_version_confirmed = (strenv(CVC) == "true") |
+                .upstream_lookup = strenv(UL) | .comparison_concluded = (strenv(CC) == "true") |
+                .update_available = (strenv(UA) == "true") | .unpublished_release = (strenv(UR) == "true") |
                 .status_color = strenv(SC) | .status_text = strenv(ST) | .build_status = strenv(BS) |
                 .description = strenv(DESC) |
                 .ghcr_image = strenv(GHCR) | .dockerhub_image = strenv(DH) |
@@ -1905,7 +1981,7 @@ generate_data() {
     activity_yaml=$(fetch_recent_activity)
 
     # Write stats file
-    write_stats_file "$total" "$up_to_date" "$updates_available" \
+    write_stats_file "$total" "$up_to_date" "$updates_available" "$unpublished_releases" \
         "$build_success" "$build_total" "$build_success_rate" "$activity_yaml"
 
     log_info "Generated $DATA_FILE with $total containers"

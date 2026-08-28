@@ -10,6 +10,7 @@ setup() {
     source "$ORIG_DIR/helpers/logging.sh" 2>/dev/null || true
     source "$ORIG_DIR/helpers/variant-utils.sh" 2>/dev/null || true
     source "$ORIG_DIR/generate-dashboard.sh" 2>/dev/null || true
+    source "$ORIG_DIR/helpers/version-utils.sh"
     eval "$(declare -f get_container_versions | sed '1s/get_container_versions/_real_get_container_versions/')"
     _SOURCED_TRIVY_CACHE="${TRIVY_CACHE_FILE:-}"
     if [[ -n "$_saved_exit_trap" ]]; then
@@ -28,7 +29,7 @@ setup() {
     TRIVY_CACHE_FILE=$(mktemp)
     export DATA_FILE CONTAINERS_DIR STATS_FILE TRIVY_CACHE_FILE
 
-    get_container_versions()             { echo "1.0.0|1.0.0|green|Up to date|true"; }
+    get_container_versions()             { jq -nc '{current_version:"1.0.0", latest_version:"1.0.0", status_color:"green", status_text:"Up to date", current_version_confirmed:true, upstream_lookup:"matched", comparison_concluded:true, update_available:false, unpublished_release:false}'; }
     get_container_description()          { echo "Alpha test container"; }
     get_container_build_status()         { echo "success"; }
     populate_container_build_status_cache() { :; }
@@ -125,16 +126,25 @@ capture_container_page() {
     }
 }
 
-@test "dashboard: unconfirmed current version carries explicit absence and no image references" {
+@test "dashboard: a concluded no-match current version marks an unpublished release" {
     make_fixture_container "unconfirmed"
 
-    get_current_published_version() { echo ""; }
+    get_current_published_version() { return 1; }
     run _real_get_container_versions "unconfirmed"
     [ "$status" -eq 0 ]
-    [[ "$(tail -n1 <<< "$output")" == "|1.0.0|warning|Publication information unavailable|false" ]]
+    # get_container_versions records an optional latency line before its JSON
+    # payload; parse the structured record, not the presentation telemetry.
+    echo "$output" | sed -n '/^{/,$p' | jq -e '
+        .current_version == "" and .latest_version == "1.0.0" and
+        .status_color == "warning" and
+        .status_text == "Publication information unavailable" and
+        .current_version_confirmed == false and
+        .comparison_concluded == false and .update_available == false and
+        .unpublished_release == true
+    ' >/dev/null
 
     capture_container_page
-    get_container_versions() { echo "|9.9.9|warning|Publication information unavailable|false"; }
+    get_container_versions() { jq -nc '{current_version:"", latest_version:"9.9.9", status_color:"warning", status_text:"Publication information unavailable", current_version_confirmed:false, upstream_lookup:"matched", comparison_concluded:false, update_available:false, unpublished_release:true}'; }
 
     run generate_data
     [ "$status" -eq 0 ]
@@ -150,16 +160,367 @@ capture_container_page() {
         .dockerhub_image == ""
     ' >/dev/null
 
-    # Lexical, and deliberately so: no Ruby or Jekyll runs in this environment,
-    # so nothing here renders Liquid. These two greps assert only that the
-    # templates branch on the explicit field rather than on a string sentinel.
-    # They cannot show what the built page emits — that check is fetching the
-    # deployed site, which is where a Liquid quirk that survives a source grep
-    # has bitten this repository before.
-    grep -q 'include.current_version_confirmed == true' \
-        "$ORIG_DIR/docs/site/_includes/container-card.html"
-    grep -q 'page.current_version_confirmed == true' \
-        "$ORIG_DIR/docs/site/_layouts/container-detail.html"
+}
+
+@test "dashboard: failed publication lookups never mark an unpublished release" {
+    make_fixture_container "registry-failed"
+
+    get_current_published_version() { return 3; }
+    run _real_get_container_versions "registry-failed"
+    [ "$status" -eq 0 ]
+    echo "$output" | sed -n '/^{/,$p' | jq -e '
+        .current_version == "" and .current_version_confirmed == false and
+        .unpublished_release == false and .comparison_concluded == false
+    ' >/dev/null
+}
+
+@test "dashboard: failed publication lookup with a successful upstream candidate is not an unpublished release" {
+    make_fixture_container "registry-failed-upstream"
+
+    get_current_published_version() { return 3; }
+    run _real_get_container_versions "registry-failed-upstream"
+    [ "$status" -eq 0 ]
+    echo "$output" | sed -n '/^{/,$p' | jq -e '
+        .upstream_lookup == "matched" and .unpublished_release == false
+    ' >/dev/null
+}
+
+@test "dashboard: a carriage-return registry answer is failed, not an unpublished release" {
+    make_fixture_container "registry-cr"
+    mkdir -p "$TEST_DIR/helpers"
+    cat > "$TEST_DIR/helpers/latest-docker-tag" <<'EOF'
+#!/usr/bin/env bash
+printf '1.2.3\r\n'
+EOF
+    chmod +x "$TEST_DIR/helpers/latest-docker-tag"
+
+    run _real_get_container_versions "registry-cr"
+    [ "$status" -eq 0 ]
+    local record
+    record=$(echo "$output" | sed -n '/^{/,$p')
+    [[ "$(jq -r '.current_version_confirmed' <<< "$record")" == "false" ]]
+    [[ "$(jq -r '.upstream_lookup' <<< "$record")" == "matched" ]]
+    [[ "$(jq -r '.unpublished_release' <<< "$record")" == "false" ]] || {
+        echo "carriage-return registry answer was treated as a concluded no-match" >&3
+        return 1
+    }
+    [[ "$(jq -r '.comparison_concluded' <<< "$record")" == "false" ]]
+}
+
+@test "dashboard: an inaccessible container emits its structured failed-lookup record" {
+    run _real_get_container_versions "does-not-exist"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '
+        .upstream_lookup == "failed" and .comparison_concluded == false and
+        .update_available == false and .unpublished_release == false
+    ' >/dev/null
+}
+
+@test "dashboard: live multi-arch digest confirms a lineage record that lacks digests" {
+    make_fixture_container "live-digest"
+    mkdir -p "$TEST_DIR/.build-lineage"
+    cat > "$TEST_DIR/.build-lineage/live-digest-1.0.0.json" <<'EOF'
+{"container":"live-digest","tag":"1.0.0","version":"1.0.0","build_digest":"sha256:build","base_image_ref":"alpine:3.21"}
+EOF
+    resolve_variant_lineage_file() {
+        printf '%s/.build-lineage/live-digest-%s.json\n' "$TEST_DIR" "$2"
+    }
+    ghcr_get_multi_arch_digests() {
+        printf '%s\n' '{"index_digest":"sha256:live","manifest_digest_amd64":"sha256:amd","manifest_digest_arm64":null}'
+    }
+
+    record=$(collect_variant_json "live-digest" "$TEST_DIR/live-digest" "default" \
+        "1.0.0" "1.0.0" "alpine:3.21" "true" "true")
+    echo "$record" | jq -e '
+        .reference_confirmed == true and
+        .multi_arch_index_digest == "sha256:live" and
+        .manifest_digest_amd64 == "sha256:amd"
+    ' >/dev/null
+}
+
+@test "container detail: a non-variant shows its verify command only when its reference is confirmed" {
+    run node - "$ORIG_DIR/docs/site/_layouts/container-detail.html" <<'NODE'
+const fs = require('fs');
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const marker = 'No-variant container: single Provenance block';
+const start = source.indexOf(marker);
+const end = source.indexOf('<!-- Security Scan Summary', start);
+if (start < 0 || end < 0) throw new Error('non-variant provenance block was not found');
+
+const block = source.slice(start, end);
+const guard = block.match(/\{%\-?\s*if\s+(prov_variant\.[a-z_]+)\s*==\s*true\s*\-?%\}([\s\S]*?<dt>Verify<\/dt>[\s\S]*?)\{%\-?\s*endif\s*\-?%\}/);
+if (!guard) throw new Error('non-variant verify branch was not found');
+
+function renderNonVariant(page) {
+  const field = guard[1].slice('prov_variant.'.length);
+  return page[field] === true ? guard[2] : '';
+}
+
+const confirmed = renderNonVariant({ current_version_confirmed: true, current_version: '1.2.3' });
+if (!confirmed.includes('<dt>Verify</dt>') || !confirmed.includes('gh attestation verify oci://ghcr.io/')) {
+  throw new Error('confirmed non-variant did not render its verification command');
+}
+const unconfirmed = renderNonVariant({ current_version_confirmed: false, current_version: '1.2.3' });
+if (unconfirmed.includes('<dt>Verify</dt>') || unconfirmed.includes('gh attestation verify oci://ghcr.io/')) {
+  throw new Error('unconfirmed non-variant rendered a verification command');
+}
+NODE
+    [ "$status" -eq 0 ]
+}
+
+@test "dashboard: Updates filter and count use update_available rather than warning presentation" {
+    run node - "$ORIG_DIR/docs/site/assets/js/dashboard.js" <<'NODE'
+const source = process.argv[2];
+const cards = [
+  makeCard('actual-update', ['status-warning'], 'true'),
+  makeCard('lookup-failed', ['status-warning'], 'false'),
+  makeCard('up-to-date', ['status-green'], 'false')
+];
+const counts = Object.fromEntries(['all', 'up-to-date', 'update-available', 'not-published']
+  .map(function (status) { return [status, { textContent: '' }]; }));
+const buttons = ['all', 'up-to-date', 'update-available', 'not-published'].map(makeButton);
+const grid = { querySelector: function () { return null; }, appendChild: function () {} };
+let ready;
+
+global.document = {
+  addEventListener: function (event, callback) { if (event === 'DOMContentLoaded') ready = callback; },
+  querySelectorAll: function (selector) {
+    if (selector === '.container-card') return cards;
+    if (selector === '.filter-btn') return buttons;
+    if (selector === 'input[id^="pull-"]') return [];
+    return [];
+  },
+  querySelector: function (selector) { return selector === '.cards-grid' ? grid : null; },
+  getElementById: function (id) {
+    if (id.indexOf('count-') === 0) return counts[id.slice('count-'.length)];
+    if (id === 'status-live') return { textContent: '' };
+    return null;
+  }
+};
+global.ThemeManager = { toggleTheme: function () {}, currentTheme: 'light' };
+require(source);
+if (!ready) throw new Error('dashboard did not register its initializer');
+ready();
+
+if (String(counts['update-available'].textContent) !== '1') {
+  throw new Error('Updates count included a warning card without an available update');
+}
+buttons.find(function (button) { return button.dataset.status === 'update-available'; }).click();
+if (cards[0].style.display !== '' || cards[1].style.display !== 'none' || cards[2].style.display !== 'none') {
+  throw new Error('Updates filter included a lookup that did not conclude');
+}
+
+function makeCard(name, classes, updateAvailable) {
+  return {
+    dataset: { container: name, updateAvailable: updateAvailable },
+    style: {},
+    classList: { contains: function (name) { return classes.includes(name); } },
+    querySelector: function () { return null; },
+    querySelectorAll: function () { return []; }
+  };
+}
+function makeButton(status) {
+  return {
+    dataset: { status: status },
+    classList: { toggle: function () {} },
+    setAttribute: function () {},
+    addEventListener: function (event, callback) { if (event === 'click') this.click = callback; }
+  };
+}
+NODE
+    [ "$status" -eq 0 ]
+}
+
+@test "dashboard: only an explicit resolver sentinel is a concluded upstream no-match" {
+    make_fixture_container "candidate-sentinel"
+    printf '#!/usr/bin/env bash\nprintf "unknown"\n' > "$TEST_DIR/candidate-sentinel/version.sh"
+    chmod +x "$TEST_DIR/candidate-sentinel/version.sh"
+    get_current_published_version() { printf '1.0.0\n'; }
+
+    run _real_get_container_versions "candidate-sentinel"
+    [ "$status" -eq 0 ]
+    echo "$output" | sed -n '/^{/,$p' | jq -e '
+        .upstream_lookup == "no-match" and .latest_version == "" and
+        .comparison_concluded == false
+    ' >/dev/null
+}
+
+@test "dashboard: malformed successful resolver output is a failed lookup" {
+    local resolver_output container index=0
+    for resolver_output in "   " $'1.2.3\r'; do
+        container="candidate-${index}"
+        index=$((index + 1))
+        make_fixture_container "$container"
+        printf '#!/usr/bin/env bash\nprintf %q\n' "$resolver_output" > "$TEST_DIR/$container/version.sh"
+        chmod +x "$TEST_DIR/$container/version.sh"
+        get_current_published_version() { printf '1.0.0\n'; }
+
+        run _real_get_container_versions "$container"
+        [ "$status" -eq 0 ]
+        echo "$output" | sed -n '/^{/,$p' | jq -e '
+            .upstream_lookup == "failed" and .latest_version == "" and
+            .comparison_concluded == false
+        ' >/dev/null
+    done
+}
+
+@test "dashboard: a failed lookup is not counted as an available update" {
+    make_fixture_container "indeterminate"
+    capture_container_page
+    # A failed lookup used to land in the warning presentation state.  Keep
+    # that defect state here so the retired colour-based counter would count it.
+    get_container_versions() { jq -nc '{current_version:"1.0.0", latest_version:"", status_color:"warning", status_text:"Upstream version unavailable", current_version_confirmed:true, upstream_lookup:"failed", comparison_concluded:false, update_available:false, unpublished_release:false}'; }
+
+    run generate_data
+    [ "$status" -eq 0 ]
+
+    yq -e '.updates_available == 0 and .unpublished_releases == 0' "$STATS_FILE" >/dev/null
+    jq -e '.comparison_concluded == false and .update_available == false' \
+        "$TEST_DIR/captured-indeterminate.json" >/dev/null
+}
+
+@test "dashboard: JSON version records preserve a pipe in every field" {
+    make_fixture_container "pipe-version"
+    capture_container_page
+    get_container_versions() { jq -nc '{current_version:"1|0", latest_version:"2|0", status_color:"warning", status_text:"Update | Available", current_version_confirmed:true, upstream_lookup:"matched", comparison_concluded:true, update_available:true, unpublished_release:false}'; }
+
+    run generate_data
+    [ "$status" -eq 0 ]
+
+    local record
+    record=$(cat "$TEST_DIR/captured-pipe-version.json")
+    [[ "$(jq -r '.current_version' <<< "$record")" == "1|0" ]]
+    [[ "$(jq -r '.latest_version' <<< "$record")" == "2|0" ]]
+    [[ "$(jq -r '.status_color' <<< "$record")" == "warning" ]]
+    [[ "$(jq -r '.status_text' <<< "$record")" == "Update | Available" ]]
+    [[ "$(jq -r '.current_version_confirmed' <<< "$record")" == "true" ]]
+    [[ "$(jq -r '.comparison_concluded' <<< "$record")" == "true" ]]
+    [[ "$(jq -r '.update_available' <<< "$record")" == "true" ]]
+}
+
+@test "dashboard: an unevidenced variant remains declared but carries no command evidence" {
+    make_fixture_container "cell-aware"
+    cat > "$TEST_DIR/cell-aware/variants.yaml" <<'EOF'
+versions:
+  - tag: 1.0.0
+    variants:
+      - name: default
+        suffix: ""
+        default: true
+      - name: unpublished
+        suffix: "-unpublished"
+EOF
+    mkdir -p "$TEST_DIR/.build-lineage"
+    cat > "$TEST_DIR/.build-lineage/cell-aware-1.0.0.json" <<'EOF'
+{"container":"cell-aware","tag":"1.0.0","version":"1.0.0","build_digest":"sha256:default","base_image_ref":"alpine:3.21","multi_arch_index_digest":"sha256:observed"}
+EOF
+    cat > "$TEST_DIR/.build-lineage/cell-aware-1.0.0-unpublished.json" <<'EOF'
+{"container":"cell-aware","tag":"1.0.0-unpublished","version":"1.0.0","build_digest":"sha256:built-not-mirrored","base_image_ref":"alpine:3.21"}
+EOF
+    resolve_variant_lineage_file() {
+        printf '%s/.build-lineage/cell-aware-%s.json\n' "$TEST_DIR" "$2"
+    }
+
+    # A manifest digest is recorded only after the generator has observed the
+    # exact GHCR tag. A build digest alone is not mirror evidence.
+    observed=$(collect_variant_json "cell-aware" "$TEST_DIR/cell-aware" "default" \
+        "1.0.0" "1.0.0" "alpine:3.21" "true" "true")
+    unpublished=$(collect_variant_json "cell-aware" "$TEST_DIR/cell-aware" "unpublished" \
+        "1.0.0" "1.0.0" "alpine:3.21" "true" "true")
+    [[ "$(jq -r '.reference_confirmed' <<< "$observed")" == "true" ]]
+    [[ "$(jq -r '.reference_confirmed' <<< "$unpublished")" == "false" ]]
+
+    # The card keeps both YAML declarations. Selecting the unevidenced one
+    # hides the actionable pull control instead of inventing a command.
+    run node - "$ORIG_DIR/docs/site/_includes/container-card.html" "$ORIG_DIR/docs/site/assets/js/dashboard.js" <<'NODE'
+const fs = require('fs');
+const cardTemplate = fs.readFileSync(process.argv[2], 'utf8');
+const dashboard = process.argv[3];
+const singleVersion = cardTemplate.slice(cardTemplate.indexOf('<!-- Single-version structure -->'));
+const loop = singleVersion.match(/\{%\s*for variant in include\.variants\s*%\}([\s\S]*?)\{%\s*endfor\s*%\}/);
+if (!loop) throw new Error('single-version card variant loop was not found');
+
+function renderVariant(variant) {
+  return loop[1]
+    .replace(/\{%\-?\s*if\s+variant\.reference_confirmed\s*==\s*true\s*\-?%\}([\s\S]*?)\{%\-?\s*endif\s*\-?%\}/g,
+      function (_, content) { return variant.reference_confirmed ? content : ''; })
+    .replace(/\{\{\s*variant\.tag[^}]*\}\}/g, variant.tag)
+    .replace(/\{\{\s*variant\.reference_confirmed[^}]*\}\}/g, String(variant.reference_confirmed))
+    .replace(/\{%[\s\S]*?%\}/g, '');
+}
+
+const declared = [
+  { tag: '1.0.0', reference_confirmed: true },
+  { tag: '1.0.0-unpublished', reference_confirmed: false }
+].map(renderVariant).join('');
+if (!declared.includes('data-tag="1.0.0"') || !declared.includes('data-tag="1.0.0-unpublished"')) {
+  throw new Error('an unevidenced declared variant was omitted from its card');
+}
+if (!declared.includes('data-reference-confirmed="false"')) {
+  throw new Error('card did not carry the selected variant evidence state');
+}
+
+const command = { hidden: false };
+const unavailable = { hidden: true };
+const input = { value: 'docker pull ghcr.io/example/demo:1.0.0' };
+const tag = {
+  dataset: { tag: '1.0.0-unpublished', referenceConfirmed: 'false' },
+  classList: { add: function () {}, remove: function () {} },
+  querySelector: function () { return null; },
+  setAttribute: function () {},
+  closest: function (selector) {
+    if (selector === '.variant-tag') return this;
+    if (selector === '.container-card') return card;
+    return null;
+  }
+};
+const card = {
+  dataset: { container: 'demo', updateAvailable: 'false' },
+  style: {},
+  classList: { contains: function (name) { return name === 'status-green'; } },
+  querySelectorAll: function (selector) { return selector === '.variant-tag' ? [tag] : []; },
+  querySelector: function (selector) {
+    if (selector === '.pull-section') return { dataset: { ghcrBase: 'ghcr.io/example/demo' } };
+    if (selector === '[data-pull-command]') return command;
+    if (selector === '[data-pull-unavailable]') return unavailable;
+    return null;
+  },
+  dispatchEvent: function () {}
+};
+const counts = Object.fromEntries(['all', 'up-to-date', 'update-available', 'not-published']
+  .map(function (status) { return [status, { textContent: '' }]; }));
+let ready;
+let click;
+global.CustomEvent = function (name, init) { this.type = name; this.detail = init.detail; };
+global.document = {
+  addEventListener: function (event, callback) {
+    if (event === 'DOMContentLoaded') ready = callback;
+    if (event === 'click') click = callback;
+  },
+  querySelectorAll: function (selector) {
+    if (selector === '.container-card') return [card];
+    if (selector === '.filter-btn' || selector === 'input[id^="pull-"]') return [];
+    return [];
+  },
+  querySelector: function (selector) {
+    return selector === '.cards-grid' ? { querySelector: function () { return null; } } : null;
+  },
+  getElementById: function (id) {
+    if (id === 'pull-demo') return input;
+    if (id === 'status-live') return { textContent: '' };
+    if (id.indexOf('count-') === 0) return counts[id.slice('count-'.length)];
+    return null;
+  }
+};
+global.ThemeManager = { toggleTheme: function () {}, currentTheme: 'light' };
+require(dashboard);
+ready();
+click({ target: tag });
+if (command.hidden !== true || unavailable.hidden !== false || input.value !== 'docker pull ghcr.io/example/demo:1.0.0') {
+  throw new Error('unevidenced declared variant rendered an actionable pull command');
+}
+NODE
+    [ "$status" -eq 0 ]
 }
 
 # Creates a minimal container directory that satisfies generate_data()'s

@@ -9,6 +9,7 @@ description: Real-time status monitoring for Docker containers with automated up
    total_containers=site.data.stats.total_containers
    up_to_date=site.data.stats.up_to_date
    updates_available=site.data.stats.updates_available
+   unpublished_releases=site.data.stats.unpublished_releases
    build_success_rate=site.data.stats.build_success_rate
 %}
 
@@ -22,6 +23,7 @@ description: Real-time status monitoring for Docker containers with automated up
      name=container.name
      current_version=container.current_version
      current_version_confirmed=container.current_version_confirmed
+     update_available=container.update_available
      latest_version=container.latest_version
      status_color=container.status_color
      status_text=container.status_text
@@ -96,6 +98,10 @@ description: Real-time status monitoring for Docker containers with automated up
     <div class="health-item">
       <span class="health-label">Updates Available</span>
       <span class="health-value">{{ site.data.stats.updates_available }}</span>
+    </div>
+    <div class="health-item">
+      <span class="health-label">Unpublished Releases</span>
+      <span class="health-value">{{ site.data.stats.unpublished_releases | default: 0 }}</span>
     </div>
     <div class="health-item">
       <span class="health-label">Last Check</span>

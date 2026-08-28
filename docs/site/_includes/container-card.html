@@ -1,6 +1,10 @@
 <!-- Container row card — details/summary expand pattern (D1 refactor) -->
 {%- assign default_variant = include.versions[0].variants[0] | default: include.variants[0] | default: include -%}
 {%- assign default_variant_tag = default_variant.tag | default: include.current_version | default: "latest" -%}
+{%- assign default_reference_confirmed = include.current_version_confirmed -%}
+{%- if include.versions or include.variants -%}
+  {%- assign default_reference_confirmed = default_variant.reference_confirmed -%}
+{%- endif -%}
 {%- assign size_amd64_label = include.size_amd64 | default: "—" -%}
 {%- assign size_amd64_raw = include.size_amd64 | default: "" | strip -%}
 {%- assign size_amd64_compact = size_amd64_raw | remove: " " | downcase -%}
@@ -15,6 +19,7 @@
 {%- capture default_image_ref -%}{{ include.name }}:{{ default_variant_tag }}{%- endcapture -%}
 <details class="container-card glass status-{{ include.status_color | default: 'secondary' }}"
          data-container="{{ include.name }}"
+         data-update-available="{{ include.update_available | default: false }}"
          data-github-username="{{ include.github_username }}"
          data-dockerhub-username="{{ include.dockerhub_username }}"
          aria-label="{{ include.name }} container - {{ include.status_text | default: 'Unknown status' }}">
@@ -127,14 +132,14 @@
     {% endif %}
 
     <!-- Pull command -->
-    {% if include.current_version_confirmed == true and include.ghcr_image and include.dockerhub_image %}
+    {% if default_reference_confirmed == true and include.ghcr_image %}
     <section>
       <h4>Pull command</h4>
       <div class="pull-section"
            data-ghcr-base="ghcr.io/{{ include.github_username }}/{{ include.name }}"
-           data-dockerhub-base="docker.io/{{ include.dockerhub_username }}/{{ include.name }}"
-           data-default-tag="{% if include.versions[0].variants[0] %}{{ include.versions[0].variants[0].tag }}{% elsif include.variants[0] %}{{ include.variants[0].tag }}{% else %}{{ include.current_version }}{% endif %}">
-        <div class="pull-input-group">
+           {%- if include.dockerhub_image %} data-dockerhub-base="docker.io/{{ include.dockerhub_username }}/{{ include.name }}"{% endif %}
+           data-default-tag="{{ include.current_version }}">
+        <div class="pull-input-group" data-pull-command>
           <input type="text"
                  class="pull-input"
                  id="pull-{{ include.name }}"
@@ -146,13 +151,13 @@
             <i class="ti ti-copy" aria-hidden="true"></i>
           </button>
         </div>
+        <p class="evidence-empty" data-pull-unavailable hidden>No published image was observed for this reference.</p>
       </div>
     </section>
-    {% elsif include.current_version_confirmed != true %}
+    {% elsif default_reference_confirmed != true %}
     <section>
       <h4>Pull command</h4>
-      <p>Publication information is unavailable; no pull reference is shown.</p>
-      <p>Upstream version: {{ include.latest_version | default: "unknown" | escape }}</p>
+      <p>No published image was observed for this reference.</p>
     </section>
     {% endif %}
 
@@ -191,6 +196,7 @@
                       {%- if synthetic %} style="display: none" aria-hidden="true"{% endif %}
                       title="{{ variant.when_to_use | default: variant.description | escape }} — Click to select"
                       data-tag="{{ variant.tag }}"
+                      data-reference-confirmed="{{ variant.reference_confirmed | default: false }}"
                       data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                       data-size-arm64="{{ variant.size_arm64 | default: '' }}"
                       {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif %}
@@ -216,6 +222,7 @@
               <span class="variant-tag{% if forloop.first %} selected{% endif %}"
                     title="{{ variant.when_to_use | default: variant.description | escape }} — Click to select"
                     data-tag="{{ variant.tag }}"
+                    data-reference-confirmed="{{ variant.reference_confirmed | default: false }}"
                     data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                     data-size-arm64="{{ variant.size_arm64 | default: '' }}"
                     {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif %}

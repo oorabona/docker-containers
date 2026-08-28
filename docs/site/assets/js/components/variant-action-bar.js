@@ -1,7 +1,7 @@
 // docs/site/assets/js/components/variant-action-bar.js
 //
 // Vanilla custom element (light DOM). CSP-clean (no eval, no innerHTML).
-// Renders: registry pills + version pills + flavor pills + pull/verify commands + per-variant signals strip.
+// Renders: version pills + flavor pills + pull/verify commands + per-variant signals strip.
 // Sticky-on-scroll (auto-collapses to signals strip; scroll up re-expands). Dispatches variant-action-bar:variant-changed.
 // Two-way sync with legacy phase-b-variant-changed / version-tabs-changed events.
 
@@ -56,56 +56,10 @@
 
       this._container = this.dataset.container || '';
       this._imageBase = this.dataset.imageBase || '';
-      this._imageBaseDockerHub = this.dataset.imageBaseDockerhub || this.dataset.imageBase || '';
       this._defaultTag = this.dataset.defaultTag || '';
 
-      // Registry options. We only synthesize the GHCR + Docker Hub default pair
-      // when the page actually provides a Docker Hub image base — otherwise
-      // selecting "Docker Hub" would silently fall back to the GHCR base. Pages
-      // without `data-image-base-dockerhub` get GHCR-only (no pill group rendered).
-      var hasDockerHubBase = !!this.dataset.imageBaseDockerhub;
-      var defaultRegistries = hasDockerHubBase
-        ? [
-            { id: 'ghcr', label: 'GHCR' },
-            { id: 'dockerhub', label: 'Docker Hub' }
-          ]
-        : [{ id: 'ghcr', label: 'GHCR' }];
-      this._registries = parse(this.dataset.registries, defaultRegistries);
-      if (!this._registries || !this._registries.length) {
-        this._registries = defaultRegistries;
-      }
-      // Cross-validate: keep only registries whose pull-base is actually
-      // implemented in _updateCommands (today: 'ghcr' + 'dockerhub'). Drop any
-      // unknown ids — rendering a "quay" pill that silently falls back to a
-      // GHCR pull command is worse than not showing it at all. Also drop
-      // 'dockerhub' when data-image-base-dockerhub is missing (same reason).
-      var SUPPORTED_REGISTRY_IDS = { ghcr: true, dockerhub: true };
-      this._registries = this._registries.filter(function (r) {
-        if (!SUPPORTED_REGISTRY_IDS[r.id]) return false;
-        if (r.id === 'dockerhub') return hasDockerHubBase;
-        return true;
-      });
-      // Guarantee GHCR is always available — every container ships there and
-      // the pull-base path is always wired. Without this, a misconfigured
-      // data-registries (e.g. only "dockerhub" with no DH base) could leave
-      // the registry list empty and orphan _selectedRegistry below.
-      if (!this._registries.some(function (r) { return r.id === 'ghcr'; })) {
-        this._registries.unshift({ id: 'ghcr', label: 'GHCR' });
-      }
-      // Default registry: explicit attribute → first registry → 'ghcr'.
-      // Validate that the requested default exists in _registries; otherwise
-      // fall back to the first available so the radiogroup always has an active
-      // pill (avoids all-tabIndex=-1 keyboard-trap state).
-      var defaultFromAttr = (this.dataset.defaultRegistry || '').trim();
-      var firstId = this._registries.length > 0 ? this._registries[0].id : 'ghcr';
-      var validDefault = defaultFromAttr && this._registries.some(function (r) { return r.id === defaultFromAttr; });
-      this._selectedRegistry = validDefault ? defaultFromAttr : firstId;
-
-      // versions: array of version-group objects with .tag + .variants[]
       this._versions = parse(this.dataset.versions, []);
-      // flavors: flat array of flavor objects ({ name, label })
       this._flavors = parse(this.dataset.flavors, []);
-      // variants: flat lookup array of all variant objects
       this._variants = parse(this.dataset.variants, []);
 
       // Select the first version/flavor as default
@@ -166,21 +120,13 @@
       card.className = 'vab-card';
       this.appendChild(card);
 
-      // Row 1 — selectors: [REGISTRY pills] · [VERSION pills] · [FLAVOR pills]
+      // Row 1 — selectors: [VERSION pills] · [FLAVOR pills]
       var hasMultipleVersions = this._versions && this._versions.length > 1;
       var hasFlavors = this._flavors && this._flavors.length > 0;
-      var hasRegistries = this._registries && this._registries.length > 1;
 
-      if (hasRegistries || hasMultipleVersions || hasFlavors) {
+      if (hasMultipleVersions || hasFlavors) {
         var row1 = document.createElement('div');
         row1.className = 'vab-row vab-row--selectors';
-
-        if (hasRegistries) {
-          row1.appendChild(
-            this._makePillGroup('Registry', this._registries, 'id', this._selectedRegistry,
-              'vab-registry-pill', 'vab-registry-pills vab-pill-group--registry')
-          );
-        }
 
         if (hasMultipleVersions) {
           row1.appendChild(
@@ -334,36 +280,18 @@
     }
 
 
-    // Build the collapsed-state actions group (registry mini-toggle + mini copy button).
+    // Build the collapsed-state actions group (mini copy button).
     // Hidden via CSS in expanded mode; shown only when [data-collapsed] is set on the host.
     _makeCollapsedActions() {
       var wrap = document.createElement('div');
       wrap.className = 'vab-collapsed-actions';
-
-      // Only render registry toggle when there are multiple registries
-      if (this._registries && this._registries.length > 1) {
-        for (var i = 0; i < this._registries.length; i++) {
-          var reg = this._registries[i];
-          var btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'vab-registry-mini';
-          btn.setAttribute('data-vab-mini-registry', reg.id);
-          btn.setAttribute('aria-pressed', reg.id === this._selectedRegistry ? 'true' : 'false');
-          // Visible text is shortened to fit the sticky bar; aria-label keeps
-          // the full registry name accessible to screen readers.
-          btn.setAttribute('aria-label', 'Pull from ' + reg.label);
-          btn.textContent = reg.id === 'dockerhub' ? 'DH' : reg.label;
-          wrap.appendChild(btn);
-        }
-      }
 
       // Compact pull-command copy button
       var copyBtn = document.createElement('button');
       copyBtn.type = 'button';
       copyBtn.className = 'vab-copy-mini';
       copyBtn.setAttribute('data-vab-mini-copy', 'pull');
-      // Dynamic label set here; _updateCollapsedActionsState keeps it in sync
-      copyBtn.setAttribute('aria-label', this._buildCopyAriaLabel(this._selectedRegistry));
+      copyBtn.setAttribute('aria-label', this._buildCopyAriaLabel());
       // Explicit classes so _onMiniCopyClick can use stable selectors
       var icon = document.createElement('span');
       icon.className = 'vab-copy-mini__icon';
@@ -389,12 +317,12 @@
       btn.type = 'button';
       btn.className = 'vab-sticky-cmd';
       btn.setAttribute('data-vab-sticky-cmd', '');
-      // aria-label keeps a stable identity ("Copy <registry> pull command"),
+      // aria-label keeps a stable identity ("Copy GHCR pull command"),
       // dynamic via _updateStickyCommand. Status feedback ("Copied" /
       // "Copy failed") is announced through a dedicated live region built
       // by _makeStickyStatus — putting status text on the button's own
       // aria-label is unreliable across screen readers.
-      btn.setAttribute('aria-label', this._buildCopyAriaLabel(this._selectedRegistry));
+      btn.setAttribute('aria-label', this._buildCopyAriaLabel());
       // Text is set by _updateStickyCommand() after _updateCommands() runs
       btn.textContent = '';
       return btn;
@@ -418,8 +346,10 @@
       var stickyEl = this.querySelector('[data-vab-sticky-cmd]');
       if (!stickyEl) { return; }
       var pullEl = this.querySelector('[data-vab-cmd="pull"]');
-      if (pullEl) { stickyEl.textContent = pullEl.textContent; }
-      stickyEl.setAttribute('aria-label', this._buildCopyAriaLabel(this._selectedRegistry));
+      stickyEl.textContent = this._hasCommand && pullEl ? pullEl.textContent : '';
+      stickyEl.disabled = !this._hasCommand;
+      stickyEl.setAttribute('aria-disabled', this._hasCommand ? 'false' : 'true');
+      stickyEl.setAttribute('aria-label', this._buildCopyAriaLabel());
     }
 
     // Copy handler for the collapsed sticky command button.
@@ -466,17 +396,11 @@
 
 
 
-    // Sync collapsed-actions buttons (aria-pressed) to current _selectedRegistry.
-    // Called after any registry change and on initial render (via _updateCommands).
+    // Keep the collapsed copy control's accessible label in sync with the
+    // command. GHCR is the sole published command source.
     _updateCollapsedActionsState() {
-      var miniBtns = this.querySelectorAll('[data-vab-mini-registry]');
-      for (var i = 0; i < miniBtns.length; i++) {
-        var active = miniBtns[i].getAttribute('data-vab-mini-registry') === this._selectedRegistry;
-        miniBtns[i].setAttribute('aria-pressed', active ? 'true' : 'false');
-      }
-      // Update the mini copy button's aria-label to reflect the current registry
       var copyBtn = this.querySelector('[data-vab-mini-copy]');
-      if (copyBtn) { copyBtn.setAttribute('aria-label', this._buildCopyAriaLabel(this._selectedRegistry)); }
+      if (copyBtn) { copyBtn.setAttribute('aria-label', this._buildCopyAriaLabel()); }
     }
 
 
@@ -487,43 +411,28 @@
 
     _updateCommands() {
       var v = this._currentVariant;
+      var confirmed = !!(v && v.reference_confirmed === true);
       var tag = (v && v.tag) ? v.tag : this._defaultTag;
       var ghcrBase = this._imageBase;
       var owner = this._extractOwner(ghcrBase);
 
-      // Pull command uses selected registry; verify always uses GHCR (Sigstore lives there)
-      var pullBase = (this._selectedRegistry === 'dockerhub')
-        ? this._imageBaseDockerHub
-        : ghcrBase;
-      var pullCmd = 'docker pull ' + pullBase + ':' + tag;
+      var pullCmd = 'docker pull ' + ghcrBase + ':' + tag;
       var verifyCmd = 'cosign verify ' + ghcrBase + ':' + tag
         + ' --certificate-identity-regexp=https://github.com/' + owner
         + ' --certificate-oidc-issuer=https://token.actions.githubusercontent.com';
+      var unavailable = 'No published image was observed for this reference.';
 
       var pullEl = this.querySelector('[data-vab-cmd="pull"]');
       var verifyEl = this.querySelector('[data-vab-cmd="verify"]');
-      if (pullEl) { pullEl.textContent = pullCmd; }
-      if (verifyEl) { verifyEl.textContent = verifyCmd; }
-
-      // Show verify note when registry is not GHCR
-      var verifyBlock = verifyEl && verifyEl.closest('.vab-command-block');
-      if (verifyBlock) {
-        var existingNote = verifyBlock.querySelector('.vab-verify-note');
-        if (this._selectedRegistry !== 'ghcr') {
-          if (!existingNote) {
-            var note = document.createElement('small');
-            note.className = 'vab-verify-note';
-            note.setAttribute('role', 'status');
-            note.setAttribute('aria-live', 'polite');
-            note.textContent = 'Verified via GHCR · attestation source';
-            verifyBlock.appendChild(note);
-          }
-        } else {
-          if (existingNote) { verifyBlock.removeChild(existingNote); }
-        }
+      if (pullEl) { pullEl.textContent = confirmed ? pullCmd : unavailable; }
+      if (verifyEl) { verifyEl.textContent = confirmed ? verifyCmd : unavailable; }
+      this._hasCommand = confirmed;
+      var copyButtons = this.querySelectorAll('[data-vab-copy], [data-vab-mini-copy]');
+      for (var i = 0; i < copyButtons.length; i++) {
+        copyButtons[i].disabled = !confirmed;
+        copyButtons[i].setAttribute('aria-disabled', confirmed ? 'false' : 'true');
       }
 
-      // Keep collapsed-actions mini toggle in sync
       this._updateCollapsedActionsState();
       // Sync sticky pull command text in collapsed bandeau
       this._updateStickyCommand();
@@ -576,14 +485,6 @@
       this._dispatchVariantChanged();
     }
 
-
-    _onRegistryPillClick(value) {
-      this._selectedRegistry = value;
-      this._updatePillActive('vab-registry-pill', value);
-      this._updateCommands();
-    }
-
-
     // F4: also update roving tabindex when active pill changes
     _updatePillActive(pillClass, value) {
       var pills = this.querySelectorAll('.' + pillClass);
@@ -601,9 +502,8 @@
     // -------------------------------------------------------
 
     // Builds the dynamic aria-label for the mini copy button.
-    _buildCopyAriaLabel(reg) {
-      var name = reg === 'dockerhub' ? 'Docker Hub' : 'GHCR';
-      return 'Copy ' + name + ' pull command';
+    _buildCopyAriaLabel() {
+      return 'Copy GHCR pull command';
     }
 
     // M-A: single clipboard helper — resolves only on success, rejects on failure.
@@ -811,9 +711,6 @@
 
     // M-B: delegated click handler — stored as bound ref so it can be removed on disconnect
     _onClick(e) {
-      var rPill = e.target.closest('.vab-registry-pill');
-      if (rPill) { this._onRegistryPillClick(rPill.dataset.value); return; }
-
       var vPill = e.target.closest('.vab-version-pill');
       if (vPill) { this._onVersionPillClick(vPill.dataset.value); return; }
 
@@ -822,10 +719,6 @@
 
       var copyBtn = e.target.closest('.vab-copy-btn');
       if (copyBtn) { this._onCopyClick(copyBtn.getAttribute('data-vab-copy')); return; }
-
-      // Collapsed-mode mini registry toggle
-      var miniReg = e.target.closest('[data-vab-mini-registry]');
-      if (miniReg) { this._onRegistryPillClick(miniReg.getAttribute('data-vab-mini-registry')); return; }
 
       // Collapsed-mode mini copy button
       var miniCopy = e.target.closest('[data-vab-mini-copy]');
@@ -840,7 +733,7 @@
     // F4: keyboard navigation for radiogroup pills (WAI-ARIA APG roving tabindex).
     // ArrowLeft/Right move focus+selection; Home/End jump to first/last.
     _onKeydown(e) {
-      var pill = e.target.closest('.vab-registry-pill, .vab-version-pill, .vab-flavor-pill');
+      var pill = e.target.closest('.vab-version-pill, .vab-flavor-pill');
       if (!pill) { return; }
       var keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
       if (keys.indexOf(e.key) === -1) { return; }
