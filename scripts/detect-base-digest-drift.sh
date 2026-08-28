@@ -706,6 +706,20 @@ for lineage_file in "${lineage_files[@]}"; do
     if [[ "$base_image_ref" =~ \$ ]]; then
         gha_warning 'Skipping %s: base_image_ref contains unresolved placeholder: %s' \
             "$basename_file" "$base_image_ref" >&2
+        # Keep an explicit machine-readable record: without one, an active
+        # variant with an unresolved ref vanishes from the result and the
+        # workflow can falsely report a clean drift run.  The placeholder check
+        # stays before the legacy check so it cannot produce a bogus rebuild PR.
+        safe_ref=$(_sanitize_for_json "$base_image_ref")
+        safe_recorded=$(_sanitize_for_json "$recorded_digest")
+        variant_json=$(jq -cn \
+            --arg variant_tag     "$variant_tag" \
+            --arg base_ref        "$safe_ref" \
+            --arg recorded_digest "$safe_recorded" \
+            --arg status          "error" \
+            --arg error_reason    "unresolved_placeholder_base_image_ref" \
+            '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status, error_reason: $error_reason}')
+        _container_variants["$container"]+="${variant_json}"$'\n'
         continue
     fi
 
@@ -713,6 +727,25 @@ for lineage_file in "${lineage_files[@]}"; do
     # which would otherwise emit a legacy record for a corrupt/unknown entry).
     if [[ -z "$base_image_ref" || "$base_image_ref" == "unknown" ]]; then
         gha_warning 'Skipping %s: base_image_ref is unknown or missing' "$basename_file" >&2
+        # Keep an explicit machine-readable record: without one, an active
+        # variant with no usable ref vanishes from the result and the workflow
+        # can falsely report a clean drift run.  This can be the first record
+        # seen for the container, so retain the registration guard used by the
+        # active-tags-unavailable error path.
+        if [[ -z "${_container_variants[$container]+x}" ]]; then
+            _container_order+=("$container")
+            _container_variants["$container"]=""
+        fi
+        safe_ref=$(_sanitize_for_json "$base_image_ref")
+        safe_recorded=$(_sanitize_for_json "$recorded_digest")
+        variant_json=$(jq -cn \
+            --arg variant_tag     "$variant_tag" \
+            --arg base_ref        "$safe_ref" \
+            --arg recorded_digest "$safe_recorded" \
+            --arg status          "error" \
+            --arg error_reason    "missing_base_image_ref" \
+            '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status, error_reason: $error_reason}')
+        _container_variants["$container"]+="${variant_json}"$'\n'
         continue
     fi
 

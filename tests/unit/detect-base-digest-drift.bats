@@ -789,9 +789,9 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Unresolved placeholder in base_image_ref — skip with warning
+# Unresolved placeholder in base_image_ref — error record with warning
 # ---------------------------------------------------------------------------
-@test "unresolved-ref: entry with \${...} placeholder in base_image_ref is skipped" {
+@test "unresolved-ref: entry with \${...} placeholder in base_image_ref emits error" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
     cat > "$lineage_dir/foo-1.0.json" <<'EOF'
@@ -807,15 +807,17 @@ EOF
     result=$(PROBE_CMD="/bin/false" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
 
-    [ "$result" = "[]" ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 1 ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "error" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "unresolved_placeholder_base_image_ref" ]
 }
 
 # ---------------------------------------------------------------------------
-# Precedence guard: placeholder ref + missing digest must be skipped (not
-# classified as legacy).  Before Fix 3 the legacy check ran first and would
-# emit a bogus drift PR for pre-#530 lineage files.
+# Precedence guard: placeholder ref + missing digest must emit error (not
+# classified as legacy). Before Fix 3 the legacy check ran first and would
+# emit a bogus drift PR for pre-#530 lineage files; silent skipping later hid it.
 # ---------------------------------------------------------------------------
-@test "unresolved-ref: placeholder ref with missing digest is skipped, not emitted as legacy" {
+@test "unresolved-ref: placeholder ref with missing digest emits error, not legacy" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
     # Simulates a pre-#530 lineage entry: placeholder ref AND no recorded digest
@@ -831,8 +833,10 @@ EOF
     result=$(PROBE_CMD="/bin/false" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
 
-    # Must be empty — placeholder takes precedence over legacy classification
-    [ "$result" = "[]" ]
+    # Placeholder takes precedence over legacy classification and remains visible.
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 1 ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "error" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "unresolved_placeholder_base_image_ref" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1104,8 +1108,8 @@ EOF
 # Fix r5-4: --baseline-only precedence (legacy wins over placeholder-skip)
 # Regression guard: a pre-#530 lineage entry with a placeholder base_image_ref
 # AND no recorded digest must emit status=legacy in --baseline-only mode (so the
-# baseline migration picks it up), while the same entry must be SKIPPED (result=[])
-# in normal mode (to prevent bogus drift PRs).
+# baseline migration picks it up).  In normal mode it must instead emit an error
+# record: it cannot be evaluated and must not be mis-classified as legacy.
 # ---------------------------------------------------------------------------
 @test "baseline-only mode emits legacy for placeholder-ref + missing-digest entry" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
@@ -1132,22 +1136,59 @@ EOF
     [ "$status_val" = "legacy" ]
 }
 
-@test "normal mode still skips placeholder-ref + missing-digest entry (no regression)" {
+@test "normal mode emits placeholder error while concrete ref is evaluated" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
-    # Same pre-#530 entry
-    cat > "$lineage_dir/foo-1.0.json" <<'EOF'
+    # The unresolved placeholder must remain visible, rather than silently
+    # disappearing from normal-mode output.
+    cat > "$lineage_dir/foo-placeholder.json" <<'EOF'
 {
-  "lineage_schema_version": 1,
+  "lineage_schema_version": 2,
   "container": "foo",
-  "tag": "1.0",
-  "base_image_ref": "${REMOTE_CR}/library/debian:trixie-slim"
+  "tag": "placeholder",
+  "base_image_ref": "${REMOTE_CR}/library/debian:trixie-slim",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+    cat > "$lineage_dir/foo-concrete.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "concrete",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }
 EOF
 
-    # Normal mode (no --baseline-only): must skip — empty output
-    result=$(PROBE_CMD="/bin/false" \
+    local probe_stub
+    probe_stub=$(_make_digest_probe_stub "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    result=$(_ACTIVE_TAGS_OVERRIDE_foo=$'placeholder\nconcrete' \
+        PROBE_CMD="$probe_stub" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 2 ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "placeholder") | .status')" = "error" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "placeholder") | .error_reason')" = "unresolved_placeholder_base_image_ref" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "concrete") | .status')" = "unchanged" ]
+}
+
+@test "baseline-only keeps nonlegacy placeholder suppression unchanged" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/foo-placeholder.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "placeholder",
+  "base_image_ref": "${REMOTE_CR}/library/debian:trixie-slim",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # The baseline-only placeholder branch deliberately remains a skip for a
+    # non-legacy entry; it is a one-off migration mode, not normal detection.
+    result=$(PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" --baseline-only "$lineage_dir" 2>/dev/null)
 
     [ "$result" = "[]" ]
 }
@@ -3532,6 +3573,168 @@ EOF
     err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
     [ "$err_status" = "error" ]
     [ "$err_reason" = "untrusted_ref" ]
+}
+
+# ---------------------------------------------------------------------------
+# Missing or unknown base_image_ref must remain visible in the public result.
+# Active variants used to warn and then disappear, allowing the workflow to
+# mistake zero drift records for a fully evaluated clean run.
+# ---------------------------------------------------------------------------
+
+@test "empty and unknown base_image_ref emit error records while valid ref is evaluated" {
+    local lineage_dir="$TEST_TEMP_DIR/missing-base-ref/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-empty.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "empty",
+  "base_image_ref": "",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+    cat > "$lineage_dir/myimage-unknown.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "unknown",
+  "base_image_ref": "unknown",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+    cat > "$lineage_dir/myimage-valid.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "valid",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    local probe_stub result rc=0
+    probe_stub=$(_make_digest_probe_stub "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage=$'empty\nunknown\nvalid' \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+
+    [ "$rc" -eq 0 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 3 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status == "error" and .error_reason == "missing_base_image_ref")] | length')" -eq 2 ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "empty") | .base_image_ref')" = "" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "unknown") | .base_image_ref')" = "unknown" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "valid") | .status')" = "unchanged" ]
+}
+
+# Execute the exact consumer decision sequence embedded in the production
+# workflow. This covers the coverage gate, scoping, notices, and its success
+# exits without requiring a live workflow dispatch.
+_load_drift_consumer() {
+    local workflow_run notice_helper consumer_helper
+    workflow_run=$(yq -r '.jobs."detect-digest-drift".steps[] | select(.id == "detect") | .run' \
+        "$PROJECT_ROOT/.github/workflows/upstream-monitor.yaml")
+    notice_helper=$(sed -n '/^emit_drift_notice() {/,/^}/p' <<<"$workflow_run")
+    consumer_helper=$(sed -n '/^consume_drift_result() {/,/^}/p' <<<"$workflow_run")
+    [ -n "$notice_helper" ] || return 1
+    [ -n "$consumer_helper" ] || return 1
+    eval "$notice_helper"
+    eval "$consumer_helper"
+}
+
+@test "coverage-incomplete closing notice reports counts and fails the workflow step" {
+    _load_drift_consumer
+
+    local incomplete_json notice rc=0 clean_json clean_notice clean_rc=0
+    incomplete_json='[{"container":"myimage","variants":[{"variant_tag":"empty","status":"error","error_reason":"missing_base_image_ref"},{"variant_tag":"valid","status":"unchanged"}]}]'
+    notice=$(emit_drift_notice "$incomplete_json") || rc=$?
+
+    [ "$rc" -eq 1 ]
+    [ "$notice" = "::notice::Base image digest drift coverage incomplete: 1 variant(s) evaluated; 1 could not be evaluated" ]
+    [[ "$notice" != *"No base image digest drift detected"* ]]
+
+    clean_json='[{"container":"myimage","variants":[{"variant_tag":"valid","status":"unchanged"}]}]'
+    clean_notice=$(emit_drift_notice "$clean_json" 0) || clean_rc=$?
+    [ "$clean_rc" -eq 0 ]
+    [ "$clean_notice" = "::notice::No base image digest drift detected" ]
+}
+
+@test "scoped clean container fails when another container has incomplete coverage" {
+    _load_drift_consumer
+
+    local drift_json output rc=0
+    drift_json='[
+      {"container":"clean","variants":[{"variant_tag":"latest","status":"unchanged"}]},
+      {"container":"unavailable","variants":[{"variant_tag":"latest","status":"error"}]}
+    ]'
+    GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
+    : > "$GITHUB_OUTPUT"
+    output=$(consume_drift_result "$drift_json" "clean") || rc=$?
+
+    [ "$rc" -eq 1 ]
+    [[ "$output" == *"Base image digest drift coverage incomplete: 1 variant(s) evaluated; 1 could not be evaluated"* ]]
+    [[ "$output" != *"No drift detected for requested container clean"* ]]
+}
+
+@test "scoped clean container still succeeds with its existing no-drift notice" {
+    _load_drift_consumer
+
+    local drift_json output rc=0
+    drift_json='[{"container":"other","variants":[{"variant_tag":"latest","status":"unchanged"}]}]'
+    GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
+    : > "$GITHUB_OUTPUT"
+    output=$(consume_drift_result "$drift_json" "clean") || rc=$?
+
+    [ "$rc" -eq 0 ]
+    [[ "$output" == *"No drift detected for requested container clean"* ]]
+    [[ "$output" != *"Base image digest drift coverage incomplete"* ]]
+    [ "$(<"$GITHUB_OUTPUT")" = $'drift_containers_csv=\nerror_containers_csv=\ndrift_containers=[]' ]
+}
+
+@test "empty unscoped drift result announces nothing to evaluate once and writes every output" {
+    _load_drift_consumer
+
+    local output rc=0 notice_count
+    GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
+    : > "$GITHUB_OUTPUT"
+    output=$(consume_drift_result '[]' '') || rc=$?
+
+    [ "$rc" -eq 0 ]
+    notice_count=$(printf '%s\n' "$output" | awk '/^::notice::/ { count++ } END { print count + 0 }')
+    [ "$notice_count" -eq 1 ]
+    [ "$output" = "::notice::No base image digest drift evaluation was performed — nothing to evaluate" ]
+    [ "$(<"$GITHUB_OUTPUT")" = $'drift_containers=[]\ndrift_matrix=[]\ndrift_matrix_leaves=[]\ndrift_matrix_consumers=[]\ndrift_containers_csv=\nerror_containers_csv=' ]
+}
+
+@test "empty scoped drift result announces nothing to evaluate once and writes every output" {
+    _load_drift_consumer
+
+    local output rc=0 notice_count
+    GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
+    : > "$GITHUB_OUTPUT"
+    output=$(consume_drift_result '[]' 'foo') || rc=$?
+
+    [ "$rc" -eq 0 ]
+    notice_count=$(printf '%s\n' "$output" | awk '/^::notice::/ { count++ } END { print count + 0 }')
+    [ "$notice_count" -eq 1 ]
+    [ "$output" = "::notice::No base image digest drift evaluation was performed — nothing to evaluate" ]
+    [ "$(<"$GITHUB_OUTPUT")" = $'drift_containers=[]\ndrift_matrix=[]\ndrift_matrix_leaves=[]\ndrift_matrix_consumers=[]\ndrift_containers_csv=\nerror_containers_csv=' ]
+}
+
+@test "populated all-clean drift result keeps the clean notice" {
+    _load_drift_consumer
+
+    local drift_json output rc=0 notice_count
+    drift_json='[{"container":"clean","variants":[{"variant_tag":"latest","status":"unchanged"}]}]'
+    GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
+    : > "$GITHUB_OUTPUT"
+    output=$(consume_drift_result "$drift_json" '') || rc=$?
+
+    [ "$rc" -eq 0 ]
+    notice_count=$(printf '%s\n' "$output" | awk '/^::notice::/ { count++ } END { print count + 0 }')
+    [ "$notice_count" -eq 1 ]
+    [ "$output" = "::notice::No base image digest drift detected" ]
 }
 
 # ---------------------------------------------------------------------------
