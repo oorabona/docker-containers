@@ -912,7 +912,9 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')" == "false" ]]
     [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .actionable')" == "false" ]]
-    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')" == "upstream-version-rejected" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')" == "upstream-lookup-failed" ]]
 }
 
 @test "check_updates multi-entry: failed upstream lookup discards partial candidate" {
@@ -954,7 +956,7 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .latest_version')" == "" ]]
     [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .upstream_lookup')" == "no-match" ]]
-    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')" == "up_to_date" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')" == "upstream-no-match" ]]
 }
 
 @test "check_updates default path: genuine newer latest is an update" {
@@ -982,7 +984,112 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
     [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
-    [[ "$(echo "$output" | jq -r '.[0].status')" == "downgrade-guard-failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-lookup-failed" ]]
+}
+
+@test "check_updates default path: digit-leading resolver junk is rejected before comparison" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    # This would pass dpkg's digit gate and compare newer without admission.
+    create_default_check_updates_fixture "1.0.0-ubuntu" "2;error"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-lookup-failed" ]]
+}
+
+@test "check_updates multi-entry: digit-leading resolver junk is rejected before comparison" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.0-alpine" "2;error"
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')" == "upstream-lookup-failed" ]]
+}
+
+@test "check_updates default path: leading tab is rejected rather than stripped before admission" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" $'\t1.1.0-ubuntu'
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
+}
+
+@test "check_updates default path: an oversized resolver line fails without retaining it" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    cat > ansible/version.sh <<'EOF'
+#!/bin/bash
+if [[ "$1" == "--registry-pattern" ]]; then echo '^[0-9]+\.[0-9]+\.[0-9]+-ubuntu$'; exit 0; fi
+head -c 1048576 /dev/zero | tr '\0' x
+printf '\n'
+EOF
+    chmod +x ansible/version.sh
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
+}
+
+@test "check_updates default path: a resolver that writes then hangs fails within the fixed bound" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    cat > ansible/version.sh <<'EOF'
+#!/bin/bash
+if [[ "$1" == "--registry-pattern" ]]; then echo '^[0-9]+\.[0-9]+\.[0-9]+-ubuntu$'; exit 0; fi
+printf '1.1.0-ubuntu\n'
+sleep 90
+EOF
+    chmod +x ansible/version.sh
+
+    # The implementation exposes no timeout knob: hostile environment values
+    # must not raise the fixed wait or make this resolver an update.
+    run timeout 65 env CHECK_UPDATES_RESOLVER_TIMEOUT=99999 CHECK_UPDATES_RESOLVER_MAX_LINE_BYTES=9999999 ./make check-updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-lookup-failed" ]]
+}
+
+@test "check_updates default path: a resolver that succeeds after six seconds remains matched" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    cat > ansible/version.sh <<'EOF'
+#!/bin/bash
+if [[ "$1" == "--registry-pattern" ]]; then echo '^[0-9]+\.[0-9]+\.[0-9]+-ubuntu$'; exit 0; fi
+sleep 6
+printf '1.1.0-ubuntu\n'
+EOF
+    chmod +x ansible/version.sh
+
+    run ./make check-updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "matched" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "1.1.0-ubuntu" ]]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "true" ]]
 }
 
 @test "check_updates default path: a non-version upstream value cannot create a container" {
@@ -995,7 +1102,9 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
     [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
-    [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-version-rejected" ]]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-lookup-failed" ]]
 }
 
 @test "check_updates default path: failed upstream lookup discards partial candidate" {
@@ -1040,6 +1149,33 @@ EOF
     run ./make sizes ansible
     [ "$status" -eq 0 ]
     [[ "$(sort -u "$SIZE_TAG_LOG")" == "latest" ]]
+}
+
+@test "sizes: a failed lookup does not reuse the preceding container tag" {
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    mkdir -p beta
+    cat > beta/version.sh <<'EOF'
+#!/bin/bash
+printf '2.0.0-ubuntu\n'
+exit 23
+EOF
+    chmod +x beta/version.sh
+    # Make the successful lookup immediately precede the failed one.
+    cat >> helpers/registry-utils.sh <<'EOF'
+list_containers() { printf '%s\n' ansible beta; }
+EOF
+    mkdir -p bin
+    cat > bin/docker <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+    chmod +x bin/docker
+    export PATH="$TEST_DIR/bin:$PATH"
+    export SIZE_TAG_LOG="$TEST_DIR/size-tags"
+
+    run ./make sizes
+    [ "$status" -eq 0 ]
+    [[ "$(cat "$SIZE_TAG_LOG")" == $'1.1.0-ubuntu\n1.1.0-ubuntu\nlatest\nlatest' ]]
 }
 
 # Positive control for registry-pattern refusal cases below: a version.sh that

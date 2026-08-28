@@ -107,6 +107,10 @@ runs:
             containers_with_updates+=("$container")
           elif [ "$status" = "registry-lookup-failed" ]; then
             echo "   ⚠️ Registry lookup did not conclude — no PR from this entry"
+          elif [ "$status" = "upstream-lookup-failed" ]; then
+            echo "   ⚠️ Upstream lookup did not conclude — no PR from this entry"
+          elif [ "$status" = "upstream-no-match" ]; then
+            echo "   ⚠️ Upstream lookup returned no version — no PR from this entry"
           elif [ "$status" = "downgrade-guard-failed" ]; then
             echo "   ⚠️ Version comparison did not conclude — no PR from this entry"
           elif [ "$status" = "upstream-version-rejected" ]; then

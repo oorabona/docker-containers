@@ -323,10 +323,11 @@ show_sizes() {
     echo "   └── Registries:"
 
     # Get latest tag from version.sh if available, fallback to "latest"
-    local latest_tag upstream_lookup lookup_info
+    local latest_tag="" upstream_lookup="" lookup_info=""
     if [[ -f "$container/version.sh" ]]; then
       lookup_info=$(check_updates_upstream_version "$container/version.sh")
-      IFS=$'\t' read -r upstream_lookup latest_tag <<< "$lookup_info"
+      upstream_lookup=${lookup_info%%$'\t'*}
+      latest_tag=${lookup_info#*$'\t'}
     fi
     [[ -z "$latest_tag" ]] && latest_tag="latest"
 
@@ -568,27 +569,83 @@ check_updates_current_version() {
 }
 
 # Emit a tab-separated upstream lookup outcome and confirmed candidate version.
-# Successful empty output is a concluded no-match; any nonzero resolver exit
-# discards its output so a partial response cannot become a candidate.
+# Read only a fixed-size first line, while draining the remainder so a resolver
+# cannot block behind a full pipe.  A fixed timeout bounds the resolver wait;
+# the drainer is stopped once that wait concludes so a descendant keeping stdout
+# open cannot hold the caller.  Neither bound is configurable.  A successful
+# empty first line is a concluded no-match; a timeout, oversized first line, or
+# nonzero resolver exit discards the candidate.
 check_updates_upstream_version() {
-  local latest_version rc
+  # All 14 repository version.sh resolvers were timed: the longest observed
+  # lookup was 18.34s (vector/web-shell fallback chains); 60s is over 3x that
+  # duration and still ends a hang during the daily scheduled monitor.
+  local readonly_timeout_seconds=60
+  local readonly_max_line_bytes=4096
+  local resolver_dir resolver_fifo resolver_result resolver_state resolver_pid reader_pid
+  local latest_version="" rc=0 outcome=""
 
-  if latest_version=$("$@" 2>/dev/null); then
-    rc=0
-  else
-    rc=$?
+  if ! resolver_dir=$(mktemp -d "${TMPDIR:-/tmp}/check-updates-resolver.XXXXXX"); then
+    printf 'failed\t\n'
+    return
   fi
-
-  if [[ "$rc" -ne 0 ]]; then
+  resolver_fifo="$resolver_dir/stdout"
+  resolver_result="$resolver_dir/first-line"
+  resolver_state="$resolver_dir/outcome"
+  if ! mkfifo "$resolver_fifo"; then
+    rmdir "$resolver_dir" || true
     printf 'failed\t\n'
     return
   fi
 
-  latest_version=$(printf '%s' "$latest_version" | head -1 | tr -d '\n')
-  if [[ -n "$latest_version" ]]; then
-    printf 'matched\t%s\n' "$latest_version"
+  # The reader retains only the first line plus one probe byte and continues
+  # draining.  Its outcome is written before the unbounded drain begins.
+  (
+    local first_line="" overflow_probe="" line_too_long="false"
+    IFS= read -r -n "$readonly_max_line_bytes" first_line || true
+    if [[ ${#first_line} -eq "$readonly_max_line_bytes" ]]; then
+      IFS= read -r -n 1 overflow_probe || true
+      if [[ -n "$overflow_probe" ]]; then
+        line_too_long="true"
+      fi
+    fi
+    printf '%s' "$first_line" > "$resolver_result"
+    if [[ "$line_too_long" == "true" ]]; then
+      printf 'too-long\n' > "$resolver_state"
+    elif [[ -n "$first_line" ]]; then
+      printf 'matched\n' > "$resolver_state"
+    else
+      printf 'no-match\n' > "$resolver_state"
+    fi
+    cat > /dev/null
+  ) < "$resolver_fifo" &
+  reader_pid=$!
+  # `command -p` uses Bash's system command path, so a caller-provided PATH
+  # cannot replace the timeout and remove this bound.
+  command -p timeout "$readonly_timeout_seconds" "$@" 2>/dev/null > "$resolver_fifo" &
+  resolver_pid=$!
+  if wait "$resolver_pid"; then
+    rc=0
   else
+    rc=$?
+  fi
+  # Normal resolvers have already produced a reader outcome when they exit.
+  # If a descendant still owns stdout, do not let it extend the fixed wait.
+  for _ in $(seq 1 100); do
+    [[ -s "$resolver_state" ]] && break
+    sleep 0.01
+  done
+  kill "$reader_pid" 2>/dev/null || true
+  wait "$reader_pid" 2>/dev/null || true
+  [[ -s "$resolver_state" ]] && outcome=$(<"$resolver_state")
+  [[ -f "$resolver_result" ]] && latest_version=$(<"$resolver_result")
+  rm -rf "$resolver_dir"
+
+  if [[ "$rc" -eq 0 && "$outcome" == "matched" ]]; then
+    printf 'matched\t%s\n' "$latest_version"
+  elif [[ "$rc" -eq 0 && "$outcome" == "no-match" ]]; then
     printf 'no-match\t\n'
+  else
+    printf 'failed\t\n'
   fi
 }
 
@@ -675,12 +732,20 @@ check_updates() {
         major_pattern="^${major}\\.[0-9]+\\.[0-9]+-alpine\$"
         local current_version registry_lookup lookup_info
         lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "$major_pattern")
-        IFS=$'\t' read -r registry_lookup current_version <<< "$lookup_info"
+        registry_lookup=${lookup_info%%$'\t'*}
+        current_version=${lookup_info#*$'\t'}
 
         # Latest upstream version for this major line
         local latest_version upstream_lookup upstream_lookup_info
         upstream_lookup_info=$(check_updates_upstream_version ./version.sh --major "$major")
-        IFS=$'\t' read -r upstream_lookup latest_version <<< "$upstream_lookup_info"
+        upstream_lookup=${upstream_lookup_info%%$'\t'*}
+        latest_version=${upstream_lookup_info#*$'\t'}
+        # Admission happens at the state-machine boundary, before this value
+        # reaches either comparison or first-publication branch (or JSON).
+        if [[ "$upstream_lookup" == "matched" && ! "$latest_version" =~ $major_pattern ]]; then
+          upstream_lookup="failed"
+          latest_version=""
+        fi
 
         # Determine update status
         local update_available="false"
@@ -691,16 +756,12 @@ check_updates() {
           status="registry-lookup-failed"
         elif [[ "$upstream_lookup" == "failed" ]]; then
           status="upstream-lookup-failed"
+        elif [[ "$upstream_lookup" == "no-match" ]]; then
+          status="upstream-no-match"
         elif [[ "$registry_lookup" == "no-match" ]]; then
-          # A first publication has no current tag to compare. Admit the
-          # upstream value only when it matches the retained major's declared
-          # tag shape; resolver diagnostics must not become a new-container PR.
-          if [[ -n "$latest_version" && "$latest_version" =~ $major_pattern ]]; then
-            update_available="true"
-            status="new-container"
-          elif [ -n "$latest_version" ]; then
-            status="upstream-version-rejected"
-          fi
+          # The candidate was admitted before entering this branch.
+          update_available="true"
+          status="new-container"
         elif [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
           if check_updates_current_blocks_latest "$current_version" "$latest_version"; then
             :
@@ -763,10 +824,18 @@ check_updates() {
         lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "$pattern")
       fi
     fi
-    IFS=$'\t' read -r registry_lookup current_version <<< "$lookup_info"
+    registry_lookup=${lookup_info%%$'\t'*}
+    current_version=${lookup_info#*$'\t'}
     local upstream_lookup upstream_lookup_info
     upstream_lookup_info=$(check_updates_upstream_version ./version.sh)
-    IFS=$'\t' read -r upstream_lookup latest_version <<< "$upstream_lookup_info"
+    upstream_lookup=${upstream_lookup_info%%$'\t'*}
+    latest_version=${upstream_lookup_info#*$'\t'}
+    # Admission happens at the state-machine boundary, before this value
+    # reaches either comparison or first-publication branch (or JSON).
+    if [[ "$upstream_lookup" == "matched" && ! "$latest_version" =~ $pattern ]]; then
+      upstream_lookup="failed"
+      latest_version=""
+    fi
 
     # Determine update status
     local update_available="false"
@@ -777,16 +846,12 @@ check_updates() {
       status="registry-lookup-failed"
     elif [[ "$upstream_lookup" == "failed" ]]; then
       status="upstream-lookup-failed"
+    elif [[ "$upstream_lookup" == "no-match" ]]; then
+      status="upstream-no-match"
     elif [[ "$registry_lookup" == "no-match" ]]; then
-      # A first publication has no current tag to compare. The registry
-      # pattern declared by version.sh is the admission rule for an upstream
-      # candidate, so successful resolver diagnostics cannot open a PR.
-      if [[ -n "$latest_version" && "$latest_version" =~ $pattern ]]; then
-        update_available="true"
-        status="new-container"
-      elif [ -n "$latest_version" ]; then
-        status="upstream-version-rejected"
-      fi
+      # The candidate was admitted before entering this branch.
+      update_available="true"
+      status="new-container"
     elif [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
       if check_updates_current_blocks_latest "$current_version" "$latest_version"; then
         :

@@ -145,6 +145,24 @@ assert_byte_for_byte() {
     [[ "$output" == *"Registry lookup did not conclude"* ]]
 }
 
+@test "composite action reports an upstream lookup failure without claiming it is up to date" {
+    write_make_result '[{"container":"ansible","current_version":"1.0.0-ubuntu","latest_version":"","update_available":false,"actionable":false,"registry_lookup":"matched","upstream_lookup":"failed","status":"upstream-lookup-failed"}]'
+
+    run run_action
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Upstream lookup did not conclude"* ]]
+    [[ "$output" != *"✅ Up to date"* ]]
+}
+
+@test "composite action reports an upstream no-match without claiming it is up to date" {
+    write_make_result '[{"container":"ansible","current_version":"1.0.0-ubuntu","latest_version":"","update_available":false,"actionable":false,"registry_lookup":"matched","upstream_lookup":"no-match","status":"upstream-no-match"}]'
+
+    run run_action
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Upstream lookup returned no version"* ]]
+    [[ "$output" != *"✅ Up to date"* ]]
+}
+
 @test "composite action reports an indeterminate version comparison without claiming it is up to date" {
     write_make_result '[{"container":"debian","current_version":"trixie","latest_version":"bookworm","update_available":false,"actionable":false,"registry_lookup":"matched","status":"downgrade-guard-failed"}]'
 
