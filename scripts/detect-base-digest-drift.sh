@@ -5,11 +5,12 @@
 # Outputs a JSON array on stdout, grouped per container:
 #   [{"container":"foo","variants":[{"variant_tag":"1.0-alpine","status":"drift",...},...]}]
 #
-# Tri-state status per variant:
+# Status per variant (closed vocabulary):
 #   drift     — recorded_digest != current_digest (real drift)
 #   unchanged — recorded_digest == current_digest (no action needed)
-#   error     — registry probe failed (timeout, 401, 404); NOT collapsed to drift
+#   error     — the variant could not be evaluated; error_reason identifies why
 #   legacy    — lineage lacks base_image_digest field (pre-v2); rebuild baselines it
+#   no_external_base — the stage has no external base to compare (no action needed)
 #
 # Usage:
 #   detect-base-digest-drift.sh [--baseline-only] [LINEAGE_DIR]
@@ -490,11 +491,18 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
+    # A malformed active lineage payload has no trustworthy identity to attach
+    # to an error record.  Failing the detector is the only honest result.
+    if ! jq -e 'type == "object"' "$lineage_file" >/dev/null 2>&1; then
+        gha_error "Could not evaluate %s: lineage payload is not a JSON object" "$basename_file" >&2
+        exit 1
+    fi
+
     # Parse required fields
     container=$(jq -re '.container // empty' "$lineage_file" 2>/dev/null || true)
     if [[ -z "$container" ]]; then
-        gha_warning "Skipping %s: missing 'container' field" "$basename_file" >&2
-        continue
+        gha_error "Could not evaluate %s: missing 'container' field" "$basename_file" >&2
+        exit 1
     fi
 
     # Control-character rejection — MUST be BEFORE any validation or caching.
@@ -502,9 +510,9 @@ for lineage_file in "${lineage_files[@]}"; do
     # as TWO patterns, so "ansible" matches and "malicious" passes validation silently.
     # Explicit cntrl-char rejection at entry point closes that bypass entirely.
     if [[ "$container" =~ [[:cntrl:]] ]]; then
-        gha_warning 'Rejecting lineage entry %s: container name contains control chars: %s' \
+        gha_error 'Could not evaluate lineage entry %s: container name contains control chars: %s' \
             "$basename_file" "$container" >&2
-        continue
+        exit 1
     fi
 
     # Positive charset gate: container names must consist only of lowercase
@@ -513,9 +521,9 @@ for lineage_file in "${lineage_files[@]}"; do
     # pass grep -xF while containing shell metacharacters.  Rejecting here ensures
     # NO container reaching the emitted drift matrices can contain metacharacters.
     if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
-        gha_warning 'Rejecting lineage entry %s: container name contains invalid characters: %s' \
+        gha_error 'Could not evaluate lineage entry %s: container name contains invalid characters: %s' \
             "$basename_file" "$container" >&2
-        continue
+        exit 1
     fi
 
     # Per-container scope: skip lineage entries for other containers (filter on the
@@ -544,24 +552,24 @@ for lineage_file in "${lineage_files[@]}"; do
         fi
     fi
     if ! grep -qxF -- "$container" <<<"$_valid_containers"; then
-        gha_warning "Skipping %s: invalid container name '%s' (not in ./make list)" \
+        gha_error "Could not evaluate %s: invalid container name '%s' (not in ./make list)" \
             "$basename_file" "$container" >&2
-        continue
+        exit 1
     fi
 
     variant_tag=$(jq -re '.tag // empty' "$lineage_file" 2>/dev/null || true)
     if [[ -z "$variant_tag" ]]; then
-        gha_warning "Skipping %s: missing 'tag' field" "$basename_file" >&2
-        continue
+        gha_error "Could not evaluate %s: missing 'tag' field" "$basename_file" >&2
+        exit 1
     fi
 
     # Reject tags with control characters before any grep/markdown operations.
     # A tag like "active\npayload" would pass grep -xF (multiple patterns) and
     # reach markdown with incomplete escaping. Validate early to close bypass.
     if [[ "$variant_tag" =~ [[:cntrl:]] ]]; then
-        gha_warning 'Rejecting lineage entry %s: tag contains control chars: %s' \
+        gha_error 'Could not evaluate lineage entry %s: tag contains control chars: %s' \
             "$basename_file" "$variant_tag" >&2
-        continue
+        exit 1
     fi
 
     # Filter to active build-matrix tags only (NORMAL MODE ONLY).
@@ -658,6 +666,7 @@ for lineage_file in "${lineage_files[@]}"; do
 
     base_image_ref=$(jq -re '.base_image_ref // empty' "$lineage_file" 2>/dev/null || true)
     recorded_digest=$(jq -re '.base_image_digest // empty' "$lineage_file" 2>/dev/null || true)
+    base_image_kind=$(jq -re '.base_image_kind // empty' "$lineage_file" 2>/dev/null || true)
     error_reason=""
 
     # Track container ordering
@@ -670,16 +679,10 @@ for lineage_file in "${lineage_files[@]}"; do
     # Determine status
     # ---------------------------------------------------------------------------
 
-    # Fix 4 (baseline-only precedence):
-    # In --baseline-only mode the goal is to baseline ALL pre-v2 entries, including
-    # ones where base_image_ref still contains a placeholder.  So legacy-emit takes
-    # precedence over the placeholder-skip in baseline mode.
-    #
-    # In normal (cron) mode the placeholder-skip MUST run first: a file with ${...}
-    # in base_image_ref and no recorded digest must not be mis-classified as legacy
-    # and trigger a bogus drift PR.
+    # Baseline mode emits only legacy records. It has to take precedence over
+    # producer markers too: otherwise a marker-bearing legacy entry leaks a
+    # non-legacy record despite --baseline-only's documented contract.
     if [[ "$BASELINE_ONLY" == "true" ]]; then
-        # Baseline mode: emit legacy first (even for placeholder refs)
         if [[ -z "$recorded_digest" || "$recorded_digest" == "unresolved" ]]; then
             safe_ref=$(_sanitize_for_json "${base_image_ref:-unknown}")
             variant_json=$(jq -cn \
@@ -688,23 +691,41 @@ for lineage_file in "${lineage_files[@]}"; do
                 --arg status       "legacy" \
                 '{variant_tag: $variant_tag, base_image_ref: $base_ref, status: $status, legacy: true}')
             _container_variants["$container"]+="${variant_json}"$'\n'
-            continue
         fi
+        continue
+    fi
 
-        # Skip if base_image_ref is a placeholder (non-legacy entry with unresolved ref)
-        if [[ "$base_image_ref" =~ \$ ]]; then
-            gha_warning 'Skipping %s: base_image_ref contains unresolved placeholder: %s' \
-                "$basename_file" "$base_image_ref" >&2
-            continue
-        fi
-
-        # In baseline-only mode, suppress real drift records for fully-resolved entries
+    # A scratch final stage is a successful build with no external image to
+    # compare.  Keep it distinct from unchanged: no digest comparison happened.
+    # An unresolved external reference, on the other hand, leaves coverage
+    # unknown and must fail closed.  Both markers take precedence over legacy
+    # handling so producer-intended meaning is never reclassified from fields
+    # that are necessarily absent for these stages.
+    if [[ "$base_image_kind" == "no_external_base" ]]; then
+        variant_json=$(jq -cn \
+            --arg variant_tag "$variant_tag" \
+            --arg status "no_external_base" \
+            '{variant_tag: $variant_tag, status: $status}')
+        _container_variants["$container"]+="${variant_json}"$'\n'
+        continue
+    fi
+    if [[ "$base_image_kind" == "unresolved_external_base" ]]; then
+        safe_ref=$(_sanitize_for_json "$base_image_ref")
+        safe_recorded=$(_sanitize_for_json "$recorded_digest")
+        variant_json=$(jq -cn \
+            --arg variant_tag "$variant_tag" \
+            --arg base_ref "$safe_ref" \
+            --arg recorded_digest "$safe_recorded" \
+            --arg status "error" \
+            --arg error_reason "unresolved_external_base" \
+            '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status, error_reason: $error_reason}')
+        _container_variants["$container"]+="${variant_json}"$'\n'
         continue
     fi
 
     # Normal mode: placeholder-skip runs before legacy check to prevent mis-classification
     if [[ "$base_image_ref" =~ \$ ]]; then
-        gha_warning 'Skipping %s: base_image_ref contains unresolved placeholder: %s' \
+        gha_warning 'Could not evaluate %s: base_image_ref contains unresolved placeholder: %s' \
             "$basename_file" "$base_image_ref" >&2
         # Keep an explicit machine-readable record: without one, an active
         # variant with an unresolved ref vanishes from the result and the
@@ -723,10 +744,16 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
-    # Skip if base_image_ref is unknown or missing (must run BEFORE legacy check
+    # An unknown sentinel and an absent field are separate producer failures.
+    # Both must run before legacy check so neither is rebuilt as a legacy entry.
     # which would otherwise emit a legacy record for a corrupt/unknown entry).
     if [[ -z "$base_image_ref" || "$base_image_ref" == "unknown" ]]; then
-        gha_warning 'Skipping %s: base_image_ref is unknown or missing' "$basename_file" >&2
+        if [[ -z "$base_image_ref" ]]; then
+            error_reason="missing_base_image_ref"
+        else
+            error_reason="unknown_base_image_ref"
+        fi
+        gha_warning 'Could not evaluate %s: base_image_ref is %s' "$basename_file" "$error_reason" >&2
         # Keep an explicit machine-readable record: without one, an active
         # variant with no usable ref vanishes from the result and the workflow
         # can falsely report a clean drift run.  This can be the first record
@@ -743,7 +770,7 @@ for lineage_file in "${lineage_files[@]}"; do
             --arg base_ref        "$safe_ref" \
             --arg recorded_digest "$safe_recorded" \
             --arg status          "error" \
-            --arg error_reason    "missing_base_image_ref" \
+            --arg error_reason    "$error_reason" \
             '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status, error_reason: $error_reason}')
         _container_variants["$container"]+="${variant_json}"$'\n'
         continue
@@ -820,26 +847,35 @@ for lineage_file in "${lineage_files[@]}"; do
         manifest_resolution_handled=true
         _manifest_source_ref=""
         if _manifest_source_ref=$(base_cache_canonical_docker_io_ref "$base_image_ref"); then
-            if _sync_manifest_lookup "$_manifest_source_ref" \
-                && [[ "$_SYNC_MANIFEST_LOOKUP_STATUS" == "synced" ]] \
-                && [[ -n "$_SYNC_MANIFEST_LOOKUP_DIGEST" ]]; then
-                current_digest="$_SYNC_MANIFEST_LOOKUP_DIGEST"
+            if _sync_manifest_lookup "$_manifest_source_ref"; then
+                if [[ "$_SYNC_MANIFEST_LOOKUP_STATUS" == "synced" && -n "$_SYNC_MANIFEST_LOOKUP_DIGEST" ]]; then
+                    current_digest="$_SYNC_MANIFEST_LOOKUP_DIGEST"
+                elif [[ "$_SYNC_MANIFEST_LOOKUP_STATUS" != "synced" ]]; then
+                    probe_failed=true
+                    error_reason="base_sync_failed"
+                else
+                    probe_failed=true
+                    error_reason="base_sync_digest_missing"
+                fi
             else
                 probe_failed=true
-                error_reason="base not synced this cycle (sync failed/absent); drift unknown, re-checked next sync"
+                error_reason="base_sync_record_absent"
             fi
         else
             probe_failed=true
-            error_reason="base not synced this cycle (manifest key unavailable); drift unknown, re-checked next sync"
+            error_reason="base_sync_manifest_key_unavailable"
         fi
     elif [[ -n "${SYNC_MANIFEST_FILE:-}" && "$base_image_ref" == ghcr.io/* ]]; then
         if _sync_manifest_lookup_by_sync_image "$base_image_ref"; then
             manifest_resolution_handled=true
             if [[ "$_SYNC_MANIFEST_LOOKUP_STATUS" == "synced" && -n "$_SYNC_MANIFEST_LOOKUP_DIGEST" ]]; then
                 current_digest="$_SYNC_MANIFEST_LOOKUP_DIGEST"
+            elif [[ "$_SYNC_MANIFEST_LOOKUP_STATUS" != "synced" ]]; then
+                probe_failed=true
+                error_reason="ghcr_mirror_sync_failed"
             else
                 probe_failed=true
-                error_reason="GHCR mirror not synced this cycle (sync failed/digestless); drift unknown, re-checked next sync"
+                error_reason="ghcr_mirror_sync_digest_missing"
             fi
         fi
     fi
@@ -854,15 +890,17 @@ for lineage_file in "${lineage_files[@]}"; do
             current_digest="$_probe_digest_cached_out"
         else
             probe_failed=true
-            if [[ -n "${_PROBE_DIGEST_ERROR:-}" ]]; then
-                error_reason="$_PROBE_DIGEST_ERROR"
+            if [[ "${_PROBE_DIGEST_ERROR:-}" == registry\ did\ not\ answer* ]]; then
+                error_reason="registry_probe_timeout"
+            else
+                error_reason="registry_probe_failed"
             fi
         fi
     fi
 
     if [[ "$probe_failed" == "true" || -z "$current_digest" ]]; then
         if [[ -z "$error_reason" ]]; then
-            error_reason="registry probe failed for ${base_image_ref} (container=${container} tag=${variant_tag})"
+            error_reason="registry_probe_failed"
         fi
         gha_error 'probe-error: %s' "$error_reason" >&2
         safe_ref=$(_sanitize_for_json "$base_image_ref")
@@ -940,10 +978,10 @@ for container in "${_container_order[@]}"; do
     variants_array+="]"
 
     # Validate the variants array is valid JSON
-    if ! printf '%s' "$variants_array" | jq '.' >/dev/null 2>&1; then
-        gha_warning "Skipping container '%s': could not build valid variants JSON" \
+    if ! printf '%s' "$variants_array" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        gha_error "Could not assemble container '%s': variants are not valid JSON" \
             "$container" >&2
-        continue
+        exit 1
     fi
 
     # Compute project-internal deps for this container.
@@ -982,25 +1020,17 @@ for container in "${_container_order[@]}"; do
             gha_error 'Failed to compute internal_deps for %s; cannot make cascade decision' \
                 "$container" >&2
         fi
-        # Emit the container as an error-only record, discarding any already-assembled
-        # variant fragments for this run.  Rationale: internal_deps is unavailable, so
-        # we cannot classify this container as a leaf (empty deps) or consumer (non-empty
-        # deps).  Emitting internal_deps:[] would be an unsafe leaf — it could trigger
-        # auto-merge against a stale parent.  Mirroring __CONTAINER_SKIP__ semantics
-        # (single status:error variant, no internal_deps, excluded from leaf/consumer
-        # matrices) is the only safe option.  Downstream _eval_parent_state State B0
-        # treats the container as in_flux when it appears in CURRENT_ERROR_SET.
+        # Preserve every variant result already assembled for this container and
+        # record the dependency failure at container scope.  It is not a variant:
+        # no base-image probe produced it.  Omitting internal_deps prevents this
+        # failed container from entering either matrix if a future consumer
+        # ignores the coverage failure.
         _dg_err_container_safe=$(_sanitize_for_json "$container")
-        _dg_err_reason_safe=$(_sanitize_for_json "dep_graph_unavailable")
-        _dg_err_variant_json=$(jq -cn \
-            --arg variant_tag     "" \
-            --arg status          "error" \
-            --arg error_reason    "$_dg_err_reason_safe" \
-            '{variant_tag: $variant_tag, status: $status, error_reason: $error_reason}')
         _dg_err_container_json=$(jq -cn \
             --arg container    "$_dg_err_container_safe" \
-            --argjson variants "[${_dg_err_variant_json}]" \
-            '{container: $container, variants: $variants}')
+            --argjson variants "$variants_array" \
+            --arg error_reason "dep_graph_unavailable" \
+            '{container: $container, variants: $variants, error_reason: $error_reason}')
         if [[ "$first_container" == "true" ]]; then
             first_container=false
         else
@@ -1013,7 +1043,10 @@ for container in "${_container_order[@]}"; do
     _internal_deps_json="[]"
     if [[ -n "$_container_internal_deps" ]]; then
         _internal_deps_json=$(printf '%s' "$_container_internal_deps" | \
-            jq -Rc 'split(" ") | map(select(length > 0))' 2>/dev/null || echo "[]")
+            jq -Rc 'split(" ") | map(select(length > 0))' 2>/dev/null) || {
+            gha_error "Could not assemble internal dependencies for '%s'" "$container" >&2
+            exit 1
+        }
     fi
 
     container_json=$(jq -cn \

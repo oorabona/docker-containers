@@ -1752,7 +1752,6 @@ jobs:
       drift_matrix_leaves: ${{ steps.detect.outputs.drift_matrix_leaves }}
       drift_matrix_consumers: ${{ steps.detect.outputs.drift_matrix_consumers }}
       drift_containers_csv: ${{ steps.detect.outputs.drift_containers_csv }}
-      error_containers_csv: ${{ steps.detect.outputs.error_containers_csv }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1806,32 +1805,83 @@ jobs:
           REQUESTED_CONTAINER: ${{ inputs.container }}
           SYNC_MANIFEST_FILE: base-sync-manifest/base-sync-manifest.jsonl
         run: |
+          # Use the repository's complete workflow-command escaper for the
+          # requested-container notice below (including the legacy ##[ marker).
+          source helpers/gha.sh
+
+          # One vocabulary defines every status that completed evaluation. Both
+          # the coverage tally and requested-container gate consume it below.
+          evaluated_drift_statuses() {
+            printf '%s\n' '["drift", "unchanged", "legacy", "no_external_base"]'
+          }
+
+          # The detector protocol is deliberately narrow.  Do not accept JSON merely
+          # because it parses: the matrix builders need unique, shell-safe container
+          # keys and string dependency entries, while coverage needs explicit reasons
+          # for both variant- and container-level failures.
+          validate_drift_result() {
+            local candidate="$1"
+            jq -e '
+              type == "array" and
+              (. as $records |
+                [$records[] | .container] | unique | length == ($records | length)) and
+              all(.[];
+                type == "object" and
+                (.container | type == "string" and test("^[a-z0-9_-]+$")) and
+                (.variants | type == "array" and length > 0) and
+                (if has("error_reason") then
+                   (.error_reason | type == "string" and length > 0) and
+                   (has("internal_deps") | not)
+                 else
+                   (has("internal_deps") and
+                    (.internal_deps | type == "array") and
+                    all(.internal_deps[];
+                      type == "string" and test("^[a-z0-9_-]+$")))
+                 end) and
+                all(.variants[];
+                  type == "object" and
+                  (.variant_tag | type == "string" and length > 0) and
+                  (.status as $status |
+                    ($status | type == "string") and
+                    (["drift", "unchanged", "legacy", "error", "no_external_base"] | index($status) != null)) and
+                  (if .status == "error" then
+                     (has("error_reason") and (.error_reason | type == "string" and length > 0))
+                   else
+                     true
+                   end)))
+            ' <<<"$candidate" >/dev/null
+          }
+
           # Keep the closing annotation truthful when the detector has error
           # records.  Its values are counts calculated from JSON only: never
           # interpolate lineage-derived strings into a workflow command.
           emit_drift_notice() {
             local notice_json="$1"
             local mode="${2:-normal}"
-            local drift_count error_count evaluated_count variant_count
+            local drift_count unavailable_count compared_count record_count evaluated_statuses
+
+            evaluated_statuses=$(evaluated_drift_statuses)
 
             drift_count=$(printf '%s' "$notice_json" | jq \
               '[.[] | select(.variants | any(.status == "drift" or .status == "legacy"))] | length')
             # Both coverage counts intentionally derive from notice_json.  The
             # coverage decision must describe one population, even when the
             # later PR matrix is scoped to a requested container.
-            error_count=$(printf '%s' "$notice_json" | jq \
-              '[.[] | .variants[] | select(.status == "error")] | length')
-            evaluated_count=$(printf '%s' "$notice_json" | jq \
-              '[.[] | .variants[] | select(.status != "error")] | length')
-            variant_count=$((error_count + evaluated_count))
+            unavailable_count=$(printf '%s' "$notice_json" | jq \
+              '([.[] | select(has("error_reason"))] +
+                [.[] | .variants[] | select(.status == "error")]) | length')
+            compared_count=$(printf '%s' "$notice_json" | jq --argjson evaluated_statuses "$evaluated_statuses" \
+              '[.[] | .variants[] |
+                select(.status as $status | $evaluated_statuses | index($status) != null)] | length')
+            record_count=$(printf '%s' "$notice_json" | jq '[.[] | .variants[]] | length')
 
-            if [[ "$error_count" -gt 0 ]]; then
-              echo "::notice::Base image digest drift coverage incomplete: ${evaluated_count} variant(s) evaluated; ${error_count} could not be evaluated"
+            if [[ "$unavailable_count" -gt 0 ]]; then
+              echo "::notice::Base image digest drift coverage incomplete: ${compared_count} comparison record(s) evaluated; ${unavailable_count} coverage record(s) could not be evaluated"
               # A successful detector process only means its JSON is valid.  An
               # error record means that JSON does not cover every active variant,
               # so fail this consumer step after preserving the coverage notice.
               return 1
-            elif [[ "$variant_count" -eq 0 ]]; then
+            elif [[ "$record_count" -eq 0 ]]; then
               echo "::notice::No base image digest drift evaluation was performed — nothing to evaluate"
             elif [[ "$mode" == "coverage" ]]; then
               # The coverage gate runs before any scoped success path.  A
@@ -1851,28 +1901,29 @@ jobs:
           consume_drift_result() {
             local drift_json="$1"
             local requested_container="$2"
-            local drift_containers_all drift_containers_csv error_containers_csv
+            local drift_containers_all drift_containers_csv
             local drift_containers drift_matrix drift_matrix_leaves drift_matrix_consumers
-            local population_variant_count
+            local population_record_count evaluated_statuses
 
             # Coverage is deliberately decided from the unfiltered result
             # before a requested-container scope can take a successful exit.
             emit_drift_notice "$drift_json" coverage || return 1
-            population_variant_count=$(printf '%s' "$drift_json" | jq \
+            population_record_count=$(printf '%s' "$drift_json" | jq \
               '[.[] | .variants[]] | length')
 
             # An empty unfiltered population was already announced by the
             # coverage decision.  Publish every advertised empty output and
             # stop before a requested-container branch can claim it is clean.
-            if [[ "$population_variant_count" -eq 0 ]]; then
-              {
-                echo "drift_containers=[]"
-                echo "drift_matrix=[]"
-                echo "drift_matrix_leaves=[]"
-                echo "drift_matrix_consumers=[]"
-                echo "drift_containers_csv="
-                echo "error_containers_csv="
-              } >> "$GITHUB_OUTPUT"
+            if [[ "$population_record_count" -eq 0 ]]; then
+              if [[ -n "$requested_container" ]]; then
+                echo "::error::Requested container $(_escape_gha_command "$requested_container") has no evaluated drift variants" >&2
+                return 1
+              fi
+              gha_output drift_containers '[]'
+              gha_output drift_matrix '[]'
+              gha_output drift_matrix_leaves '[]'
+              gha_output drift_matrix_consumers '[]'
+              gha_output drift_containers_csv ''
               return 0
             fi
 
@@ -1884,31 +1935,19 @@ jobs:
             # containing only "wordpress", causing State B to mark a still-drifting
             # "php" parent as stable and auto-merging the child against a stale image.
             drift_containers_all=$(echo "$drift_json" | jq -c \
-              '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
-              || echo "[]")
+              '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]')
             drift_containers_csv=$(echo "$drift_containers_all" | jq -r 'join(",")')
-            echo "drift_containers_csv=${drift_containers_csv}" >> "$GITHUB_OUTPUT"
-
-            # Compute repo-wide error_containers_csv from the UNFILTERED drift_json.
-            # Containers with ANY variant status == "error" are those whose probe FAILED
-            # this run — their actual drift state is UNKNOWN.  Plumbed as CURRENT_ERROR_SET
-            # into the cascade-labels step so _eval_parent_state can treat an errored parent
-            # as in_flux (conservative: wait rather than auto-merge against unknown state).
-            error_containers_csv=$(echo "$drift_json" | jq -r \
-              '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
-              || echo "")
-            echo "error_containers_csv=${error_containers_csv}" >> "$GITHUB_OUTPUT"
+            gha_output drift_containers_csv "$drift_containers_csv"
 
             if [[ -n "$requested_container" ]]; then
               drift_json=$(echo "$drift_json" | jq --arg c "$requested_container" '[.[] | select(.container == $c)]')
-              if [[ "$(echo "$drift_json" | jq 'length')" == "0" ]]; then
-                # Escape for GHA ::notice:: — %0A in value would inject a new command.
-                _escaped_container="${requested_container//%/%25}"
-                _escaped_container="${_escaped_container//$'\n'/%0A}"
-                _escaped_container="${_escaped_container//$'\r'/%0D}"
-                echo "::notice::No drift detected for requested container ${_escaped_container}"
-                echo "drift_containers=[]" >> "$GITHUB_OUTPUT"
-                return 0
+              evaluated_statuses=$(evaluated_drift_statuses)
+              scoped_record_count=$(printf '%s' "$drift_json" | jq --argjson evaluated_statuses "$evaluated_statuses" \
+                '[.[] | .variants[] |
+                  select(.status as $status | $evaluated_statuses | index($status) != null)] | length')
+              if [[ "$scoped_record_count" -eq 0 ]]; then
+                echo "::error::Requested container $(_escape_gha_command "$requested_container") has no evaluated drift variants" >&2
+                return 1
               fi
             fi
 
@@ -1916,17 +1955,15 @@ jobs:
             # from the (possibly scoped) drift_json.  Used to build the PR-opening matrix;
             # cascade gating uses drift_containers_csv computed above from the unfiltered set.
             drift_containers=$(echo "$drift_json" | jq -c \
-              '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
-              || echo "[]")
-            echo "drift_containers=${drift_containers}" >> "$GITHUB_OUTPUT"
+              '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]')
+            gha_output drift_containers "$drift_containers"
 
             # Build enriched matrix: include internal_deps_csv per container (used for leaf/consumer split)
             drift_matrix=$(echo "$drift_json" | jq -c \
               '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) |
                 {container: .container,
-                 internal_deps_csv: ((.internal_deps // []) | join(","))}]' \
-              || echo "[]")
-            echo "drift_matrix=${drift_matrix}" >> "$GITHUB_OUTPUT"
+                 internal_deps_csv: ((.internal_deps // []) | join(","))}]')
+            gha_output drift_matrix "$drift_matrix"
 
             # Two-job split (leaves vs consumers):
             #   drift_matrix_leaves   — containers with no project-internal deps
@@ -1937,12 +1974,12 @@ jobs:
             #     created before any consumer matrix item starts.
             drift_matrix_leaves=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv == "")]')
             drift_matrix_consumers=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv != "")]')
-            echo "drift_matrix_leaves=${drift_matrix_leaves}" >> "$GITHUB_OUTPUT"
-            echo "drift_matrix_consumers=${drift_matrix_consumers}" >> "$GITHUB_OUTPUT"
+            gha_output drift_matrix_leaves "$drift_matrix_leaves"
+            gha_output drift_matrix_consumers "$drift_matrix_consumers"
 
             # The empty result was already announced by the coverage decision;
             # do not turn it into a clean-drift notice here.
-            if [[ "$population_variant_count" -gt 0 ]]; then
+            if [[ "$population_record_count" -gt 0 ]]; then
               emit_drift_notice "$drift_json"
             fi
           }
@@ -1951,16 +1988,21 @@ jobs:
           detect_rc=0
           drift_json=$(./scripts/detect-base-digest-drift.sh 2>/tmp/drift-detect-stderr.log) || detect_rc=$?
 
+          replay_drift_stderr() {
+            local stderr_file="$1"
+            [[ -s "$stderr_file" ]] || return 0
+
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              printf '%s\n' "$line"
+            done < "$stderr_file" >&2
+          }
+
           # Always replay buffered stderr — per-variant ::error:: diagnostics must
           # be visible regardless of whether the detector succeeded or failed.
           # Under bash -e, the bare command substitution above would abort the step
           # immediately on non-zero exit, leaving the replay block unreachable.
           # Capturing the exit code first ensures the replay always runs.
-          if [[ -s /tmp/drift-detect-stderr.log ]]; then
-            while IFS= read -r line; do
-              printf '%s\n' "$line"
-            done < /tmp/drift-detect-stderr.log >&2
-          fi
+          replay_drift_stderr /tmp/drift-detect-stderr.log
 
           if [[ $detect_rc -ne 0 ]]; then
             echo "::error::Drift detector failed with exit code $detect_rc" >&2
@@ -1969,21 +2011,22 @@ jobs:
 
           echo "$drift_json" > /tmp/drift.json
 
-          # Surface unavailable-variant count; per-variant diagnostics are already
+          # Validate the protocol before even counting records.  A syntactically
+          # valid object or an unknown status is not a completed drift scan.
+          if ! validate_drift_result "$drift_json"; then
+            echo "::error::Drift JSON violates the detector result schema" >&2
+            exit 1
+          fi
+
+          # Surface unavailable-record count; per-variant diagnostics are already
           # emitted by the script itself (escaped) and passed through via stderr above.
           # Do NOT re-compose warning lines from drift_json fields here — those fields
           # are untrusted lineage data and would reintroduce GHA command injection.
-          error_count=$(echo "$drift_json" | jq '[.[] | .variants[] | select(.status == "error")] | length' || echo 0)
-          if [[ "$error_count" -gt 0 ]]; then
-            echo "::warning::${error_count} variant(s) could not be evaluated — drift may be undetected for those variants (see diagnostics above)"
-          fi
-
-          # Validate drift_json shape before downstream use.  An invalid JSON
-          # payload (e.g. from a poisoned lineage entry) must fail loudly rather
-          # than silently masking drift as "no containers need rebuild".
-          if ! jq_err=$(jq -e . <<<"$drift_json" 2>&1 >/dev/null); then
-            echo "::error::Drift JSON is invalid; lineage may be corrupted: ${jq_err}" >&2
-            exit 1
+          unavailable_record_count=$(echo "$drift_json" | jq \
+            '([.[] | select(has("error_reason"))] +
+              [.[] | .variants[] | select(.status == "error")]) | length')
+          if [[ "$unavailable_record_count" -gt 0 ]]; then
+            echo "::warning::${unavailable_record_count} coverage record(s) could not be evaluated — drift may be undetected (see diagnostics above)"
           fi
 
           # The consumer owns the coverage decision as well as the scoped PR
@@ -2571,10 +2614,9 @@ jobs:
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
           INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
           CURRENT_DRIFT_SET: ${{ needs.detect-digest-drift.outputs.drift_containers_csv }}
-          CURRENT_ERROR_SET: ${{ needs.detect-digest-drift.outputs.error_containers_csv }}
         run: |
-          # Four-state parent evaluation: in_flux | ready
-          # Ordering: A → B0 → B → C
+          # Three-state parent evaluation: in_flux | ready
+          # Ordering: A → B → C
           #
           # STATE A: open drift PR → in_flux (parent is still being integrated)
           #   Ground truth for "is there pending parent work?" — queried FIRST because it
@@ -2583,15 +2625,9 @@ jobs:
           #   is now derived from the UNFILTERED drift_json (repo-wide truth), but State A
           #   runs first anyway for safety.
           #
-          # STATE B0: parent probe errored this run → in_flux (conservative)
-          #   A probe error means the parent's actual drift state is UNKNOWN — we cannot
-          #   distinguish "stable" from "drifting but unreachable".  Treating an unknown
-          #   parent as ready risks auto-merging a child against a stale parent image.
-          #   Conservative answer: wait (same as in_flux) until the next successful probe.
-          #
           # STATE B: parent not in CURRENT_DRIFT_SET → stable (ready); OR parent IS in
           #   CURRENT_DRIFT_SET but no open PR → conservative in_flux.
-          #   Only safe AFTER the open-PR check (A) and error check (B0): no open PR and
+          #   Only safe AFTER the open-PR check (A): no open PR and
           #   no probe error means the parent was cleanly stable this run.
           #   CURRENT_DRIFT_SET is now repo-wide (Defect E fix), so the scoped-dispatch
           #   false-negative that previously appeared here is eliminated.
@@ -2631,26 +2667,8 @@ jobs:
               echo "in_flux"
               return 0
             fi
-            # STATE B0: Did the parent probe ERROR this run?
-            # Only reached when there is no open drift PR (State A cleared above).
-            # An error means we genuinely don't know whether the parent's image matches
-            # what the child consumes; safer to wait than auto-merge against unknown state.
-            if [[ -n "${CURRENT_ERROR_SET:-}" ]]; then
-              local _parent_errored=0
-              for _c in ${CURRENT_ERROR_SET//,/ }; do
-                if [[ "$_c" == "$parent" ]]; then
-                  _parent_errored=1
-                  break
-                fi
-              done
-              if [[ $_parent_errored -eq 1 ]]; then
-                echo "::notice::Parent ${parent} probe errored this run — waiting conservatively"
-                echo "in_flux"
-                return 0
-              fi
-            fi
             # STATE B: Is the parent in the current drift set?
-            # Only reached when there is no open drift PR (A) and no probe error (B0).
+            # Only reached when there is no open drift PR (State A).
             # If the parent is absent from CURRENT_DRIFT_SET, it was rebuilt in a prior run —
             # GHCR already has the stable image. Short-circuit to ready.
             if [[ -n "${CURRENT_DRIFT_SET:-}" ]]; then

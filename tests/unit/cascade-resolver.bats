@@ -594,16 +594,15 @@ _run_identify_parent() {
 }
 
 # ---------------------------------------------------------------------------
-# Four-state parent evaluation (_eval_parent_state) — open PR first, error-safe
+# Three-state parent evaluation (_eval_parent_state) — open PR first
 #
 # The _eval_parent_state function (defined in "Apply cascade labels (strict)"
 # in upstream-monitor.yaml) emits 'in_flux' or 'ready' on stdout, with
 # notices/warnings on GHA annotation lines.
 #
-# Ordering (A → B0 → B → C):
+# Ordering (A → B → C):
 #   State A:  open drift PR → in_flux  (ground truth — runs FIRST, independent of drift-set scope)
-#   State B0: parent probe errored this run → in_flux  (conservative: unknown state must not merge)
-#   State B:  parent not in CURRENT_DRIFT_SET → ready  (only safe after A+B0 confirm clean)
+#   State B:  parent not in CURRENT_DRIFT_SET → ready  (only safe after A confirms clean)
 #   State C:  parent drifting, no PR yet → in_flux  (conservative wait)
 #
 # Mock strategy:
@@ -611,86 +610,17 @@ _run_identify_parent() {
 #   - RUN_STARTED_AT: set per-test to control the timestamp comparison
 # ---------------------------------------------------------------------------
 
-# Body of _eval_parent_state extracted verbatim from the workflow step.
-# Variables on the calling side: parent=$1; gh is mocked.
-EVAL_PARENT_STATE_BODY='
-_eval_parent_state() {
-  local parent="$1"
-  # STATE A: open drift PR → in_flux
-  # Runs FIRST — ground truth independent of how CURRENT_DRIFT_SET was scoped.
-  local open_pr _open_pr_raw _open_pr_rc
-  # Capture gh output separately so head cannot mask a gh API/auth failure —
-  # this step has no pipefail, so a pipeline'"'"'s exit status is the last
-  # command'"'"'s (head), not gh'"'"'s.  Splitting capture and head-1 makes gh rc
-  # the authoritative failure signal.
-  _open_pr_raw=$(gh pr list \
-    --head "update/base-digest-${parent}" \
-    --label "base-digest-drift" \
-    --base master \
-    --state open \
-    --json number,isCrossRepository \
-    --jq '"'"'.[] | select(.isCrossRepository == false) | .number'"'"' 2>&1)
-  _open_pr_rc=$?
-  if [[ $_open_pr_rc -ne 0 ]]; then
-    echo "::error::gh pr list failed while checking parent ${parent} open-PR state (rc=${_open_pr_rc}): ${_open_pr_raw}"
-    return 2
-  fi
-  open_pr=$(printf '"'"'%s\n'"'"' "$_open_pr_raw" | head -1)
-  if [[ -n "$open_pr" ]]; then
-    echo "::notice::Parent ${parent} has open drift PR #${open_pr}"
-    echo "in_flux"
-    return 0
-  fi
-  # STATE B0: Did the parent probe ERROR this run?
-  # Only reached when there is no open drift PR (State A cleared above).
-  # An error means we genuinely do not know whether the parent image matches
-  # what the child consumes; safer to wait than auto-merge against unknown state.
-  if [[ -n "${CURRENT_ERROR_SET:-}" ]]; then
-    local _parent_errored=0
-    for _c in ${CURRENT_ERROR_SET//,/ }; do
-      if [[ "$_c" == "$parent" ]]; then
-        _parent_errored=1
-        break
-      fi
-    done
-    if [[ $_parent_errored -eq 1 ]]; then
-      echo "::notice::Parent ${parent} probe errored this run — waiting conservatively"
-      echo "in_flux"
-      return 0
-    fi
-  fi
-  # STATE B: parent not in CURRENT_DRIFT_SET → stable, ready
-  # Only safe after State A (no open PR) and State B0 (no probe error).
-  if [[ -n "${CURRENT_DRIFT_SET:-}" ]]; then
-    local _parent_drifting=0
-    for _c in ${CURRENT_DRIFT_SET//,/ }; do
-      if [[ "$_c" == "$parent" ]]; then
-        _parent_drifting=1
-        break
-      fi
-    done
-    if [[ $_parent_drifting -eq 0 ]]; then
-      echo "::notice::Parent ${parent} has no open drift PR and is not in the current drift set — GHCR image is stable, ready"
-      echo "ready"
-      return 0
-    fi
-    # Parent IS in the drift snapshot, no open PR → conservative in_flux.
-    # A tag-specific GHCR freshness check is not safe here: the package-wide
-    # /versions API returns the most-recently-CREATED version regardless of tag,
-    # so a concurrent push of a different tag would yield a false-ready.
-    # See ADR-011 §Known Limitations.
-    echo "::notice::Parent ${parent} is drifting this run, no open PR yet — waiting conservatively"
-    echo "in_flux"
-    return 0
-  fi
-  # STATE C (conservative in_flux): CURRENT_DRIFT_SET unset -- no snapshot available.
-  # Cannot determine parent state; wait for the next successful cron run.
-  echo "::notice::Parent ${parent} is drifting this run but has no open PR yet — waiting"
-  echo "in_flux"
-  return 0
+# Extract the production function from the workflow step on every test run.
+# This is intentionally not a maintained copy: assertions exercise exactly the
+# function the workflow executes, with only gh and environment inputs mocked.
+_extract_eval_parent_state() {
+    local workflow_run function_body
+    workflow_run=$(yq -r '.jobs."open-drift-prs-consumers".steps[] | select(.name == "Apply cascade labels (strict)") | .run' \
+        "$PROJECT_ROOT/.github/workflows/upstream-monitor.yaml") || return 1
+    function_body=$(sed -n '/^_eval_parent_state() {/,/^}/p' <<<"$workflow_run")
+    [ -n "$function_body" ] || return 1
+    printf '%s' "$function_body"
 }
-_eval_parent_state "$PARENT_ARG"
-'
 
 # Writes a mock gh for three-state tests.
 # $1 = mode:
@@ -703,6 +633,14 @@ _eval_parent_state "$PARENT_ARG"
 # the package-wide GHCR check was reverted (not tag-specific; see ADR-011 §Known Limitations).
 _setup_three_state_mock() {
     local mode="$1"
+    case "$mode" in
+        open-pr|open-pr-fork|open-pr-no-label|no-open-pr|pr-list-error)
+            ;;
+        *)
+            echo "unknown three-state mock mode: $mode" >&2
+            return 1
+            ;;
+    esac
     mkdir -p "$TEST_TEMP_DIR/bin"
     local calls_log="$TEST_TEMP_DIR/gh_calls.log"
     touch "$calls_log"
@@ -736,10 +674,18 @@ _setup_three_state_mock() {
     export PATH="$TEST_TEMP_DIR/bin:$PATH"
 }
 
+@test "three-state mock rejects an unknown mode" {
+    run _setup_three_state_mock "ghcr-stale"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"unknown three-state mock mode"* ]]
+}
+
 _run_eval_parent_state() {
     local parent="$1"
     local script="$TEST_TEMP_DIR/eval_parent_state.sh"
-    printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$EVAL_PARENT_STATE_BODY" > "$script"
+    local function_body
+    function_body=$(_extract_eval_parent_state) || return 1
+    printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n_eval_parent_state "$PARENT_ARG"\n' "$function_body" > "$script"
     chmod +x "$script"
     PARENT_ARG="$parent" run "$script"
 }
@@ -876,7 +822,8 @@ _run_eval_parent_state() {
     # Structural invariant: the body must capture gh output into a variable
     # (explicit rc check) BEFORE applying head -1.  The pipe-inside-if-guard
     # anti-pattern is structurally absent.
-    local body="$EVAL_PARENT_STATE_BODY"
+    local body
+    body=$(_extract_eval_parent_state)
     # New pattern: explicit rc variable present
     [[ "$body" == *"_open_pr_rc"* ]]
     # Old anti-pattern must be absent: gh pr list ... | head -1 inside the if guard
@@ -1218,104 +1165,6 @@ MOCK_BODY
 }
 
 # ---------------------------------------------------------------------------
-# State B0: probe error → in_flux (Defect L regression lock)
-#
-# When a parent's digest probe errored this run (status=error), the parent's
-# actual drift state is UNKNOWN.  The prior logic excluded error containers from
-# drift_containers_csv, so State B would see the parent absent from the drift set
-# and return ready — auto-merging the child against a parent whose image may be
-# stale.  State B0 closes this gap: a parent in CURRENT_ERROR_SET is treated as
-# in_flux regardless of the drift set.
-#
-# Mutation guards:
-#   removing State B0 → errored parent gets ready (the original defect)
-#            (test "errored parent in CURRENT_ERROR_SET → in_flux, not ready")
-#   inverting _parent_errored check → errored parent gets ready
-#            (test "errored parent → in_flux even when absent from CURRENT_DRIFT_SET")
-#   State A must still short-circuit before B0
-#            (test "errored parent with open PR → in_flux via State A, not B0")
-# ---------------------------------------------------------------------------
-
-@test "parent in CURRENT_ERROR_SET → in_flux (probe error treated as unknown)" {
-    # Parent probe failed this run; no open PR (State A cleared).
-    # State B0 must return in_flux — we do not know if the parent is stable.
-    _setup_three_state_mock "ghcr-stale"
-    CURRENT_ERROR_SET="debian" CURRENT_DRIFT_SET="" _run_eval_parent_state "debian"
-    [ "$status" -eq 0 ]
-    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    [ "$state_token" = "in_flux" ]
-}
-
-@test "errored parent → emits ::notice:: with probe-error message" {
-    _setup_three_state_mock "ghcr-stale"
-    CURRENT_ERROR_SET="debian" CURRENT_DRIFT_SET="" _run_eval_parent_state "debian"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"::notice::"* ]]
-    [[ "$output" == *"probe errored"* ]]
-}
-
-@test "errored parent not in CURRENT_DRIFT_SET → in_flux (not short-circuited to ready by State B)" {
-    # This is the exact defect: error excluded from drift set → State B saw absent → ready.
-    # With State B0, error set is checked BEFORE the drift set, so ready is never reached.
-    _setup_three_state_mock "ghcr-stale"
-    CURRENT_ERROR_SET="debian" CURRENT_DRIFT_SET="wordpress,ansible" _run_eval_parent_state "debian"
-    [ "$status" -eq 0 ]
-    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    [ "$state_token" = "in_flux" ]
-    # State B must not have emitted "stable, ready" for the errored parent
-    ! [[ "$output" == *"GHCR image is stable, ready"* ]]
-}
-
-@test "parent with open PR → in_flux via State A (not B0)" {
-    # State A runs before B0: an open PR is caught by State A, B0 is never reached.
-    _setup_three_state_mock "open-pr"
-    CURRENT_ERROR_SET="debian" CURRENT_DRIFT_SET="" _run_eval_parent_state "debian"
-    [ "$status" -eq 0 ]
-    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    [ "$state_token" = "in_flux" ]
-    # Must have used State A, not State B0
-    [[ "$output" == *"has open drift PR"* ]]
-    ! [[ "$output" == *"probe errored"* ]]
-}
-
-@test "empty CURRENT_ERROR_SET → State B0 skipped, falls through to State B" {
-    # When CURRENT_ERROR_SET is empty/unset, B0 is a no-op.
-    # Parent absent from drift set → State B returns ready.
-    _setup_three_state_mock "ghcr-stale"
-    CURRENT_ERROR_SET="" CURRENT_DRIFT_SET="wordpress" _run_eval_parent_state "php"
-    [ "$status" -eq 0 ]
-    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    [ "$state_token" = "ready" ]
-}
-
-@test "unset CURRENT_ERROR_SET → State B0 skipped, falls through to State B" {
-    # Same as above but CURRENT_ERROR_SET is unset (not just empty).
-    _setup_three_state_mock "ghcr-stale"
-    CURRENT_DRIFT_SET="wordpress" _run_eval_parent_state "php"
-    [ "$status" -eq 0 ]
-    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    [ "$state_token" = "ready" ]
-}
-
-@test "body contains CURRENT_ERROR_SET loop (State B0 is present)" {
-    # Structural invariant: State B0 must be present in the function body.
-    local body="$EVAL_PARENT_STATE_BODY"
-    [[ "$body" == *"CURRENT_ERROR_SET"* ]]
-    [[ "$body" == *"_parent_errored"* ]]
-}
-
-@test "B0 appears before State B loop in function body (ordering invariant)" {
-    # Structural invariant: CURRENT_ERROR_SET check must precede CURRENT_DRIFT_SET check.
-    local body="$EVAL_PARENT_STATE_BODY"
-    local b0_pos b_pos
-    b0_pos=$(echo "$body" | grep -n "_parent_errored=0" | head -1 | cut -d: -f1)
-    b_pos=$(echo "$body" | grep -n "_parent_drifting=0" | head -1 | cut -d: -f1)
-    [[ -n "$b0_pos" ]]
-    [[ -n "$b_pos" ]]
-    [ "$b0_pos" -lt "$b_pos" ]
-}
-
-# ---------------------------------------------------------------------------
 # State B: stable-parent deadlock fix (formerly State 0)
 #
 # When CURRENT_DRIFT_SET is set and the parent is NOT in it AND there is no
@@ -1336,7 +1185,7 @@ MOCK_BODY
     # CURRENT_DRIFT_SET contains wordpress, NOT php.
     # State A (open-PR) returns empty → State B must return ready for php without
     # calling the GHCR API.
-    _setup_three_state_mock "ghcr-stale"
+    _setup_three_state_mock "no-open-pr"
     CURRENT_DRIFT_SET="wordpress,ansible" _run_eval_parent_state "php"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
@@ -1347,7 +1196,7 @@ MOCK_BODY
 }
 
 @test "StateB: parent not in drift set → emits ::notice:: with stable-parent message" {
-    _setup_three_state_mock "ghcr-stale"
+    _setup_three_state_mock "no-open-pr"
     CURRENT_DRIFT_SET="wordpress" _run_eval_parent_state "php"
     [ "$status" -eq 0 ]
     [[ "$output" == *"::notice::"* ]]
@@ -1391,7 +1240,8 @@ MOCK_BODY
 
 @test "StateB: body contains CURRENT_DRIFT_SET loop (State B is present)" {
     # State B MUST be present in the function body.
-    local body="$EVAL_PARENT_STATE_BODY"
+    local body
+    body=$(_extract_eval_parent_state)
     [[ "$body" == *"CURRENT_DRIFT_SET"* ]]
     [[ "$body" == *"_parent_drifting"* ]]
 }
@@ -1432,7 +1282,8 @@ MOCK_BODY
 @test "State A runs before State B (open-PR check precedes drift-set loop in body)" {
     # Structural invariant: the gh pr list call must appear before the CURRENT_DRIFT_SET
     # iteration loop (_parent_drifting loop).
-    local body="$EVAL_PARENT_STATE_BODY"
+    local body
+    body=$(_extract_eval_parent_state)
     local pr_list_pos drift_loop_pos
     pr_list_pos=$(echo "$body" | grep -n "gh pr list" | head -1 | cut -d: -f1)
     # Use the iteration variable assignment, not the if-condition (avoids matching comments)
@@ -1499,7 +1350,8 @@ MOCK_BODY
     # Architectural regression lock: the GHCR /versions API must NOT be present in
     # the function body.  If someone re-introduces it without per-tag label support,
     # this test catches the regression immediately.
-    local body="$EVAL_PARENT_STATE_BODY"
+    local body
+    body=$(_extract_eval_parent_state)
     ! echo "$body" | grep -q "packages/container"
 }
 
