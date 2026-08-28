@@ -42,7 +42,9 @@ run_action() {
     local output_file="$TEST_DIR/github-output"
     : > "$output_file"
     GITHUB_OUTPUT="$output_file" bash ./run-check-versions.sh
+    local action_status=$?
     cat "$output_file"
+    return "$action_status"
 }
 
 @test "composite action excludes declared non-actionable updates" {
@@ -54,22 +56,22 @@ run_action() {
     [[ "$output" == *"update_count=0"* ]]
 }
 
-@test "composite action fails closed when actionable is absent" {
+@test "composite action rejects an entry when actionable is absent" {
     write_make_result '[{"container":"future-container","current_version":"1.0.0","latest_version":"1.1.0","update_available":true,"status":"update-available"}]'
 
     run run_action
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"containers_with_updates=[]"* ]]
-    [[ "$output" == *"update_count=0"* ]]
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"invalid or unauthorized version_info entry"* ]]
+    [[ "$output" != *"update_count="* ]]
 }
 
-@test "composite action fails closed when actionable is the string true" {
+@test "composite action rejects an entry when actionable is the string true" {
     write_make_result '[{"container":"string-actionable","current_version":"1.0.0","latest_version":"1.1.0","update_available":true,"actionable":"true","registry_lookup":"matched","status":"update-available"}]'
 
     run run_action
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"containers_with_updates=[]"* ]]
-    [[ "$output" == *"update_count=0"* ]]
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"invalid or unauthorized version_info entry"* ]]
+    [[ "$output" != *"update_count="* ]]
 }
 
 # Positive control for the two exclusion tests above. Without it a mutation that
@@ -90,4 +92,58 @@ run_action() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"containers_with_updates=[]"* ]]
     [[ "$output" == *"Registry lookup did not conclude"* ]]
+}
+
+@test "composite action rejects an entry without a container" {
+    write_make_result '[{"actionable":true,"update_available":true,"registry_lookup":"matched"}]'
+
+    run run_action
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"invalid or unauthorized version_info entry"* ]]
+    [[ "$output" != *"update_count="* ]]
+}
+
+@test "composite action rejects actionable entries without an available update" {
+    write_make_result '[{"container":"contradiction","update_available":false,"actionable":true,"registry_lookup":"matched"}]'
+
+    run run_action
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"invalid or unauthorized version_info entry"* ]]
+    [[ "$output" != *"update_count="* ]]
+}
+
+@test "composite action rejects actionable entries whose lookup did not conclude" {
+    write_make_result '[{"container":"failed-lookup","update_available":true,"actionable":true,"registry_lookup":"failed"}]'
+
+    run run_action
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"invalid or unauthorized version_info entry"* ]]
+    [[ "$output" != *"update_count="* ]]
+}
+
+@test "composite action rejects actionable entries without a concluded lookup" {
+    write_make_result '[{"container":"missing-lookup","update_available":true,"actionable":true}]'
+
+    run run_action
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"invalid or unauthorized version_info entry"* ]]
+    [[ "$output" != *"update_count="* ]]
+}
+
+@test "composite action reports zero updates for a well-formed empty array" {
+    write_make_result '[]'
+
+    run run_action
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"containers_with_updates=[]"* ]]
+    [[ "$output" == *"update_count=0"* ]]
+}
+
+@test "composite action fails when check-updates emits truncated JSON" {
+    write_make_result '[{"container":"truncated"'
+
+    run run_action
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"invalid or unauthorized version_info entry"* ]]
+    [[ "$output" != *"update_count=0"* ]]
 }

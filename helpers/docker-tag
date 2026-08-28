@@ -40,6 +40,13 @@ function docker-tag-matching-tags() {
   local timeout_seconds=${3:-120}
   local registry_url raw all_tags matching_tags filtered_tags rc
 
+  # An absent filter cannot answer which published tags are relevant.  Keep it
+  # in the same failed-enumeration state rather than letting grep match all
+  # tags with an empty expression.
+  if [[ -z "$pattern" ]]; then
+    return 3
+  fi
+
   registry_url=$(docker-tag-registry-url "$image")
   raw=$(docker-tag-list-raw "$registry_url" "$timeout_seconds")
   rc=$?
@@ -59,7 +66,7 @@ function docker-tag-matching-tags() {
     return 3
   fi
 
-  matching_tags=$(printf '%s\n' "$all_tags" | grep -E "$pattern" 2>/dev/null)
+  matching_tags=$(printf '%s\n' "$all_tags" | grep -E -- "$pattern" 2>/dev/null)
   rc=$?
   if [ "$rc" -eq 1 ]; then
     return 0
@@ -100,21 +107,34 @@ function docker-tag-digest() {
   raw=$(timeout "$timeout_seconds" docker run --rm "$SKOPEO_IMAGE" inspect "$ref" 2>/dev/null)
   rc=$?
   if [ "$rc" -ne 0 ]; then
-    return 1
+    return 3
   fi
 
-  digest=$(printf '%s' "$raw" | jq -r '.Digest // empty' 2>/dev/null)
+  digest=$(printf '%s' "$raw" | jq -er '
+    if (.Digest | type) == "string" and (.Digest | length) > 0 then
+      .Digest
+    else
+      error("inspect output lacks a digest")
+    end
+  ' 2>/dev/null)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    return 3
+  fi
+
   if [[ -n "$digest" && "$digest" != "null" ]]; then
     printf '%s\n' "$digest"
     return 0
   fi
 
-  return 1
+  return 3
 }
 
 function latest-docker-tag() {
   local image=$1
   local pattern=$2
+
+  [[ -n "$pattern" ]] || return 3
   
   # Get all tags using skopeo and filter with pattern.
   # timeout 120: cold image pull + list-tags can take 30-60s; 120s is generous
@@ -143,6 +163,12 @@ function check-docker-tag() {
   local image=$1
   local tag_pattern=$2
   local registry_url
+
+  # An absent filter identifies no tag.  Refuse it before the registry query,
+  # consistent with docker-tag-matching-tags.
+  if [[ -z "$tag_pattern" ]]; then
+    return 3
+  fi
   
   registry_url=$(docker-tag-registry-url "$image")
   
@@ -154,7 +180,7 @@ function check-docker-tag() {
   while [ $retry_count -lt $max_retries ]; do
     result=$(docker run --rm "$SKOPEO_IMAGE" list-tags "$registry_url" 2>/dev/null | \
       jq -r '.Tags[]? // empty' 2>/dev/null | \
-      grep -E "$tag_pattern" 2>/dev/null | \
+      grep -E -- "$tag_pattern" 2>/dev/null | \
       head -n1)
     
     if [[ -n "$result" && "$result" != "null" ]]; then
@@ -178,15 +204,27 @@ function resolve-numeric-alias() {
   local image=$1
   local tag=$2
   local numeric_pattern=$3
-  local target_digest candidates candidate candidate_digest
+  local target_digest candidates candidate candidate_digest rc
 
-  target_digest=$(docker-tag-digest "$image" "$tag" 30) || return 1
-  candidates=$(docker-tag-matching-tags "$image" "$numeric_pattern" 120) || return 1
+  [[ -n "$numeric_pattern" ]] || return 3
+
+  target_digest=$(docker-tag-digest "$image" "$tag" 30) || return 3
+  if candidates=$(docker-tag-matching-tags "$image" "$numeric_pattern" 120); then
+    :
+  else
+    rc=$?
+    # Preserve the distinction between a completed empty enumeration (1) and
+    # an enumeration that did not conclude (3) for the downgrade guard.
+    case "$rc" in
+      1) return 1 ;;
+      *) return 3 ;;
+    esac
+  fi
 
   while IFS= read -r candidate; do
     [[ -n "$candidate" ]] || continue
 
-    candidate_digest=$(docker-tag-digest "$image" "$candidate" 30) || continue
+    candidate_digest=$(docker-tag-digest "$image" "$candidate" 30) || return 3
     if [[ "$candidate_digest" == "$target_digest" ]]; then
       printf '%s\n' "$candidate"
       return 0

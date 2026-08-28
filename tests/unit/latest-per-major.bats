@@ -717,6 +717,62 @@ EOF
     chmod +x ./make
 }
 
+# Replaces the numeric-alias resolver while leaving check-updates and its
+# current-version lookup as their real entry points.  The case-specific
+# outcomes exercise both resolver invocations in the downgrade guard.
+write_resolver_fixture_helper() {
+    cat > helpers/docker-tag <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "$(basename "$0")" in
+    latest-docker-tag)
+        printf '%s\n' "${MOCK_CURRENT:-trixie}"
+        ;;
+    docker-tag)
+        [[ "${1:-}" == "resolve-numeric-alias" ]] || exit 99
+        case "${RESOLVER_CASE:?}" in
+            current-127)
+                if [[ "${3:-}" == "trixie" ]]; then exit 127; fi
+                ;;
+            latest-137)
+                if [[ "${3:-}" == "bookworm" ]]; then exit 137; fi
+                ;;
+            current-multiline)
+                if [[ "${3:-}" == "trixie" ]]; then
+                    printf '13\n12\n'
+                    exit 0
+                fi
+                ;;
+            latest-nonnumeric)
+                if [[ "${3:-}" == "bookworm" ]]; then
+                    printf 'bookworm\n'
+                    exit 0
+                fi
+                ;;
+            current-no-alias)
+                if [[ "${3:-}" == "trixie" ]]; then exit 1; fi
+                ;;
+            normal)
+                ;;
+            *)
+                exit 98
+                ;;
+        esac
+        case "${3:-}" in
+            trixie) printf '13\n' ;;
+            bookworm) printf '12\n' ;;
+            *) exit 97 ;;
+        esac
+        ;;
+    *)
+        exit 96
+        ;;
+esac
+EOF
+    chmod +x helpers/docker-tag
+}
+
 @test "check_updates multi-entry: emits one entry per retained major for latest_per_major container" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
@@ -857,6 +913,67 @@ EOF
     status_value=$(echo "$output" | jq -r '.[0].status')
     [[ "$update_available" == "true" ]]
     [[ "$status_value" == "update-available" ]]
+}
+
+# Positive control for registry-pattern refusal cases below: a version.sh that
+# supplies a usable pattern still reaches the registry helper and can report an
+# actionable update.
+@test "check_updates default path: a non-empty registry pattern remains actionable" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].registry_lookup')" == "matched" ]]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "true" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "true" ]]
+}
+
+@test "check_updates default path: a failing registry-pattern probe refuses instead of widening" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    cat > ansible/version.sh <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "--registry-pattern" ]]; then
+    exit 17
+fi
+echo "1.1.0-ubuntu"
+EOF
+    chmod +x ansible/version.sh
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].registry_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "registry-lookup-failed" ]]
+}
+
+@test "check_updates default path: an empty registry-pattern probe refuses instead of matching every tag" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    cat > ansible/version.sh <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "--registry-pattern" ]]; then
+    printf '\n'
+    exit 0
+fi
+echo "1.1.0-ubuntu"
+EOF
+    chmod +x ansible/version.sh
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].registry_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "registry-lookup-failed" ]]
 }
 
 @test "check_updates default path: digit-leading versions skip numeric alias probes" {
@@ -1039,6 +1156,26 @@ WEOF
     [ "$status" -eq 3 ]
 }
 
+@test "latest-docker-tag treats a dash-prefixed pattern as a grep operand" {
+    local shim_dir real_jq real_grep
+    shim_dir="$TEST_DIR/dash-pattern-shim"
+    mkdir -p "$shim_dir"
+    real_jq=$(command -v jq)
+    real_grep=$(command -v grep)
+    ln -s "$real_jq" "$shim_dir/jq"
+    ln -s "$real_grep" "$shim_dir/grep"
+    ln -s "$ORIG_DIR/helpers/docker-tag" "$shim_dir/latest-docker-tag"
+    cat > "$shim_dir/timeout" <<'SHEOF'
+#!/bin/bash
+printf '{"Repository":"docker://library/alpine","Tags":["1.2.3","--help"]}\n'
+SHEOF
+    chmod +x "$shim_dir/timeout"
+
+    run env PATH="$shim_dir:/usr/bin:/bin" "$shim_dir/latest-docker-tag" alpine --help
+    [ "$status" -eq 0 ]
+    [ "$output" = "--help" ]
+}
+
 @test "check_updates latest_per_major path reads its declaration once per container" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
@@ -1161,6 +1298,140 @@ EOF
     [[ "$latest_version" == "trixie" ]]
     [[ "$update_available" == "true" ]]
     [[ "$status_value" == "update-available" ]]
+}
+
+@test "check_updates default path: resolver exit 127 leaves the current alias comparison indeterminate" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "trixie" "bookworm"
+    write_resolver_fixture_helper
+
+    run env RESOLVER_CASE=current-127 ./make check-updates debian
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "downgrade-guard-failed" ]]
+}
+
+@test "check_updates default path: resolver exit 137 leaves the latest alias comparison indeterminate" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "trixie" "bookworm"
+    write_resolver_fixture_helper
+
+    run env RESOLVER_CASE=latest-137 ./make check-updates debian
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "downgrade-guard-failed" ]]
+}
+
+@test "check_updates default path: multiline resolver success is indeterminate" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "trixie" "bookworm"
+    write_resolver_fixture_helper
+
+    run env RESOLVER_CASE=current-multiline ./make check-updates debian
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "downgrade-guard-failed" ]]
+}
+
+@test "check_updates default path: non-numeric resolver success is indeterminate" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "trixie" "bookworm"
+    write_resolver_fixture_helper
+
+    run env RESOLVER_CASE=latest-nonnumeric ./make check-updates debian
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "downgrade-guard-failed" ]]
+}
+
+@test "check_updates default path: a valid numeric resolver comparison still blocks a downgrade" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "trixie" "bookworm"
+    write_resolver_fixture_helper
+
+    run env RESOLVER_CASE=normal ./make check-updates debian
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "up_to_date" ]]
+}
+
+@test "check_updates default path: a completed unmappable current alias keeps its existing no-match policy" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "trixie" "bookworm"
+    write_resolver_fixture_helper
+
+    run env RESOLVER_CASE=current-no-alias ./make check-updates debian
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "true" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "true" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "update-available" ]]
+}
+
+@test "check_updates default path: an alias enumeration failure makes a non-numeric comparison non-actionable" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "trixie" "bookworm"
+    # The direct GHCR lookup still concludes, but the numeric-alias candidate
+    # enumeration fails. This must not turn a possible downgrade into an update.
+    sed -i '/docker:\/\/library\/debian)/a\\                exit 1' bin/docker
+
+    run run_check_updates debian
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].current_version')" == "trixie" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "bookworm" ]]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "downgrade-guard-failed" ]]
+}
+
+@test "check_updates default path: a target digest inspection failure makes a non-numeric comparison non-actionable" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "trixie" "bookworm"
+    # Both formatted and fallback inspection of the current alias fail.
+    sed -i '/docker:\/\/library\/debian:trixie|docker:\/\/library\/debian:13)/a\                exit 1' bin/docker
+
+    run run_check_updates debian
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "downgrade-guard-failed" ]]
+}
+
+@test "check_updates default path: a candidate digest inspection failure makes a non-numeric comparison non-actionable" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "trixie" "bookworm"
+    # Candidate 11 is not the target digest, but its unavailable digest still
+    # makes the alias comparison indeterminate rather than safe to update.
+    sed -i 's/\["11","12","13","12.14","bookworm","trixie","bullseye"\]/["11","12","bookworm","trixie","bullseye"]/' bin/docker
+    sed -i '/docker:\/\/library\/debian:bullseye|docker:\/\/library\/debian:11)/a\                exit 1' bin/docker
+
+    run run_check_updates debian
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "downgrade-guard-failed" ]]
 }
 
 @test "check_updates default path: testing and stable labels without numeric alias remain permissive" {

@@ -97,9 +97,10 @@ check_updates_current_blocks_latest() {
   local latest_version=$2
   local normalized_current=$current_version
   local normalized_latest=$latest_version
+  local rc
 
   if ! command -v dpkg >/dev/null 2>&1; then
-    return 1
+    return 3
   fi
 
   case "$normalized_current" in
@@ -112,8 +113,15 @@ check_updates_current_blocks_latest() {
   esac
 
   if [[ "$normalized_current" =~ ^[0-9] && "$normalized_latest" =~ ^[0-9] ]]; then
-    dpkg --compare-versions "$normalized_current" gt "$normalized_latest" 2>/dev/null
-    return $?
+    if dpkg --compare-versions "$normalized_current" gt "$normalized_latest" 2>/dev/null; then
+      return 0
+    else
+      rc=$?
+    fi
+    if [ "$rc" -eq 1 ]; then
+      return 1
+    fi
+    return 3
   fi
 
   local numeric_alias_image numeric_alias_pattern
@@ -124,19 +132,43 @@ check_updates_current_blocks_latest() {
   # latest-version lookup. Require an explicit image-like source to opt in.
   if [[ -n "$numeric_alias_image" && -n "$numeric_alias_pattern" && "$numeric_alias_image" == */* ]]; then
     local current_numeric_alias latest_numeric_alias
-    current_numeric_alias=$(../helpers/docker-tag resolve-numeric-alias "$numeric_alias_image" "$current_version" "$numeric_alias_pattern" 2>/dev/null | head -1 | tr -d '\n' || true)
-    latest_numeric_alias=$(../helpers/docker-tag resolve-numeric-alias "$numeric_alias_image" "$latest_version" "$numeric_alias_pattern" 2>/dev/null | head -1 | tr -d '\n' || true)
-
-    if [[ -z "$current_numeric_alias" || -z "$latest_numeric_alias" ]]; then
-      return 1
+    if current_numeric_alias=$(../helpers/docker-tag resolve-numeric-alias "$numeric_alias_image" "$current_version" "$numeric_alias_pattern" 2>/dev/null); then
+      :
+    else
+      rc=$?
+      # Only a completed comparison with no alias (1) concludes.  Execution
+      # failures and statuses not yet classified keep the guard indeterminate.
+      case "$rc" in
+        1) return 1 ;;
+        *) return 3 ;;
+      esac
+    fi
+    if latest_numeric_alias=$(../helpers/docker-tag resolve-numeric-alias "$numeric_alias_image" "$latest_version" "$numeric_alias_pattern" 2>/dev/null); then
+      :
+    else
+      rc=$?
+      # Keep this classification identical to the current-alias lookup above.
+      case "$rc" in
+        1) return 1 ;;
+        *) return 3 ;;
+      esac
     fi
 
-    if [[ ! "$current_numeric_alias" =~ ^[0-9] || ! "$latest_numeric_alias" =~ ^[0-9] ]]; then
-      return 1
+    # A resolver success is usable only when it is exactly one non-empty
+    # numeric line.  Do not normalize malformed output into a comparison.
+    if [[ ! "$current_numeric_alias" =~ ^[0-9]+$ || ! "$latest_numeric_alias" =~ ^[0-9]+$ ]]; then
+      return 3
     fi
 
-    dpkg --compare-versions "$current_numeric_alias" gt "$latest_numeric_alias" 2>/dev/null
-    return $?
+    if dpkg --compare-versions "$current_numeric_alias" gt "$latest_numeric_alias" 2>/dev/null; then
+      return 0
+    else
+      rc=$?
+    fi
+    if [ "$rc" -eq 1 ]; then
+      return 1
+    fi
+    return 3
   fi
 
   return 1
@@ -636,8 +668,13 @@ check_updates() {
           if check_updates_current_blocks_latest "$current_version" "$latest_version"; then
             :
           else
-            update_available="true"
-            status="update-available"
+            local downgrade_guard_rc=$?
+            if [ "$downgrade_guard_rc" -eq 1 ]; then
+              update_available="true"
+              status="update-available"
+            else
+              status="downgrade-guard-failed"
+            fi
           fi
         fi
 
@@ -680,11 +717,12 @@ check_updates() {
     # Get current and latest versions using container-specific patterns
     # Query GHCR (primary registry) to avoid stale Docker Hub data causing duplicate PRs
     local pattern current_version registry_lookup lookup_info
+    lookup_info=$'failed\t'
     if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-      lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "$pattern")
-    else
-      # Fallback: try common version pattern
-      lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$")
+      pattern=$(printf '%s' "$pattern" | head -1 | tr -d '\n')
+      if [[ -n "$pattern" ]]; then
+        lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "$pattern")
+      fi
     fi
     IFS=$'\t' read -r registry_lookup current_version <<< "$lookup_info"
     latest_version=$(./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "")
@@ -705,8 +743,13 @@ check_updates() {
       if check_updates_current_blocks_latest "$current_version" "$latest_version"; then
         :
       else
-        update_available="true"
-        status="update-available"
+        local downgrade_guard_rc=$?
+        if [ "$downgrade_guard_rc" -eq 1 ]; then
+          update_available="true"
+          status="update-available"
+        else
+          status="downgrade-guard-failed"
+        fi
       fi
     fi
 
