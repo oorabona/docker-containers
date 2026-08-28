@@ -39,8 +39,8 @@
 
       cards.forEach(function(card) {
         var name = card.dataset.container.toLowerCase();
-        var statusColor = card.classList.contains('status-green') ? 'up-to-date' :
-                         card.classList.contains('status-warning') ? 'update-available' :
+        var statusColor = card.dataset.updateAvailable === 'true' ? 'update-available' :
+                         card.classList.contains('status-green') ? 'up-to-date' :
                          'not-published';
         // F1: also match description text and variant tag names
         var descEl = card.querySelector('.card-description');
@@ -87,10 +87,10 @@
       var counts = { 'all': cards.length, 'up-to-date': 0, 'update-available': 0, 'not-published': 0 };
 
       cards.forEach(function(card) {
-        if (card.classList.contains('status-green')) {
-          counts['up-to-date']++;
-        } else if (card.classList.contains('status-warning')) {
+        if (card.dataset.updateAvailable === 'true') {
           counts['update-available']++;
+        } else if (card.classList.contains('status-green')) {
+          counts['up-to-date']++;
         } else {
           counts['not-published']++;
         }
@@ -173,10 +173,15 @@
       var pullSection = card.querySelector('.pull-section');
       var ghcrBase = pullSection ? pullSection.dataset.ghcrBase : '';
       var imageUrl = ghcrBase + ':' + tag;
+      var referenceConfirmed = element.dataset.referenceConfirmed === 'true';
 
       var containerName = card.dataset.container;
       var input = document.getElementById('pull-' + containerName);
-      if (input) input.value = 'docker pull ' + imageUrl;
+      var pullCommand = card.querySelector('[data-pull-command]');
+      var pullUnavailable = card.querySelector('[data-pull-unavailable]');
+      if (pullCommand) pullCommand.hidden = !referenceConfirmed;
+      if (pullUnavailable) pullUnavailable.hidden = referenceConfirmed;
+      if (input && referenceConfirmed) input.value = 'docker pull ' + imageUrl;
 
       var sizeAmd64El = card.querySelector('[data-meta="size-amd64"]');
       var sizeArm64El = card.querySelector('[data-meta="size-arm64"]');

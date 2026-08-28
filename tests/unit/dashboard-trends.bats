@@ -160,16 +160,6 @@ capture_container_page() {
         .dockerhub_image == ""
     ' >/dev/null
 
-    # Lexical, and deliberately so: no Ruby or Jekyll runs in this environment,
-    # so nothing here renders Liquid. These two greps assert only that the
-    # templates branch on the explicit field rather than on a string sentinel.
-    # They cannot show what the built page emits — that check is fetching the
-    # deployed site, which is where a Liquid quirk that survives a source grep
-    # has bitten this repository before.
-    grep -q 'include.current_version_confirmed == true' \
-        "$ORIG_DIR/docs/site/_includes/container-card.html"
-    grep -q 'page.current_version_confirmed == true' \
-        "$ORIG_DIR/docs/site/_layouts/container-detail.html"
 }
 
 @test "dashboard: failed publication lookups never mark an unpublished release" {
@@ -248,10 +238,97 @@ EOF
     ' >/dev/null
 }
 
-@test "container detail: attestation commands require the selected reference's evidence" {
-    local no_variant_provenance
-    no_variant_provenance=$(sed -n '535,655p' "$ORIG_DIR/docs/site/_layouts/container-detail.html")
-    [[ "$no_variant_provenance" == *'if prov_variant.reference_confirmed == true'* ]]
+@test "container detail: a non-variant shows its verify command only when its reference is confirmed" {
+    run node - "$ORIG_DIR/docs/site/_layouts/container-detail.html" <<'NODE'
+const fs = require('fs');
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const marker = 'No-variant container: single Provenance block';
+const start = source.indexOf(marker);
+const end = source.indexOf('<!-- Security Scan Summary', start);
+if (start < 0 || end < 0) throw new Error('non-variant provenance block was not found');
+
+const block = source.slice(start, end);
+const guard = block.match(/\{%\-?\s*if\s+(prov_variant\.[a-z_]+)\s*==\s*true\s*\-?%\}([\s\S]*?<dt>Verify<\/dt>[\s\S]*?)\{%\-?\s*endif\s*\-?%\}/);
+if (!guard) throw new Error('non-variant verify branch was not found');
+
+function renderNonVariant(page) {
+  const field = guard[1].slice('prov_variant.'.length);
+  return page[field] === true ? guard[2] : '';
+}
+
+const confirmed = renderNonVariant({ current_version_confirmed: true, current_version: '1.2.3' });
+if (!confirmed.includes('<dt>Verify</dt>') || !confirmed.includes('gh attestation verify oci://ghcr.io/')) {
+  throw new Error('confirmed non-variant did not render its verification command');
+}
+const unconfirmed = renderNonVariant({ current_version_confirmed: false, current_version: '1.2.3' });
+if (unconfirmed.includes('<dt>Verify</dt>') || unconfirmed.includes('gh attestation verify oci://ghcr.io/')) {
+  throw new Error('unconfirmed non-variant rendered a verification command');
+}
+NODE
+    [ "$status" -eq 0 ]
+}
+
+@test "dashboard: Updates filter and count use update_available rather than warning presentation" {
+    run node - "$ORIG_DIR/docs/site/assets/js/dashboard.js" <<'NODE'
+const source = process.argv[2];
+const cards = [
+  makeCard('actual-update', ['status-warning'], 'true'),
+  makeCard('lookup-failed', ['status-warning'], 'false'),
+  makeCard('up-to-date', ['status-green'], 'false')
+];
+const counts = Object.fromEntries(['all', 'up-to-date', 'update-available', 'not-published']
+  .map(function (status) { return [status, { textContent: '' }]; }));
+const buttons = ['all', 'up-to-date', 'update-available', 'not-published'].map(makeButton);
+const grid = { querySelector: function () { return null; }, appendChild: function () {} };
+let ready;
+
+global.document = {
+  addEventListener: function (event, callback) { if (event === 'DOMContentLoaded') ready = callback; },
+  querySelectorAll: function (selector) {
+    if (selector === '.container-card') return cards;
+    if (selector === '.filter-btn') return buttons;
+    if (selector === 'input[id^="pull-"]') return [];
+    return [];
+  },
+  querySelector: function (selector) { return selector === '.cards-grid' ? grid : null; },
+  getElementById: function (id) {
+    if (id.indexOf('count-') === 0) return counts[id.slice('count-'.length)];
+    if (id === 'status-live') return { textContent: '' };
+    return null;
+  }
+};
+global.ThemeManager = { toggleTheme: function () {}, currentTheme: 'light' };
+require(source);
+if (!ready) throw new Error('dashboard did not register its initializer');
+ready();
+
+if (String(counts['update-available'].textContent) !== '1') {
+  throw new Error('Updates count included a warning card without an available update');
+}
+buttons.find(function (button) { return button.dataset.status === 'update-available'; }).click();
+if (cards[0].style.display !== '' || cards[1].style.display !== 'none' || cards[2].style.display !== 'none') {
+  throw new Error('Updates filter included a lookup that did not conclude');
+}
+
+function makeCard(name, classes, updateAvailable) {
+  return {
+    dataset: { container: name, updateAvailable: updateAvailable },
+    style: {},
+    classList: { contains: function (name) { return classes.includes(name); } },
+    querySelector: function () { return null; },
+    querySelectorAll: function () { return []; }
+  };
+}
+function makeButton(status) {
+  return {
+    dataset: { status: status },
+    classList: { toggle: function () {} },
+    setAttribute: function () {},
+    addEventListener: function (event, callback) { if (event === 'click') this.click = callback; }
+  };
+}
+NODE
+    [ "$status" -eq 0 ]
 }
 
 @test "dashboard: only an explicit resolver sentinel is a concluded upstream no-match" {
@@ -353,13 +430,97 @@ EOF
     [[ "$(jq -r '.reference_confirmed' <<< "$observed")" == "true" ]]
     [[ "$(jq -r '.reference_confirmed' <<< "$unpublished")" == "false" ]]
 
-    # Selectors and JS inputs retain every declared variant. Command rendering
-    # alone branches on the exact reference evidence.
-    local template="$ORIG_DIR/docs/site/_includes/variant-action-bar.html"
-    grep -q '"reference_confirmed":{{ _vab_v.reference_confirmed' "$template"
-    grep -q 'No published image was observed for this reference.' "$template"
-    [[ "$(grep -c 'if _vab_v.reference_confirmed == true' "$template")" -eq 0 ]]
-    [[ "$(grep -c 'if _ns_v.reference_confirmed == true' "$template")" -eq 2 ]]
+    # The card keeps both YAML declarations. Selecting the unevidenced one
+    # hides the actionable pull control instead of inventing a command.
+    run node - "$ORIG_DIR/docs/site/_includes/container-card.html" "$ORIG_DIR/docs/site/assets/js/dashboard.js" <<'NODE'
+const fs = require('fs');
+const cardTemplate = fs.readFileSync(process.argv[2], 'utf8');
+const dashboard = process.argv[3];
+const singleVersion = cardTemplate.slice(cardTemplate.indexOf('<!-- Single-version structure -->'));
+const loop = singleVersion.match(/\{%\s*for variant in include\.variants\s*%\}([\s\S]*?)\{%\s*endfor\s*%\}/);
+if (!loop) throw new Error('single-version card variant loop was not found');
+
+function renderVariant(variant) {
+  return loop[1]
+    .replace(/\{%\-?\s*if\s+variant\.reference_confirmed\s*==\s*true\s*\-?%\}([\s\S]*?)\{%\-?\s*endif\s*\-?%\}/g,
+      function (_, content) { return variant.reference_confirmed ? content : ''; })
+    .replace(/\{\{\s*variant\.tag[^}]*\}\}/g, variant.tag)
+    .replace(/\{\{\s*variant\.reference_confirmed[^}]*\}\}/g, String(variant.reference_confirmed))
+    .replace(/\{%[\s\S]*?%\}/g, '');
+}
+
+const declared = [
+  { tag: '1.0.0', reference_confirmed: true },
+  { tag: '1.0.0-unpublished', reference_confirmed: false }
+].map(renderVariant).join('');
+if (!declared.includes('data-tag="1.0.0"') || !declared.includes('data-tag="1.0.0-unpublished"')) {
+  throw new Error('an unevidenced declared variant was omitted from its card');
+}
+if (!declared.includes('data-reference-confirmed="false"')) {
+  throw new Error('card did not carry the selected variant evidence state');
+}
+
+const command = { hidden: false };
+const unavailable = { hidden: true };
+const input = { value: 'docker pull ghcr.io/example/demo:1.0.0' };
+const tag = {
+  dataset: { tag: '1.0.0-unpublished', referenceConfirmed: 'false' },
+  classList: { add: function () {}, remove: function () {} },
+  querySelector: function () { return null; },
+  setAttribute: function () {},
+  closest: function (selector) {
+    if (selector === '.variant-tag') return this;
+    if (selector === '.container-card') return card;
+    return null;
+  }
+};
+const card = {
+  dataset: { container: 'demo', updateAvailable: 'false' },
+  style: {},
+  classList: { contains: function (name) { return name === 'status-green'; } },
+  querySelectorAll: function (selector) { return selector === '.variant-tag' ? [tag] : []; },
+  querySelector: function (selector) {
+    if (selector === '.pull-section') return { dataset: { ghcrBase: 'ghcr.io/example/demo' } };
+    if (selector === '[data-pull-command]') return command;
+    if (selector === '[data-pull-unavailable]') return unavailable;
+    return null;
+  },
+  dispatchEvent: function () {}
+};
+const counts = Object.fromEntries(['all', 'up-to-date', 'update-available', 'not-published']
+  .map(function (status) { return [status, { textContent: '' }]; }));
+let ready;
+let click;
+global.CustomEvent = function (name, init) { this.type = name; this.detail = init.detail; };
+global.document = {
+  addEventListener: function (event, callback) {
+    if (event === 'DOMContentLoaded') ready = callback;
+    if (event === 'click') click = callback;
+  },
+  querySelectorAll: function (selector) {
+    if (selector === '.container-card') return [card];
+    if (selector === '.filter-btn' || selector === 'input[id^="pull-"]') return [];
+    return [];
+  },
+  querySelector: function (selector) {
+    return selector === '.cards-grid' ? { querySelector: function () { return null; } } : null;
+  },
+  getElementById: function (id) {
+    if (id === 'pull-demo') return input;
+    if (id === 'status-live') return { textContent: '' };
+    if (id.indexOf('count-') === 0) return counts[id.slice('count-'.length)];
+    return null;
+  }
+};
+global.ThemeManager = { toggleTheme: function () {}, currentTheme: 'light' };
+require(dashboard);
+ready();
+click({ target: tag });
+if (command.hidden !== true || unavailable.hidden !== false || input.value !== 'docker pull ghcr.io/example/demo:1.0.0') {
+  throw new Error('unevidenced declared variant rendered an actionable pull command');
+}
+NODE
+    [ "$status" -eq 0 ]
 }
 
 # Creates a minimal container directory that satisfies generate_data()'s
