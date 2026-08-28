@@ -63,6 +63,28 @@ runs:
         
         # Extract entries authorized for monitor PRs (make script already handles all logic)
         containers_with_updates=()
+
+        # A process substitution does not propagate jq's exit status to the
+        # loop. Validate the complete producer payload first so malformed JSON
+        # cannot be published as a successful zero-update observation.
+        if ! jq -e '
+          type == "array" and
+          all(.[];
+            type == "object" and
+            (.container | type == "string" and length > 0) and
+            (.update_available | type == "boolean") and
+            (.actionable | type == "boolean") and
+            (if .actionable then
+              .update_available and
+              (.registry_lookup | type == "string" and (. == "matched" or . == "no-match"))
+            else
+              true
+            end)
+          )
+        ' <<< "$version_info" > /dev/null; then
+          echo "::error::check-updates returned invalid or unauthorized version_info entry" >&2
+          exit 1
+        fi
         
         while IFS= read -r container_data; do
           container=$(echo "$container_data" | jq -r '.container')
