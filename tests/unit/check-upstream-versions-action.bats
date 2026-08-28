@@ -13,13 +13,6 @@ setup() {
     cp "$ORIG_DIR/.github/actions/check-upstream-versions/action.yaml" \
         .github/actions/check-upstream-versions/action.yaml
 
-    # GitHub evaluates inputs before Bash sees the run block. In this hermetic
-    # invocation, replace the optional container expression with an empty value
-    # and execute the composite action's otherwise-unmodified script.
-    yq -r '.runs.steps[] | select(.id == "check-versions") | .run' \
-        .github/actions/check-upstream-versions/action.yaml |
-        sed 's#${{ inputs.container }}##g' > run-check-versions.sh
-    chmod +x run-check-versions.sh
 }
 
 teardown() {
@@ -29,19 +22,35 @@ teardown() {
 
 write_make_result() {
     local result="$1"
+    MAKE_RESULT="$result"
+    export MAKE_RESULT
     cat > make <<EOF
 #!/usr/bin/env bash
 if [[ "\$1" == "check-updates" ]]; then
-  printf '%s\\n' '$result'
+  if [[ -n "\${EXPECTED_CONTAINER:-}" && "\${2:-}" != "\$EXPECTED_CONTAINER" ]]; then
+    printf 'unexpected requested container: %s\\n' "\${2:-}" >&2
+    exit 1
+  fi
+  printf '%s\\n' "\$MAKE_RESULT"
 fi
 EOF
     chmod +x make
 }
 
 run_action() {
+    local requested_container="${1:-}"
     local output_file="$TEST_DIR/github-output"
+    # GitHub expands an input before Bash parses `run:`. Render the one input
+    # expression only for this hermetic extraction so a regression that puts it
+    # back in the body is tested in the same execution shape as a real runner.
+    yq -r '.runs.steps[] | select(.id == "check-versions") | .run' \
+        .github/actions/check-upstream-versions/action.yaml |
+        sed "s#\${{ inputs.container }}#$requested_container#g" > run-check-versions.sh
+    chmod +x run-check-versions.sh
     : > "$output_file"
-    GITHUB_OUTPUT="$output_file" bash ./run-check-versions.sh
+    REQUESTED_CONTAINER="$requested_container" \
+        EXPECTED_CONTAINER="$requested_container" \
+        GITHUB_OUTPUT="$output_file" bash ./run-check-versions.sh
     local action_status=$?
     cat "$output_file"
     return "$action_status"
@@ -83,6 +92,23 @@ run_action() {
     [ "$status" -eq 0 ]
     [[ "$output" == *'containers_with_updates=["terraform"]'* ]]
     [[ "$output" == *"update_count=1"* ]]
+}
+
+@test "composite action treats hostile container and upstream version as data" {
+    local marker="$TEST_DIR/executed"
+    local hostile_container hostile_version result
+    hostile_container='victim'\''$(touch '"$marker"')'\''x`:`'
+    hostile_version='v1'\''$(touch '"$marker"')'\''x`:`'
+    result=$(jq -cn \
+        --arg container "$hostile_container" \
+        --arg version "$hostile_version" \
+        '[{container: $container, current_version: "1.0.0", latest_version: $version, update_available: true, actionable: true, registry_lookup: "matched", status: "update-available"}]')
+    write_make_result "$result"
+
+    run run_action "$hostile_container"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"update_count=1"* ]]
+    [ ! -e "$marker" ]
 }
 
 @test "composite action excludes an entry whose registry lookup failed" {

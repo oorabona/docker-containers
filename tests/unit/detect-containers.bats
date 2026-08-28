@@ -8,7 +8,7 @@ setup() {
 }
 
 teardown() {
-    unset BASELINE_FAILED BASELINE_VALID CONTAINER_SCOPES_INPUT GITHUB_ACTION_PATH GITHUB_OUTPUT GITHUB_WORKSPACE RUNNER_TEMP TEST_BASE_SHA TEST_HEAD_SHA TEST_CHANGED_FILES
+    unset BASELINE_FAILED BASELINE_VALID CONTAINER_SCOPES_INPUT REQUESTED_CONTAINER REBUILD_MODE FORCE_REBUILD GITHUB_ACTION_PATH GITHUB_OUTPUT GITHUB_WORKSPACE RUNNER_TEMP TEST_BASE_SHA TEST_HEAD_SHA TEST_CHANGED_FILES
     teardown_temp_dir
 }
 
@@ -61,6 +61,9 @@ run_find_containers_step() {
 
     export BASELINE_FAILED="[]"
     export BASELINE_VALID="false"
+    export REQUESTED_CONTAINER=""
+    export REBUILD_MODE="none"
+    export FORCE_REBUILD="false"
     export GITHUB_ACTION_PATH="$PROJECT_ROOT/.github/actions/detect-containers"
     export GITHUB_OUTPUT="$TEST_TEMP_DIR/github-output"
     export GITHUB_WORKSPACE="$workspace"
@@ -68,6 +71,36 @@ run_find_containers_step() {
     export TEST_CHANGED_FILES="$changed_files"
 
     run bash -c 'cd "$1" || exit 1; exec bash "$2"' _ "$workspace" "$script"
+}
+
+# Drive the output from compute-versions into the real expand-variants body.
+# This is the same multi-hop path used by the workflow matrix: the version is
+# produced as a step output, bound as an environment value, then expanded.
+run_expand_variants_step() {
+    local versions_json="$1"
+    local script="$TEST_TEMP_DIR/expand-variants.sh"
+
+    yq -r '.runs.steps[] | select(.id == "expand-variants") | .run' \
+        "$PROJECT_ROOT/.github/actions/detect-containers/action.yaml" > "$script"
+
+    # The production runner renders expressions before Bash parses the body.
+    # The safe body has no version expression; this rendering only exercises a
+    # deliberate mutation that puts the output back into program text.
+    VERSION_OUTPUT_FOR_RENDER="$versions_json" perl -0pi -e \
+        's/\$\{\{ steps\.compute-versions\.outputs\.versions \}\}/$ENV{VERSION_OUTPUT_FOR_RENDER}/g' \
+        "$script"
+
+    : > "$TEST_TEMP_DIR/github-output"
+    GITHUB_ACTION_PATH="$PROJECT_ROOT/.github/actions/detect-containers" \
+        GITHUB_OUTPUT="$TEST_TEMP_DIR/github-output" \
+        SCOPE_VERSIONS="" \
+        SCOPE_FLAVORS="" \
+        BUILD_SCOPE="" \
+        EXPAND_RETAINED_MAP="{}" \
+        CONTAINER_SCOPES="" \
+        CONTAINERS_JSON='["vector"]' \
+        VERSIONS_JSON="$versions_json" \
+        run bash -c 'cd "$1" || exit 1; exec bash "$2"' _ "$PROJECT_ROOT" "$script"
 }
 
 output_value() {
@@ -99,6 +132,18 @@ assert_extension_scope() {
 
 @test "changed extension recipe emits hypopg scope and forces compilation" {
     assert_extension_scope "postgres/extensions/build/hypopg.Dockerfile" "hypopg" "true"
+}
+
+@test "hostile upstream version remains data through compute output and matrix expansion" {
+    local marker="$TEST_TEMP_DIR/upstream-expression-executed"
+    local hostile_version versions_json
+    hostile_version='v1'\''$(touch '"$marker"')'\''x`:'
+    versions_json=$(jq -cn --arg version "$hostile_version" '{vector: $version}')
+
+    run_expand_variants_step "$versions_json"
+
+    [ "$status" -eq 0 ]
+    [ ! -e "$marker" ]
 }
 
 @test "changed declared extension version scopes and forces that extension" {

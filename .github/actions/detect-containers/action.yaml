@@ -266,6 +266,9 @@ runs:
         BASELINE_FAILED: ${{ steps.resolve-coverage-baseline.outputs.baseline_failed_containers }}
         BASELINE_VALID: ${{ steps.resolve-coverage-baseline.outputs.baseline_valid }}
         CONTAINER_SCOPES_INPUT: ${{ inputs.container_scopes }}
+        REQUESTED_CONTAINER: ${{ inputs.container }}
+        REBUILD_MODE: ${{ inputs.rebuild }}
+        FORCE_REBUILD: ${{ inputs.force_rebuild }}
       run: |
         set -e
         # shellcheck disable=SC1091  # path resolved at runtime in the action dir
@@ -338,13 +341,13 @@ runs:
           mapfile -t containers_to_build < <(container_scope_keys "$normalized_container_scopes")
           echo "✅ container_scopes keys validated"
         # If specific container requested, validate it
-        elif [ -n "${{ inputs.container }}" ]; then
-          echo "🎯 Validating specific container: ${{ inputs.container }}"
-          if echo "$valid_containers" | grep -Fxq "${{ inputs.container }}"; then
-            containers_to_build=("${{ inputs.container }}")
+        elif [ -n "$REQUESTED_CONTAINER" ]; then
+          echo "🎯 Validating specific container: $REQUESTED_CONTAINER"
+          if echo "$valid_containers" | grep -Fxq "$REQUESTED_CONTAINER"; then
+            containers_to_build=("$REQUESTED_CONTAINER")
             echo "✅ Container validated"
           else
-            echo "❌ Container '${{ inputs.container }}' not found in make list"
+            echo "❌ Container '$REQUESTED_CONTAINER' not found in make list"
             exit 1
           fi
         else
@@ -413,8 +416,8 @@ runs:
           else
             # For manual triggers (workflow_dispatch)
             # rebuild != none OR force_rebuild=true → build ALL containers
-            effective_rebuild="${{ inputs.rebuild }}"
-            [[ "${{ inputs.force_rebuild }}" == "true" && "$effective_rebuild" == "none" ]] && effective_rebuild="all"
+            effective_rebuild="$REBUILD_MODE"
+            [[ "$FORCE_REBUILD" == "true" && "$effective_rebuild" == "none" ]] && effective_rebuild="all"
             if [[ "$effective_rebuild" != "none" ]]; then
               echo "🔄 Rebuild mode '$effective_rebuild' — building all containers"
               while IFS= read -r container; do
@@ -778,14 +781,16 @@ runs:
         BUILD_SCOPE: ${{ inputs.scope }}
         EXPAND_RETAINED_MAP: ${{ steps.compute-expand-map.outputs.map }}
         CONTAINER_SCOPES: ${{ steps.find-containers.outputs.container_scopes }}
+        CONTAINERS_JSON: ${{ steps.find-containers.outputs.containers }}
+        VERSIONS_JSON: ${{ steps.compute-versions.outputs.versions }}
       run: |
         set -e
         # shellcheck disable=SC1091
         source "${GITHUB_ACTION_PATH}/../../../helpers/variant-utils.sh"
         # shellcheck disable=SC1091
         source "${GITHUB_ACTION_PATH}/../../../helpers/container-scopes.sh"
-        containers_json='${{ steps.find-containers.outputs.containers }}'
-        versions_json='${{ steps.compute-versions.outputs.versions }}'
+        containers_json="$CONTAINERS_JSON"
+        versions_json="$VERSIONS_JSON"
 
         builds_json=$(expand_variants_for_containers \
           "$containers_json" \

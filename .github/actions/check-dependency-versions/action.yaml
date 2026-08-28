@@ -58,6 +58,7 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
+        REQUESTED_CONTAINER: ${{ inputs.container }}
       run: |
         set -e
 
@@ -68,9 +69,9 @@ runs:
         echo "🔍 Checking 3rd party dependency versions..."
 
         # Run orchestrator
-        if [ -n "${{ inputs.container }}" ]; then
-          echo "🎯 Checking specific container: ${{ inputs.container }}"
-          dep_info=$(./scripts/check-dependency-versions.sh "${{ inputs.container }}" --json)
+        if [ -n "$REQUESTED_CONTAINER" ]; then
+          echo "🎯 Checking specific container: $REQUESTED_CONTAINER"
+          dep_info=$(./scripts/check-dependency-versions.sh "$REQUESTED_CONTAINER" --json)
         else
           echo "🔍 Checking all containers..."
           dep_info=$(./scripts/check-dependency-versions.sh --all --json)

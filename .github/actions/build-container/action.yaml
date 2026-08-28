@@ -135,13 +135,18 @@ runs:
     - name: Log in to GHCR (Windows)
       if: runner.os == 'Windows'
       shell: bash
-      run: echo "${{ inputs.github_token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      env:
+        GHCR_TOKEN: ${{ inputs.github_token }}
+      run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
     - name: Log in to Docker Hub (Windows)
       if: runner.os == 'Windows' && inputs.dockerhub_username != '' && inputs.dockerhub_token != ''
       id: dockerhub-login-windows
       shell: bash
-      run: echo "${{ inputs.dockerhub_token }}" | docker login docker.io -u ${{ inputs.dockerhub_username }} --password-stdin
+      env:
+        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
+        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
+      run: printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
       continue-on-error: true
 
     - name: Preflight BuildKit image
@@ -196,12 +201,21 @@ runs:
     - name: Check if build is needed and get version
       id: check-build
       shell: bash
+      env:
+        INPUT_CONTAINER: ${{ inputs.container }}
+        INPUT_VARIANT: ${{ inputs.variant }}
+        INPUT_FLAVOR: ${{ inputs.flavor }}
+        INPUT_DOCKERFILE: ${{ inputs.dockerfile }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_REBUILD_MODE: ${{ inputs.rebuild_mode }}
+        INPUT_PLATFORM: ${{ inputs.platform }}
       run: |
         set -e
-        container="${{ inputs.container }}"
-        variant="${{ inputs.variant }}"
-        flavor="${{ inputs.flavor }}"
-        dockerfile="${{ inputs.dockerfile }}"
+        container="$INPUT_CONTAINER"
+        variant="$INPUT_VARIANT"
+        flavor="$INPUT_FLAVOR"
+        dockerfile="$INPUT_DOCKERFILE"
 
         # Default to Dockerfile if not specified
         [[ -z "$dockerfile" ]] && dockerfile="Dockerfile"
@@ -224,7 +238,7 @@ runs:
 
         # Get current version for tagging
         # Priority: 1) input version, 2) ./make version, 3) fallback to "latest"
-        current_version="${{ inputs.version }}"
+        current_version="$INPUT_VERSION"
 
         if [[ -n "$current_version" && "$current_version" != "unknown" && "$current_version" != "latest" ]]; then
           echo "::notice::Using provided version: $current_version"
@@ -241,7 +255,7 @@ runs:
         fi
 
         # Use tag input if provided, otherwise use version
-        current_tag="${{ inputs.tag }}"
+        current_tag="$INPUT_TAG"
         if [[ -z "$current_tag" ]]; then
           current_tag="$current_version"
         fi
@@ -252,7 +266,7 @@ runs:
         fi
 
         # Determine if build is needed
-        rebuild_mode="${{ inputs.rebuild_mode }}"
+        rebuild_mode="$INPUT_REBUILD_MODE"
         if [ "$rebuild_mode" = "all" ] || [ "$rebuild_mode" = "force" ]; then
           echo "::notice::Rebuild mode '$rebuild_mode' — skipping digest check"
           needs_build=true
@@ -265,7 +279,7 @@ runs:
         fi
 
         # Extract platform suffix from platform input (e.g., linux/amd64 -> amd64)
-        platform="${{ inputs.platform }}"
+        platform="$INPUT_PLATFORM"
         platform_suffix="${platform##*/}"
 
         # Determine if this is the default variant (for latest tag logic)
@@ -298,9 +312,11 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
+        CONTAINER: ${{ inputs.container }}
+        CURRENT_VERSION: ${{ steps.check-build.outputs.current_version }}
       run: |
-        container="${{ inputs.container }}"
-        current_version="${{ steps.check-build.outputs.current_version }}"
+        container="$CONTAINER"
+        current_version="$CURRENT_VERSION"
 
         # Check if prebuild script exists
         if [[ -x "$container/prebuild.sh" ]]; then
@@ -375,17 +391,26 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
         REBUILD_MODE: ${{ inputs.rebuild_mode }}
         DOCKER_NO_CACHE: ${{ inputs.docker_no_cache }}
+        CONTAINER: ${{ inputs.container }}
+        CURRENT_VERSION: ${{ steps.check-build.outputs.current_version }}
+        CURRENT_TAG: ${{ steps.check-build.outputs.current_tag }}
+        FLAVOR: ${{ steps.check-build.outputs.flavor }}
+        VARIANT: ${{ inputs.variant }}
+        DOCKERFILE: ${{ steps.check-build.outputs.dockerfile }}
+        BUILD_FLAVOR: ${{ inputs.build_flavor }}
+        USE_BASE_CACHE: ${{ inputs.use_base_cache }}
+        IS_DEFAULT: ${{ steps.check-build.outputs.is_default }}
       run: |
         set -euo pipefail
         source ./helpers/logging.sh
         source ./helpers/variant-utils.sh
 
-        container="${{ inputs.container }}"
-        current_version="${{ steps.check-build.outputs.current_version }}"
-        current_tag="${{ steps.check-build.outputs.current_tag }}"
-        flavor="${{ steps.check-build.outputs.flavor }}"
-        variant="${{ inputs.variant }}"
-        dockerfile="${{ steps.check-build.outputs.dockerfile }}"
+        container="$CONTAINER"
+        current_version="$CURRENT_VERSION"
+        current_tag="$CURRENT_TAG"
+        flavor="$FLAVOR"
+        variant="$VARIANT"
+        dockerfile="$DOCKERFILE"
 
         # Log build info
         if [[ -n "$variant" ]]; then
@@ -425,7 +450,7 @@ runs:
         # on push, and refreshed daily by sync-base-images in upstream-monitor).
         # Skip on fork PRs: sync-base-images is gated to own-repo PRs only, so
         # GHCR cache images may not exist there — fall back to Docker Hub defaults.
-        if [[ "${{ inputs.use_base_cache }}" == "true" ]]; then
+        if [[ "$USE_BASE_CACHE" == "true" ]]; then
           source ./helpers/base-cache-utils.sh
           if ! distro_uses_base_cache "./$container/config.yaml" "$flavor"; then
             echo "::notice::Skipping GHCR base cache probe for $container distro '$flavor' because distros.$flavor.use_base_cache is false"
@@ -527,8 +552,8 @@ runs:
         fi
 
         # Build via ./make — sources container build files, handles CUSTOM_BUILD_ARGS
-        build_flavor="${{ inputs.build_flavor }}"
-        is_default="${{ steps.check-build.outputs.is_default }}"
+        build_flavor="$BUILD_FLAVOR"
+        is_default="$IS_DEFAULT"
         make_args=("build" "$container" "$build_version")
         [[ -n "$current_tag" ]] && make_args+=("$current_tag")
         [[ -n "$flavor" ]] && make_args+=("--flavor" "$flavor")
@@ -630,10 +655,13 @@ runs:
       shell: bash
       env:
         VULNERABILITY_SEVERITY: ${{ inputs.vulnerability_severity }}
+        CONTAINER: ${{ inputs.container }}
+        CURRENT_TAG: ${{ steps.check-build.outputs.current_tag }}
+        PLATFORM: ${{ inputs.platform }}
       run: |
-        container="${{ inputs.container }}"
-        current_tag="${{ steps.check-build.outputs.current_tag }}"
-        platform="${{ inputs.platform }}"
+        container="$CONTAINER"
+        current_tag="$CURRENT_TAG"
+        platform="$PLATFORM"
 
         # Replace '/' with '-' for filename safety (e.g. linux/amd64 → linux-amd64)
         platform_safe="${platform//\//-}"
@@ -736,13 +764,17 @@ runs:
       if: ${{ steps.build.outputs.image_loaded == 'true' && inputs.push == 'true' && github.event_name != 'pull_request' }}
       id: push-ghcr
       shell: bash
+      env:
+        IMAGE_NAME: ${{ steps.check-build.outputs.image_name }}
+        CURRENT_TAG: ${{ steps.check-build.outputs.current_tag }}
+        PLATFORM_SUFFIX: ${{ steps.check-build.outputs.platform_suffix }}
       run: |
         set -e
         # shellcheck disable=SC1091
         source ./helpers/retry.sh
-        image_name="${{ steps.check-build.outputs.image_name }}"
-        current_tag="${{ steps.check-build.outputs.current_tag }}"
-        platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
+        image_name="$IMAGE_NAME"
+        current_tag="$CURRENT_TAG"
+        platform_suffix="$PLATFORM_SUFFIX"
 
         # Source image (built without platform suffix)
         ghcr_image="ghcr.io/$image_name:$current_tag"
@@ -773,12 +805,16 @@ runs:
       if: ${{ steps.build.outputs.image_loaded == 'true' && inputs.push == 'true' && github.event_name != 'pull_request' && (steps.dockerhub-login.outcome == 'success' || steps.dockerhub-login-windows.outcome == 'success') }}
       id: push-dockerhub
       shell: bash
+      env:
+        IMAGE_NAME: ${{ steps.check-build.outputs.image_name }}
+        CURRENT_TAG: ${{ steps.check-build.outputs.current_tag }}
+        PLATFORM_SUFFIX: ${{ steps.check-build.outputs.platform_suffix }}
       run: |
         # shellcheck disable=SC1091
         source ./helpers/retry.sh
-        image_name="${{ steps.check-build.outputs.image_name }}"
-        current_tag="${{ steps.check-build.outputs.current_tag }}"
-        platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
+        image_name="$IMAGE_NAME"
+        current_tag="$CURRENT_TAG"
+        platform_suffix="$PLATFORM_SUFFIX"
 
         ghcr_image="ghcr.io/$image_name:$current_tag"
         dockerhub_image="docker.io/$image_name:$current_tag-$platform_suffix"
@@ -807,10 +843,14 @@ runs:
     - name: Flatten image layers
       if: ${{ steps.push-ghcr.outputs.success == 'true' && runner.os != 'Windows' }}
       shell: bash
+      env:
+        IMAGE_NAME: ${{ steps.check-build.outputs.image_name }}
+        CURRENT_TAG: ${{ steps.check-build.outputs.current_tag }}
+        PLATFORM_SUFFIX: ${{ steps.check-build.outputs.platform_suffix }}
       run: |
-        image_name="${{ steps.check-build.outputs.image_name }}"
-        current_tag="${{ steps.check-build.outputs.current_tag }}"
-        platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
+        image_name="$IMAGE_NAME"
+        current_tag="$CURRENT_TAG"
+        platform_suffix="$PLATFORM_SUFFIX"
         image_ref="ghcr.io/$image_name:$current_tag-$platform_suffix"
 
         # Install crane
@@ -840,10 +880,14 @@ runs:
     - name: Capture OCI subject digest
       if: ${{ steps.push-ghcr.outputs.success == 'true' && runner.os != 'Windows' }}
       shell: bash
+      env:
+        IMAGE_NAME: ${{ steps.check-build.outputs.image_name }}
+        CURRENT_TAG: ${{ steps.check-build.outputs.current_tag }}
+        PLATFORM_SUFFIX: ${{ steps.check-build.outputs.platform_suffix }}
       run: |
-        image_name="${{ steps.check-build.outputs.image_name }}"
-        current_tag="${{ steps.check-build.outputs.current_tag }}"
-        platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
+        image_name="$IMAGE_NAME"
+        current_tag="$CURRENT_TAG"
+        platform_suffix="$PLATFORM_SUFFIX"
         lineage_file=".build-lineage/${image_name##*/}-${current_tag}.json"
 
         # Resolve the OCI digest of the platform-suffixed image that was just pushed
@@ -885,12 +929,18 @@ runs:
     - name: Create early tag alias
       if: ${{ steps.push-ghcr.outputs.success == 'true' }}
       shell: bash
+      env:
+        IMAGE_NAME: ${{ steps.check-build.outputs.image_name }}
+        CURRENT_TAG: ${{ steps.check-build.outputs.current_tag }}
+        PLATFORM_SUFFIX: ${{ steps.check-build.outputs.platform_suffix }}
+        FLAVOR: ${{ steps.check-build.outputs.flavor }}
+        IS_DEFAULT: ${{ steps.check-build.outputs.is_default }}
       run: |
-        image_name="${{ steps.check-build.outputs.image_name }}"
-        current_tag="${{ steps.check-build.outputs.current_tag }}"
-        platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
-        flavor="${{ steps.check-build.outputs.flavor }}"
-        is_default="${{ steps.check-build.outputs.is_default }}"
+        image_name="$IMAGE_NAME"
+        current_tag="$CURRENT_TAG"
+        platform_suffix="$PLATFORM_SUFFIX"
+        flavor="$FLAVOR"
+        is_default="$IS_DEFAULT"
 
         # shellcheck disable=SC1091
         source ./helpers/retry.sh
@@ -938,8 +988,10 @@ runs:
     - name: Skip push for pull request or disabled publishing
       if: ${{ steps.build.outputs.image_loaded == 'true' && (github.event_name == 'pull_request' || inputs.push != 'true') }}
       shell: bash
+      env:
+        PUSH: ${{ inputs.push }}
       run: |
-        if [[ "${{ inputs.push }}" != "true" ]]; then
+        if [[ "$PUSH" != "true" ]]; then
           echo "::notice::Skipping push (push input is false - test build only)"
         else
           echo "::notice::Skipping push (pull request - test build only)"
