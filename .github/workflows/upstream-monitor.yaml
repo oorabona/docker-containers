@@ -1806,6 +1806,147 @@ jobs:
           REQUESTED_CONTAINER: ${{ inputs.container }}
           SYNC_MANIFEST_FILE: base-sync-manifest/base-sync-manifest.jsonl
         run: |
+          # Keep the closing annotation truthful when the detector has error
+          # records.  Its values are counts calculated from JSON only: never
+          # interpolate lineage-derived strings into a workflow command.
+          emit_drift_notice() {
+            local notice_json="$1"
+            local mode="${2:-normal}"
+            local drift_count error_count evaluated_count variant_count
+
+            drift_count=$(printf '%s' "$notice_json" | jq \
+              '[.[] | select(.variants | any(.status == "drift" or .status == "legacy"))] | length')
+            # Both coverage counts intentionally derive from notice_json.  The
+            # coverage decision must describe one population, even when the
+            # later PR matrix is scoped to a requested container.
+            error_count=$(printf '%s' "$notice_json" | jq \
+              '[.[] | .variants[] | select(.status == "error")] | length')
+            evaluated_count=$(printf '%s' "$notice_json" | jq \
+              '[.[] | .variants[] | select(.status != "error")] | length')
+            variant_count=$((error_count + evaluated_count))
+
+            if [[ "$error_count" -gt 0 ]]; then
+              echo "::notice::Base image digest drift coverage incomplete: ${evaluated_count} variant(s) evaluated; ${error_count} could not be evaluated"
+              # A successful detector process only means its JSON is valid.  An
+              # error record means that JSON does not cover every active variant,
+              # so fail this consumer step after preserving the coverage notice.
+              return 1
+            elif [[ "$variant_count" -eq 0 ]]; then
+              echo "::notice::No base image digest drift evaluation was performed — nothing to evaluate"
+            elif [[ "$mode" == "coverage" ]]; then
+              # The coverage gate runs before any scoped success path.  A
+              # populated, complete result has no closing notice until its
+              # scoped or unscoped consumer output has been assembled below.
+              return 0
+            elif [[ "$drift_count" -gt 0 ]]; then
+              echo "::notice::Digest drift detected for ${drift_count} container(s)"
+            else
+              echo "::notice::No base image digest drift detected"
+            fi
+          }
+
+          # Consume a validated detector result.  Keeping this whole decision
+          # sequence in one function lets its coverage-first behavior be tested
+          # directly without a live workflow dispatch.
+          consume_drift_result() {
+            local drift_json="$1"
+            local requested_container="$2"
+            local drift_containers_all drift_containers_csv error_containers_csv
+            local drift_containers drift_matrix drift_matrix_leaves drift_matrix_consumers
+            local population_variant_count
+
+            # Coverage is deliberately decided from the unfiltered result
+            # before a requested-container scope can take a successful exit.
+            emit_drift_notice "$drift_json" coverage || return 1
+            population_variant_count=$(printf '%s' "$drift_json" | jq \
+              '[.[] | .variants[]] | length')
+
+            # An empty unfiltered population was already announced by the
+            # coverage decision.  Publish every advertised empty output and
+            # stop before a requested-container branch can claim it is clean.
+            if [[ "$population_variant_count" -eq 0 ]]; then
+              {
+                echo "drift_containers=[]"
+                echo "drift_matrix=[]"
+                echo "drift_matrix_leaves=[]"
+                echo "drift_matrix_consumers=[]"
+                echo "drift_containers_csv="
+                echo "error_containers_csv="
+              } >> "$GITHUB_OUTPUT"
+              return 0
+            fi
+
+            # Compute repo-wide drift_containers_csv from the UNFILTERED drift_json.
+            # This must happen BEFORE the REQUESTED_CONTAINER filter below, so that
+            # _eval_parent_state always sees the full drift picture regardless of how
+            # workflow_dispatch was scoped.  Without this split a scoped dispatch
+            # (e.g. requested_container=wordpress) would produce drift_containers_csv
+            # containing only "wordpress", causing State B to mark a still-drifting
+            # "php" parent as stable and auto-merging the child against a stale image.
+            drift_containers_all=$(echo "$drift_json" | jq -c \
+              '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
+              || echo "[]")
+            drift_containers_csv=$(echo "$drift_containers_all" | jq -r 'join(",")')
+            echo "drift_containers_csv=${drift_containers_csv}" >> "$GITHUB_OUTPUT"
+
+            # Compute repo-wide error_containers_csv from the UNFILTERED drift_json.
+            # Containers with ANY variant status == "error" are those whose probe FAILED
+            # this run — their actual drift state is UNKNOWN.  Plumbed as CURRENT_ERROR_SET
+            # into the cascade-labels step so _eval_parent_state can treat an errored parent
+            # as in_flux (conservative: wait rather than auto-merge against unknown state).
+            error_containers_csv=$(echo "$drift_json" | jq -r \
+              '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
+              || echo "")
+            echo "error_containers_csv=${error_containers_csv}" >> "$GITHUB_OUTPUT"
+
+            if [[ -n "$requested_container" ]]; then
+              drift_json=$(echo "$drift_json" | jq --arg c "$requested_container" '[.[] | select(.container == $c)]')
+              if [[ "$(echo "$drift_json" | jq 'length')" == "0" ]]; then
+                # Escape for GHA ::notice:: — %0A in value would inject a new command.
+                _escaped_container="${requested_container//%/%25}"
+                _escaped_container="${_escaped_container//$'\n'/%0A}"
+                _escaped_container="${_escaped_container//$'\r'/%0D}"
+                echo "::notice::No drift detected for requested container ${_escaped_container}"
+                echo "drift_containers=[]" >> "$GITHUB_OUTPUT"
+                return 0
+              fi
+            fi
+
+            # Extract container names with actionable drift (drift or legacy status)
+            # from the (possibly scoped) drift_json.  Used to build the PR-opening matrix;
+            # cascade gating uses drift_containers_csv computed above from the unfiltered set.
+            drift_containers=$(echo "$drift_json" | jq -c \
+              '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
+              || echo "[]")
+            echo "drift_containers=${drift_containers}" >> "$GITHUB_OUTPUT"
+
+            # Build enriched matrix: include internal_deps_csv per container (used for leaf/consumer split)
+            drift_matrix=$(echo "$drift_json" | jq -c \
+              '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) |
+                {container: .container,
+                 internal_deps_csv: ((.internal_deps // []) | join(","))}]' \
+              || echo "[]")
+            echo "drift_matrix=${drift_matrix}" >> "$GITHUB_OUTPUT"
+
+            # Two-job split (leaves vs consumers):
+            #   drift_matrix_leaves   — containers with no project-internal deps
+            #     consumed by open-drift-prs-leaves job
+            #   drift_matrix_consumers — containers with project-internal deps
+            #     consumed by open-drift-prs-consumers job, which has
+            #     `needs: [open-drift-prs-leaves]` so parent PRs are already
+            #     created before any consumer matrix item starts.
+            drift_matrix_leaves=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv == "")]')
+            drift_matrix_consumers=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv != "")]')
+            echo "drift_matrix_leaves=${drift_matrix_leaves}" >> "$GITHUB_OUTPUT"
+            echo "drift_matrix_consumers=${drift_matrix_consumers}" >> "$GITHUB_OUTPUT"
+
+            # The empty result was already announced by the coverage decision;
+            # do not turn it into a clean-drift notice here.
+            if [[ "$population_variant_count" -gt 0 ]]; then
+              emit_drift_notice "$drift_json"
+            fi
+          }
+
           chmod +x scripts/detect-base-digest-drift.sh
           detect_rc=0
           drift_json=$(./scripts/detect-base-digest-drift.sh 2>/tmp/drift-detect-stderr.log) || detect_rc=$?
@@ -1828,13 +1969,13 @@ jobs:
 
           echo "$drift_json" > /tmp/drift.json
 
-          # Surface probe error count; per-variant ::error:: lines are already
+          # Surface unavailable-variant count; per-variant diagnostics are already
           # emitted by the script itself (escaped) and passed through via stderr above.
           # Do NOT re-compose warning lines from drift_json fields here — those fields
           # are untrusted lineage data and would reintroduce GHA command injection.
           error_count=$(echo "$drift_json" | jq '[.[] | .variants[] | select(.status == "error")] | length' || echo 0)
           if [[ "$error_count" -gt 0 ]]; then
-            echo "::warning::${error_count} digest probe(s) failed — drift may be undetected for those variants (see ::error:: lines above)"
+            echo "::warning::${error_count} variant(s) could not be evaluated — drift may be undetected for those variants (see diagnostics above)"
           fi
 
           # Validate drift_json shape before downstream use.  An invalid JSON
@@ -1845,88 +1986,9 @@ jobs:
             exit 1
           fi
 
-          # Scope to requested container when workflow_dispatch.inputs.container is set.
-          # Older jobs in this workflow already honor this input; apply the same
-          # filter here so a manual run for one container does not fan out drift
-          # PRs across all drifting containers.
-          #
-          # SECURITY: inputs.container is a workflow_dispatch user-supplied string.
-          # Interpolating ${{ inputs.container }} directly inside the shell body of
-          # a `run:` block allows injection — a value like `foo" ]]; then cmd; #`
-          # is substituted BEFORE bash parses the script.  Canonical GHA mitigation:
-          # expose via `env:` (set above as REQUESTED_CONTAINER) so the value is
-          # treated as data, never as code.  See OWASP / GitHub security hardening
-          # docs on "Untrusted input in workflow expressions".
-          # Compute repo-wide drift_containers_csv from the UNFILTERED drift_json.
-          # This must happen BEFORE the REQUESTED_CONTAINER filter below, so that
-          # _eval_parent_state always sees the full drift picture regardless of how
-          # workflow_dispatch was scoped.  Without this split a scoped dispatch
-          # (e.g. requested_container=wordpress) would produce drift_containers_csv
-          # containing only "wordpress", causing State B to mark a still-drifting
-          # "php" parent as stable and auto-merging the child against a stale image.
-          drift_containers_all=$(echo "$drift_json" | jq -c \
-            '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
-            || echo "[]")
-          drift_containers_csv=$(echo "$drift_containers_all" | jq -r 'join(",")')
-          echo "drift_containers_csv=${drift_containers_csv}" >> "$GITHUB_OUTPUT"
-
-          # Compute repo-wide error_containers_csv from the UNFILTERED drift_json.
-          # Containers with ANY variant status == "error" are those whose probe FAILED
-          # this run — their actual drift state is UNKNOWN.  Plumbed as CURRENT_ERROR_SET
-          # into the cascade-labels step so _eval_parent_state can treat an errored parent
-          # as in_flux (conservative: wait rather than auto-merge against unknown state).
-          error_containers_csv=$(echo "$drift_json" | jq -r \
-            '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
-            || echo "")
-          echo "error_containers_csv=${error_containers_csv}" >> "$GITHUB_OUTPUT"
-
-          if [[ -n "$REQUESTED_CONTAINER" ]]; then
-            drift_json=$(echo "$drift_json" | jq --arg c "$REQUESTED_CONTAINER" '[.[] | select(.container == $c)]')
-            if [[ "$(echo "$drift_json" | jq 'length')" == "0" ]]; then
-              # Escape for GHA ::notice:: — %0A in value would inject a new command.
-              _escaped_container="${REQUESTED_CONTAINER//%/%25}"
-              _escaped_container="${_escaped_container//$'\n'/%0A}"
-              _escaped_container="${_escaped_container//$'\r'/%0D}"
-              echo "::notice::No drift detected for requested container ${_escaped_container}"
-              echo "drift_containers=[]" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-
-          # Extract container names with actionable drift (drift or legacy status)
-          # from the (possibly scoped) drift_json.  Used to build the PR-opening matrix;
-          # cascade gating uses drift_containers_csv computed above from the unfiltered set.
-          drift_containers=$(echo "$drift_json" | jq -c \
-            '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
-            || echo "[]")
-          echo "drift_containers=${drift_containers}" >> "$GITHUB_OUTPUT"
-
-          # Build enriched matrix: include internal_deps_csv per container (used for leaf/consumer split)
-          drift_matrix=$(echo "$drift_json" | jq -c \
-            '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) |
-              {container: .container,
-               internal_deps_csv: ((.internal_deps // []) | join(","))}]' \
-            || echo "[]")
-          echo "drift_matrix=${drift_matrix}" >> "$GITHUB_OUTPUT"
-
-          # Two-job split (leaves vs consumers):
-          #   drift_matrix_leaves   — containers with no project-internal deps
-          #     consumed by open-drift-prs-leaves job
-          #   drift_matrix_consumers — containers with project-internal deps
-          #     consumed by open-drift-prs-consumers job, which has
-          #     `needs: [open-drift-prs-leaves]` so parent PRs are already
-          #     created before any consumer matrix item starts.
-          drift_matrix_leaves=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv == "")]')
-          drift_matrix_consumers=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv != "")]')
-          echo "drift_matrix_leaves=${drift_matrix_leaves}" >> "$GITHUB_OUTPUT"
-          echo "drift_matrix_consumers=${drift_matrix_consumers}" >> "$GITHUB_OUTPUT"
-
-          count=$(echo "$drift_containers" | jq 'length')
-          if [[ "$count" -gt 0 ]]; then
-            echo "::notice::Digest drift detected for ${count} container(s): ${drift_containers}"
-          else
-            echo "::notice::No base image digest drift detected"
-          fi
+          # The consumer owns the coverage decision as well as the scoped PR
+          # outputs.  It must see the original JSON before any scope is applied.
+          consume_drift_result "$drift_json" "$REQUESTED_CONTAINER"
 
   open-drift-prs-leaves:
     name: Open drift PR (leaf) for ${{ matrix.container }}
