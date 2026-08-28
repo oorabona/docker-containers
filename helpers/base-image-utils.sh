@@ -19,38 +19,54 @@
 # or Docker invocation.  Effective build args take precedence over Dockerfile
 # ARG defaults; expansion is bounded so a cyclic value remains unresolved
 # rather than guessed.  The caller supplies the already-materialized content
-# for inline Dockerfiles (before Bake's $${...} HCL escaping).
+# for inline Dockerfiles (before Bake's $${...} HCL escaping).  It implements
+# only the final-FROM grammar used by this fleet: a reference (optionally
+# argument-derived), an optional AS name, or scratch.  New syntax must fail
+# here until the resolver deliberately learns how to interpret it.
 resolve_final_runnable_base() {
     local dockerfile_content="$1"
     local effective_args_json="${2-}"
-    [[ -n "$effective_args_json" ]] || effective_args_json='{}'
     local from_line="" line
+
+    if [[ -z "$effective_args_json" ]]; then
+        effective_args_json='{}'
+    elif ! jq -e 'type == "object"' >/dev/null 2>&1 <<< "$effective_args_json"; then
+        printf 'effective build arguments must be a valid JSON object\n' >&2
+        return 1
+    fi
 
     while IFS= read -r line; do
         [[ "$line" =~ ^[[:space:]]*FROM[[:space:]]+ ]] && from_line="$line"
     done <<< "$dockerfile_content"
 
     [[ -n "$from_line" ]] || {
-        jq -cn '{kind:"unresolved", ref:""}'
-        return 0
+        printf 'Dockerfile has no final FROM instruction\n' >&2
+        return 1
     }
 
-    # Docker permits flags before the image (`FROM --platform=$BUILDPLATFORM …`).
-    local rest raw_ref token
-    rest="${from_line#${from_line%%[![:space:]]*}}"
-    rest="${rest#FROM}"
-    rest="${rest#${rest%%[![:space:]]*}}"
-    raw_ref=""
-    for token in $rest; do
-        [[ "$token" == --* ]] && continue
-        raw_ref="$token"
-        break
+    # Deliberately accept only `<reference> [AS <stage>]`. In particular,
+    # `--platform`, continuations, and other Dockerfile forms are not safe to
+    # reduce to a base-image identity without extending this resolver.
+    local raw_ref
+    if [[ "$from_line" =~ ^[[:space:]]*FROM[[:space:]]+([^[:space:]]+)([[:space:]]+[Aa][Ss][[:space:]]+[A-Za-z0-9][A-Za-z0-9_.-]*)?[[:space:]]*$ ]]; then
+        raw_ref="${BASH_REMATCH[1]}"
+    else
+        printf 'unsupported final FROM syntax: %s\n' "$from_line" >&2
+        return 1
+    fi
+
+    # An argument-derived reference may contain only complete `$NAME` or
+    # `${NAME}` tokens. Removing those first makes parameter operators such as
+    # `${NAME:-fallback}` a visible unsupported construct rather than a
+    # partially resolved identity.
+    local syntax_check="$raw_ref"
+    while [[ "$syntax_check" =~ (\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*) ]]; do
+        syntax_check="${syntax_check/"${BASH_REMATCH[1]}"/}"
     done
-
-    [[ -n "$raw_ref" ]] || {
-        jq -cn '{kind:"unresolved", ref:""}'
-        return 0
-    }
+    if [[ "$syntax_check" == *'$'* || "$syntax_check" == *'{'* || "$syntax_check" == *'}'* ]]; then
+        printf 'unsupported final FROM syntax: %s\n' "$from_line" >&2
+        return 1
+    fi
     [[ "$raw_ref" == "scratch" ]] && {
         jq -cn '{kind:"no_external_base"}'
         return 0
@@ -58,12 +74,7 @@ resolve_final_runnable_base() {
 
     # Effective args win.  Dockerfile defaults fill only values the build did
     # not supply.  Use JSON as the map boundary so the helper has no globals.
-    local args_json
-    if ! jq -e 'type == "object"' >/dev/null 2>&1 <<< "$effective_args_json"; then
-        args_json='{}'
-    else
-        args_json="$effective_args_json"
-    fi
+    local args_json="$effective_args_json"
 
     local defaults='{}' arg_name arg_value
     while IFS= read -r line; do
@@ -77,15 +88,19 @@ resolve_final_runnable_base() {
     done <<< "$dockerfile_content"
     args_json=$(jq -cn --argjson defaults "$defaults" --argjson effective "$args_json" '$defaults + $effective')
 
-    local resolved="$raw_ref" previous pass=0 key value
-    while [[ "$resolved" == *'$'* && $pass -lt 10 ]]; do
-        previous="$resolved"
-        while IFS=$'\t' read -r key value; do
-            [[ -n "$key" ]] || continue
-            resolved="${resolved//\$\{$key\}/$value}"
-            resolved="${resolved//\$$key/$value}"
-        done < <(jq -r 'to_entries[] | [.key, (.value | tostring)] | @tsv' <<< "$args_json")
-        [[ "$resolved" == "$previous" ]] && break
+    local resolved="$raw_ref" pass=0 token arg_name value
+    while [[ "$resolved" =~ (\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*) && $pass -lt 10 ]]; do
+        token="${BASH_REMATCH[1]}"
+        if [[ "${token:0:2}" == '${' ]]; then
+            arg_name="${token:2:${#token}-3}"
+        else
+            arg_name="${token:1}"
+        fi
+        if ! jq -e --arg key "$arg_name" 'has($key)' >/dev/null <<< "$args_json"; then
+            break
+        fi
+        value=$(jq -r --arg key "$arg_name" '.[$key] | tostring' <<< "$args_json")
+        resolved="${resolved/"$token"/$value}"
         ((pass++)) || true
     done
 
@@ -96,24 +111,55 @@ resolve_final_runnable_base() {
     fi
 }
 
+# The resolver's non-external outcomes have no coupled ref/digest fields. Keep
+# their lineage spelling here so every writer records them identically.
+#
+# lineage_base_fields_from_identity <base-identity-json> [<digest>]
+lineage_base_fields_from_identity() {
+    local base_identity="$1"
+    local digest="${2:-}"
+    local kind ref
+    kind=$(jq -r '.kind // "unresolved"' <<< "$base_identity") || return 1
+    case "$kind" in
+        no_external_base)
+            jq -cn '{base_image_kind:"no_external_base"}'
+            return 0
+            ;;
+        unresolved)
+            jq -cn '{base_image_kind:"unresolved_external_base"}'
+            return 0
+            ;;
+        external)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    ref=$(jq -r '.ref // empty' <<< "$base_identity")
+    [[ -n "$ref" ]] || return 1
+    [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
+    jq -cn --arg ref "$ref" --arg digest "$digest" \
+        '{base_image_ref:$ref, base_image_digest:$digest}'
+}
+
 # lineage_base_fields_from_provenance <base-identity-json> <target-metadata-json>
 #
 # Extract the digest of the selected final-stage base from Buildx's *per target*
-# `buildx.build.provenance` material list.  This is build-resolved evidence; it
-# never inspects a mutable tag after the build.  The source accepts the current
-# SLSA v0.2 (`predicate.materials`) and v1 (`resolvedDependencies`) layouts.
-# A no-external-base result omits both coupled fields and carries an explicit
-# marker for the drift consumer.
+# `buildx.build.provenance` material list. This is build-resolved evidence; it
+# never inspects a mutable tag after the build. Buildx decodes the exporter
+# response and writes the provenance predicate object itself, so the current
+# metadata-file shape has `buildx.build.provenance.materials` (no `predicate`
+# wrapper). This is the BuildKit SLSA v0.2 predicate which Buildx emits by
+# default; do not add speculative layouts without a producing Buildx version.
 lineage_base_fields_from_provenance() {
     local base_identity="$1"
     local target_metadata="$2"
     local kind ref digest
-    kind=$(jq -r '.kind // "unresolved"' <<< "$base_identity")
-    if [[ "$kind" == "no_external_base" ]]; then
-        jq -cn '{base_image_kind:"no_external_base"}'
-        return 0
+    kind=$(jq -r '.kind // "unresolved"' <<< "$base_identity") || return 1
+    if [[ "$kind" != "external" ]]; then
+        lineage_base_fields_from_identity "$base_identity"
+        return
     fi
-    [[ "$kind" == "external" ]] || return 1
     ref=$(jq -r '.ref // empty' <<< "$base_identity")
     [[ -n "$ref" ]] || return 1
 
@@ -124,7 +170,7 @@ lineage_base_fields_from_provenance() {
     digest=$(jq -r --arg ref "$ref" '
       def materials:
         (."buildx.build.provenance" // {}) as $p
-        | ($p.predicate.materials // $p.predicate.buildDefinition.resolvedDependencies // $p.predicate.runDetails.builderDependencies // []);
+        | ($p.materials // []);
       def purl_ref:
         sub("^pkg:docker/"; "") | split("?")[0] | sub("@"; ":");
       [ materials[]?
@@ -133,7 +179,5 @@ lineage_base_fields_from_provenance() {
            | if startswith("sha256:") then . else "sha256:" + . end)
       ][0] // empty
     ' <<< "$target_metadata")
-    [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
-    jq -cn --arg ref "$ref" --arg digest "$digest" \
-        '{base_image_ref:$ref, base_image_digest:$digest}'
+    lineage_base_fields_from_identity "$base_identity" "$digest"
 }

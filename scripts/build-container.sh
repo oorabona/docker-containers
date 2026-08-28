@@ -190,7 +190,6 @@ _resolve_base_image() {
     _BASE_IMAGE_REF=$(jq -r '.ref // empty' <<< "$base_identity")
     if [[ "$_BASE_IMAGE_KIND" == "unresolved" ]]; then
         log_warning "final runnable base_image_ref left unresolved after bounded expansion: ${_BASE_IMAGE_REF:-unknown}"
-        _BASE_IMAGE_REF=""
     fi
 
     # Resolve digest if we have a concrete image reference
@@ -242,21 +241,22 @@ _emit_build_lineage() {
     local build_args_data
     build_args_data=$(build_args_json ".")
 
-    # A runnable scratch stage has no external material.  Keep the marker
-    # explicit and omit the coupled ref/digest pair; external records carry both.
-    local base_fields
-    if [[ "${_BASE_IMAGE_KIND:-external}" == "no_external_base" ]]; then
-        base_fields='{"base_image_kind":"no_external_base"}'
-    elif [[ -n "${_BASE_IMAGE_REF:-}" && "${_BASE_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-        base_fields=$(jq -cn \
-            --arg ref "$_BASE_IMAGE_REF" \
-            --arg digest "$_BASE_DIGEST" \
-            '{base_image_ref:$ref, base_image_digest:$digest}')
-    else
+    # The shared helper translates resolver identities into the detector's
+    # marker vocabulary. Do not encode an unresolved reference as an empty
+    # base_image_ref: the marker is the assertion this writer can make.
+    local base_fields base_identity
+    base_identity=$(jq -cn \
+        --arg kind "${_BASE_IMAGE_KIND:-unresolved}" \
+        --arg ref "${_BASE_IMAGE_REF:-}" \
+        'if $kind == "external" then {kind:$kind, ref:$ref} else {kind:$kind} end')
+    if [[ "${_BASE_IMAGE_KIND:-unresolved}" == "external" && \
+            ( -z "${_BASE_IMAGE_REF:-}" || ! "${_BASE_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ ) ]]; then
         # Do not create the detector's ref-without-digest legacy shape. A
-        # failed matrix probe is explicit but has no comparison material.
-        base_fields='{"base_image_kind":"unresolved_external_base"}'
+        # failed matrix probe has no comparison material, so represent it with
+        # the same explicit unresolved identity as the resolver does.
+        base_identity='{"kind":"unresolved"}'
     fi
+    base_fields=$(lineage_base_fields_from_identity "$base_identity" "${_BASE_DIGEST:-}") || return 1
 
     # Fix C: use jq -n --arg so values with '"' or backslash are safely escaped.
     # Fix E: include lineage_schema_version=2 for downstream schema detection.
