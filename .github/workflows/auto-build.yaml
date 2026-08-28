@@ -2327,7 +2327,7 @@ jobs:
             lineage_file=".build-lineage/${container}-${tag}.json"
             built_at="$(date -Iseconds)"
             ghcr_image="${REMOTE_CR}/${container}:${tag}"
-            jq -cn \
+            lineage_record=$(jq -cn \
               --arg container "$container" \
               --arg version "$tag" \
               --arg tag "$tag" \
@@ -2347,7 +2347,8 @@ jobs:
                 built_at:$built_at,
                 is_default:($is_default == "true"),
                 is_latest_version:($is_latest == "true")} + $base_fields' \
-              > "$lineage_file" || true
+              )
+            write_lineage_record_atomically "$lineage_file" "$lineage_record"
           done
 
       # Upload all bake SBOMs as a single combined artifact so the bake-attest

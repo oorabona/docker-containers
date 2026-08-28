@@ -260,7 +260,9 @@ _emit_build_lineage() {
 
     # Fix C: use jq -n --arg so values with '"' or backslash are safely escaped.
     # Fix E: include lineage_schema_version=2 for downstream schema detection.
-    jq -n \
+    # Construct the complete record before its single atomic publication.
+    local lineage_record
+    lineage_record=$(jq -n \
         --arg     container        "$container" \
         --arg     version          "$version" \
         --arg     tag              "$tag" \
@@ -278,6 +280,7 @@ _emit_build_lineage() {
         --arg     dockerhub_image  "$dockerhub_image:$tag" \
         --arg     ghcr_image       "$ghcr_image:$tag" \
         --argjson build_args       "$build_args_data" \
+        --argjson extensions_build_seconds "$extensions_build_seconds" \
         '{
           lineage_schema_version: 2,
           container:              $container,
@@ -298,25 +301,9 @@ _emit_build_lineage() {
             ghcr:      $ghcr_image
           },
           build_args: $build_args
-        } + $base_fields' > "$lineage_file"
-
-    # Conditionally merge extensions_build_seconds when the caller actually
-    # measured it. The field's PRESENCE (not its value) is the signal that
-    # downstream consumers (sbom-utils.sh::append_build_history, the dashboard
-    # frontend) use to detect "container has extensions concept". Containers
-    # without extensions/config.yaml pass the literal string "null" as the
-    # 10th arg — for those we omit the field entirely so the signal stays
-    # honest.
-    if [[ "$extensions_build_seconds" != "null" ]]; then
-        local _lineage_tmp="${lineage_file}.tmp"
-        if jq --argjson ext "$extensions_build_seconds" \
-            '. + {extensions_build_seconds: $ext}' "$lineage_file" > "$_lineage_tmp" 2>/dev/null; then
-            mv "$_lineage_tmp" "$lineage_file"
-        else
-            rm -f "$_lineage_tmp"
-            log_warning "Failed to merge extensions_build_seconds=$extensions_build_seconds into $lineage_file"
-        fi
-    fi
+        } + $base_fields
+          | if $extensions_build_seconds == null then . else . + {extensions_build_seconds: $extensions_build_seconds} end') || return 1
+    write_lineage_record_atomically "$lineage_file" "$lineage_record" || return 1
     log_info "Build lineage: $lineage_file"
 }
 
@@ -462,7 +449,11 @@ build_container() {
     # is still read — no behavior change for monolithic path.
     local _rbi_generated=0
     [[ -n "$_generated_dockerfile" ]] && _rbi_generated=1
-    _resolve_base_image "$dockerfile" "$version" "label_args" "$_rbi_generated"
+    if ! _resolve_base_image "$dockerfile" "$version" "label_args" "$_rbi_generated"; then
+        log_error "Failed to resolve final runnable base for $container:$tag"
+        [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
+        return 1
+    fi
 
     # Pre-build context hook: download external artifacts needed by the Dockerfile
     # (e.g., github-runner downloads the runner agent tarball via gh CLI)
@@ -575,8 +566,12 @@ build_container() {
     fi
 
     if [[ "${DRY_RUN:-false}" != "true" ]]; then
-        _emit_build_lineage "$container" "$version" "$tag" "$flavor" "$dockerfile" \
-            "$_PLATFORMS" "$_RUNTIME_INFO" "$dockerhub_image" "$ghcr_image" "$_ext_seconds"
+        if ! _emit_build_lineage "$container" "$version" "$tag" "$flavor" "$dockerfile" \
+                "$_PLATFORMS" "$_RUNTIME_INFO" "$dockerhub_image" "$ghcr_image" "$_ext_seconds"; then
+            log_error "Failed to publish build lineage for $container:$tag"
+            [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
+            return 1
+        fi
     else
         log_info "[DRY-RUN] Would write lineage: .build-lineage/${container}-${tag}.json"
     fi

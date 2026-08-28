@@ -14,6 +14,7 @@
 #   {"kind":"external","ref":"registry/image:tag"}
 #   {"kind":"no_external_base"}       # final stage is scratch
 #   {"kind":"unresolved","ref":"${ARG}/image"}
+#   {"kind":"sibling_target","supplier":{...}}
 #
 # The function is intentionally pure: no cwd, globals, labels, registry I/O,
 # or Docker invocation.  Effective build args take precedence over Dockerfile
@@ -129,6 +130,21 @@ lineage_base_fields_from_identity() {
             jq -cn '{base_image_kind:"unresolved_external_base"}'
             return 0
             ;;
+        sibling_target)
+            # A Bake context can replace the textual final FROM reference with
+            # another target in this same invocation. This is neither an
+            # external material nor scratch, so retain its exact supplier cell.
+            jq -e '
+              .supplier as $supplier
+              | ($supplier | type == "object") and
+                ([$supplier.container, $supplier.version, $supplier.platform,
+                  $supplier.textual_ref, $supplier.bake_target_id] | all(type == "string" and length > 0)) and
+                ($supplier.flavor | type == "string")
+            ' >/dev/null <<< "$base_identity" || return 1
+            jq -cn --argjson supplier "$(jq -c '.supplier' <<< "$base_identity")" \
+                '{base_image_kind:"sibling_target", base_image_sibling:$supplier}'
+            return 0
+            ;;
         external)
             ;;
         *)
@@ -140,6 +156,29 @@ lineage_base_fields_from_identity() {
     [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
     jq -cn --arg ref "$ref" --arg digest "$digest" \
         '{base_image_ref:$ref, base_image_digest:$digest}'
+}
+
+# write_lineage_record_atomically <destination> <json-record>
+#
+# A required lineage step succeeds only after a complete, parseable record has
+# been installed at its final path. The temporary file is beside the target so
+# the final rename is atomic.
+write_lineage_record_atomically() {
+    local destination="$1" record="$2"
+    local directory basename tmp_file
+    directory=$(dirname "$destination") || return 1
+    basename=$(basename "$destination") || return 1
+    mkdir -p "$directory" || return 1
+    tmp_file=$(mktemp "${directory}/.${basename}.tmp.XXXXXX") || return 1
+
+    if ! printf '%s\n' "$record" > "$tmp_file" || ! jq -e . "$tmp_file" >/dev/null; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+    if ! mv -f "$tmp_file" "$destination"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
 }
 
 # lineage_base_fields_from_provenance <base-identity-json> <target-metadata-json>

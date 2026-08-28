@@ -1039,6 +1039,42 @@ _contexts_for_cell() {
     printf '%s' "$ctx"
 }
 
+# Replace an external-looking final FROM identity with a same-build supplier
+# identity whenever Bake injects a target: context for it. The context target
+# is the selected dependency cell, so retain its durable coordinates instead
+# of merely naming the dependency container.
+_sibling_target_identity_for_cell() {
+    local container="$1" base_identity="$2" dep_target_ids_json="$3"
+    local kind ref deps dep dep_target_id supplier_cell supplier_version supplier_flavor
+
+    kind=$(jq -r '.kind // empty' <<< "$base_identity") || return 1
+    [[ "$kind" == "external" ]] || { printf '%s' "$base_identity"; return 0; }
+    ref=$(jq -r '.ref // empty' <<< "$base_identity") || return 1
+    [[ -n "$ref" ]] || return 1
+    deps=$(_depgraph_get_deps "$container") || return 1
+
+    for dep in $deps; do
+        [[ "$ref" == *"/${dep}:"* || "$ref" == *"/${dep}" ]] || continue
+        dep_target_id=$(jq -r --arg dep "$dep" '.[$dep] // empty' <<< "$dep_target_ids_json") || return 1
+        [[ -n "$dep_target_id" ]] || continue
+        supplier_cell=$(jq -ce '.[0]' <<< "${_EC_all_matrix_json[$dep]}") || return 1
+        supplier_version=$(jq -r '.version' <<< "$supplier_cell") || return 1
+        supplier_flavor=$(jq -r '.flavor // ""' <<< "$supplier_cell") || return 1
+        # --cells is consumed by the amd64 lineage job; the target is built for
+        # this same platform in that Bake invocation.
+        jq -cn \
+            --arg container "$dep" \
+            --arg version "$supplier_version" \
+            --arg flavor "$supplier_flavor" \
+            --arg platform "linux/amd64" \
+            --arg textual_ref "$ref" \
+            --arg bake_target_id "$dep_target_id" \
+            '{kind:"sibling_target", supplier:{container:$container, version:$version, flavor:$flavor, platform:$platform, textual_ref:$textual_ref, bake_target_id:$bake_target_id}}'
+        return 0
+    done
+    printf '%s' "$base_identity"
+}
+
 # ---------------------------------------------------------------------------
 # _validate_internal_dependency_base_refs <targets_json> <dep_target_ids_json>
 #
@@ -1606,6 +1642,16 @@ _emit_cells_json() {
         return 1
     fi
 
+    # Match the bake document's dependency contexts: each dependency resolves
+    # to its selected first target cell.
+    local dep_target_ids_json='{}'
+    local _dep_name
+    for _dep_name in "${!_EC_first_target_per_container[@]}"; do
+        dep_target_ids_json=$(jq -cn --argjson base "$dep_target_ids_json" \
+            --arg key "$_dep_name" --arg value "${_EC_first_target_per_container[$_dep_name]}" \
+            '$base + {($key): $value}')
+    done
+
     # Accumulate cell objects into a JSON array
     local cells_json='[]'
 
@@ -1623,6 +1669,11 @@ _emit_cells_json() {
         if ! _base_identity=$(_runtime_base_identity_for_cell "$_c" "$_version" "$_flavor" \
                 "$_build_flavor" "$_cell_dockerfile" "$_config_args"); then
             printf 'ERROR: runtime base resolution failed for %q version=%q\n' "$_c" "$_version" >&2
+            return 1
+        fi
+        if ! _base_identity=$(_sibling_target_identity_for_cell \
+                "$_c" "$_base_identity" "$dep_target_ids_json"); then
+            printf 'ERROR: sibling target identity resolution failed for %q\n' "$_c" >&2
             return 1
         fi
         _obj=$(jq -cn \

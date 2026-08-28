@@ -44,7 +44,7 @@ setup() {
     [ "$status" -eq 0 ]
     # github-runner's template defaults REMOTE_CR, while the target passes it
     # explicitly. The returned ref proves the target-effective value won.
-    [ "$(jq -r '[.[] | .runtime_base.ref] | all(startswith("ghcr.io/oorabona/"))' <<< "$output")" = "true" ]
+    [ "$(jq -r '[.[] | select(.runtime_base.kind == "external") | .runtime_base.ref] | all(startswith("ghcr.io/oorabona/"))' <<< "$output")" = "true" ]
 
     run bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" github-runner
     [ "$status" -eq 0 ]
@@ -116,7 +116,7 @@ setup() {
     done < <(git -C "$PROJECT_ROOT" ls-files | rg '(^|/)Dockerfile([._-]|$)')
 }
 
-@test "bake lineage is mandatory even when the Syft install is advisory" {
+@test "bake lineage is mandatory and publishes records through the atomic writer" {
     local workflow steps lineage syft
     workflow="$PROJECT_ROOT/.github/workflows/auto-build.yaml"
     steps=$(yq -o=json '.jobs."bake-build-amd64".steps' "$workflow")
@@ -128,8 +128,64 @@ setup() {
         || { printf 'mandatory bake lineage step must not continue on error\n' >&2; return 1; }
     [[ "$(jq -r '.if // ""' <<< "$lineage")" != *"install-syft-bake"* ]] \
         || { printf 'mandatory bake lineage step must not depend on Syft\n' >&2; return 1; }
+    [[ "$(jq -r '.run' <<< "$lineage")" == *"write_lineage_record_atomically"* ]] \
+        || { printf 'mandatory bake lineage step must use the atomic verified writer\n' >&2; return 1; }
     [ "$(jq -r '."continue-on-error" // false' <<< "$syft")" = "true" ] \
         || { printf 'Syft install must remain advisory\n' >&2; return 1; }
+}
+
+@test "sibling Bake target lineage names the exact supplying cell rather than an external material" {
+    local cell result
+    cell=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells wordpress | jq -c '.[]')
+    result=$(lineage_base_fields_from_provenance "$(jq -c '.runtime_base' <<< "$cell")" '{}')
+
+    [ "$(jq -r '.base_image_kind' <<< "$result")" = "sibling_target" ] || {
+        echo "Sibling target must emit its explicit lineage marker"
+        return 1
+    }
+    [ "$(jq 'has("base_image_ref") or has("base_image_digest")' <<< "$result")" = "false" ] || {
+        echo "Sibling target must not be recorded as a direct external base"
+        return 1
+    }
+    [ "$(jq -r '.base_image_sibling.container' <<< "$result")" = "php" ]
+    [ "$(jq -r '.base_image_sibling.version' <<< "$result")" = "8.5.9-fpm-alpine" ]
+    [ "$(jq -r '.base_image_sibling.flavor' <<< "$result")" = "" ]
+    [ "$(jq -r '.base_image_sibling.platform' <<< "$result")" = "linux/amd64" ]
+    [ "$(jq -r '.base_image_sibling.textual_ref' <<< "$result")" = "ghcr.io/oorabona/php:latest" ]
+    [ "$(jq -r '.base_image_sibling.bake_target_id' <<< "$result")" = "php_8_5_9_fpm_alpine" ] || {
+        echo "Sibling target must identify the precise supplying Bake cell"
+        return 1
+    }
+}
+
+@test "atomic lineage writer fails without publishing when its destination cannot be written" {
+    local blocked_parent destination
+    blocked_parent="$BATS_TEST_TMPDIR/not-a-directory"
+    printf 'block' > "$blocked_parent"
+    destination="$blocked_parent/lineage.json"
+
+    run write_lineage_record_atomically "$destination" '{"container":"foo"}'
+    [ "$status" -ne 0 ] || {
+        echo "Lineage write failure must surface to the required caller"
+        return 1
+    }
+    [ ! -e "$destination" ] || {
+        echo "Failed lineage write must leave no final file behind"
+        return 1
+    }
+}
+
+@test "atomic lineage writer rejects an unparseable record without publishing it" {
+    local destination="$BATS_TEST_TMPDIR/lineage.json"
+    run write_lineage_record_atomically "$destination" '{truncated'
+    [ "$status" -ne 0 ] || {
+        echo "Unparseable lineage record must fail the required caller"
+        return 1
+    }
+    [ ! -e "$destination" ] || {
+        echo "Unparseable lineage record must never reach the final path"
+        return 1
+    }
 }
 
 @test "both bake architectures request minimum metadata provenance" {

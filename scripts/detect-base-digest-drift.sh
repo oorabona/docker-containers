@@ -11,6 +11,7 @@
 #   error     — the variant could not be evaluated; error_reason identifies why
 #   legacy    — lineage lacks base_image_digest field (pre-v2); rebuild baselines it
 #   no_external_base — the stage has no external base to compare (no action needed)
+#   sibling_target — final base is another Bake target; no direct check applies
 #
 # Usage:
 #   detect-base-digest-drift.sh [--baseline-only] [LINEAGE_DIR]
@@ -706,6 +707,19 @@ for lineage_file in "${lineage_files[@]}"; do
             --arg variant_tag "$variant_tag" \
             --arg status "no_external_base" \
             '{variant_tag: $variant_tag, status: $status}')
+        _container_variants["$container"]+="${variant_json}"$'\n'
+        continue
+    fi
+    # A Bake target can use a sibling target as its final base.  This is an
+    # internal build relationship, not an external image comparison; preserve
+    # the producer's full supplier identity for the consumer.
+    if [[ "$base_image_kind" == "sibling_target" ]]; then
+        base_image_sibling=$(jq -c '.base_image_sibling' "$lineage_file" 2>/dev/null || true)
+        variant_json=$(jq -cn \
+            --arg variant_tag "$variant_tag" \
+            --argjson base_image_sibling "$base_image_sibling" \
+            --arg status "sibling_target" \
+            '{variant_tag: $variant_tag, base_image_sibling: $base_image_sibling, status: $status}')
         _container_variants["$container"]+="${variant_json}"$'\n'
         continue
     fi
