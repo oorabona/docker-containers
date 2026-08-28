@@ -69,6 +69,8 @@ source "${PROJECT_ROOT}/helpers/logging.sh"
 source "${PROJECT_ROOT}/helpers/gha.sh"
 # shellcheck source=../helpers/build-args-utils.sh
 source "${PROJECT_ROOT}/helpers/build-args-utils.sh"
+# shellcheck source=../helpers/base-image-utils.sh
+source "${PROJECT_ROOT}/helpers/base-image-utils.sh"
 # validate-base-cache-schema provides _vbc_validate_build_args_config — the
 # canonical fail-closed validator for config.yaml build_args entries.
 # shellcheck source=../helpers/validate-base-cache-schema.sh
@@ -778,6 +780,44 @@ _compute_cell_build_args() {
     fi
 
     printf '%s' "$args"
+}
+
+# Resolve the final runnable stage and effective args that Bake receives.
+# Template generation is needed only when it changes the final FROM itself;
+# this keeps --cells as an offline enumeration of the same build matrix. Build
+# stages are deliberately excluded; see helpers/base-image-utils.sh for the
+# fleet-specific v1 boundary.
+_runtime_base_identity_for_cell() {
+    local container="$1" version="$2" flavor="$3" build_flavor="$4"
+    local cell_dockerfile="$5" config_args="$6"
+    local dockerfile abs_dockerfile template_for_gen source_dockerfile df_content final_from
+    dockerfile=$(_resolve_dockerfile "$container" "$cell_dockerfile" "$flavor" "$build_flavor")
+    abs_dockerfile="${PROJECT_ROOT}/${container}/${dockerfile}"
+    template_for_gen="$dockerfile"
+    if [[ -f "$abs_dockerfile" ]]; then
+        source_dockerfile="$abs_dockerfile"
+    elif [[ -f "${PROJECT_ROOT}/${container}/Dockerfile" ]]; then
+        source_dockerfile="${PROJECT_ROOT}/${container}/Dockerfile"
+        template_for_gen="Dockerfile"
+    else
+        return 1
+    fi
+    df_content=$(< "$source_dockerfile")
+
+    # A marker in an earlier build stage cannot affect the v1 final-runnable
+    # identity. Avoid running its generator here: cells mode is an offline
+    # matrix enumerator, and source availability must not remove build cells.
+    final_from=$(awk '/^[[:space:]]*FROM[[:space:]]+/{line=$0} END{print line}' <<< "$df_content")
+    if { [[ -z "$final_from" ]] && grep -qE '@@[A-Z_]+@@' <<< "$df_content"; } || \
+            [[ "$final_from" == *@@* ]]; then
+        df_content=$(_materialize_dockerfile "$container" "$template_for_gen" \
+            "$flavor" "$version" "$build_flavor") || return 1
+    fi
+
+    local args_json
+    args_json=$(_compute_cell_build_args "$container" "$version" "$flavor" \
+        "$build_flavor" "$config_args" "$df_content" 1) || return 1
+    resolve_final_runnable_base "$df_content" "$args_json"
 }
 
 # ---------------------------------------------------------------------------
@@ -1523,7 +1563,9 @@ _build_bake_json() {
 # ---------------------------------------------------------------------------
 # --cells mode: emit a compact JSON array — one object per linux build cell.
 # Same cell set as the bake mode (same closure + matrix + os==windows skip).
-# No Dockerfile work; no build_args computation.
+# Each cell carries its final runnable-stage identity, computed from the exact
+# materialized Dockerfile and args used by Bake.  The workflow pairs it with
+# Buildx's per-target provenance material after the build.
 #
 # Output per element:
 #   {
@@ -1575,7 +1617,14 @@ _emit_cells_json() {
     #        bake-buildresult.sh can correlate --metadata-file keys to cells.
     _on_cell_plain() {
         local _c="$1" _tag="$2" _flavor="$3" _is_default="$4" _iref="$5" _is_latest="${6:-false}" _variant="${7:-}" _tid="${8:-}"
-        local _obj
+        local _version="${9:-}" _build_flavor="${10:-}" _cell_dockerfile="${11:-Dockerfile}" _config_args="${12-}"
+        [[ -n "$_config_args" ]] || _config_args='{}'
+        local _obj _base_identity
+        if ! _base_identity=$(_runtime_base_identity_for_cell "$_c" "$_version" "$_flavor" \
+                "$_build_flavor" "$_cell_dockerfile" "$_config_args"); then
+            printf 'ERROR: runtime base resolution failed for %q version=%q\n' "$_c" "$_version" >&2
+            return 1
+        fi
         _obj=$(jq -cn \
             --arg container    "$_c" \
             --arg tag          "$_tag" \
@@ -1585,7 +1634,8 @@ _emit_cells_json() {
             --argjson is_latest_version "$( [ "$_is_latest"  = "true" ] && echo 'true' || echo 'false')" \
             --arg intermediate_ref "$_iref" \
             --arg target_id    "$_tid" \
-            '{container: $container, tag: $tag, flavor: $flavor, variant: $variant, is_default: $is_default, is_latest_version: $is_latest_version, intermediate_ref: $intermediate_ref, target_id: $target_id}')
+            --argjson runtime_base "$_base_identity" \
+            '{container: $container, tag: $tag, flavor: $flavor, variant: $variant, is_default: $is_default, is_latest_version: $is_latest_version, intermediate_ref: $intermediate_ref, target_id: $target_id, runtime_base: $runtime_base}')
         cells_json=$(jq -cn --argjson arr "$cells_json" --argjson obj "$_obj" '$arr + [$obj]')
     }
 
@@ -1595,6 +1645,12 @@ _emit_cells_json() {
         # requested set — their intermediates are never pushed.
         if [[ -z "${_requested_set[$c]+set}" ]]; then
             continue
+        fi
+
+        local config_args
+        if ! config_args=$(_config_build_args "$c"); then
+            printf 'ERROR: _config_build_args failed for %q\n' "$c" >&2
+            return 1
         fi
 
         local matrix="${_EC_all_matrix_json[$c]}"
@@ -1630,7 +1686,8 @@ _emit_cells_json() {
             local intermediate_ref="${_BAKE_REMOTE_CR}/${c}:${_EC_cell_tag}"
             _on_cell_plain "$c" "$_EC_cell_tag" "$_EC_cell_flavor" \
                 "$_EC_cell_is_default" "$intermediate_ref" "$_EC_cell_is_latest_version" \
-                "$_EC_cell_variant" "$cell_tid"
+                "$_EC_cell_variant" "$cell_tid" "$_EC_cell_version" \
+                "$_EC_cell_build_flavor" "$_EC_cell_dockerfile" "$config_args" || return 1
         done
     done
 

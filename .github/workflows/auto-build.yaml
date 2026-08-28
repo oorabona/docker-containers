@@ -2006,6 +2006,10 @@ jobs:
           DRY_RUN: ${{ env.DRY_RUN }}
           DOCKER_NO_CACHE: ${{ env.DOCKER_NO_CACHE }}
           BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
+          # Full per-target BuildKit provenance contains the resolved external
+          # materials. The lineage emitter reads this build-produced evidence;
+          # a later registry/tag inspection would not identify this build's base.
+          BUILDX_METADATA_PROVENANCE: max
           PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
           REBUILD: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
         run: |
@@ -2188,6 +2192,7 @@ jobs:
           set -euo pipefail
           source ./helpers/logging.sh
           source ./helpers/retry.sh
+          source ./helpers/base-image-utils.sh
           source ./helpers/sbom-utils.sh
           chmod +x scripts/generate-bake-hcl.sh
 
@@ -2228,6 +2233,8 @@ jobs:
             container=$(jq -r '.container'       <<< "$cell")
             tag=$(jq -r '.tag'                   <<< "$cell")
             flavor=$(jq -r '.flavor // ""'       <<< "$cell")
+            target_id=$(jq -r '.target_id'         <<< "$cell")
+            runtime_base=$(jq -c '.runtime_base'   <<< "$cell")
             is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
             is_latest=$(jq -r 'if has("is_latest_version") then (if .is_latest_version then "true" else "false" end) else "true" end' <<< "$cell")
             iref=$(jq -r '.intermediate_ref'     <<< "$cell")
@@ -2259,6 +2266,12 @@ jobs:
             fi
 
             # Emit schema-v2 lineage JSON
+            target_metadata=$(jq -c --arg tid "$target_id" '.[$tid] // {}' \
+              "${RUNNER_TEMP}/bake-metadata-amd64.json")
+            if ! base_fields=$(lineage_base_fields_from_provenance "$runtime_base" "$target_metadata"); then
+              echo "::error::Bake provenance did not provide the final runnable base digest for ${container}:${tag} (target ${target_id})"
+              exit 1
+            fi
             lineage_file=".build-lineage/${container}-${tag}.json"
             built_at="$(date -Iseconds)"
             ghcr_image="${REMOTE_CR}/${container}:${tag}"
@@ -2269,19 +2282,19 @@ jobs:
               --arg flavor    "$flavor" \
               --arg platform  "linux/amd64" \
               --arg build_digest "$digest" \
-              --arg base_image_ref "" \
+              --argjson base_fields "$base_fields" \
               --arg ghcr      "$ghcr_image" \
               --arg dockerhub "docker.io/oorabona/${container}:${tag}" \
               --arg built_at  "$built_at" \
               --arg is_default "$is_default" \
               --arg is_latest  "$is_latest" \
-              '{container:$container, version:$version, tag:$tag, flavor:$flavor,
+              '{lineage_schema_version:2,
+                container:$container, version:$version, tag:$tag, flavor:$flavor,
                 platform:$platform, build_digest:$build_digest,
-                base_image_ref:$base_image_ref,
                 images:{ghcr:$ghcr, dockerhub:$dockerhub},
                 built_at:$built_at,
                 is_default:($is_default == "true"),
-                is_latest_version:($is_latest == "true")}' \
+                is_latest_version:($is_latest == "true")} + $base_fields' \
               > "$lineage_file" || true
 
             echo "::endgroup::"
@@ -2499,6 +2512,9 @@ jobs:
           DRY_RUN: ${{ env.DRY_RUN }}
           DOCKER_NO_CACHE: ${{ env.DOCKER_NO_CACHE }}
           BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
+          # Keep the per-target resolved materials in bake-metadata-arm64 too;
+          # amd64 lineage consumes its sibling metadata in the same format.
+          BUILDX_METADATA_PROVENANCE: max
           PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
           REBUILD: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
         run: |

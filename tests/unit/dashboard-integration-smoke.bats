@@ -1,14 +1,15 @@
 #!/usr/bin/env bats
 
 # Integration smoke tests for the base_image truth pipeline (issue #530).
-# Tests the full chain: _prepare_build_args → _resolve_base_image → _emit_build_lineage
-# → resolve_lineage_file (dashboard read).
+# Tests the resolver boundary and dashboard read path. Bake lineage now couples
+# the reference to a digest extracted from build provenance, so resolver tests
+# must not use a mocked registry probe as an emission substitute.
 #
 # Covers:
 #   - Monolithic fixture (sslh-style): build_args substitution via _BUILD_ARGS_RESOLVED
 #   - Template fixture (web-shell-style): post-template-generation FROM is authoritative
 #   - Dashboard read fast-path: network helpers are NOT called
-#   - Mutation guard: disabling A1 substitution pass causes base_image_ref to leak ${...}
+#   - Mutation guard: removing required effective args leaves the resolver identity unresolved
 
 load "../test_helper"
 
@@ -64,11 +65,9 @@ source_dashboard_fns() {
 }
 
 # ---------------------------------------------------------------------------
-# Smoke 1 — Monolithic fixture (Fix A1 end-to-end)
-# Pipeline: _prepare_build_args → _resolve_base_image → _emit_build_lineage
-# Assert: base_image_ref concrete, lineage_schema_version=2
+# Smoke 1 — Monolithic fixture: effective build args resolve the final base.
 # ---------------------------------------------------------------------------
-@test "Monolithic fixture produces concrete base_image_ref (Fix A1)" {
+@test "Monolithic fixture resolves concrete final base from effective build args" {
     local work="$TEST_TEMP_DIR/mono"
     mkdir -p "$work"
     cp "$FIXTURE_MONO/config.yaml"   "$work/"
@@ -81,27 +80,11 @@ source_dashboard_fns() {
     source_build_container
     export PROJECT_ROOT="$work"
 
-    # Mock docker (no real Docker needed)
-    docker() { echo ""; }
-    export -f docker
-
     # Run the substitution pipeline (version first, then flavor — matches production signature)
     _prepare_build_args "v2.3.1" ""
     _resolve_base_image "$work/Dockerfile" "v2.3.1" "label_args"
-
-    # Emit lineage
-    _emit_build_lineage \
-        "mono-fixture" "v2.3.1" "v2.3.1-alpine" "" \
-        "$work/Dockerfile" "linux/amd64" "" \
-        "example/mono-fixture" "ghcr.io/test/mono-fixture"
-
-    local lineage_file="$work/.build-lineage/mono-fixture-v2.3.1-alpine.json"
-    [ -f "$lineage_file" ]
-
-    local base_image_ref
-    base_image_ref=$(jq -r '.base_image_ref' "$lineage_file")
-    # Must be concrete (no ${...} placeholder)
-    [[ "$base_image_ref" == "alpine:3.21" ]]
+    [ "$_BASE_IMAGE_KIND" = "external" ]
+    [ "$_BASE_IMAGE_REF" = "alpine:3.21" ]
 }
 
 @test "Monolithic fixture lineage_schema_version equals 2" {
@@ -137,7 +120,7 @@ source_dashboard_fns() {
 # Pipeline: template generation → _resolve_base_image with from_generated=1
 # Assert: base_image_ref = "alpine:3.21" (from generated Dockerfile, not config)
 # ---------------------------------------------------------------------------
-@test "Template fixture (alpine) produces alpine:3.21 (Fix A2)" {
+@test "Template fixture alpine resolves its generated final base" {
     local work="$TEST_TEMP_DIR/tpl"
     mkdir -p "$work"
     cp "$FIXTURE_TPL/config.yaml"          "$work/"
@@ -150,9 +133,6 @@ source_dashboard_fns() {
     cd "$work" || return 1
     source_build_container
     export PROJECT_ROOT="$work"
-
-    docker() { echo ""; }
-    export -f docker
 
     # Simulate what build_container does: generate the per-flavor Dockerfile
     local generated_df="$work/Dockerfile.alpine"
@@ -168,22 +148,12 @@ source_dashboard_fns() {
     # Resolve base image POST-template-generation (Fix A2): use generated Dockerfile
     _resolve_base_image "$generated_df" "1.0" "label_args" "1"
 
-    # Emit lineage
-    _emit_build_lineage \
-        "tpl-fixture" "1.0" "1.0-alpine" "alpine" \
-        "$generated_df" "linux/amd64" "" \
-        "example/tpl-fixture" "ghcr.io/test/tpl-fixture"
-
-    local lineage_file="$work/.build-lineage/tpl-fixture-1.0-alpine.json"
-    [ -f "$lineage_file" ]
-
-    local base_image_ref
-    base_image_ref=$(jq -r '.base_image_ref' "$lineage_file")
-    # Must be alpine:3.21 (from generated Dockerfile), NOT the debian template default
-    [[ "$base_image_ref" == "alpine:3.21" ]]
+    # Must use the generated Dockerfile, not its debian template default.
+    [ "$_BASE_IMAGE_KIND" = "external" ]
+    [ "$_BASE_IMAGE_REF" = "alpine:3.21" ]
 }
 
-@test "Template fixture (debian) produces concrete debian base_image_ref" {
+@test "Template fixture debian resolves its generated final base" {
     local work="$TEST_TEMP_DIR/tpl-deb"
     mkdir -p "$work"
     cp "$FIXTURE_TPL/config.yaml"          "$work/"
@@ -197,9 +167,6 @@ source_dashboard_fns() {
     source_build_container
     export PROJECT_ROOT="$work"
 
-    docker() { echo ""; }
-    export -f docker
-
     # Generate debian-flavor Dockerfile
     local generated_df="$work/Dockerfile.debian"
     bash "$work/generate-dockerfile.sh" "$work/Dockerfile.template" "debian" > "$generated_df"
@@ -207,19 +174,10 @@ source_dashboard_fns() {
     _prepare_build_args "1.0" ""
     _resolve_base_image "$generated_df" "1.0" "label_args" "1"
 
-    _emit_build_lineage \
-        "tpl-fixture" "1.0" "1.0" "debian" \
-        "$generated_df" "linux/amd64" "" \
-        "example/tpl-fixture" "ghcr.io/test/tpl-fixture"
-
-    local lineage_file="$work/.build-lineage/tpl-fixture-1.0.json"
-    [ -f "$lineage_file" ]
-
-    local base_image_ref
-    base_image_ref=$(jq -r '.base_image_ref' "$lineage_file")
     # Must be concrete (no ${...} leak) and must mention debian
-    [[ "$base_image_ref" != *'${'* ]]
-    [[ "$base_image_ref" == *"debian"* ]]
+    [ "$_BASE_IMAGE_KIND" = "external" ]
+    [[ "$_BASE_IMAGE_REF" != *'${'* ]]
+    [[ "$_BASE_IMAGE_REF" == *"debian"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -287,9 +245,9 @@ source_dashboard_fns() {
 }
 
 # ---------------------------------------------------------------------------
-# Mutation guard: disabling A1 substitution pass causes ${...} to survive
+# Mutation guard: removing final-base substitution leaves its placeholder exposed.
 # ---------------------------------------------------------------------------
-@test "Mutation guard — disabling A1 substitution pass leaks placeholder" {
+@test "Final base requires effective build args for a concrete identity" {
     local work="$TEST_TEMP_DIR/mut"
     mkdir -p "$work"
     cp "$FIXTURE_MONO/config.yaml"   "$work/"
@@ -301,21 +259,27 @@ source_dashboard_fns() {
     source_build_container
     export PROJECT_ROOT="$work"
 
-    docker() { echo ""; }
-    export -f docker
-
     _prepare_build_args "v2.3.1" ""
 
-    # Simulate pre-fix behavior: clear _BUILD_ARGS_RESOLVED before resolving
-    # (this mimics the state before Fix A1 was applied)
-    declare -gA _BUILD_ARGS_RESOLVED=()
+    # Control: the prepared map makes the final base concrete.
+    local resolved_identity
+    resolved_identity=$(resolve_final_runnable_base "$(< "$work/Dockerfile")" \
+        "$(jq -cn --arg base "${_BUILD_ARGS_RESOLVED[OS_IMAGE_BASE]}" \
+            --arg tag "${_BUILD_ARGS_RESOLVED[OS_IMAGE_TAG]}" \
+            '{OS_IMAGE_BASE:$base, OS_IMAGE_TAG:$tag}')")
+    if [[ "$(jq -r '.kind' <<< "$resolved_identity")" != "external" || \
+          "$(jq -r '.ref' <<< "$resolved_identity")" != "alpine:3.21" ]]; then
+        echo "FAIL: effective-arg substitution did not produce alpine:3.21"
+        echo "resolved identity: $resolved_identity"
+        return 1
+    fi
 
-    _resolve_base_image "$work/Dockerfile" "v2.3.1" "label_args"
-
-    # Without _BUILD_ARGS_RESOLVED, _BASE_IMAGE_REF still has ${...} placeholders
-    # because the Dockerfile ARG lines have no defaults (ARG OS_IMAGE_BASE, not ARG OS_IMAGE_BASE=alpine)
-    # The mutation guard: _BASE_IMAGE_REF must still contain ${ when A1 is disabled
-    [[ "$_BASE_IMAGE_REF" == *'${'* ]]
+    # Model the missing-substitution result explicitly. The shared resolver
+    # must expose it as unresolved, never invent a concrete external base.
+    local mutated_identity
+    mutated_identity=$(resolve_final_runnable_base "$(< "$work/Dockerfile")" '{}')
+    [ "$(jq -r '.kind' <<< "$mutated_identity")" = "unresolved" ]
+    [[ "$(jq -r '.ref' <<< "$mutated_identity")" == *'${'* ]]
 }
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,8 @@ source "$PROJECT_ROOT/helpers/build-cache-utils.sh"
 source "$PROJECT_ROOT/helpers/build-args-utils.sh"
 source "$PROJECT_ROOT/helpers/template-utils.sh"
 source "$PROJECT_ROOT/helpers/extension-utils.sh"
+# shellcheck source=../helpers/base-image-utils.sh
+source "$PROJECT_ROOT/helpers/base-image-utils.sh"
 # shellcheck source=../helpers/extension-duration-utils.sh
 [[ -f "$PROJECT_ROOT/helpers/extension-duration-utils.sh" ]] && source "$PROJECT_ROOT/helpers/extension-duration-utils.sh"
 
@@ -130,24 +132,20 @@ _prepare_build_args() {
     done < <(echo "${_BUILD_ARGS:-}" | grep -oE -- '--build-arg [^ ]+' | sed 's/--build-arg //' || true)
 }
 
-# Resolve base image reference from config.yaml or Dockerfile, substitute variables
-# Sets: _BASE_IMAGE_REF, _BASE_DIGEST, adds to label_args
+# Resolve the final runnable stage's external base reference.  The pure
+# substitution and final-FROM selection live in base-image-utils.sh so Bake and
+# the flat matrix cannot diverge as containers are added.
+# Sets: _BASE_IMAGE_REF, _BASE_DIGEST, _BASE_IMAGE_KIND; adds digest label.
 # Args: <dockerfile> <version> <label_args_var> [<from_generated>]
-#   from_generated: 1 = use the concrete FROM line in the generated Dockerfile as the
-#     authoritative base-image source (Fix A2); 0 = use config.yaml::base_image (default).
-#     Pass this explicitly from every call site — callers that forget default to monolithic
-#     semantics (0), which is safe but may miss the per-flavor fix for template containers.
+#   from_generated remains a compatibility argument; callers now pass concrete
+#   Dockerfile content to the shared final-stage resolver in either case.
 _resolve_base_image() {
     local dockerfile="$1"
     local version="$2"
     local label_args_var="$3"  # name of the label_args variable to append to
-    local from_generated="${4:-0}"  # Fix A2 positional param (replaces _RESOLVE_FROM_GENERATED env)
-
-    # Fix A2: when called with a generated Dockerfile (post-template-generation),
-    # the concrete FROM line is the authoritative source.  In that case, skip
-    # config.yaml::base_image — it contains the default-distro template value and
-    # would override the per-flavor FROM already baked into the generated file.
-    local _use_from_only="$from_generated"
+    # Kept as a positional compatibility slot for existing callers. The shared
+    # resolver always receives the concrete Dockerfile content, generated or not.
+    : "${4:-0}"
 
     # Fix A1: _BUILD_ARGS_RESOLVED is populated by _prepare_build_args (wrapper).
     # When _resolve_base_image is called directly in tests (without the wrapper),
@@ -157,126 +155,42 @@ _resolve_base_image() {
         declare -gA _BUILD_ARGS_RESOLVED=()
     fi
 
-    _BASE_IMAGE_REF=""
-    if [[ "$_use_from_only" != "1" && -f "./config.yaml" ]]; then
-        _BASE_IMAGE_REF=$(yq -r '.base_image // ""' ./config.yaml 2>/dev/null || true)
+    local effective_args='{}' key
+    for key in "${!_BUILD_ARGS_RESOLVED[@]}"; do
+        effective_args=$(jq -cn --argjson base "$effective_args" --arg k "$key" \
+            --arg v "${_BUILD_ARGS_RESOLVED[$key]}" '$base + {($k): $v}')
+    done
+    # Normal builds populate the map above. Keep the function's direct-call
+    # compatibility by providing the same standard values as fallback inputs;
+    # explicit effective args still win.
+    local standard_args
+    standard_args=$(jq -cn \
+        --arg version "$version" \
+        --arg major "${_MAJOR_VERSION:-}" \
+        --arg upstream "${_UPSTREAM_VERSION:-}" \
+        '{VERSION:$version}
+         + (if $major == "" then {} else {MAJOR_VERSION:$major} end)
+         + (if $upstream == "" then {} else {UPSTREAM_VERSION:$upstream} end)')
+    effective_args=$(jq -cn --argjson standard "$standard_args" --argjson effective "$effective_args" '$standard + $effective')
+    # _prepare_build_args normally already includes these final overrides. Keep
+    # direct callers (including the public helper tests) on Docker's last-value
+    # semantics too.
+    if [[ -n "${CUSTOM_BUILD_ARGS:-}" ]]; then
+        local custom_arg
+        while IFS= read -r custom_arg; do
+            local custom_key="${custom_arg%%=*}" custom_value="${custom_arg#*=}"
+            [[ "$custom_key" == "$custom_arg" || -z "$custom_key" ]] && continue
+            effective_args=$(jq -cn --argjson base "$effective_args" --arg k "$custom_key" \
+                --arg v "$custom_value" '$base + {($k): $v}')
+        done < <(printf '%s\n' "$CUSTOM_BUILD_ARGS" | grep -oE '\-\-build-arg [^ ]+' | sed 's/--build-arg //' || true)
     fi
-    # Always pre-compute the FROM line; used as fallback and as the authoritative
-    # source when _use_from_only=1.
-    local _dockerfile_from=""
-    _dockerfile_from=$(grep -E '^FROM ' "$dockerfile" | grep -v ' AS ' | tail -1 | awk '{print $2}' 2>/dev/null || true)
-    [[ -z "$_dockerfile_from" ]] && _dockerfile_from=$(grep -E '^FROM ' "$dockerfile" | tail -1 | awk '{print $2}' 2>/dev/null || true)
-    if [[ -z "$_BASE_IMAGE_REF" ]]; then
-        _BASE_IMAGE_REF="$_dockerfile_from"
-    fi
-
-    # Substitute known variables into the base image template.
-    #
-    # Ordering rationale: CUSTOM_BUILD_ARGS overrides must be parsed and applied
-    # BEFORE the standard VERSION/UPSTREAM_VERSION substitutions so that a build
-    # script's explicit --build-arg UPSTREAM_VERSION=<retained> wins over the
-    # helper-resolved _UPSTREAM_VERSION (which always reflects the latest upstream).
-    # Without this order, retained-version builds (e.g. terraform) would record the
-    # wrong base_image_ref in the lineage file because _UPSTREAM_VERSION (latest)
-    # would be substituted first, and the CUSTOM_BUILD_ARGS override would arrive
-    # too late to correct an already-expanded placeholder.
-    # Order: (1) parse CUSTOM_BUILD_ARGS, (2) apply overrides, (2.5) build_args
-    # resolved set from _prepare_build_args [Fix A1], (3) standard substitutions
-    # (no-ops for placeholders already consumed in steps 1-2.5), (4) Dockerfile
-    # ARG defaults.
-    if [[ "$_BASE_IMAGE_REF" =~ \$ ]]; then
-        # Step 1 + 2: Parse CUSTOM_BUILD_ARGS and apply overrides first so they win
-        # over all subsequent substitutions. Docker semantics: last --build-arg wins.
-        declare -A _custom_arg_overrides=()
-        if [[ -n "${CUSTOM_BUILD_ARGS:-}" ]]; then
-            while read -r arg_val; do
-                local _ov_name="${arg_val%%=*}"
-                local _ov_value="${arg_val#*=}"
-                [[ -n "$_ov_name" ]] && _custom_arg_overrides["$_ov_name"]="$_ov_value"
-            done < <(echo "$CUSTOM_BUILD_ARGS" | grep -oE '\-\-build-arg [^ ]+' | sed 's/--build-arg //' || true)
-        fi
-
-        # Apply CUSTOM_BUILD_ARGS overrides before standard substitutions.
-        for _ov_name in "${!_custom_arg_overrides[@]}"; do
-            local _ov_value="${_custom_arg_overrides[$_ov_name]}"
-            _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$_ov_name\}/$_ov_value}"
-            _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$_ov_name/$_ov_value}"
-        done
-
-        # Step 2.5 [Fix A1]: Apply build_args resolved set from _prepare_build_args.
-        # This covers ARGs whose values come from config.yaml build_args or version
-        # params — invisible to both CUSTOM_BUILD_ARGS and Dockerfile ARG defaults.
-        # Iterates up to 10 times to resolve cross-arg chains (A→B→C).  On cap-hit,
-        # remaining placeholders survive to sanitize-at-read in the dashboard.
-        if [[ ${#_BUILD_ARGS_RESOLVED[@]} -gt 0 ]]; then
-            local _pass=0
-            while [[ "$_BASE_IMAGE_REF" =~ \$ && $_pass -lt 10 ]]; do
-                local _prev="$_BASE_IMAGE_REF"
-                for _ba_name in "${!_BUILD_ARGS_RESOLVED[@]}"; do
-                    # Skip args already handled by CUSTOM_BUILD_ARGS
-                    [[ -v _custom_arg_overrides["$_ba_name"] ]] && continue
-                    local _ba_val="${_BUILD_ARGS_RESOLVED[$_ba_name]}"
-                    _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$_ba_name\}/$_ba_val}"
-                    _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$_ba_name/$_ba_val}"
-                done
-                # Converged: no more substitutions possible
-                [[ "$_BASE_IMAGE_REF" == "$_prev" ]] && break
-                (( _pass++ )) || true
-            done
-            if [[ "$_BASE_IMAGE_REF" =~ \$ && $_pass -ge 10 ]]; then
-                log_warning "base_image_ref cross-arg expansion capped at 10 passes: $_BASE_IMAGE_REF"
-                # On cap-hit, _BASE_IMAGE_REF is cleared to empty string.
-                # Sanitize-at-read in the dashboard displays "unknown" downstream.
-                _BASE_IMAGE_REF=""
-            fi
-        fi
-
-        # Step 3: Standard substitutions. These are no-ops for any placeholder
-        # already consumed by a CUSTOM_BUILD_ARGS override above.
-        _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{VERSION\}/$version}"
-        _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$VERSION/$version}"
-        [[ -n "${_MAJOR_VERSION:-}" ]] && _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{MAJOR_VERSION\}/$_MAJOR_VERSION}"
-        [[ -n "${_UPSTREAM_VERSION:-}" ]] && _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{UPSTREAM_VERSION\}/$_UPSTREAM_VERSION}"
-
-        # Step 4: Resolve Dockerfile ARG defaults (e.g. ARG REMOTE_CR=docker.io) for any
-        # variables not already substituted by a CUSTOM_BUILD_ARGS override above.
-        while IFS= read -r arg_line; do
-            local arg_name="${arg_line%%=*}"
-            local arg_default="${arg_line#*=}"
-            arg_default="${arg_default%\"}"
-            arg_default="${arg_default#\"}"
-            arg_default="${arg_default%\'}"
-            arg_default="${arg_default#\'}"
-            [[ -z "$arg_name" || "$arg_name" == "$arg_line" ]] && continue
-            # Skip if this arg was already applied via CUSTOM_BUILD_ARGS override
-            [[ -v _custom_arg_overrides["$arg_name"] ]] && continue
-            if [[ "$_BASE_IMAGE_REF" == *"\${$arg_name}"* || "$_BASE_IMAGE_REF" == *"\$$arg_name"* ]]; then
-                _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$arg_name\}/$arg_default}"
-                _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$arg_name/$arg_default}"
-            fi
-        done < <(grep -E '^ARG [A-Za-z_][A-Za-z0-9_]*=' "$dockerfile" | sed 's/^ARG //' || true)
-
-        unset _custom_arg_overrides
-
-        # Post-substitution fallback: if config.yaml base_image had a template
-        # expression that still contains ${ after all passes, fall back to the concrete
-        # FROM line in the Dockerfile — but ONLY when the 4th positional parameter
-        # from_generated=1 (the caller has already expanded the template, so the
-        # generated Dockerfile's FROM is the authoritative per-flavor base image).
-        #
-        # For monolithic containers (no template generation), config.yaml::base_image is
-        # the source of truth. If its placeholders remain unresolved, that is a build-time
-        # configuration error — substituting an unrelated concrete FROM line (e.g. a
-        # multi-stage final-stage "FROM scratch") would write false lineage silently.
-        # Instead, leave the unresolved literal so sanitize-at-read displays "unknown".
-        if [[ "$_BASE_IMAGE_REF" =~ \$\{ && "$_use_from_only" == "1" && -n "$_dockerfile_from" && ! "$_dockerfile_from" =~ \$\{ ]]; then
-            _BASE_IMAGE_REF="$_dockerfile_from"
-        fi
-
-        # Emit warning when a placeholder survives all substitution passes
-        if [[ "$_BASE_IMAGE_REF" =~ \$\{ ]]; then
-            log_warning "base_image_ref left un-resolved: $_BASE_IMAGE_REF"
-        fi
+    local base_identity
+    base_identity=$(resolve_final_runnable_base "$(< "$dockerfile")" "$effective_args")
+    _BASE_IMAGE_KIND=$(jq -r '.kind' <<< "$base_identity")
+    _BASE_IMAGE_REF=$(jq -r '.ref // empty' <<< "$base_identity")
+    if [[ "$_BASE_IMAGE_KIND" == "unresolved" ]]; then
+        log_warning "final runnable base_image_ref left unresolved after bounded expansion: ${_BASE_IMAGE_REF:-unknown}"
+        _BASE_IMAGE_REF=""
     fi
 
     # Resolve digest if we have a concrete image reference
@@ -287,7 +201,7 @@ _resolve_base_image() {
     # pattern was order-dependent and could return a per-arch child digest instead
     # of the index digest — causing a perpetual drift-PR loop.
     _BASE_DIGEST=""
-    if [[ -n "$_BASE_IMAGE_REF" && ! "$_BASE_IMAGE_REF" =~ \$ ]]; then
+    if [[ "$_BASE_IMAGE_KIND" == "external" && -n "$_BASE_IMAGE_REF" ]]; then
         _BASE_DIGEST=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$_BASE_IMAGE_REF" 2>/dev/null | jq -r '.digest // empty' 2>/dev/null || true)
         if [[ -n "$_BASE_DIGEST" ]]; then
             # Fix r7-1: validate digest shape before embedding in label_args.
@@ -328,6 +242,22 @@ _emit_build_lineage() {
     local build_args_data
     build_args_data=$(build_args_json ".")
 
+    # A runnable scratch stage has no external material.  Keep the marker
+    # explicit and omit the coupled ref/digest pair; external records carry both.
+    local base_fields
+    if [[ "${_BASE_IMAGE_KIND:-external}" == "no_external_base" ]]; then
+        base_fields='{"base_image_kind":"no_external_base"}'
+    elif [[ -n "${_BASE_IMAGE_REF:-}" && "${_BASE_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+        base_fields=$(jq -cn \
+            --arg ref "$_BASE_IMAGE_REF" \
+            --arg digest "$_BASE_DIGEST" \
+            '{base_image_ref:$ref, base_image_digest:$digest}')
+    else
+        # Do not create the detector's ref-without-digest legacy shape. A
+        # failed matrix probe is explicit but has no comparison material.
+        base_fields='{"base_image_kind":"unresolved_external_base"}'
+    fi
+
     # Fix C: use jq -n --arg so values with '"' or backslash are safely escaped.
     # Fix E: include lineage_schema_version=2 for downstream schema detection.
     jq -n \
@@ -341,8 +271,7 @@ _emit_build_lineage() {
         --arg     image_id         "${image_id:-unknown}" \
         --arg     build_digest     "${BUILD_DIGEST:-unknown}" \
         --arg     oci_subject_digest "${OCI_SUBJECT_DIGEST:-}" \
-        --arg     base_image_ref   "${_BASE_IMAGE_REF:-unknown}" \
-        --arg     base_image_digest "${_BASE_DIGEST:-unresolved}" \
+        --argjson base_fields      "$base_fields" \
         --arg     built_at         "$build_ts" \
         --argjson duration_seconds "${_BUILD_DURATION_SECONDS:-null}" \
         --argjson github_actions   "${GITHUB_ACTIONS:-false}" \
@@ -361,8 +290,6 @@ _emit_build_lineage() {
           image_id:               $image_id,
           build_digest:           $build_digest,
           oci_subject_digest:     $oci_subject_digest,
-          base_image_ref:         $base_image_ref,
-          base_image_digest:      $base_image_digest,
           built_at:               $built_at,
           duration_seconds:       $duration_seconds,
           github_actions:         $github_actions,
@@ -371,7 +298,7 @@ _emit_build_lineage() {
             ghcr:      $ghcr_image
           },
           build_args: $build_args
-        }' > "$lineage_file"
+        } + $base_fields' > "$lineage_file"
 
     # Conditionally merge extensions_build_seconds when the caller actually
     # measured it. The field's PRESENCE (not its value) is the signal that
