@@ -40,12 +40,8 @@ EOF
 run_action() {
     local requested_container="${1:-}"
     local output_file="$TEST_DIR/github-output"
-    # GitHub expands an input before Bash parses `run:`. Render the one input
-    # expression only for this hermetic extraction so a regression that puts it
-    # back in the body is tested in the same execution shape as a real runner.
     yq -r '.runs.steps[] | select(.id == "check-versions") | .run' \
-        .github/actions/check-upstream-versions/action.yaml |
-        sed "s#\${{ inputs.container }}#$requested_container#g" > run-check-versions.sh
+        .github/actions/check-upstream-versions/action.yaml > run-check-versions.sh
     chmod +x run-check-versions.sh
     : > "$output_file"
     REQUESTED_CONTAINER="$requested_container" \
@@ -71,6 +67,15 @@ assert_byte_for_byte() {
             "$assertion" "$expected" "$actual" >&2
         return 1
     fi
+}
+
+@test "the check-versions step binds REQUESTED_CONTAINER from its container input" {
+    local container_binding
+    container_binding=$(yq -r '.runs.steps[] | select(.id == "check-versions") | .env.REQUESTED_CONTAINER // ""' \
+        .github/actions/check-upstream-versions/action.yaml)
+
+    assert_byte_for_byte '${{ inputs.container }}' "$container_binding" \
+        "REQUESTED_CONTAINER must bind from the container input"
 }
 
 @test "composite action excludes declared non-actionable updates" {
