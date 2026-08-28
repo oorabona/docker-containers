@@ -1057,7 +1057,8 @@ _sibling_target_identity_for_cell() {
         [[ "$ref" == *"/${dep}:"* || "$ref" == *"/${dep}" ]] || continue
         dep_target_id=$(jq -r --arg dep "$dep" '.[$dep] // empty' <<< "$dep_target_ids_json") || return 1
         [[ -n "$dep_target_id" ]] || continue
-        supplier_cell=$(jq -ce '.[0]' <<< "${_EC_all_matrix_json[$dep]}") || return 1
+        supplier_cell="${_EC_first_cell_per_container[$dep]:-}"
+        [[ -n "$supplier_cell" ]] || return 1
         supplier_version=$(jq -r '.version' <<< "$supplier_cell") || return 1
         supplier_flavor=$(jq -r '.flavor // ""' <<< "$supplier_cell") || return 1
         # --cells is consumed by the amd64 lineage job; the target is built for
@@ -1176,7 +1177,9 @@ _enumerate_cells_init() {
         fi
     done <<< "$closure_newline"
 
-    # Matrix enumeration + first-target-per-container for dep-context lookup
+    # Matrix enumeration + selected cell/target per container for dep-context
+    # lookup. Retain both views of this one choice: sibling lineage records
+    # must not combine a selected target ID with another matrix cell's fields.
     # F4: use the caller-supplied include_all_retained flag (default false = latest-only).
     local _ec_all_retained="${_BAKE_INCLUDE_ALL_RETAINED:-false}"
     for c in "${_EC_closure_containers[@]}"; do
@@ -1243,6 +1246,7 @@ _enumerate_cells_init() {
             else
                 ftid="$(_target_id "${c}_${_EC_cell_version}_${_EC_cell_variant}")"
             fi
+            _EC_first_cell_per_container[$c]="$first_entry"
             _EC_first_target_per_container[$c]="$ftid"
         fi
     done
@@ -1448,6 +1452,7 @@ _build_bake_json() {
     # Shared init: validate, expand closure, fetch matrices
     declare -a _EC_closure_containers=()
     declare -A _EC_all_matrix_json=()
+    declare -A _EC_first_cell_per_container=()
     declare -A _EC_first_target_per_container=()
     if ! _enumerate_cells_init "${requested_containers[@]}"; then
         return 1
@@ -1633,6 +1638,7 @@ _emit_cells_json() {
     # Shared init: validate, expand closure, fetch matrices
     declare -a _EC_closure_containers=()
     declare -A _EC_all_matrix_json=()
+    declare -A _EC_first_cell_per_container=()
     declare -A _EC_first_target_per_container=()
     if ! _enumerate_cells_init "${requested_containers[@]}"; then
         return 1

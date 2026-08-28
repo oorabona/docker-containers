@@ -3743,6 +3743,39 @@ EOF
     }
 }
 
+@test "sibling target marker without a supplier is an error outcome and fails coverage" {
+    local lineage_dir="$TEST_TEMP_DIR/malformed-sibling-target"
+    mkdir -p "$lineage_dir"
+    jq -cn '{container:"wordpress", tag:"7.1.0-alpine", base_image_kind:"sibling_target"}' \
+        > "$lineage_dir/wordpress.json"
+
+    local result rc=0 notice
+    result=$(_VALID_CONTAINERS_OVERRIDE="wordpress" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="wordpress" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+    [ "$(jq -r '.[0].variants[0].status' <<< "$result")" = "error" ] || {
+        echo "Sibling target without a supplier must be an error outcome"
+        return 1
+    }
+    [ "$(jq -r '.[0].variants[0].error_reason' <<< "$result")" = "malformed_sibling_target" ]
+
+    _load_drift_consumer
+    validate_drift_result "$result"
+    notice=$(emit_drift_notice "$result") || rc=$?
+    [ "$rc" -eq 1 ]
+    [[ "$notice" == *"coverage incomplete"* ]]
+}
+
+@test "workflow validator rejects a sibling target outcome without a supplier" {
+    _load_drift_consumer
+
+    local malformed='[{"container":"wordpress","internal_deps":[],"variants":[{"variant_tag":"7.1.0-alpine","status":"sibling_target"}]}]'
+    if validate_drift_result "$malformed"; then
+        echo "Workflow validator must reject a sibling target without a supplier"
+        return 1
+    fi
+}
+
 @test "a no_external_base-only result is evaluated unscoped and when scoped" {
     _load_drift_consumer
 

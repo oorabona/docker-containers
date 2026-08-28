@@ -714,7 +714,23 @@ for lineage_file in "${lineage_files[@]}"; do
     # internal build relationship, not an external image comparison; preserve
     # the producer's full supplier identity for the consumer.
     if [[ "$base_image_kind" == "sibling_target" ]]; then
-        base_image_sibling=$(jq -c '.base_image_sibling' "$lineage_file" 2>/dev/null || true)
+        if ! base_image_sibling=$(jq -ce '
+            .base_image_sibling as $supplier
+            | ($supplier | type == "object") and
+              ([$supplier.container, $supplier.version, $supplier.platform,
+                $supplier.textual_ref, $supplier.bake_target_id]
+               | all(type == "string" and length > 0)) and
+              ($supplier.flavor | type == "string")
+            | $supplier
+        ' "$lineage_file" 2>/dev/null); then
+            variant_json=$(jq -cn \
+                --arg variant_tag "$variant_tag" \
+                --arg status "error" \
+                --arg error_reason "malformed_sibling_target" \
+                '{variant_tag: $variant_tag, status: $status, error_reason: $error_reason}')
+            _container_variants["$container"]+="${variant_json}"$'\n'
+            continue
+        fi
         variant_json=$(jq -cn \
             --arg variant_tag "$variant_tag" \
             --argjson base_image_sibling "$base_image_sibling" \

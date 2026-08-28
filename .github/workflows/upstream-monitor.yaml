@@ -1866,6 +1866,14 @@ jobs:
                     (["drift", "unchanged", "legacy", "error", "no_external_base", "sibling_target"] | index($status) != null)) and
                   (if .status == "error" then
                      (has("error_reason") and (.error_reason | type == "string" and length > 0))
+                   elif .status == "sibling_target" then
+                     (has("base_image_sibling") and
+                      (.base_image_sibling | type == "object") and
+                      (.base_image_sibling as $supplier |
+                        ([$supplier.container, $supplier.version, $supplier.platform,
+                          $supplier.textual_ref, $supplier.bake_target_id]
+                         | all(type == "string" and length > 0)) and
+                        ($supplier.flavor | type == "string")))
                    else
                      true
                    end)))

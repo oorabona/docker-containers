@@ -2070,6 +2070,29 @@ YAML
     [ "$dangling_count" -eq 0 ]
 }
 
+@test "scoped sibling lineage coordinates come from the selected supplier cell" {
+    _run_generator --cells --all-retained \
+        --container-scopes '{"php":{"versions":"8.5.8-fpm-alpine"}}' wordpress php
+    [ "$status" -eq 0 ]
+
+    local sibling_records inconsistent_records
+    sibling_records=$(printf '%s' "$output" | jq '[.[] | select(.container == "wordpress") | .runtime_base.supplier] | length')
+    inconsistent_records=$(printf '%s' "$output" | jq '[.[]
+        | select(.container == "wordpress")
+        | .runtime_base.supplier
+        | select(.bake_target_id != "php_8_5_8_fpm_alpine" or .version != "8.5.8-fpm-alpine" or .flavor != "")
+      ] | length')
+
+    [ "$sibling_records" -gt 0 ] || {
+        echo "Scoped wordpress cells must record their sibling PHP supplier"
+        return 1
+    }
+    [ "$inconsistent_records" -eq 0 ] || {
+        echo "Sibling target ID and coordinates must name the same selected PHP cell"
+        return 1
+    }
+}
+
 @test "container scopes — empty map is byte-identical to no container scope flag" {
     _run_generator terraform debian
     [ "$status" -eq 0 ]
