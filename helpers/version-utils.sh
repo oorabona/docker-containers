@@ -14,16 +14,20 @@ version_first_line() {
     printf '%s\n' "$line"
 }
 
-# A successful resolver with no usable version is a concluded no-match, not a
-# candidate. Keep this normalization shared by dashboard and monitor callers.
+# A successful resolver with an explicit sentinel is a concluded no-match, not
+# a candidate. Corrupted or unreadable output is a failed lookup instead. Keep
+# this normalization shared by dashboard and monitor callers.
 version_lookup_candidate() {
     local candidate raw_first_line=${1%%$'\n'*}
     # A CR is not part of a tag. Reject it rather than silently offering a
-    # transport-corrupted value as an update target.
-    [[ "$raw_first_line" != *$'\r'* ]] || return 1
+    # transport-corrupted value as an update target. This is not evidence that
+    # the tag is absent, so it must not use the no-match status.
+    [[ "$raw_first_line" != *$'\r'* ]] || return 3
+    # `unknown` is the resolver's explicit no-candidate sentinel.
+    [[ "$raw_first_line" != "unknown" ]] || return 1
     candidate=$(version_first_line "$1")
-    [[ "$candidate" =~ [^[:space:]] ]] || return 1
-    [[ "$candidate" != "unknown" ]] || return 1
+    # A successful resolver that produced no usable bytes did not conclude.
+    [[ "$candidate" =~ [^[:space:]] ]] || return 3
     printf '%s\n' "$candidate"
 }
 
@@ -105,7 +109,7 @@ get_registry_pattern() {
 # Note: defaults to GHCR (primary registry) when no registry prefix is provided
 get_current_published_version() {
     local image="$1"
-    local pattern output rc
+    local pattern output rc candidate candidate_rc
     pattern=$(get_registry_pattern)
 
     # Default to GHCR (primary registry) unless a specific registry is provided
@@ -120,9 +124,16 @@ get_current_published_version() {
     fi
 
     # Preserve latest-docker-tag's three states: 0 matched, 1 no-match, and
-    # 3 failed enumeration. A successful sentinel is no-match.
+    # 3 failed enumeration. Only its exit 1 or the explicit `unknown` sentinel
+    # below conclude that there was no candidate.
     if [[ "$rc" -eq 0 ]]; then
-        version_lookup_candidate "$output" || return 1
+        if candidate=$(version_lookup_candidate "$output"); then
+            printf '%s\n' "$candidate"
+            return 0
+        else
+            candidate_rc=$?
+            return "$candidate_rc"
+        fi
     fi
     return "$rc"
 }

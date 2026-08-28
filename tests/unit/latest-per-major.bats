@@ -286,19 +286,33 @@ MOCK
     [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-lookup-failed" ]]
 }
 
-@test "check_updates: sentinels, whitespace, and CR-terminated candidates conclude no-match" {
+@test "check_updates: only an explicit resolver sentinel concludes no-match" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    printf '%s\n' '#!/usr/bin/env bash' 'if [[ "${1:-}" == "--registry-pattern" ]]; then printf "%s\\n" "^[0-9]+\\.[0-9]+(\\.[0-9]+)?-ubuntu$"; exit 0; fi' 'printf "unknown"' > ansible/version.sh
+    chmod +x ansible/version.sh
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "no-match" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-no-match" ]]
+}
+
+@test "check_updates: malformed successful resolver output is failed and non-actionable" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
     local resolver_output
-    for resolver_output in "unknown" "   " $'1.1.0-ubuntu\r'; do
+    for resolver_output in "   " $'1.1.0-ubuntu\r'; do
         create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
         printf '%s\n' '#!/usr/bin/env bash' 'if [[ "${1:-}" == "--registry-pattern" ]]; then printf "%s\\n" "^[0-9]+\\.[0-9]+(\\.[0-9]+)?-ubuntu$"; exit 0; fi' "printf '%s\\n' $(printf '%q' "$resolver_output")" > ansible/version.sh
         chmod +x ansible/version.sh
         run run_check_updates ansible
         [ "$status" -eq 0 ]
-        [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "no-match" ]]
+        [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
         [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
-        [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-no-match" ]]
+        [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+        [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-lookup-failed" ]]
     done
 }
 
@@ -592,6 +606,9 @@ EOF
         printf 'exit 3\n' >> helpers/latest-docker-tag
     elif [[ "$mock_current" == "__NO_MATCH__" ]]; then
         printf 'exit 1\n' >> helpers/latest-docker-tag
+    elif [[ "$mock_current" == "__CR__" ]]; then
+        printf "printf '1.2.3\\r\\n'\n" >> helpers/latest-docker-tag
+        printf 'exit 0\n' >> helpers/latest-docker-tag
     else
         printf 'echo "%s"\n' "$mock_current" >> helpers/latest-docker-tag
         printf 'exit 0\n' >> helpers/latest-docker-tag
@@ -639,6 +656,20 @@ EOF
 
     cp "$ORIG_DIR/make" ./make
     chmod +x ./make
+}
+
+@test "check_updates: a malformed successful registry answer is failed and non-actionable" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "__CR__" "1.1.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].registry_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "registry-lookup-failed" ]]
 }
 
 create_debian_check_updates_fixture() {

@@ -22,40 +22,6 @@
                 attestation_url, attestation_id, trivy_summary, multi_arch_platforms }
 {%- endcomment -%}
 
-{%- assign _vab_variants = "" -%}
-{%- assign _vab_confirmed_count = 0 -%}
-{%- assign _vab_default_tag = "" -%}
-{%- assign _vab_default_version = "" -%}
-{%- assign _vab_default_flavor = "" -%}
-{%- if page.versions -%}
-  {%- for _vab_ver in page.versions -%}
-    {%- for _vab_v in _vab_ver.variants -%}
-      {%- if _vab_v.reference_confirmed == true -%}
-        {%- assign _vab_variants = _vab_variants | append: _vab_v.tag | append: "||" -%}
-        {%- assign _vab_confirmed_count = _vab_confirmed_count | plus: 1 -%}
-        {%- if _vab_default_tag == "" -%}
-          {%- assign _vab_default_tag = _vab_v.tag -%}
-          {%- assign _vab_default_version = _vab_ver.base_tag | default: _vab_ver.tag -%}
-          {%- assign _vab_default_flavor = _vab_v.name | default: "" -%}
-        {%- endif -%}
-      {%- endif -%}
-    {%- endfor -%}
-  {%- endfor -%}
-{%- elsif page.variants -%}
-  {%- for _vab_single in page.variants -%}
-    {%- if _vab_single.reference_confirmed == true -%}
-      {%- assign _vab_confirmed_count = _vab_confirmed_count | plus: 1 -%}
-      {%- if _vab_default_tag == "" -%}
-        {%- assign _vab_default_tag = _vab_single.tag -%}
-        {%- assign _vab_default_flavor = _vab_single.tag -%}
-      {%- endif -%}
-    {%- endif -%}
-  {%- endfor -%}
-{%- else -%}
-  {%- assign _vab_confirmed_count = 1 -%}
-  {%- assign _vab_default_tag = page.current_version -%}
-{%- endif -%}
-
 {%- comment -%} Determine unique versions for version pills {%- endcomment -%}
 {%- comment -%}
   Build a literal JSON array via capture, with per-field jsonify on each
@@ -64,38 +30,20 @@
   output that fails JSON.parse.
 {%- endcomment -%}
 {%- capture _vab_ver_arr -%}
-{%- if page.versions -%}[
-  {%- assign _vab_ver_first = true -%}
+{%- if page.versions and page.versions.size > 1 -%}[
   {%- for _vv in page.versions -%}
-    {%- assign _vab_version_confirmed = false -%}
-    {%- for _vv_variant in _vv.variants -%}
-      {%- if _vv_variant.reference_confirmed == true -%}{%- assign _vab_version_confirmed = true -%}{%- endif -%}
-    {%- endfor -%}
-    {%- if _vab_version_confirmed -%}
-      {%- unless _vab_ver_first -%},{%- endunless -%}
-      {%- assign _vab_ver_first = false -%}
-      {"tag":{{ _vv.base_tag | default: _vv.tag | jsonify }},"label":{{ _vv.base_tag | default: _vv.tag | jsonify }}}
-    {%- endif -%}
+    {%- unless forloop.first -%},{%- endunless -%}
+    {"tag":{{ _vv.base_tag | default: _vv.tag | jsonify }},"label":{{ _vv.base_tag | default: _vv.tag | jsonify }}}
   {%- endfor -%}
 ]{%- else -%}[]{%- endif -%}
 {%- endcapture -%}
 
 {%- comment -%} Determine unique flavors for flavor pills {%- endcomment -%}
 {%- assign _has_flavors = false -%}
-{%- if page.versions and _vab_default_version != "" -%}
-  {%- for _fv_ver in page.versions -%}
-    {%- assign _fv_ver_tag = _fv_ver.base_tag | default: _fv_ver.tag -%}
-    {%- if _fv_ver_tag == _vab_default_version -%}
-      {%- for _fv in _fv_ver.variants -%}
-        {%- if _fv.reference_confirmed == true and _fv.name and _fv.name != "" -%}
-          {%- assign _has_flavors = true -%}
-        {%- endif -%}
-      {%- endfor -%}
-    {%- endif -%}
-  {%- endfor -%}
-{%- elsif page.variants -%}
-  {%- for _fv in page.variants -%}
-    {%- if _fv.reference_confirmed == true and _fv.name and _fv.name != "" -%}
+{%- if page.versions and page.versions.size > 0 -%}
+  {%- assign _first_ver = page.versions[0] -%}
+  {%- for _fv in _first_ver.variants -%}
+    {%- if _fv.name and _fv.name != "" -%}
       {%- assign _has_flavors = true -%}
     {%- endif -%}
   {%- endfor -%}
@@ -103,28 +51,13 @@
 {%- capture _vab_fla_arr -%}
 {%- if _has_flavors -%}[
   {%- assign _fla_first = true -%}
-  {%- if page.versions -%}
-    {%- for _fv_ver in page.versions -%}
-      {%- assign _fv_ver_tag = _fv_ver.base_tag | default: _fv_ver.tag -%}
-      {%- if _fv_ver_tag == _vab_default_version -%}
-        {%- for _fv in _fv_ver.variants -%}
-          {%- if _fv.reference_confirmed == true and _fv.name and _fv.name != "" -%}
-            {%- unless _fla_first -%},{%- endunless -%}
-            {%- assign _fla_first = false -%}
-            {"name":{{ _fv.name | jsonify }},"label":{{ _fv.name | jsonify }}}
-          {%- endif -%}
-        {%- endfor -%}
-      {%- endif -%}
-    {%- endfor -%}
-  {%- else -%}
-    {%- for _fv in page.variants -%}
-      {%- if _fv.reference_confirmed == true and _fv.name and _fv.name != "" -%}
-        {%- unless _fla_first -%},{%- endunless -%}
-        {%- assign _fla_first = false -%}
-        {"name":{{ _fv.name | jsonify }},"label":{{ _fv.name | jsonify }}}
-      {%- endif -%}
-    {%- endfor -%}
-  {%- endif -%}
+  {%- for _fv in _first_ver.variants -%}
+    {%- if _fv.name and _fv.name != "" -%}
+      {%- unless _fla_first -%},{%- endunless -%}
+      {%- assign _fla_first = false -%}
+      {"name":{{ _fv.name | jsonify }},"label":{{ _fv.name | jsonify }}}
+    {%- endif -%}
+  {%- endfor -%}
 ]{%- else -%}[]{%- endif -%}
 {%- endcapture -%}
 
@@ -134,33 +67,35 @@
   {%- assign _vab_first_row = true -%}
   {%- for _vab_ver in page.versions -%}
     {%- for _vab_v in _vab_ver.variants -%}
-      {%- if _vab_v.reference_confirmed == true -%}
-        {%- unless _vab_first_row -%},{%- endunless -%}
-        {%- assign _vab_first_row = false -%}
-        {"tag":{{ _vab_v.tag | jsonify }},"version":{{ _vab_ver.base_tag | default: _vab_ver.tag | jsonify }},"flavor":{{ _vab_v.name | default: "" | jsonify }},"name":{{ _vab_v.name | default: "" | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
-      {%- endif -%}
+      {%- unless _vab_first_row -%},{%- endunless -%}
+      {%- assign _vab_first_row = false -%}
+      {"tag":{{ _vab_v.tag | jsonify }},"version":{{ _vab_ver.base_tag | default: _vab_ver.tag | jsonify }},"flavor":{{ _vab_v.name | default: "" | jsonify }},"name":{{ _vab_v.name | default: "" | jsonify }},"reference_confirmed":{{ _vab_v.reference_confirmed | default: false | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
     {%- endfor -%}
   {%- endfor -%}
 {%- elsif page.variants -%}
-  {%- assign _vab_first_row = true -%}
   {%- for _vab_v in page.variants -%}
-    {%- if _vab_v.reference_confirmed == true -%}
-      {%- unless _vab_first_row -%},{%- endunless -%}
-      {%- assign _vab_first_row = false -%}
-      {"tag":{{ _vab_v.tag | jsonify }},"version":"","flavor":{{ _vab_v.tag | jsonify }},"name":{{ _vab_v.tag | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
-    {%- endif -%}
+    {%- unless forloop.first -%},{%- endunless -%}
+    {"tag":{{ _vab_v.tag | jsonify }},"version":"","flavor":{{ _vab_v.tag | jsonify }},"name":{{ _vab_v.tag | jsonify }},"reference_confirmed":{{ _vab_v.reference_confirmed | default: false | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
   {%- endfor -%}
 {%- else -%}
-  {"tag":{{ page.current_version | jsonify }},"version":"","flavor":"","name":"","size_amd64":{{ page.size_amd64 | default: "" | jsonify }},"size_arm64":{{ page.size_arm64 | default: "" | jsonify }},"build_digest":{{ page.build_digest | default: "" | jsonify }},"attestation_url":"","attestation_id":"","trivy_summary":null,"multi_arch_platforms":[]}
+  {"tag":{{ page.current_version | jsonify }},"version":"","flavor":"","name":"","reference_confirmed":{{ page.current_version_confirmed | default: false | jsonify }},"size_amd64":{{ page.size_amd64 | default: "" | jsonify }},"size_arm64":{{ page.size_arm64 | default: "" | jsonify }},"build_digest":{{ page.build_digest | default: "" | jsonify }},"attestation_url":"","attestation_id":"","trivy_summary":null,"multi_arch_platforms":[]}
 {%- endif -%}
 ]
 {%- endcapture -%}
 
+{%- assign _vab_default_version = "" -%}
+{%- assign _vab_default_flavor = "" -%}
+{%- if page.versions and page.versions.size > 0 -%}
+  {%- assign _vab_default_version = page.versions[0].base_tag | default: page.versions[0].tag -%}
+  {%- if page.versions[0].variants[0].name -%}
+    {%- assign _vab_default_flavor = page.versions[0].variants[0].name -%}
+  {%- endif -%}
+{%- endif -%}
+
 <section id="variants-pull" class="vab-section" aria-label="Variant selector and pull commands">
-  {%- if _vab_confirmed_count > 0 -%}
   <variant-action-bar
     data-container="{{ page.name | escape }}"
-    data-default-tag="{{ _vab_default_tag | escape }}"
+    data-default-tag="{{ page.current_version | escape }}"
     data-default-version="{{ _vab_default_version | escape }}"
     data-default-flavor="{{ _vab_default_flavor | escape }}"
     data-versions="{{ _vab_ver_arr | strip | escape }}"
@@ -171,11 +106,15 @@
 
   <noscript>
     <div class="vab-noscript">
+      {%- if page.current_version_confirmed == true -%}
       <p class="vab-noscript-label">JavaScript is disabled — showing default variant.</p>
-      <pre><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _vab_default_tag | escape }}</code></pre>
-      <pre><code>cosign verify ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _vab_default_tag | escape }} \
+      <pre><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ page.current_version | escape }}</code></pre>
+      <pre><code>cosign verify ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ page.current_version | escape }} \
   --certificate-identity-regexp=https://github.com/{{ page.github_username | escape }} \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com</code></pre>
+      {%- else -%}
+      <p>No published image was observed for the default reference.</p>
+      {%- endif -%}
       {%- if page.versions or page.variants -%}
       <details>
         <summary>All variants</summary>
@@ -185,16 +124,12 @@
             {%- if page.versions -%}
               {%- for _ns_ver in page.versions -%}
                 {%- for _ns_v in _ns_ver.variants -%}
-                  {%- if _ns_v.reference_confirmed == true -%}
-                  <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code></td></tr>
-                  {%- endif -%}
+                  <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td>{%- if _ns_v.reference_confirmed == true -%}<code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code>{%- else -%}No published image was observed for this reference.{%- endif -%}</td></tr>
                 {%- endfor -%}
               {%- endfor -%}
             {%- elsif page.variants -%}
               {%- for _ns_v in page.variants -%}
-                {%- if _ns_v.reference_confirmed == true -%}
-                <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code></td></tr>
-                {%- endif -%}
+                <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td>{%- if _ns_v.reference_confirmed == true -%}<code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code>{%- else -%}No published image was observed for this reference.{%- endif -%}</td></tr>
               {%- endfor -%}
             {%- endif -%}
           </tbody>
@@ -203,7 +138,4 @@
       {%- endif -%}
     </div>
   </noscript>
-  {%- else -%}
-  <p>Publication information is unavailable for every variant; no pull reference is shown.</p>
-  {%- endif -%}
 </section>

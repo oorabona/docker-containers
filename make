@@ -551,7 +551,7 @@ make() {
 check_updates_current_version() {
   local image=$1
   local pattern=$2
-  local current_version rc
+  local current_version rc candidate_rc
 
   if current_version=$(../helpers/latest-docker-tag "$image" "$pattern" 2>/dev/null); then
     rc=0
@@ -561,10 +561,18 @@ check_updates_current_version() {
   case "$rc" in
     0)
       # no-published-version is a legacy caller sentinel, never a confirmed tag.
-      if current_version=$(version_lookup_candidate "$current_version") && [[ "$current_version" != "no-published-version" ]]; then
-        printf 'matched\t%s\n' "$current_version"
+      if current_version=$(version_lookup_candidate "$current_version"); then
+        if [[ "$current_version" != "no-published-version" ]]; then
+          printf 'matched\t%s\n' "$current_version"
+        else
+          printf 'no-match\t\n'
+        fi
       else
-        printf 'no-match\t\n'
+        candidate_rc=$?
+        case "$candidate_rc" in
+          1) printf 'no-match\t\n' ;;
+          *) printf 'failed\t\n' ;;
+        esac
       fi
       ;;
     1) printf 'no-match\t\n' ;;
@@ -578,7 +586,7 @@ check_updates_current_version() {
 check_updates_upstream_version() {
   # A lookup that exceeds either documented bound has not established a
   # candidate. The values are overridable only to keep refusal tests fast.
-  local output candidate output_file rc
+  local output candidate output_file rc candidate_rc
   local timeout_seconds="${CHECK_UPDATES_UPSTREAM_TIMEOUT_SECONDS:-30}"
   local max_output_blocks="${CHECK_UPDATES_UPSTREAM_MAX_OUTPUT_BLOCKS:-1024}"
 
@@ -599,7 +607,11 @@ check_updates_upstream_version() {
   elif candidate=$(version_lookup_candidate "$output"); then
     printf 'matched\t%s\n' "$candidate"
   else
-    printf 'no-match\t\n'
+    candidate_rc=$?
+    case "$candidate_rc" in
+      1) printf 'no-match\t\n' ;;
+      *) printf 'failed\t\n' ;;
+    esac
   fi
 }
 

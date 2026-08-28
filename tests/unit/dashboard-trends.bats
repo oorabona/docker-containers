@@ -195,6 +195,37 @@ capture_container_page() {
     ' >/dev/null
 }
 
+@test "dashboard: a carriage-return registry answer is failed, not an unpublished release" {
+    make_fixture_container "registry-cr"
+    mkdir -p "$TEST_DIR/helpers"
+    cat > "$TEST_DIR/helpers/latest-docker-tag" <<'EOF'
+#!/usr/bin/env bash
+printf '1.2.3\r\n'
+EOF
+    chmod +x "$TEST_DIR/helpers/latest-docker-tag"
+
+    run _real_get_container_versions "registry-cr"
+    [ "$status" -eq 0 ]
+    local record
+    record=$(echo "$output" | sed -n '/^{/,$p')
+    [[ "$(jq -r '.current_version_confirmed' <<< "$record")" == "false" ]]
+    [[ "$(jq -r '.upstream_lookup' <<< "$record")" == "matched" ]]
+    [[ "$(jq -r '.unpublished_release' <<< "$record")" == "false" ]] || {
+        echo "carriage-return registry answer was treated as a concluded no-match" >&3
+        return 1
+    }
+    [[ "$(jq -r '.comparison_concluded' <<< "$record")" == "false" ]]
+}
+
+@test "dashboard: an inaccessible container emits its structured failed-lookup record" {
+    run _real_get_container_versions "does-not-exist"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '
+        .upstream_lookup == "failed" and .comparison_concluded == false and
+        .update_available == false and .unpublished_release == false
+    ' >/dev/null
+}
+
 @test "dashboard: live multi-arch digest confirms a lineage record that lacks digests" {
     make_fixture_container "live-digest"
     mkdir -p "$TEST_DIR/.build-lineage"
@@ -217,16 +248,29 @@ EOF
     ' >/dev/null
 }
 
-@test "container detail: a confirmed non-variant reference exposes its attestation command" {
+@test "container detail: attestation commands require the selected reference's evidence" {
     local no_variant_provenance
     no_variant_provenance=$(sed -n '535,655p' "$ORIG_DIR/docs/site/_layouts/container-detail.html")
-    [[ "$no_variant_provenance" == *'if page.current_version_confirmed == true'* ]]
-    [[ "$no_variant_provenance" != *'if prov_variant.reference_confirmed == true'* ]]
+    [[ "$no_variant_provenance" == *'if prov_variant.reference_confirmed == true'* ]]
 }
 
-@test "dashboard: resolver sentinels and whitespace never become an upstream candidate" {
+@test "dashboard: only an explicit resolver sentinel is a concluded upstream no-match" {
+    make_fixture_container "candidate-sentinel"
+    printf '#!/usr/bin/env bash\nprintf "unknown"\n' > "$TEST_DIR/candidate-sentinel/version.sh"
+    chmod +x "$TEST_DIR/candidate-sentinel/version.sh"
+    get_current_published_version() { printf '1.0.0\n'; }
+
+    run _real_get_container_versions "candidate-sentinel"
+    [ "$status" -eq 0 ]
+    echo "$output" | sed -n '/^{/,$p' | jq -e '
+        .upstream_lookup == "no-match" and .latest_version == "" and
+        .comparison_concluded == false
+    ' >/dev/null
+}
+
+@test "dashboard: malformed successful resolver output is a failed lookup" {
     local resolver_output container index=0
-    for resolver_output in "unknown" "   " $'1.2.3\r'; do
+    for resolver_output in "   " $'1.2.3\r'; do
         container="candidate-${index}"
         index=$((index + 1))
         make_fixture_container "$container"
@@ -237,7 +281,7 @@ EOF
         run _real_get_container_versions "$container"
         [ "$status" -eq 0 ]
         echo "$output" | sed -n '/^{/,$p' | jq -e '
-            .upstream_lookup == "no-match" and .latest_version == "" and
+            .upstream_lookup == "failed" and .latest_version == "" and
             .comparison_concluded == false
         ' >/dev/null
     done
@@ -277,7 +321,7 @@ EOF
     [[ "$(jq -r '.update_available' <<< "$record")" == "true" ]]
 }
 
-@test "dashboard: an unevidenced variant is excluded from pull-command inputs" {
+@test "dashboard: an unevidenced variant remains declared but carries no command evidence" {
     make_fixture_container "cell-aware"
     cat > "$TEST_DIR/cell-aware/variants.yaml" <<'EOF'
 versions:
@@ -309,11 +353,12 @@ EOF
     [[ "$(jq -r '.reference_confirmed' <<< "$observed")" == "true" ]]
     [[ "$(jq -r '.reference_confirmed' <<< "$unpublished")" == "false" ]]
 
-    # This is the rendering boundary: the versions path has one guard for the
-    # command JSON and one for the no-JS command table. Count both exact
-    # guards; a presence-only grep would leave either output path unprotected.
+    # Selectors and JS inputs retain every declared variant. Command rendering
+    # alone branches on the exact reference evidence.
     local template="$ORIG_DIR/docs/site/_includes/variant-action-bar.html"
-    [[ "$(grep -c 'if _vab_v.reference_confirmed == true' "$template")" -eq 3 ]]
+    grep -q '"reference_confirmed":{{ _vab_v.reference_confirmed' "$template"
+    grep -q 'No published image was observed for this reference.' "$template"
+    [[ "$(grep -c 'if _vab_v.reference_confirmed == true' "$template")" -eq 0 ]]
     [[ "$(grep -c 'if _ns_v.reference_confirmed == true' "$template")" -eq 2 ]]
 }
 

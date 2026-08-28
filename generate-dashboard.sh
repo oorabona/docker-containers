@@ -314,7 +314,10 @@ get_container_versions() {
             upstream_lookup: "failed", comparison_concluded: false,
             update_available: false, unpublished_release: false
         }'
-        return 1
+        # The caller runs under set -e. The structured failed-lookup record is
+        # the handling for this error, so do not discard it by returning a
+        # failing status from the command substitution.
+        return 0
     }
 
     local current_version latest_version status_color status_text current_version_confirmed="false"
@@ -344,8 +347,12 @@ get_container_versions() {
         if latest_version=$(version_lookup_candidate "$upstream_output"); then
             upstream_lookup="matched"
         else
+            local upstream_rc=$?
             latest_version=""
-            upstream_lookup="no-match"
+            case "$upstream_rc" in
+                1) upstream_lookup="no-match" ;;
+                *) upstream_lookup="failed" ;;
+            esac
         fi
     else
         latest_version=""

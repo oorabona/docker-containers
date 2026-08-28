@@ -58,37 +58,15 @@
       this._imageBase = this.dataset.imageBase || '';
       this._defaultTag = this.dataset.defaultTag || '';
 
-      // variants: flat lookup array of all variant objects
-      this._variants = parse(this.dataset.variants, []).filter(function (variant) {
-        return variant.reference_confirmed !== false;
-      });
-      // Keep a defensive runtime boundary as well as the Liquid filter: a
-      // selectable version must have at least one record the component can
-      // show. Older generated pages may still carry reference_confirmed.
-      this._versions = parse(this.dataset.versions, []).filter(function (version) {
-        return this._variants.some(function (variant) {
-          return variant.version === version.tag;
-        });
-      }, this);
-      // The component rebuilds this when a version changes; start with the
-      // confirmed records for the selected version below.
+      this._versions = parse(this.dataset.versions, []);
       this._flavors = parse(this.dataset.flavors, []);
+      this._variants = parse(this.dataset.variants, []);
 
       // Select the first version/flavor as default
-      var requestedVersion = this.dataset.defaultVersion || '';
-      var hasRequestedVersion = this._versions.some(function (version) {
-        return version.tag === requestedVersion;
-      });
-      this._selectedVersion = hasRequestedVersion
-        ? requestedVersion
-        : (this._versions[0] && this._versions[0].tag) || '';
+      this._selectedVersion = this.dataset.defaultVersion
+        || (this._versions[0] && this._versions[0].tag) || '';
       this._selectedFlavor = this.dataset.defaultFlavor
         || (this._flavors[0] && this._flavors[0].name) || '';
-
-      if (this._selectedVersion) {
-        this._flavors = this._flavorsForVersion(this._selectedVersion);
-        this._selectedFlavor = this._flavors[0] ? this._flavors[0].name : '';
-      }
 
       // Find initial selected variant
       this._currentVariant = this._findVariant(this._selectedVersion, this._selectedFlavor);
@@ -123,19 +101,6 @@
       }
 
       return variants[0] || null;
-    }
-
-    _flavorsForVersion(version) {
-      var flavors = [];
-      var seen = {};
-      for (var i = 0; i < this._variants.length; i++) {
-        var variant = this._variants[i];
-        var flavor = variant.flavor || variant.name || '';
-        if (variant.version !== version || !flavor || seen[flavor]) { continue; }
-        seen[flavor] = true;
-        flavors.push({ name: flavor, label: flavor });
-      }
-      return flavors;
     }
 
     // -------------------------------------------------------
@@ -381,7 +346,9 @@
       var stickyEl = this.querySelector('[data-vab-sticky-cmd]');
       if (!stickyEl) { return; }
       var pullEl = this.querySelector('[data-vab-cmd="pull"]');
-      if (pullEl) { stickyEl.textContent = pullEl.textContent; }
+      stickyEl.textContent = this._hasCommand && pullEl ? pullEl.textContent : '';
+      stickyEl.disabled = !this._hasCommand;
+      stickyEl.setAttribute('aria-disabled', this._hasCommand ? 'false' : 'true');
       stickyEl.setAttribute('aria-label', this._buildCopyAriaLabel());
     }
 
@@ -444,6 +411,7 @@
 
     _updateCommands() {
       var v = this._currentVariant;
+      var confirmed = !!(v && v.reference_confirmed === true);
       var tag = (v && v.tag) ? v.tag : this._defaultTag;
       var ghcrBase = this._imageBase;
       var owner = this._extractOwner(ghcrBase);
@@ -452,11 +420,18 @@
       var verifyCmd = 'cosign verify ' + ghcrBase + ':' + tag
         + ' --certificate-identity-regexp=https://github.com/' + owner
         + ' --certificate-oidc-issuer=https://token.actions.githubusercontent.com';
+      var unavailable = 'No published image was observed for this reference.';
 
       var pullEl = this.querySelector('[data-vab-cmd="pull"]');
       var verifyEl = this.querySelector('[data-vab-cmd="verify"]');
-      if (pullEl) { pullEl.textContent = pullCmd; }
-      if (verifyEl) { verifyEl.textContent = verifyCmd; }
+      if (pullEl) { pullEl.textContent = confirmed ? pullCmd : unavailable; }
+      if (verifyEl) { verifyEl.textContent = confirmed ? verifyCmd : unavailable; }
+      this._hasCommand = confirmed;
+      var copyButtons = this.querySelectorAll('[data-vab-copy], [data-vab-mini-copy]');
+      for (var i = 0; i < copyButtons.length; i++) {
+        copyButtons[i].disabled = !confirmed;
+        copyButtons[i].setAttribute('aria-disabled', confirmed ? 'false' : 'true');
+      }
 
       this._updateCollapsedActionsState();
       // Sync sticky pull command text in collapsed bandeau
@@ -494,10 +469,10 @@
 
     _onVersionPillClick(value) {
       this._selectedVersion = value;
-      this._flavors = this._flavorsForVersion(value);
-      this._selectedFlavor = (this._flavors[0] && this._flavors[0].name) || '';
+      this._updatePillActive('vab-version-pill', value);
       this._currentVariant = this._findVariant(this._selectedVersion, this._selectedFlavor);
-      this._render();
+      this._updateCommands();
+      this._updateSignals();
       this._dispatchVariantChanged();
     }
 
