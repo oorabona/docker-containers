@@ -319,10 +319,13 @@ show_sizes() {
     # Show registry sizes
     echo "   └── Registries:"
 
-    # Get latest tag from version.sh if available, fallback to "latest"
-    local latest_tag
+    # Get latest tag from version.sh if available, fallback to "latest".
+    # A failed lookup may have produced partial stdout; it is not a tag.
+    local latest_tag upstream_lookup upstream_info
     if [[ -f "$container/version.sh" ]]; then
-      latest_tag=$("$container/version.sh" 2>/dev/null | head -1)
+      upstream_info=$(check_updates_upstream_version "$container/version.sh")
+      IFS=$'\t' read -r upstream_lookup latest_tag <<< "$upstream_info"
+      [[ "$upstream_lookup" == "matched" ]] || latest_tag=""
     fi
     [[ -z "$latest_tag" ]] && latest_tag="latest"
 
@@ -563,6 +566,28 @@ check_updates_current_version() {
   esac
 }
 
+# Emit a tab-separated upstream lookup outcome and confirmed candidate version.
+# Do not pipe version.sh into head: a script can emit a plausible first line and
+# then fail, in which case there is no established upstream candidate.
+check_updates_upstream_version() {
+  local output rc
+
+  if output=$("$@" 2>/dev/null); then
+    rc=0
+  else
+    rc=$?
+  fi
+  output=$(printf '%s' "$output" | head -1 | tr -d '\n')
+
+  if [[ "$rc" -ne 0 ]]; then
+    printf 'failed\t\n'
+  elif [[ -n "$output" ]]; then
+    printf 'matched\t%s\n' "$output"
+  else
+    printf 'no-match\t\n'
+  fi
+}
+
 # An absent declaration preserves the historical behaviour (actionable when
 # there is a confirmed update). Do not use yq's `// true` here: false is a
 # valid declaration and must not be coalesced with an absent value.
@@ -649,8 +674,9 @@ check_updates() {
         IFS=$'\t' read -r registry_lookup current_version <<< "$lookup_info"
 
         # Latest upstream version for this major line
-        local latest_version
-        latest_version=$(./version.sh --major "$major" 2>/dev/null | head -1 | tr -d '\n' || echo "")
+        local latest_version upstream_lookup upstream_info
+        upstream_info=$(check_updates_upstream_version ./version.sh --major "$major")
+        IFS=$'\t' read -r upstream_lookup latest_version <<< "$upstream_info"
 
         # Determine update status
         local update_available="false"
@@ -659,6 +685,8 @@ check_updates() {
 
         if [[ "$registry_lookup" == "failed" ]]; then
           status="registry-lookup-failed"
+        elif [[ "$upstream_lookup" == "failed" ]]; then
+          status="upstream-lookup-failed"
         elif [[ "$registry_lookup" == "no-match" ]]; then
           if [ -n "$latest_version" ]; then
             update_available="true"
@@ -678,7 +706,7 @@ check_updates() {
           fi
         fi
 
-        if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$declared_actionable" == "true" ]]; then
+        if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$upstream_lookup" == "matched" && "$declared_actionable" == "true" ]]; then
           actionable="true"
         fi
 
@@ -694,6 +722,7 @@ check_updates() {
           --argjson update_available "$update_available" \
           --argjson actionable "$actionable" \
           --arg registry_lookup "$registry_lookup" \
+          --arg upstream_lookup "$upstream_lookup" \
           --arg status "$status" \
           '{
             container: $container,
@@ -703,6 +732,7 @@ check_updates() {
             update_available: $update_available,
             actionable: $actionable,
             registry_lookup: $registry_lookup,
+            upstream_lookup: $upstream_lookup,
             status: $status
           }')
 
@@ -725,7 +755,9 @@ check_updates() {
       fi
     fi
     IFS=$'\t' read -r registry_lookup current_version <<< "$lookup_info"
-    latest_version=$(./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "")
+    local upstream_lookup upstream_info
+    upstream_info=$(check_updates_upstream_version ./version.sh)
+    IFS=$'\t' read -r upstream_lookup latest_version <<< "$upstream_info"
 
     # Determine update status
     local update_available="false"
@@ -734,6 +766,8 @@ check_updates() {
 
     if [[ "$registry_lookup" == "failed" ]]; then
       status="registry-lookup-failed"
+    elif [[ "$upstream_lookup" == "failed" ]]; then
+      status="upstream-lookup-failed"
     elif [[ "$registry_lookup" == "no-match" ]]; then
       if [ -n "$latest_version" ]; then
         update_available="true"
@@ -753,7 +787,7 @@ check_updates() {
       fi
     fi
 
-    if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$declared_actionable" == "true" ]]; then
+    if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$upstream_lookup" == "matched" && "$declared_actionable" == "true" ]]; then
       actionable="true"
     fi
 
@@ -765,6 +799,7 @@ check_updates() {
       --argjson update_available "$update_available" \
       --argjson actionable "$actionable" \
       --arg registry_lookup "$registry_lookup" \
+      --arg upstream_lookup "$upstream_lookup" \
       --arg status "$status" \
       '{
         container: $container,
@@ -773,6 +808,7 @@ check_updates() {
         update_available: $update_available,
         actionable: $actionable,
         registry_lookup: $registry_lookup,
+        upstream_lookup: $upstream_lookup,
         status: $status
       }')
 

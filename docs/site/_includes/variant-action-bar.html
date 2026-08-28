@@ -26,7 +26,9 @@
 {%- if page.versions -%}
   {%- for _vab_ver in page.versions -%}
     {%- for _vab_v in _vab_ver.variants -%}
-      {%- assign _vab_variants = _vab_variants | append: _vab_v.tag | append: "||" -%}
+      {%- if _vab_v.reference_confirmed == true -%}
+        {%- assign _vab_variants = _vab_variants | append: _vab_v.tag | append: "||" -%}
+      {%- endif -%}
     {%- endfor -%}
   {%- endfor -%}
 {%- endif -%}
@@ -76,15 +78,21 @@
   {%- assign _vab_first_row = true -%}
   {%- for _vab_ver in page.versions -%}
     {%- for _vab_v in _vab_ver.variants -%}
-      {%- unless _vab_first_row -%},{%- endunless -%}
-      {%- assign _vab_first_row = false -%}
-      {"tag":{{ _vab_v.tag | jsonify }},"version":{{ _vab_ver.base_tag | default: _vab_ver.tag | jsonify }},"flavor":{{ _vab_v.name | default: "" | jsonify }},"name":{{ _vab_v.name | default: "" | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
+      {%- if _vab_v.reference_confirmed == true -%}
+        {%- unless _vab_first_row -%},{%- endunless -%}
+        {%- assign _vab_first_row = false -%}
+        {"tag":{{ _vab_v.tag | jsonify }},"version":{{ _vab_ver.base_tag | default: _vab_ver.tag | jsonify }},"flavor":{{ _vab_v.name | default: "" | jsonify }},"name":{{ _vab_v.name | default: "" | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
+      {%- endif -%}
     {%- endfor -%}
   {%- endfor -%}
 {%- elsif page.variants -%}
+  {%- assign _vab_first_row = true -%}
   {%- for _vab_v in page.variants -%}
-    {%- unless forloop.first -%},{%- endunless -%}
-    {"tag":{{ _vab_v.tag | jsonify }},"version":"","flavor":{{ _vab_v.tag | jsonify }},"name":{{ _vab_v.tag | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
+    {%- if _vab_v.reference_confirmed == true -%}
+      {%- unless _vab_first_row -%},{%- endunless -%}
+      {%- assign _vab_first_row = false -%}
+      {"tag":{{ _vab_v.tag | jsonify }},"version":"","flavor":{{ _vab_v.tag | jsonify }},"name":{{ _vab_v.tag | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
+    {%- endif -%}
   {%- endfor -%}
 {%- else -%}
   {"tag":{{ page.current_version | jsonify }},"version":"","flavor":"","name":"","size_amd64":{{ page.size_amd64 | default: "" | jsonify }},"size_arm64":{{ page.size_arm64 | default: "" | jsonify }},"build_digest":{{ page.build_digest | default: "" | jsonify }},"attestation_url":"","attestation_id":"","trivy_summary":null,"multi_arch_platforms":[]}
@@ -101,8 +109,6 @@
   {%- endif -%}
 {%- endif -%}
 
-{%- capture _vab_registries -%}[{"id":"ghcr","label":"GHCR"},{"id":"dockerhub","label":"Docker Hub"}]{%- endcapture -%}
-
 <section id="variants-pull" class="vab-section" aria-label="Variant selector and pull commands">
   <variant-action-bar
     data-container="{{ page.name | escape }}"
@@ -113,8 +119,8 @@
     data-flavors="{{ _vab_fla_arr | strip | escape }}"
     data-variants="{{ _vab_variants_json | strip | escape }}"
     data-image-base="ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}"
-    data-image-base-dockerhub="{{ page.dockerhub_username | default: page.github_username | escape }}/{{ page.name | escape }}"
-    data-registries='{{ _vab_registries | escape }}'
+    {%- if page.dockerhub_image %}data-image-base-dockerhub="{{ page.dockerhub_username | default: page.github_username | escape }}/{{ page.name | escape }}"{%- endif %}
+    data-registries='[{"id":"ghcr","label":"GHCR"}]'
   ></variant-action-bar>
 
   <noscript>
@@ -133,12 +139,16 @@
             {%- if page.versions -%}
               {%- for _ns_ver in page.versions -%}
                 {%- for _ns_v in _ns_ver.variants -%}
+                  {%- if _ns_v.reference_confirmed == true -%}
                   <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code></td></tr>
+                  {%- endif -%}
                 {%- endfor -%}
               {%- endfor -%}
             {%- elsif page.variants -%}
               {%- for _ns_v in page.variants -%}
+                {%- if _ns_v.reference_confirmed == true -%}
                 <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code></td></tr>
+                {%- endif -%}
               {%- endfor -%}
             {%- endif -%}
           </tbody>

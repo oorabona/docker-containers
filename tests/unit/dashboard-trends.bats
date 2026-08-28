@@ -28,7 +28,7 @@ setup() {
     TRIVY_CACHE_FILE=$(mktemp)
     export DATA_FILE CONTAINERS_DIR STATS_FILE TRIVY_CACHE_FILE
 
-    get_container_versions()             { echo "1.0.0|1.0.0|green|Up to date|true"; }
+    get_container_versions()             { jq -nc '{current_version:"1.0.0", latest_version:"1.0.0", status_color:"green", status_text:"Up to date", current_version_confirmed:true, upstream_lookup:"matched", comparison_concluded:true, update_available:false, unpublished_release:false}'; }
     get_container_description()          { echo "Alpha test container"; }
     get_container_build_status()         { echo "success"; }
     populate_container_build_status_cache() { :; }
@@ -131,10 +131,19 @@ capture_container_page() {
     get_current_published_version() { echo ""; }
     run _real_get_container_versions "unconfirmed"
     [ "$status" -eq 0 ]
-    [[ "$(tail -n1 <<< "$output")" == "|1.0.0|warning|Publication information unavailable|false" ]]
+    # get_container_versions records an optional latency line before its JSON
+    # payload; parse the structured record, not the presentation telemetry.
+    echo "$output" | sed -n '/^{/,$p' | jq -e '
+        .current_version == "" and .latest_version == "1.0.0" and
+        .status_color == "warning" and
+        .status_text == "Publication information unavailable" and
+        .current_version_confirmed == false and
+        .comparison_concluded == false and .update_available == false and
+        .unpublished_release == true
+    ' >/dev/null
 
     capture_container_page
-    get_container_versions() { echo "|9.9.9|warning|Publication information unavailable|false"; }
+    get_container_versions() { jq -nc '{current_version:"", latest_version:"9.9.9", status_color:"warning", status_text:"Publication information unavailable", current_version_confirmed:false, upstream_lookup:"matched", comparison_concluded:false, update_available:false, unpublished_release:true}'; }
 
     run generate_data
     [ "$status" -eq 0 ]
@@ -160,6 +169,80 @@ capture_container_page() {
         "$ORIG_DIR/docs/site/_includes/container-card.html"
     grep -q 'page.current_version_confirmed == true' \
         "$ORIG_DIR/docs/site/_layouts/container-detail.html"
+}
+
+@test "dashboard: a failed lookup is not counted as an available update" {
+    make_fixture_container "indeterminate"
+    capture_container_page
+    # A failed lookup used to land in the warning presentation state.  Keep
+    # that defect state here so the retired colour-based counter would count it.
+    get_container_versions() { jq -nc '{current_version:"1.0.0", latest_version:"", status_color:"warning", status_text:"Upstream version unavailable", current_version_confirmed:true, upstream_lookup:"failed", comparison_concluded:false, update_available:false, unpublished_release:false}'; }
+
+    run generate_data
+    [ "$status" -eq 0 ]
+
+    yq -e '.updates_available == 0 and .unpublished_releases == 0' "$STATS_FILE" >/dev/null
+    jq -e '.comparison_concluded == false and .update_available == false' \
+        "$TEST_DIR/captured-indeterminate.json" >/dev/null
+}
+
+@test "dashboard: JSON version records preserve a pipe in every field" {
+    make_fixture_container "pipe-version"
+    capture_container_page
+    get_container_versions() { jq -nc '{current_version:"1|0", latest_version:"2|0", status_color:"warning", status_text:"Update | Available", current_version_confirmed:true, upstream_lookup:"matched", comparison_concluded:true, update_available:true, unpublished_release:false}'; }
+
+    run generate_data
+    [ "$status" -eq 0 ]
+
+    local record
+    record=$(cat "$TEST_DIR/captured-pipe-version.json")
+    [[ "$(jq -r '.current_version' <<< "$record")" == "1|0" ]]
+    [[ "$(jq -r '.latest_version' <<< "$record")" == "2|0" ]]
+    [[ "$(jq -r '.status_color' <<< "$record")" == "warning" ]]
+    [[ "$(jq -r '.status_text' <<< "$record")" == "Update | Available" ]]
+    [[ "$(jq -r '.current_version_confirmed' <<< "$record")" == "true" ]]
+    [[ "$(jq -r '.comparison_concluded' <<< "$record")" == "true" ]]
+    [[ "$(jq -r '.update_available' <<< "$record")" == "true" ]]
+}
+
+@test "dashboard: an unevidenced variant is excluded from pull-command inputs" {
+    make_fixture_container "cell-aware"
+    cat > "$TEST_DIR/cell-aware/variants.yaml" <<'EOF'
+versions:
+  - tag: 1.0.0
+    variants:
+      - name: default
+        suffix: ""
+        default: true
+      - name: unpublished
+        suffix: "-unpublished"
+EOF
+    mkdir -p "$TEST_DIR/.build-lineage"
+    cat > "$TEST_DIR/.build-lineage/cell-aware-1.0.0.json" <<'EOF'
+{"container":"cell-aware","tag":"1.0.0","version":"1.0.0","build_digest":"sha256:default","base_image_ref":"alpine:3.21","multi_arch_index_digest":"sha256:observed"}
+EOF
+    cat > "$TEST_DIR/.build-lineage/cell-aware-1.0.0-unpublished.json" <<'EOF'
+{"container":"cell-aware","tag":"1.0.0-unpublished","version":"1.0.0","build_digest":"sha256:built-not-mirrored","base_image_ref":"alpine:3.21"}
+EOF
+    resolve_variant_lineage_file() {
+        printf '%s/.build-lineage/cell-aware-%s.json\n' "$TEST_DIR" "$2"
+    }
+
+    # A manifest digest is recorded only after the generator has observed the
+    # exact GHCR tag. A build digest alone is not mirror evidence.
+    observed=$(collect_variant_json "cell-aware" "$TEST_DIR/cell-aware" "default" \
+        "1.0.0" "1.0.0" "alpine:3.21" "true" "true")
+    unpublished=$(collect_variant_json "cell-aware" "$TEST_DIR/cell-aware" "unpublished" \
+        "1.0.0" "1.0.0" "alpine:3.21" "true" "true")
+    [[ "$(jq -r '.reference_confirmed' <<< "$observed")" == "true" ]]
+    [[ "$(jq -r '.reference_confirmed' <<< "$unpublished")" == "false" ]]
+
+    # This is the rendering boundary: the versions path has one guard for the
+    # command JSON and one for the no-JS command table. Count both exact
+    # guards; a presence-only grep would leave either output path unprotected.
+    local template="$ORIG_DIR/docs/site/_includes/variant-action-bar.html"
+    [[ "$(grep -c 'if _vab_v.reference_confirmed == true' "$template")" -eq 3 ]]
+    [[ "$(grep -c 'if _ns_v.reference_confirmed == true' "$template")" -eq 2 ]]
 }
 
 # Creates a minimal container directory that satisfies generate_data()'s

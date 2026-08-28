@@ -915,6 +915,77 @@ EOF
     [[ "$status_value" == "update-available" ]]
 }
 
+@test "check_updates default path: partial output from a failed upstream lookup supplies no candidate" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    cat > ansible/version.sh <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "--registry-pattern" ]]; then
+    echo '^[0-9]+\.[0-9]+(\.[0-9]+)?-ubuntu$'
+    exit 0
+fi
+echo '2.0.0-ubuntu'
+exit 28
+EOF
+    chmod +x ansible/version.sh
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-lookup-failed" ]]
+}
+
+@test "check_updates multi-entry path: partial output from a failed major lookup supplies no candidate" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.1-alpine" "6.9.5-alpine"
+    cat > wordpress/version.sh <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "--major" ]]; then
+    echo "${2}.99.99-alpine"
+    exit 28
+fi
+echo '7.99.99-alpine'
+exit 28
+EOF
+    chmod +x wordpress/version.sh
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r 'all(.[]; .latest_version == "")')" == "true" ]]
+    [[ "$(echo "$output" | jq -r 'all(.[]; .upstream_lookup == "failed")')" == "true" ]]
+    [[ "$(echo "$output" | jq -r 'all(.[]; .update_available == false and .actionable == false and .status == "upstream-lookup-failed")')" == "true" ]]
+}
+
+@test "show_sizes: partial output from a failed upstream lookup falls back without using that tag" {
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    cat > ansible/version.sh <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "--registry-pattern" ]]; then
+    echo '^[0-9]+\.[0-9]+(\.[0-9]+)?-ubuntu$'
+    exit 0
+fi
+echo '2.0.0-ubuntu'
+exit 28
+EOF
+    chmod +x ansible/version.sh
+    cat > sizes-config.sh <<'EOF'
+get_dockerhub_sizes() { echo 'amd64: 1MB'; }
+get_ghcr_sizes() { echo 'amd64: 1MB'; }
+EOF
+
+    run env CONFIG_MK="$TEST_DIR/sizes-config.sh" ./make sizes ansible
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"GHCR (latest):"* ]]
+    [[ "$output" != *"2.0.0-ubuntu"* ]]
+}
+
 # Positive control for registry-pattern refusal cases below: a version.sh that
 # supplies a usable pattern still reaches the registry helper and can report an
 # actionable update.

@@ -25,6 +25,14 @@
   </div>
 
   <div class="stat-card glass">
+    <div class="stat-icon blue">
+      <i class="ti ti-package-export" aria-hidden="true"></i>
+    </div>
+    <div class="stat-value">{{ include.unpublished_releases | default: 0 }}</div>
+    <div class="stat-label">Unpublished Releases</div>
+  </div>
+
+  <div class="stat-card glass">
     <div class="stat-icon purple">
       <i class="ti ti-chart-bar" aria-hidden="true"></i>
     </div>

@@ -2,7 +2,9 @@
     'use strict';
 
     // State (theme managed by shared theme.js)
-    var currentRegistry = localStorage.getItem('preferredRegistry') || 'ghcr';
+    // This dashboard run has per-reference evidence only for GHCR. A saved
+    // mirror preference must not recreate a Docker Hub command by convention.
+    var currentRegistry = 'ghcr';
     var currentSearch = '';
     var currentStatus = 'all';
 
@@ -17,6 +19,7 @@
     // Set global registry for all containers
     function setGlobalRegistry(registry, save) {
       if (save === undefined) save = true;
+      if (registry !== 'ghcr') registry = 'ghcr';
       currentRegistry = registry;
       if (save) {
         localStorage.setItem('preferredRegistry', registry);
@@ -38,7 +41,9 @@
           var defaultTag = pullSection.dataset.defaultTag;
           var selectedVariant = card.querySelector('.variant-tag.selected');
           var tag = selectedVariant ? selectedVariant.dataset.tag : defaultTag;
-          var baseUrl = registry === 'ghcr' ? ghcrBase : dockerhubBase;
+          // Docker Hub is selectable only where the generator emitted an
+          // observed mirror reference. Never synthesize one from the name.
+          var baseUrl = registry === 'dockerhub' && dockerhubBase ? dockerhubBase : ghcrBase;
           var imageUrl = baseUrl + ':' + tag;
           var containerName = card.dataset.container;
           var input = document.getElementById('pull-' + containerName);
@@ -213,7 +218,7 @@
       var pullSection = card.querySelector('.pull-section');
       var ghcrBase = pullSection ? pullSection.dataset.ghcrBase : '';
       var dockerhubBase = pullSection ? pullSection.dataset.dockerhubBase : '';
-      var baseUrl = currentRegistry === 'ghcr' ? ghcrBase : dockerhubBase;
+      var baseUrl = currentRegistry === 'dockerhub' && dockerhubBase ? dockerhubBase : ghcrBase;
       var imageUrl = baseUrl + ':' + tag;
 
       var containerName = card.dataset.container;

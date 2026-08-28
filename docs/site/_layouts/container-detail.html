@@ -82,10 +82,6 @@
                  class="btn" target="_blank" rel="noopener noreferrer" aria-label="View package on GitHub Container Registry">
                 <i class="ti ti-package" aria-hidden="true"></i> GHCR
               </a>
-              <a href="https://hub.docker.com/r/{{ page.dockerhub_username }}/{{ page.name }}"
-                 class="btn" target="_blank" rel="noopener noreferrer" aria-label="View image on Docker Hub">
-                <i class="ti ti-brand-docker" aria-hidden="true"></i> Docker Hub
-              </a>
             </div>
           </div>
 
@@ -386,6 +382,7 @@
               </div>
                 {%- endif -%}
               {%- endif -%}
+              {%- if _prov_var.reference_confirmed == true -%}
               <div class="evidence-row">
                 <dt>Verify</dt>
                 <dd class="provenance-verify-cmd">
@@ -396,6 +393,7 @@
                      title="Verification guide — step-by-step commands to reproduce SBOM, Trivy, and cosign checks">guide →</a>
                 </dd>
               </div>
+              {%- endif -%}
             </dl>
             <footer class="provenance-footer">
               <a href="{{ '/verify-images/' | relative_url }}" class="trust-badge trust-badge--verify"
@@ -513,6 +511,7 @@
               </div>
                 {%- endif -%}
               {%- endif -%}
+              {%- if _prov_var.reference_confirmed == true -%}
               <div class="evidence-row">
                 <dt>Verify</dt>
                 <dd class="provenance-verify-cmd">
@@ -523,6 +522,7 @@
                      title="Verification guide — step-by-step commands to reproduce SBOM, Trivy, and cosign checks">guide →</a>
                 </dd>
               </div>
+              {%- endif -%}
             </dl>
             <footer class="provenance-footer">
               <a href="{{ '/verify-images/' | relative_url }}" class="trust-badge trust-badge--verify"
@@ -638,6 +638,7 @@
               </div>
                 {%- endif -%}
               {%- endif -%}
+              {%- if prov_variant.reference_confirmed == true -%}
               <div class="evidence-row">
                 <dt>Verify</dt>
                 <dd class="provenance-verify-cmd">
@@ -649,6 +650,7 @@
                      title="Verification guide — step-by-step commands to reproduce SBOM, Trivy, and cosign checks">guide →</a>
                 </dd>
               </div>
+              {%- endif -%}
             </dl>
             <footer class="provenance-footer">
               <a href="{{ '/verify-images/' | relative_url }}" class="trust-badge trust-badge--verify"
