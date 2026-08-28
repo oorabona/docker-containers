@@ -296,9 +296,9 @@ Checks for upstream version updates across containers using individual `version.
 - `container` (optional): Specific container to check
 
 **Outputs:**
-- `containers_with_updates`: JSON array of containers needing updates
-- `update_count`: Number of containers with updates
-- `version_info`: Detailed version information
+- `containers_with_updates`: JSON array of entries authorized to open a monitor PR
+- `update_count`: Number of entries authorized to open a monitor PR
+- `version_info`: JSON array of every version observation, including entries not authorized for monitor PRs
 
 **Key Features:**
 - Supports both single container and bulk checking
@@ -416,9 +416,9 @@ Checks for upstream version updates across containers.
 - `container` (optional): Specific container to check
 
 **Outputs:**
-- `containers_with_updates`: JSON array of containers needing updates
-- `update_count`: Number of containers with updates
-- `version_info`: Detailed version information
+- `containers_with_updates`: JSON array of entries authorized to open a monitor PR
+- `update_count`: Number of entries authorized to open a monitor PR
+- `version_info`: JSON array of every version observation, including entries not authorized for monitor PRs
 
 ### Check Dependency Versions (`.github/actions/check-dependency-versions`)
 

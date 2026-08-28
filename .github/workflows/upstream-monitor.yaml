@@ -45,7 +45,7 @@ jobs:
       - name: Summary
         run: |
           update_count="${{ steps.check.outputs.update_count }}"
-          echo "Found $update_count containers with updates"
+          echo "Found $update_count entries authorized to open monitor PRs"
           if [ "$update_count" -gt 0 ]; then
             echo "Containers to update: ${{ steps.check.outputs.containers_with_updates }}"
           fi

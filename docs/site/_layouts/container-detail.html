@@ -64,7 +64,7 @@
           <div class="detail-header">
             <div class="detail-title">
               <h1>{{ page.name }}</h1>
-              <span class="detail-badge">{{ page.current_version }}</span>
+              <span class="detail-badge">{{ page.current_version | default: "unknown" }}</span>
             </div>
             <div class="detail-actions">
               {%- assign _repo_url = site.github.repository_url | default: '' -%}
@@ -99,7 +99,14 @@
           {%- endif -%}
 
           {%- comment -%} Variant action bar — replaces static pull command + meta-cards {%- endcomment -%}
-          {% include variant-action-bar.html %}
+          {% if page.current_version_confirmed == true %}
+            {% include variant-action-bar.html %}
+          {% else %}
+            <section id="variants-pull" class="vab-section" aria-label="Publication information">
+              <p>Publication information is unavailable; no pull reference is shown.</p>
+              <p>Upstream version: {{ page.latest_version | default: "unknown" | escape }}</p>
+            </section>
+          {% endif %}
 
         </header>{%- comment -%} /Zone 1 — Identity {%- endcomment -%}
 

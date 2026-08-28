@@ -502,6 +502,64 @@ make() {
   return $_op_rc
 }
 
+# Emit a tab-separated registry lookup outcome and confirmed current version.
+# Exit 1 remains "enumeration succeeded but matched nothing" in
+# latest-docker-tag; exit 3 means the enumeration or its response failed.
+check_updates_current_version() {
+  local image=$1
+  local pattern=$2
+  local current_version rc
+
+  if current_version=$(../helpers/latest-docker-tag "$image" "$pattern" 2>/dev/null); then
+    rc=0
+  else
+    rc=$?
+  fi
+  current_version=$(printf '%s' "$current_version" | head -1 | tr -d '\n')
+
+  case "$rc" in
+    0)
+      # no-published-version is a legacy caller sentinel, never a confirmed tag.
+      if [[ -n "$current_version" && "$current_version" != "no-published-version" ]]; then
+        printf 'matched\t%s\n' "$current_version"
+      else
+        printf 'no-match\t\n'
+      fi
+      ;;
+    1) printf 'no-match\t\n' ;;
+    *) printf 'failed\t\n' ;;
+  esac
+}
+
+# An absent declaration preserves the historical behaviour (actionable when
+# there is a confirmed update). Do not use yq's `// true` here: false is a
+# valid declaration and must not be coalesced with an absent value.
+check_updates_declared_actionable() {
+  local container=$1
+  local declaration field_present action_tag declared_actionable
+
+  if [[ ! -e variants.yaml && ! -L variants.yaml ]]; then
+    printf 'true\n'
+    return
+  fi
+
+  if ! declaration=$(yq -r '[ (.build | has("upstream_monitor_actionable")), (.build.upstream_monitor_actionable | tag), .build.upstream_monitor_actionable] | @tsv' variants.yaml 2>/dev/null); then
+    printf 'check-updates: %s: unable to read variants.yaml; refusing monitor PR\n' "$container" >&2
+    printf 'false\n'
+    return
+  fi
+
+  IFS=$'\t' read -r field_present action_tag declared_actionable <<< "$declaration"
+  if [[ "$field_present" == "false" ]]; then
+    printf 'true\n'
+  elif [[ "$action_tag" == "!!bool" && ( "$declared_actionable" == "true" || "$declared_actionable" == "false" ) ]]; then
+    printf '%s\n' "$declared_actionable"
+  else
+    printf 'check-updates: %s: upstream_monitor_actionable must be a JSON boolean; refusing monitor PR\n' "$container" >&2
+    printf 'false\n'
+  fi
+}
+
 check_updates() {
   local target=${1:-""}
   local output_json="[]"
@@ -526,6 +584,11 @@ check_updates() {
 
     pushd "$container" > /dev/null
 
+    # Read the declaration once after entering the container directory so both
+    # retained-major and default paths use the same result.
+    local declared_actionable
+    declared_actionable=$(check_updates_declared_actionable "$container")
+
     # Detect retention strategy for multi-entry (latest_per_major) containers
     local strategy
     strategy=$(yq -r '.build.retention_strategy // ""' variants.yaml 2>/dev/null) || strategy=""
@@ -549,12 +612,9 @@ check_updates() {
         # Current published version on GHCR matching ^N\. pattern for this major
         local major_pattern
         major_pattern="^${major}\\.[0-9]+\\.[0-9]+-alpine\$"
-        local current_version
-        # No matching published tag is a normal lookup outcome. Keep the
-        # current-version field empty in that case, independently of pipefail.
-        if ! current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "$major_pattern" 2>/dev/null | head -1 | tr -d '\n'); then
-          current_version=""
-        fi
+        local current_version registry_lookup lookup_info
+        lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "$major_pattern")
+        IFS=$'\t' read -r registry_lookup current_version <<< "$lookup_info"
 
         # Latest upstream version for this major line
         local latest_version
@@ -562,9 +622,12 @@ check_updates() {
 
         # Determine update status
         local update_available="false"
+        local actionable="false"
         local status="up_to_date"
 
-        if [ -z "$current_version" ] || [ "$current_version" = "no-published-version" ]; then
+        if [[ "$registry_lookup" == "failed" ]]; then
+          status="registry-lookup-failed"
+        elif [[ "$registry_lookup" == "no-match" ]]; then
           if [ -n "$latest_version" ]; then
             update_available="true"
             status="new-container"
@@ -578,6 +641,10 @@ check_updates() {
           fi
         fi
 
+        if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$declared_actionable" == "true" ]]; then
+          actionable="true"
+        fi
+
         # Build per-major JSON entry.
         # container field = composite key (for action routing)
         # major_line field = the plain major number (for human-readable outputs)
@@ -588,6 +655,8 @@ check_updates() {
           --arg current "$current_version" \
           --arg latest "$latest_version" \
           --argjson update_available "$update_available" \
+          --argjson actionable "$actionable" \
+          --arg registry_lookup "$registry_lookup" \
           --arg status "$status" \
           '{
             container: $container,
@@ -595,6 +664,8 @@ check_updates() {
             current_version: $current,
             latest_version: $latest,
             update_available: $update_available,
+            actionable: $actionable,
+            registry_lookup: $registry_lookup,
             status: $status
           }')
 
@@ -608,24 +679,24 @@ check_updates() {
     # Default single-entry path (no latest_per_major strategy)
     # Get current and latest versions using container-specific patterns
     # Query GHCR (primary registry) to avoid stale Docker Hub data causing duplicate PRs
-    local pattern
+    local pattern current_version registry_lookup lookup_info
     if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-      if ! current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n'); then
-        current_version=""
-      fi
+      lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "$pattern")
     else
       # Fallback: try common version pattern
-      if ! current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null | head -1 | tr -d '\n'); then
-        current_version=""
-      fi
+      lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$")
     fi
+    IFS=$'\t' read -r registry_lookup current_version <<< "$lookup_info"
     latest_version=$(./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "")
 
     # Determine update status
     local update_available="false"
+    local actionable="false"
     local status="up_to_date"
 
-    if [ -z "$current_version" ] || [ "$current_version" = "no-published-version" ]; then
+    if [[ "$registry_lookup" == "failed" ]]; then
+      status="registry-lookup-failed"
+    elif [[ "$registry_lookup" == "no-match" ]]; then
       if [ -n "$latest_version" ]; then
         update_available="true"
         status="new-container"
@@ -639,18 +710,26 @@ check_updates() {
       fi
     fi
 
+    if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$declared_actionable" == "true" ]]; then
+      actionable="true"
+    fi
+
     # Build JSON object for this container
     container_json=$(jq -n \
       --arg container "$container" \
       --arg current "$current_version" \
       --arg latest "$latest_version" \
       --argjson update_available "$update_available" \
+      --argjson actionable "$actionable" \
+      --arg registry_lookup "$registry_lookup" \
       --arg status "$status" \
       '{
         container: $container,
         current_version: $current,
         latest_version: $latest,
         update_available: $update_available,
+        actionable: $actionable,
+        registry_lookup: $registry_lookup,
         status: $status
       }')
 

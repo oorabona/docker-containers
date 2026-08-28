@@ -333,9 +333,9 @@ SHEOF
 # latest-docker-tag (helpers/docker-tag) — capture-first rc check
 # =============================================================================
 
-@test "latest-docker-tag: timeout exit-124 with partial valid JSON returns rc=1 and empty stdout" {
+@test "latest-docker-tag: timeout exit-124 with partial valid JSON returns rc=3 and empty stdout" {
     # Mutation caught: removing the capture-first `rc` check in latest-docker-tag
-    # (i.e. dropping `rc=$?; if [ "$rc" -ne 0 ]; then return 1; fi`) would cause
+    # (i.e. dropping `rc=$?; if [ "$rc" -ne 0 ]; then return 3; fi`) would cause
     # `raw` to hold the partial valid tags JSON emitted before the kill, which then
     # passes through jq/.Tags[]/grep/sort/tail and produces a false-success tag on
     # stdout instead of an empty result.
@@ -343,7 +343,7 @@ SHEOF
     # This shim replaces `timeout` so that `timeout 120 docker run ...` prints a
     # syntactically-valid tags list to stdout (what a real skopeo would emit) then
     # exits 124 — exactly what happens when skopeo is killed mid-output by a wall-
-    # clock timeout.  The function must detect rc=124, return 1, and emit nothing.
+    # clock timeout. The function must detect rc=124, return 3, and emit nothing.
 
     # Source the helper (functions only; execution guard prevents side-effects).
     source "$ORIG_DIR/helpers/docker-tag" 2>/dev/null || true
@@ -379,9 +379,94 @@ WEOF
 
     run "$wrapper"
 
-    # rc must be 1 (failure path) — not 0 (false success).
-    [ "$status" -eq 1 ]
+    # rc 3 means registry enumeration failed — not 0 (false success), and
+    # not 1 (the established successful-enumeration/no-match outcome).
+    [ "$status" -eq 3 ]
     # stdout must be empty — the partial valid JSON must NOT have leaked through
     # the jq/.Tags[]/grep/sort/tail pipeline to produce a tag string.
+    [ -z "$output" ]
+}
+
+@test "latest-docker-tag: successful enumeration with no matches keeps exit 1" {
+    source "$ORIG_DIR/helpers/docker-tag" 2>/dev/null || true
+
+    local shim_dir wrapper
+    shim_dir="$TEST_DIR/no-matches-shim"
+    mkdir -p "$shim_dir"
+    cat > "$shim_dir/timeout" <<'SHEOF'
+#!/bin/bash
+printf '{"Repository":"docker://library/alpine","Tags":["3.20","latest"]}\n'
+exit 0
+SHEOF
+    chmod +x "$shim_dir/timeout"
+
+    wrapper="$shim_dir/run-latest-docker-tag.sh"
+    cat > "$wrapper" <<WEOF
+#!/bin/bash
+source "$ORIG_DIR/helpers/docker-tag"
+export PATH="$shim_dir:\$PATH"
+latest-docker-tag "alpine" "^9\\." 2>/dev/null
+WEOF
+    chmod +x "$wrapper"
+
+    run "$wrapper"
+
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+}
+
+@test "latest-docker-tag: unparseable enumeration response returns rc=3" {
+    source "$ORIG_DIR/helpers/docker-tag" 2>/dev/null || true
+
+    local shim_dir wrapper
+    shim_dir="$TEST_DIR/unparseable-response-shim"
+    mkdir -p "$shim_dir"
+    cat > "$shim_dir/timeout" <<'SHEOF'
+#!/bin/bash
+printf '{"Repository":"docker://library/alpine","Tags":\n'
+exit 0
+SHEOF
+    chmod +x "$shim_dir/timeout"
+
+    wrapper="$shim_dir/run-latest-docker-tag.sh"
+    cat > "$wrapper" <<WEOF
+#!/bin/bash
+source "$ORIG_DIR/helpers/docker-tag"
+export PATH="$shim_dir:\$PATH"
+latest-docker-tag "alpine" "^3\\." 2>/dev/null
+WEOF
+    chmod +x "$wrapper"
+
+    run "$wrapper"
+
+    [ "$status" -eq 3 ]
+    [ -z "$output" ]
+}
+
+@test "latest-docker-tag: a non-string Tags member returns rc=3" {
+    source "$ORIG_DIR/helpers/docker-tag" 2>/dev/null || true
+
+    local shim_dir wrapper
+    shim_dir="$TEST_DIR/non-string-tags-shim"
+    mkdir -p "$shim_dir"
+    cat > "$shim_dir/timeout" <<'SHEOF'
+#!/bin/bash
+printf '{"Repository":"docker://library/alpine","Tags":[{"tag":"3.20"}]}'
+exit 0
+SHEOF
+    chmod +x "$shim_dir/timeout"
+
+    wrapper="$shim_dir/run-latest-docker-tag.sh"
+    cat > "$wrapper" <<WEOF
+#!/bin/bash
+source "$ORIG_DIR/helpers/docker-tag"
+export PATH="$shim_dir:\$PATH"
+latest-docker-tag "alpine" "^3\\." 2>/dev/null
+WEOF
+    chmod +x "$wrapper"
+
+    run "$wrapper"
+
+    [ "$status" -eq 3 ]
     [ -z "$output" ]
 }

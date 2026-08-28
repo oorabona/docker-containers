@@ -38,18 +38,47 @@ function docker-tag-matching-tags() {
   local image=$1
   local pattern=$2
   local timeout_seconds=${3:-120}
-  local registry_url raw
+  local registry_url raw all_tags matching_tags filtered_tags rc
 
   registry_url=$(docker-tag-registry-url "$image")
-  raw=$(docker-tag-list-raw "$registry_url" "$timeout_seconds") || return 1
+  raw=$(docker-tag-list-raw "$registry_url" "$timeout_seconds")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # 3 means the registry enumeration did not conclude.  Keep 1 reserved for
+    # a successful enumeration with no matching tag, which existing callers
+    # already treat as "not published".
+    return 3
+  fi
 
-  printf '%s' "$raw" | \
-    jq -r '.Tags[]? // empty' 2>/dev/null | \
-    grep -E "$pattern" 2>/dev/null | \
-    # Exclude prerelease tags (rc, alpha, beta, dev, pre, snapshot, nightly).
-    # Anchored at end of string to avoid false positives (e.g. "go-alpine" != alpha).
-    grep -viE '\-?(rc|alpha|beta|dev|pre|snapshot|nightly)[0-9.]*$' 2>/dev/null | \
-    sort -V
+  # Parse before filtering so invalid/partial registry output cannot be
+  # mistaken for a successful empty match set.
+  all_tags=$(printf '%s' "$raw" | \
+    jq -r 'if ((.Tags | type) == "array" and all(.Tags[]; type == "string")) then .Tags[] else error("Tags must be an array of strings") end' 2>/dev/null)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    return 3
+  fi
+
+  matching_tags=$(printf '%s\n' "$all_tags" | grep -E "$pattern" 2>/dev/null)
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    return 0
+  elif [ "$rc" -ne 0 ]; then
+    return 3
+  fi
+
+  # Exclude prerelease tags (rc, alpha, beta, dev, pre, snapshot, nightly).
+  # Anchored at end of string to avoid false positives (e.g. "go-alpine" != alpha).
+  filtered_tags=$(printf '%s\n' "$matching_tags" | \
+    grep -viE '\-?(rc|alpha|beta|dev|pre|snapshot|nightly)[0-9.]*$' 2>/dev/null)
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    return 0
+  elif [ "$rc" -ne 0 ]; then
+    return 3
+  fi
+
+  printf '%s\n' "$filtered_tags" | sort -V || return 3
 }
 
 function docker-tag-digest() {
@@ -93,8 +122,14 @@ function latest-docker-tag() {
   # Capture raw output and exit code FIRST so a 124 (timeout with partial stdout)
   # deterministically routes to the failure path rather than silently returning
   # whatever partial JSON the pipeline happened to parse before exit.
-  local result
-  result=$(docker-tag-matching-tags "$image" "$pattern" 120 | tail -n1)
+  local matching_tags result rc
+  matching_tags=$(docker-tag-matching-tags "$image" "$pattern" 120)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    return "$rc"
+  fi
+
+  result=$(printf '%s\n' "$matching_tags" | tail -n1)
 
   if [[ -n "$result" && "$result" != "null" ]]; then
     echo "$result"

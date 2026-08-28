@@ -1,5 +1,7 @@
 #!/usr/bin/env bats
 
+bats_require_minimum_version 1.5.0
+
 # Unit tests for the latest_per_major_versions helper in helpers/variant-utils.sh
 # and the --major flag in wordpress/version.sh
 
@@ -112,6 +114,15 @@ fi
 echo "1.0.0"
 VEOF
     chmod +x "$dir/version.sh"
+}
+
+@test "postgres declares its upstream monitor non-actionable pending #1512" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+
+    run yq -r '.build.upstream_monitor_actionable' "$ORIG_DIR/postgres/variants.yaml"
+    [ "$status" -eq 0 ]
+    [ "$output" = "false" ]
+    grep -q '#1512' "$ORIG_DIR/postgres/variants.yaml"
 }
 
 # ----------------------------------------------------------------
@@ -418,14 +429,18 @@ EOF
     printf '# Args: <image> <pattern>\n' >> helpers/latest-docker-tag
     printf 'pattern="$2"\n' >> helpers/latest-docker-tag
     printf 'if echo "$pattern" | grep -qE "^\\^7"; then\n' >> helpers/latest-docker-tag
-    if [[ "$mock_ghcr_7" == "__EMPTY_FAILURE__" ]]; then
+    if [[ "$mock_ghcr_7" == "__ENUMERATION_FAILURE__" ]]; then
+        printf '  exit 3\n' >> helpers/latest-docker-tag
+    elif [[ "$mock_ghcr_7" == "__NO_MATCH__" ]]; then
         printf '  exit 1\n' >> helpers/latest-docker-tag
     else
         printf '  echo "%s"; exit 0\n' "${mock_ghcr_7}" >> helpers/latest-docker-tag
     fi
     printf 'fi\n' >> helpers/latest-docker-tag
     printf 'if echo "$pattern" | grep -qE "^\\^6"; then\n' >> helpers/latest-docker-tag
-    if [[ "$mock_ghcr_6" == "__EMPTY_FAILURE__" ]]; then
+    if [[ "$mock_ghcr_6" == "__ENUMERATION_FAILURE__" ]]; then
+        printf '  exit 3\n' >> helpers/latest-docker-tag
+    elif [[ "$mock_ghcr_6" == "__NO_MATCH__" ]]; then
         printf '  exit 1\n' >> helpers/latest-docker-tag
     else
         printf '  echo "%s"; exit 0\n' "${mock_ghcr_6}" >> helpers/latest-docker-tag
@@ -500,12 +515,14 @@ create_default_check_updates_fixture() {
     local mock_current="${1:-1.0.0-ubuntu}"
     local mock_latest="${2:-2.0.0-ubuntu}"
     local registry_pattern="${3:-^[0-9]+\.[0-9]+(\.[0-9]+)?-ubuntu$}"
+    local monitor_actionable="${4:-true}"
 
     mkdir -p ansible helpers scripts
 
-    cat > ansible/variants.yaml <<'EOF'
+    cat > ansible/variants.yaml <<EOF
 build:
   requires_extensions: false
+  upstream_monitor_actionable: ${monitor_actionable}
 versions:
   - tag: 1.0.0-ubuntu
 EOF
@@ -520,7 +537,9 @@ EOF
     if [[ "$mock_current" == "__NO_PUBLISHED__" ]]; then
         printf 'echo "no-published-version"\n' >> helpers/latest-docker-tag
         printf 'exit 0\n' >> helpers/latest-docker-tag
-    elif [[ "$mock_current" == "__EMPTY_FAILURE__" ]]; then
+    elif [[ "$mock_current" == "__ENUMERATION_FAILURE__" ]]; then
+        printf 'exit 3\n' >> helpers/latest-docker-tag
+    elif [[ "$mock_current" == "__NO_MATCH__" ]]; then
         printf 'exit 1\n' >> helpers/latest-docker-tag
     else
         printf 'echo "%s"\n' "$mock_current" >> helpers/latest-docker-tag
@@ -773,21 +792,55 @@ EOF
     [[ "$status_6" == "up_to_date" ]]
 }
 
-@test "check_updates multi-entry: accepted empty current_version ambiguity reports new-container" {
+@test "check_updates multi-entry: enumeration failure is reported and fails closed" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
-    # Accepted pre-existing ambiguity: Docker/GHCR/skopeo/rate-limit helper failures and genuinely unpublished containers both yield empty current_version; status is cosmetic, not a fully reasoned contract.
-    create_check_updates_fixture "7.0.0-alpine" "__EMPTY_FAILURE__" "7.0.0-alpine" "6.9.4-alpine"
+    create_check_updates_fixture "7.0.0-alpine" "__ENUMERATION_FAILURE__" "7.0.0-alpine" "6.9.4-alpine"
 
     run run_check_updates wordpress
     [ "$status" -eq 0 ]
 
     current_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .current_version')
     update_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')
+    actionable_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .actionable')
+    lookup_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .registry_lookup')
     status_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')
     [[ -z "$current_6" ]]
+    [[ "$update_6" == "false" ]]
+    [[ "$actionable_6" == "false" ]]
+    [[ "$lookup_6" == "failed" ]]
+    [[ "$status_6" == "registry-lookup-failed" ]]
+}
+
+@test "check_updates multi-entry: classifies a failed lookup with inherit_errexit enabled" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "__ENUMERATION_FAILURE__" "7.0.0-alpine" "6.9.4-alpine"
+
+    run --separate-stderr bash -O inherit_errexit ./make check-updates wordpress
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .registry_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')" == "registry-lookup-failed" ]]
+}
+
+@test "check_updates multi-entry: successful no-match is distinct from enumeration failure" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "__NO_MATCH__" "7.0.0-alpine" "6.9.4-alpine"
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+
+    lookup_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .registry_lookup')
+    update_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')
+    actionable_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .actionable')
+    status_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')
+    [[ "$lookup_6" == "no-match" ]]
     [[ "$update_6" == "true" ]]
+    [[ "$actionable_6" == "true" ]]
     [[ "$status_6" == "new-container" ]]
 }
 
@@ -869,22 +922,161 @@ EOF
     [[ "$status_value" == "up_to_date" ]]
 }
 
-@test "check_updates default path: accepted empty current_version ambiguity reports new-container" {
+@test "check_updates default path: enumeration failure is reported and fails closed" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
-    # Accepted pre-existing ambiguity: Docker/GHCR/skopeo/rate-limit helper failures and genuinely unpublished containers both yield empty current_version; status is cosmetic, not a fully reasoned contract.
-    create_default_check_updates_fixture "__EMPTY_FAILURE__" "14.1.0-ubuntu"
+    create_default_check_updates_fixture "__ENUMERATION_FAILURE__" "14.1.0-ubuntu"
 
     run run_check_updates ansible
     [ "$status" -eq 0 ]
 
     current_version=$(echo "$output" | jq -r '.[0].current_version')
     update_available=$(echo "$output" | jq -r '.[0].update_available')
+    actionable=$(echo "$output" | jq -r '.[0].actionable')
+    lookup=$(echo "$output" | jq -r '.[0].registry_lookup')
     status_value=$(echo "$output" | jq -r '.[0].status')
     [[ -z "$current_version" ]]
-    [[ "$update_available" == "true" ]]
-    [[ "$status_value" == "new-container" ]]
+    [[ "$update_available" == "false" ]]
+    [[ "$actionable" == "false" ]]
+    [[ "$lookup" == "failed" ]]
+    [[ "$status_value" == "registry-lookup-failed" ]]
+}
+
+@test "check_updates default path: classifies a failed lookup with inherit_errexit enabled" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "__ENUMERATION_FAILURE__" "14.1.0-ubuntu"
+
+    run --separate-stderr bash -O inherit_errexit ./make check-updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].registry_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "registry-lookup-failed" ]]
+}
+
+@test "check_updates default path: malformed variants declaration refuses monitor PRs" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    printf 'build:\n  upstream_monitor_actionable: [\n' > ansible/variants.yaml
+
+    run --separate-stderr ./make check-updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "true" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$stderr" == *"ansible: unable to read variants.yaml"* ]]
+}
+
+@test "check_updates default path: an absent declaration remains actionable" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    cat > ansible/variants.yaml <<'EOF'
+build:
+  requires_extensions: false
+EOF
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "true" ]]
+}
+
+@test "check_updates default path: an absent variants file remains actionable" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    rm ansible/variants.yaml
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "true" ]]
+}
+
+@test "check_updates default path: a dangling variants symlink refuses monitor PRs" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    rm ansible/variants.yaml
+    ln -s /nonexistent-variants-target ansible/variants.yaml
+
+    run --separate-stderr ./make check-updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "true" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$stderr" == *"ansible: unable to read variants.yaml"* ]]
+}
+
+@test "docker-tag-matching-tags: unavailable sort returns rc=3" {
+    local shim_dir wrapper real_jq real_grep
+    shim_dir="$TEST_DIR/sort-unavailable-shim"
+    mkdir -p "$shim_dir"
+    real_jq=$(command -v jq)
+    real_grep=$(command -v grep)
+    ln -s "$real_jq" "$shim_dir/jq"
+    ln -s "$real_grep" "$shim_dir/grep"
+    cat > "$shim_dir/timeout" <<'SHEOF'
+#!/bin/bash
+printf '{"Repository":"docker://library/alpine","Tags":["3.20"]}\n'
+exit 0
+SHEOF
+    chmod +x "$shim_dir/timeout"
+
+    wrapper="$shim_dir/run-docker-tag-matching-tags.sh"
+    cat > "$wrapper" <<WEOF
+#!/bin/bash
+source "$ORIG_DIR/helpers/docker-tag"
+export PATH="$shim_dir"
+docker-tag-matching-tags "alpine" "^3\\."
+WEOF
+    chmod +x "$wrapper"
+
+    run "$wrapper"
+    [ "$status" -eq 3 ]
+}
+
+@test "check_updates latest_per_major path reads its declaration once per container" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.1-alpine" "6.9.5-alpine"
+    mkdir -p bin
+    local real_yq declaration_log
+    real_yq=$(command -v yq)
+    declaration_log="$TEST_DIR/actionable-yq.log"
+    cat > bin/yq <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"upstream_monitor_actionable"* ]]; then
+    printf '%s\n' "$*" >> "$YQ_ACTIONABLE_LOG"
+fi
+exec "$REAL_YQ" "$@"
+EOF
+    chmod +x bin/yq
+
+    export REAL_YQ="$real_yq"
+    export YQ_ACTIONABLE_LOG="$declaration_log"
+    export PATH="$TEST_DIR/bin:$PATH"
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$declaration_log" | tr -d ' ')" -eq 1 ]
+}
+
+@test "check_updates default path: declared non-actionable update remains reportable" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu" "^[0-9]+\\.[0-9]+(\\.[0-9]+)?-ubuntu$" "false"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "true" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].registry_lookup')" == "matched" ]]
 }
 
 @test "check_updates default path: same numeric tuple with different suffix is an update" {
@@ -1013,7 +1205,7 @@ EOF
     current_version=$(echo "$output" | jq -r '.[0].current_version')
     update_available=$(echo "$output" | jq -r '.[0].update_available')
     status_value=$(echo "$output" | jq -r '.[0].status')
-    [[ "$current_version" == "no-published-version" ]]
+    [[ -z "$current_version" ]]
     [[ "$update_available" == "true" ]]
     [[ "$status_value" == "new-container" ]]
 }
