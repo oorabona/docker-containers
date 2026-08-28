@@ -2,9 +2,6 @@
     'use strict';
 
     // State (theme managed by shared theme.js)
-    // This dashboard run has per-reference evidence only for GHCR. A saved
-    // mirror preference must not recreate a Docker Hub command by convention.
-    var currentRegistry = 'ghcr';
     var currentSearch = '';
     var currentStatus = 'all';
 
@@ -13,48 +10,6 @@
       var liveRegion = document.getElementById('status-live');
       if (liveRegion) {
         liveRegion.textContent = message;
-      }
-    }
-
-    // Set global registry for all containers
-    function setGlobalRegistry(registry, save) {
-      if (save === undefined) save = true;
-      if (registry !== 'ghcr') registry = 'ghcr';
-      currentRegistry = registry;
-      if (save) {
-        localStorage.setItem('preferredRegistry', registry);
-      }
-
-      // Update toggle buttons and ARIA state
-      document.querySelectorAll('.registry-btn').forEach(function(btn) {
-        var isActive = btn.dataset.registry === registry;
-        btn.classList.toggle('active', isActive);
-        btn.setAttribute('aria-checked', isActive ? 'true' : 'false');
-      });
-
-      // Update all container cards
-      document.querySelectorAll('.container-card').forEach(function(card) {
-        var pullSection = card.querySelector('.pull-section');
-        if (pullSection) {
-          var ghcrBase = pullSection.dataset.ghcrBase;
-          var dockerhubBase = pullSection.dataset.dockerhubBase;
-          var defaultTag = pullSection.dataset.defaultTag;
-          var selectedVariant = card.querySelector('.variant-tag.selected');
-          var tag = selectedVariant ? selectedVariant.dataset.tag : defaultTag;
-          // Docker Hub is selectable only where the generator emitted an
-          // observed mirror reference. Never synthesize one from the name.
-          var baseUrl = registry === 'dockerhub' && dockerhubBase ? dockerhubBase : ghcrBase;
-          var imageUrl = baseUrl + ':' + tag;
-          var containerName = card.dataset.container;
-          var input = document.getElementById('pull-' + containerName);
-          if (input) {
-            input.value = 'docker pull ' + imageUrl;
-          }
-        }
-      });
-
-      if (save) {
-        announceStatus('Registry switched to ' + (registry === 'ghcr' ? 'GitHub Container Registry' : 'Docker Hub'));
       }
     }
 
@@ -217,9 +172,7 @@
 
       var pullSection = card.querySelector('.pull-section');
       var ghcrBase = pullSection ? pullSection.dataset.ghcrBase : '';
-      var dockerhubBase = pullSection ? pullSection.dataset.dockerhubBase : '';
-      var baseUrl = currentRegistry === 'dockerhub' && dockerhubBase ? dockerhubBase : ghcrBase;
-      var imageUrl = baseUrl + ':' + tag;
+      var imageUrl = ghcrBase + ':' + tag;
 
       var containerName = card.dataset.container;
       var input = document.getElementById('pull-' + containerName);
@@ -302,9 +255,6 @@
 
     // Event delegation — no inline onclick handlers
     document.addEventListener('DOMContentLoaded', function() {
-      // Restore registry preference
-      setGlobalRegistry(currentRegistry, false);
-
       // Auto-select text on click
       document.querySelectorAll('input[id^="pull-"]').forEach(function(input) {
         input.addEventListener('click', function() { this.select(); });
@@ -318,13 +268,6 @@
       if (themeBtn) themeBtn.addEventListener('click', function() {
         ThemeManager.toggleTheme();
         announceStatus('Theme switched to ' + ThemeManager.currentTheme + ' mode');
-      });
-
-      // Registry buttons
-      document.querySelectorAll('.registry-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          setGlobalRegistry(this.dataset.registry);
-        });
       });
 
       // Search input

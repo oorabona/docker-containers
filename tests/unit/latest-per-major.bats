@@ -252,14 +252,11 @@ EOF
     mkdir -p helpers
     cat > helpers/latest-docker-tag <<'MOCK'
 #!/bin/bash
-# Args: library/wordpress "^7\.[0-9]+\.[0-9]+$"
-# Return a fixed version matching the major
-pattern="$2"
-if echo "7.0.0" | grep -qE "${pattern}"; then
-    echo "7.0.0"
-    exit 0
-fi
-exit 1
+# This stub is the entire upstream boundary: it both controls the result and
+# refuses an unexpected image/pattern so this unit test cannot reach GHCR.
+[[ "${1:-}" == "library/wordpress" ]] || exit 41
+[[ "${2:-}" == '^7\.[0-9]+\.[0-9]+$' ]] || exit 42
+printf '7.0.0\n'
 MOCK
     chmod +x helpers/latest-docker-tag
 
@@ -274,6 +271,60 @@ MOCK
     run wordpress/version.sh --major 7
     [ "$status" -eq 0 ]
     [[ "$output" == "7.0.0-alpine" ]]
+}
+
+@test "check_updates: a resolver that hangs after a version is a bounded failed lookup" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    printf '%s\n' '#!/usr/bin/env bash' 'if [[ "${1:-}" == "--registry-pattern" ]]; then printf "%s\\n" "^[0-9]+\\.[0-9]+(\\.[0-9]+)?-ubuntu$"; exit 0; fi' 'printf "1.1.0-ubuntu\\n"' 'sleep 60' > ansible/version.sh
+    chmod +x ansible/version.sh
+    run timeout 4 env CHECK_UPDATES_UPSTREAM_TIMEOUT_SECONDS=1 ./make check-updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-lookup-failed" ]]
+}
+
+@test "check_updates: sentinels, whitespace, and CR-terminated candidates conclude no-match" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+    local resolver_output
+    for resolver_output in "unknown" "   " $'1.1.0-ubuntu\r'; do
+        create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+        printf '%s\n' '#!/usr/bin/env bash' 'if [[ "${1:-}" == "--registry-pattern" ]]; then printf "%s\\n" "^[0-9]+\\.[0-9]+(\\.[0-9]+)?-ubuntu$"; exit 0; fi' "printf '%s\\n' $(printf '%q' "$resolver_output")" > ansible/version.sh
+        chmod +x ansible/version.sh
+        run run_check_updates ansible
+        [ "$status" -eq 0 ]
+        [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "no-match" ]]
+        [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
+        [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-no-match" ]]
+    done
+}
+
+@test "check_updates: large successful resolver output keeps the first candidate without SIGPIPE" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    printf '%s\n' '#!/usr/bin/env bash' 'if [[ "${1:-}" == "--registry-pattern" ]]; then printf "%s\\n" "^[0-9]+\\.[0-9]+(\\.[0-9]+)?-ubuntu$"; exit 0; fi' 'printf "1.1.0-ubuntu\\n"' 'yes x | head -c 131072' > ansible/version.sh
+    chmod +x ansible/version.sh
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "matched" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "1.1.0-ubuntu" ]]
+}
+
+@test "check_updates: resolver output beyond the 1 MiB bound is a failed lookup" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    printf '%s\n' '#!/usr/bin/env bash' 'if [[ "${1:-}" == "--registry-pattern" ]]; then printf "%s\\n" "^[0-9]+\\.[0-9]+(\\.[0-9]+)?-ubuntu$"; exit 0; fi' 'printf "1.1.0-ubuntu\\n"' 'yes x | head -c 1100000' > ansible/version.sh
+    chmod +x ansible/version.sh
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-lookup-failed" ]]
 }
 
 @test "version.sh --major: fails fast with non-numeric argument" {

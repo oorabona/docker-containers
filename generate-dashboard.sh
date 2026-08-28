@@ -318,14 +318,20 @@ get_container_versions() {
     }
 
     local current_version latest_version status_color status_text current_version_confirmed="false"
+    local publication_lookup publication_rc
     local upstream_lookup="failed" upstream_output comparison_concluded="false"
     local update_available="false" unpublished_release="false"
 
     local _t0_skopeo=${EPOCHREALTIME:-}
-    if ! current_version=$(get_current_published_version "oorabona/$container"); then
-        # A registry failure is not an empty-but-concluded publication lookup.
-        # Either way there is no version to compare in this dashboard run.
+    if current_version=$(get_current_published_version "oorabona/$container"); then
+        publication_lookup="matched"
+    else
+        publication_rc=$?
         current_version=""
+        case "$publication_rc" in
+            1) publication_lookup="no-match" ;;
+            *) publication_lookup="failed" ;;
+        esac
     fi
     log_latency "skopeo-list-tags oorabona/$container" "$_t0_skopeo" 60
     if [[ -n "$current_version" && "$current_version" != "unknown" ]]; then
@@ -335,8 +341,12 @@ get_container_versions() {
     # Capture version.sh before selecting its display line.  A resolver that
     # writes a version and then fails has not established a usable candidate.
     if upstream_output=$(timeout 30 ./version.sh 2>/dev/null); then
-        latest_version=$(printf '%s' "$upstream_output" | head -1 | tr -d '\n')
-        [[ -n "$latest_version" ]] && upstream_lookup="matched" || upstream_lookup="no-match"
+        if latest_version=$(version_lookup_candidate "$upstream_output"); then
+            upstream_lookup="matched"
+        else
+            latest_version=""
+            upstream_lookup="no-match"
+        fi
     else
         latest_version=""
     fi
@@ -346,7 +356,7 @@ get_container_versions() {
     if [[ "$current_version_confirmed" != "true" ]]; then
         status_color="warning"
         status_text="Publication information unavailable"
-        if [[ "$upstream_lookup" == "matched" ]]; then
+        if [[ "$publication_lookup" == "no-match" && "$upstream_lookup" == "matched" ]]; then
             unpublished_release="true"
         fi
     elif [[ "$upstream_lookup" != "matched" ]]; then
@@ -927,7 +937,7 @@ collect_variant_json() {
         {
             name: $name, tag: $tag, description: $desc,
             is_default: $is_default,
-            reference_confirmed: (($lineage.multi_arch_index_digest // "") | length > 0),
+            reference_confirmed: (($multi_arch_digests.index_digest // "") | length > 0),
             size_amd64: $size_amd64, size_arm64: $size_arm64,
             build_digest: $lineage.build_digest,
             base_image: $lineage.base_image,

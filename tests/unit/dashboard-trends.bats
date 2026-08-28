@@ -10,6 +10,7 @@ setup() {
     source "$ORIG_DIR/helpers/logging.sh" 2>/dev/null || true
     source "$ORIG_DIR/helpers/variant-utils.sh" 2>/dev/null || true
     source "$ORIG_DIR/generate-dashboard.sh" 2>/dev/null || true
+    source "$ORIG_DIR/helpers/version-utils.sh"
     eval "$(declare -f get_container_versions | sed '1s/get_container_versions/_real_get_container_versions/')"
     _SOURCED_TRIVY_CACHE="${TRIVY_CACHE_FILE:-}"
     if [[ -n "$_saved_exit_trap" ]]; then
@@ -125,10 +126,10 @@ capture_container_page() {
     }
 }
 
-@test "dashboard: unconfirmed current version carries explicit absence and no image references" {
+@test "dashboard: a concluded no-match current version marks an unpublished release" {
     make_fixture_container "unconfirmed"
 
-    get_current_published_version() { echo ""; }
+    get_current_published_version() { return 1; }
     run _real_get_container_versions "unconfirmed"
     [ "$status" -eq 0 ]
     # get_container_versions records an optional latency line before its JSON
@@ -169,6 +170,77 @@ capture_container_page() {
         "$ORIG_DIR/docs/site/_includes/container-card.html"
     grep -q 'page.current_version_confirmed == true' \
         "$ORIG_DIR/docs/site/_layouts/container-detail.html"
+}
+
+@test "dashboard: failed publication lookups never mark an unpublished release" {
+    make_fixture_container "registry-failed"
+
+    get_current_published_version() { return 3; }
+    run _real_get_container_versions "registry-failed"
+    [ "$status" -eq 0 ]
+    echo "$output" | sed -n '/^{/,$p' | jq -e '
+        .current_version == "" and .current_version_confirmed == false and
+        .unpublished_release == false and .comparison_concluded == false
+    ' >/dev/null
+}
+
+@test "dashboard: failed publication lookup with a successful upstream candidate is not an unpublished release" {
+    make_fixture_container "registry-failed-upstream"
+
+    get_current_published_version() { return 3; }
+    run _real_get_container_versions "registry-failed-upstream"
+    [ "$status" -eq 0 ]
+    echo "$output" | sed -n '/^{/,$p' | jq -e '
+        .upstream_lookup == "matched" and .unpublished_release == false
+    ' >/dev/null
+}
+
+@test "dashboard: live multi-arch digest confirms a lineage record that lacks digests" {
+    make_fixture_container "live-digest"
+    mkdir -p "$TEST_DIR/.build-lineage"
+    cat > "$TEST_DIR/.build-lineage/live-digest-1.0.0.json" <<'EOF'
+{"container":"live-digest","tag":"1.0.0","version":"1.0.0","build_digest":"sha256:build","base_image_ref":"alpine:3.21"}
+EOF
+    resolve_variant_lineage_file() {
+        printf '%s/.build-lineage/live-digest-%s.json\n' "$TEST_DIR" "$2"
+    }
+    ghcr_get_multi_arch_digests() {
+        printf '%s\n' '{"index_digest":"sha256:live","manifest_digest_amd64":"sha256:amd","manifest_digest_arm64":null}'
+    }
+
+    record=$(collect_variant_json "live-digest" "$TEST_DIR/live-digest" "default" \
+        "1.0.0" "1.0.0" "alpine:3.21" "true" "true")
+    echo "$record" | jq -e '
+        .reference_confirmed == true and
+        .multi_arch_index_digest == "sha256:live" and
+        .manifest_digest_amd64 == "sha256:amd"
+    ' >/dev/null
+}
+
+@test "container detail: a confirmed non-variant reference exposes its attestation command" {
+    local no_variant_provenance
+    no_variant_provenance=$(sed -n '535,655p' "$ORIG_DIR/docs/site/_layouts/container-detail.html")
+    [[ "$no_variant_provenance" == *'if page.current_version_confirmed == true'* ]]
+    [[ "$no_variant_provenance" != *'if prov_variant.reference_confirmed == true'* ]]
+}
+
+@test "dashboard: resolver sentinels and whitespace never become an upstream candidate" {
+    local resolver_output container index=0
+    for resolver_output in "unknown" "   " $'1.2.3\r'; do
+        container="candidate-${index}"
+        index=$((index + 1))
+        make_fixture_container "$container"
+        printf '#!/usr/bin/env bash\nprintf %q\n' "$resolver_output" > "$TEST_DIR/$container/version.sh"
+        chmod +x "$TEST_DIR/$container/version.sh"
+        get_current_published_version() { printf '1.0.0\n'; }
+
+        run _real_get_container_versions "$container"
+        [ "$status" -eq 0 ]
+        echo "$output" | sed -n '/^{/,$p' | jq -e '
+            .upstream_lookup == "no-match" and .latest_version == "" and
+            .comparison_concluded == false
+        ' >/dev/null
+    done
 }
 
 @test "dashboard: a failed lookup is not counted as an available update" {

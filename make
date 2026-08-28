@@ -125,8 +125,16 @@ check_updates_current_blocks_latest() {
   fi
 
   local numeric_alias_image numeric_alias_pattern
-  numeric_alias_image=$(./version.sh --numeric-alias-image 2>/dev/null | head -1 | tr -d '\n' || true)
-  numeric_alias_pattern=$(./version.sh --numeric-alias-pattern 2>/dev/null | head -1 | tr -d '\n' || true)
+  if numeric_alias_image=$(./version.sh --numeric-alias-image 2>/dev/null); then
+    numeric_alias_image=$(version_first_line "$numeric_alias_image")
+  else
+    numeric_alias_image=""
+  fi
+  if numeric_alias_pattern=$(./version.sh --numeric-alias-pattern 2>/dev/null); then
+    numeric_alias_pattern=$(version_first_line "$numeric_alias_pattern")
+  else
+    numeric_alias_pattern=""
+  fi
 
   # Unknown flags in some older version.sh files fall through to the normal
   # latest-version lookup. Require an explicit image-like source to opt in.
@@ -550,12 +558,10 @@ check_updates_current_version() {
   else
     rc=$?
   fi
-  current_version=$(printf '%s' "$current_version" | head -1 | tr -d '\n')
-
   case "$rc" in
     0)
       # no-published-version is a legacy caller sentinel, never a confirmed tag.
-      if [[ -n "$current_version" && "$current_version" != "no-published-version" ]]; then
+      if current_version=$(version_lookup_candidate "$current_version") && [[ "$current_version" != "no-published-version" ]]; then
         printf 'matched\t%s\n' "$current_version"
       else
         printf 'no-match\t\n'
@@ -570,19 +576,28 @@ check_updates_current_version() {
 # Do not pipe version.sh into head: a script can emit a plausible first line and
 # then fail, in which case there is no established upstream candidate.
 check_updates_upstream_version() {
-  local output rc
+  # A lookup that exceeds either documented bound has not established a
+  # candidate. The values are overridable only to keep refusal tests fast.
+  local output candidate output_file rc
+  local timeout_seconds="${CHECK_UPDATES_UPSTREAM_TIMEOUT_SECONDS:-30}"
+  local max_output_blocks="${CHECK_UPDATES_UPSTREAM_MAX_OUTPUT_BLOCKS:-1024}"
 
-  if output=$("$@" 2>/dev/null); then
+  output_file=$(mktemp "${TMPDIR:-/tmp}/check-updates-upstream.XXXXXX") || {
+    printf 'failed\t\n'
+    return
+  }
+  if (ulimit -f "$max_output_blocks"; timeout "$timeout_seconds" "$@" >"$output_file" 2>/dev/null); then
     rc=0
   else
     rc=$?
   fi
-  output=$(printf '%s' "$output" | head -1 | tr -d '\n')
+  output=$(<"$output_file")
+  rm -f "$output_file" || true
 
   if [[ "$rc" -ne 0 ]]; then
     printf 'failed\t\n'
-  elif [[ -n "$output" ]]; then
-    printf 'matched\t%s\n' "$output"
+  elif candidate=$(version_lookup_candidate "$output"); then
+    printf 'matched\t%s\n' "$candidate"
   else
     printf 'no-match\t\n'
   fi
@@ -681,12 +696,14 @@ check_updates() {
         # Determine update status
         local update_available="false"
         local actionable="false"
-        local status="up_to_date"
+        local status="upstream-no-match"
 
         if [[ "$registry_lookup" == "failed" ]]; then
           status="registry-lookup-failed"
         elif [[ "$upstream_lookup" == "failed" ]]; then
           status="upstream-lookup-failed"
+        elif [[ "$upstream_lookup" == "no-match" ]]; then
+          status="upstream-no-match"
         elif [[ "$registry_lookup" == "no-match" ]]; then
           if [ -n "$latest_version" ]; then
             update_available="true"
@@ -694,7 +711,7 @@ check_updates() {
           fi
         elif [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
           if check_updates_current_blocks_latest "$current_version" "$latest_version"; then
-            :
+            status="up_to_date"
           else
             local downgrade_guard_rc=$?
             if [ "$downgrade_guard_rc" -eq 1 ]; then
@@ -704,6 +721,8 @@ check_updates() {
               status="downgrade-guard-failed"
             fi
           fi
+        else
+          status="up_to_date"
         fi
 
         if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$upstream_lookup" == "matched" && "$declared_actionable" == "true" ]]; then
@@ -749,7 +768,7 @@ check_updates() {
     local pattern current_version registry_lookup lookup_info
     lookup_info=$'failed\t'
     if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-      pattern=$(printf '%s' "$pattern" | head -1 | tr -d '\n')
+      pattern=$(version_first_line "$pattern")
       if [[ -n "$pattern" ]]; then
         lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "$pattern")
       fi
@@ -762,12 +781,14 @@ check_updates() {
     # Determine update status
     local update_available="false"
     local actionable="false"
-    local status="up_to_date"
+    local status="upstream-no-match"
 
     if [[ "$registry_lookup" == "failed" ]]; then
       status="registry-lookup-failed"
     elif [[ "$upstream_lookup" == "failed" ]]; then
       status="upstream-lookup-failed"
+    elif [[ "$upstream_lookup" == "no-match" ]]; then
+      status="upstream-no-match"
     elif [[ "$registry_lookup" == "no-match" ]]; then
       if [ -n "$latest_version" ]; then
         update_available="true"
@@ -775,7 +796,7 @@ check_updates() {
       fi
     elif [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
       if check_updates_current_blocks_latest "$current_version" "$latest_version"; then
-        :
+        status="up_to_date"
       else
         local downgrade_guard_rc=$?
         if [ "$downgrade_guard_rc" -eq 1 ]; then
@@ -785,6 +806,8 @@ check_updates() {
           status="downgrade-guard-failed"
         fi
       fi
+    else
+      status="up_to_date"
     fi
 
     if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$upstream_lookup" == "matched" && "$declared_actionable" == "true" ]]; then
