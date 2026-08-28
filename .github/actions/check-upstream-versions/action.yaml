@@ -77,7 +77,8 @@ runs:
             (.actionable | type == "boolean") and
             (if .actionable then
               .update_available and
-              (.registry_lookup | type == "string" and (. == "matched" or . == "no-match"))
+              (.registry_lookup | type == "string" and (. == "matched" or . == "no-match")) and
+              (.upstream_lookup | type == "string" and . == "matched")
             else
               true
             end)
@@ -113,12 +114,12 @@ runs:
             echo "   ⚠️ Upstream lookup returned no version — no PR from this entry"
           elif [ "$status" = "downgrade-guard-failed" ]; then
             echo "   ⚠️ Version comparison did not conclude — no PR from this entry"
-          elif [ "$status" = "upstream-version-rejected" ]; then
-            echo "   ⚠️ Upstream value does not match the declared version pattern — no PR from this entry"
-          elif [ "$update_available" = "true" ]; then
+          elif { [ "$status" = "new-container" ] || [ "$status" = "update-available" ]; } && [ "$update_available" = "true" ]; then
             echo "   ⏸️ Update available but this container declines monitor PRs"
-          else
+          elif [ "$status" = "up_to_date" ]; then
             echo "   ✅ Up to date"
+          else
+            echo "   ⚠️ Unrecognised status '$status' — no PR from this entry"
           fi
           
         done < <(echo "$version_info" | jq -c '.[]')

@@ -1031,7 +1031,7 @@ EOF
     [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
 }
 
-@test "check_updates default path: an oversized resolver line fails without retaining it" {
+@test "check_updates default path: a streaming resolver is discarded without retaining its output" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
@@ -1039,8 +1039,7 @@ EOF
     cat > ansible/version.sh <<'EOF'
 #!/bin/bash
 if [[ "$1" == "--registry-pattern" ]]; then echo '^[0-9]+\.[0-9]+\.[0-9]+-ubuntu$'; exit 0; fi
-head -c 1048576 /dev/zero | tr '\0' x
-printf '\n'
+exec yes '1.1.0-ubuntu'
 EOF
     chmod +x ansible/version.sh
 
@@ -1048,48 +1047,6 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
     [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
-}
-
-@test "check_updates default path: a resolver that writes then hangs fails within the fixed bound" {
-    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
-    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
-
-    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
-    cat > ansible/version.sh <<'EOF'
-#!/bin/bash
-if [[ "$1" == "--registry-pattern" ]]; then echo '^[0-9]+\.[0-9]+\.[0-9]+-ubuntu$'; exit 0; fi
-printf '1.1.0-ubuntu\n'
-sleep 90
-EOF
-    chmod +x ansible/version.sh
-
-    # The implementation exposes no timeout knob: hostile environment values
-    # must not raise the fixed wait or make this resolver an update.
-    run timeout 65 env CHECK_UPDATES_RESOLVER_TIMEOUT=99999 CHECK_UPDATES_RESOLVER_MAX_LINE_BYTES=9999999 ./make check-updates ansible
-    [ "$status" -eq 0 ]
-    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
-    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
-    [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-lookup-failed" ]]
-}
-
-@test "check_updates default path: a resolver that succeeds after six seconds remains matched" {
-    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
-    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
-
-    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
-    cat > ansible/version.sh <<'EOF'
-#!/bin/bash
-if [[ "$1" == "--registry-pattern" ]]; then echo '^[0-9]+\.[0-9]+\.[0-9]+-ubuntu$'; exit 0; fi
-sleep 6
-printf '1.1.0-ubuntu\n'
-EOF
-    chmod +x ansible/version.sh
-
-    run ./make check-updates ansible
-    [ "$status" -eq 0 ]
-    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "matched" ]]
-    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "1.1.0-ubuntu" ]]
-    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "true" ]]
 }
 
 @test "check_updates default path: a non-version upstream value cannot create a container" {

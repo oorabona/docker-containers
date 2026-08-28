@@ -323,11 +323,16 @@ show_sizes() {
     echo "   └── Registries:"
 
     # Get latest tag from version.sh if available, fallback to "latest"
-    local latest_tag="" upstream_lookup="" lookup_info=""
+    local latest_tag=""
     if [[ -f "$container/version.sh" ]]; then
-      lookup_info=$(check_updates_upstream_version "$container/version.sh")
-      upstream_lookup=${lookup_info%%$'\t'*}
-      latest_tag=${lookup_info#*$'\t'}
+      # Preserve the resolver's status: only a successful resolver supplies a
+      # tag. This deliberately does not bound time; a resolver that writes one
+      # line and then hangs is tracked separately in #1556.
+      if latest_tag=$("$container/version.sh" 2>/dev/null | head -1; exit "${PIPESTATUS[0]}"); then
+        :
+      else
+        latest_tag=""
+      fi
     fi
     [[ -z "$latest_tag" ]] && latest_tag="latest"
 
@@ -568,87 +573,6 @@ check_updates_current_version() {
   esac
 }
 
-# Emit a tab-separated upstream lookup outcome and confirmed candidate version.
-# Read only a fixed-size first line, while draining the remainder so a resolver
-# cannot block behind a full pipe.  A fixed timeout bounds the resolver wait;
-# the drainer is stopped once that wait concludes so a descendant keeping stdout
-# open cannot hold the caller.  Neither bound is configurable.  A successful
-# empty first line is a concluded no-match; a timeout, oversized first line, or
-# nonzero resolver exit discards the candidate.
-check_updates_upstream_version() {
-  # All 14 repository version.sh resolvers were timed: the longest observed
-  # lookup was 18.34s (vector/web-shell fallback chains); 60s is over 3x that
-  # duration and still ends a hang during the daily scheduled monitor.
-  local readonly_timeout_seconds=60
-  local readonly_max_line_bytes=4096
-  local resolver_dir resolver_fifo resolver_result resolver_state resolver_pid reader_pid
-  local latest_version="" rc=0 outcome=""
-
-  if ! resolver_dir=$(mktemp -d "${TMPDIR:-/tmp}/check-updates-resolver.XXXXXX"); then
-    printf 'failed\t\n'
-    return
-  fi
-  resolver_fifo="$resolver_dir/stdout"
-  resolver_result="$resolver_dir/first-line"
-  resolver_state="$resolver_dir/outcome"
-  if ! mkfifo "$resolver_fifo"; then
-    rmdir "$resolver_dir" || true
-    printf 'failed\t\n'
-    return
-  fi
-
-  # The reader retains only the first line plus one probe byte and continues
-  # draining.  Its outcome is written before the unbounded drain begins.
-  (
-    local first_line="" overflow_probe="" line_too_long="false"
-    IFS= read -r -n "$readonly_max_line_bytes" first_line || true
-    if [[ ${#first_line} -eq "$readonly_max_line_bytes" ]]; then
-      IFS= read -r -n 1 overflow_probe || true
-      if [[ -n "$overflow_probe" ]]; then
-        line_too_long="true"
-      fi
-    fi
-    printf '%s' "$first_line" > "$resolver_result"
-    if [[ "$line_too_long" == "true" ]]; then
-      printf 'too-long\n' > "$resolver_state"
-    elif [[ -n "$first_line" ]]; then
-      printf 'matched\n' > "$resolver_state"
-    else
-      printf 'no-match\n' > "$resolver_state"
-    fi
-    cat > /dev/null
-  ) < "$resolver_fifo" &
-  reader_pid=$!
-  # `command -p` uses Bash's system command path, so a caller-provided PATH
-  # cannot replace the timeout and remove this bound.
-  command -p timeout "$readonly_timeout_seconds" "$@" 2>/dev/null > "$resolver_fifo" &
-  resolver_pid=$!
-  if wait "$resolver_pid"; then
-    rc=0
-  else
-    rc=$?
-  fi
-  # Normal resolvers have already produced a reader outcome when they exit.
-  # If a descendant still owns stdout, do not let it extend the fixed wait.
-  for _ in $(seq 1 100); do
-    [[ -s "$resolver_state" ]] && break
-    sleep 0.01
-  done
-  kill "$reader_pid" 2>/dev/null || true
-  wait "$reader_pid" 2>/dev/null || true
-  [[ -s "$resolver_state" ]] && outcome=$(<"$resolver_state")
-  [[ -f "$resolver_result" ]] && latest_version=$(<"$resolver_result")
-  rm -rf "$resolver_dir"
-
-  if [[ "$rc" -eq 0 && "$outcome" == "matched" ]]; then
-    printf 'matched\t%s\n' "$latest_version"
-  elif [[ "$rc" -eq 0 && "$outcome" == "no-match" ]]; then
-    printf 'no-match\t\n'
-  else
-    printf 'failed\t\n'
-  fi
-}
-
 # An absent declaration preserves the historical behaviour (actionable when
 # there is a confirmed update). Do not use yq's `// true` here: false is a
 # valid declaration and must not be coalesced with an absent value.
@@ -736,10 +660,23 @@ check_updates() {
         current_version=${lookup_info#*$'\t'}
 
         # Latest upstream version for this major line
-        local latest_version upstream_lookup upstream_lookup_info
-        upstream_lookup_info=$(check_updates_upstream_version ./version.sh --major "$major")
-        upstream_lookup=${upstream_lookup_info%%$'\t'*}
-        latest_version=${upstream_lookup_info#*$'\t'}
+        local latest_version="" upstream_lookup upstream_rc
+        # Keep only the first line while recovering the resolver's status.
+        # Time is intentionally unbounded here: the one-line-then-hang case is
+        # #1556, not a reason to reintroduce a timeout harness.
+        if latest_version=$(./version.sh --major "$major" 2>/dev/null | head -1; exit "${PIPESTATUS[0]}"); then
+          upstream_rc=0
+        else
+          upstream_rc=$?
+          latest_version=""
+        fi
+        if [[ "$upstream_rc" -eq 0 && -n "$latest_version" ]]; then
+          upstream_lookup="matched"
+        elif [[ "$upstream_rc" -eq 0 ]]; then
+          upstream_lookup="no-match"
+        else
+          upstream_lookup="failed"
+        fi
         # Admission happens at the state-machine boundary, before this value
         # reaches either comparison or first-publication branch (or JSON).
         if [[ "$upstream_lookup" == "matched" && ! "$latest_version" =~ $major_pattern ]]; then
@@ -826,10 +763,22 @@ check_updates() {
     fi
     registry_lookup=${lookup_info%%$'\t'*}
     current_version=${lookup_info#*$'\t'}
-    local upstream_lookup upstream_lookup_info
-    upstream_lookup_info=$(check_updates_upstream_version ./version.sh)
-    upstream_lookup=${upstream_lookup_info%%$'\t'*}
-    latest_version=${upstream_lookup_info#*$'\t'}
+    local upstream_lookup upstream_rc
+    # Keep only the first line while recovering the resolver's status. Time is
+    # intentionally unbounded: the one-line-then-hang case is tracked in #1556.
+    if latest_version=$(./version.sh 2>/dev/null | head -1; exit "${PIPESTATUS[0]}"); then
+      upstream_rc=0
+    else
+      upstream_rc=$?
+      latest_version=""
+    fi
+    if [[ "$upstream_rc" -eq 0 && -n "$latest_version" ]]; then
+      upstream_lookup="matched"
+    elif [[ "$upstream_rc" -eq 0 ]]; then
+      upstream_lookup="no-match"
+    else
+      upstream_lookup="failed"
+    fi
     # Admission happens at the state-machine boundary, before this value
     # reaches either comparison or first-publication branch (or JSON).
     if [[ "$upstream_lookup" == "matched" && ! "$latest_version" =~ $pattern ]]; then

@@ -108,7 +108,7 @@ assert_byte_for_byte() {
 # Positive control for the two exclusion tests above. Without it a mutation that
 # emptied containers_with_updates unconditionally would satisfy both of them.
 @test "composite action selects an actionable update" {
-    write_make_result '[{"container":"terraform","current_version":"1.15.9-alpine","latest_version":"1.16.0-alpine","update_available":true,"actionable":true,"registry_lookup":"matched","status":"update-available"}]'
+    write_make_result '[{"container":"terraform","current_version":"1.15.9-alpine","latest_version":"1.16.0-alpine","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"matched","status":"update-available"}]'
 
     run run_action
     [ "$status" -eq 0 ]
@@ -123,7 +123,7 @@ assert_byte_for_byte() {
     result=$(jq -cn \
         --arg container "$hostile_container" \
         --arg version "$hostile_version" \
-        '[{container: $container, current_version: "1.0.0", latest_version: $version, update_available: true, actionable: true, registry_lookup: "matched", status: "update-available"}]')
+        '[{container: $container, current_version: "1.0.0", latest_version: $version, update_available: true, actionable: true, registry_lookup: "matched", upstream_lookup: "matched", status: "update-available"}]')
     write_make_result "$result"
 
     run run_action "$hostile_container"
@@ -172,15 +172,6 @@ assert_byte_for_byte() {
     [[ "$output" != *"✅ Up to date"* ]]
 }
 
-@test "composite action reports a rejected upstream value without claiming it is up to date" {
-    write_make_result '[{"container":"ansible","current_version":"","latest_version":"error: rate limited","update_available":false,"actionable":false,"registry_lookup":"no-match","status":"upstream-version-rejected"}]'
-
-    run run_action
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"does not match the declared version pattern"* ]]
-    [[ "$output" != *"✅ Up to date"* ]]
-}
-
 @test "composite action rejects an entry without a container" {
     write_make_result '[{"actionable":true,"update_available":true,"registry_lookup":"matched"}]'
 
@@ -208,6 +199,15 @@ assert_byte_for_byte() {
     [[ "$output" != *"update_count="* ]]
 }
 
+@test "composite action rejects actionable entries whose upstream lookup failed" {
+    write_make_result '[{"container":"failed-upstream","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"failed","status":"update-available"}]'
+
+    run run_action
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"invalid or unauthorized version_info entry"* ]]
+    [[ "$output" != *"update_count="* ]]
+}
+
 @test "composite action rejects actionable entries without a concluded lookup" {
     write_make_result '[{"container":"missing-lookup","update_available":true,"actionable":true}]'
 
@@ -215,6 +215,15 @@ assert_byte_for_byte() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"invalid or unauthorized version_info entry"* ]]
     [[ "$output" != *"update_count="* ]]
+}
+
+@test "composite action reports an unrecognised status without claiming it is up to date" {
+    write_make_result '[{"container":"unknown-state","current_version":"1.0.0","latest_version":"1.1.0","update_available":true,"actionable":false,"registry_lookup":"matched","upstream_lookup":"matched","status":"future-failure-status"}]'
+
+    run run_action
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Unrecognised status 'future-failure-status'"* ]]
+    [[ "$output" != *"✅ Up to date"* ]]
 }
 
 @test "composite action reports zero updates for a well-formed empty array" {
