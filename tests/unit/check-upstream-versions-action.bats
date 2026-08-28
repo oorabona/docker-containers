@@ -56,6 +56,23 @@ run_action() {
     return "$action_status"
 }
 
+version_info_output() {
+    sed -n '/^version_info<<EOF$/,/^EOF$/ { /^version_info<<EOF$/d; /^EOF$/d; p; }' \
+        "$TEST_DIR/github-output"
+}
+
+assert_byte_for_byte() {
+    local expected="$1"
+    local actual="$2"
+    local assertion="$3"
+
+    if [[ "$actual" != "$expected" ]]; then
+        printf 'ASSERTION FAILED: %s\nExpected: %s\nActual: %s\n' \
+            "$assertion" "$expected" "$actual" >&2
+        return 1
+    fi
+}
+
 @test "composite action excludes declared non-actionable updates" {
     write_make_result '[{"container":"postgres","current_version":"","latest_version":"18.6-alpine","update_available":true,"actionable":false,"registry_lookup":"no-match","status":"new-container"}]'
 
@@ -95,10 +112,9 @@ run_action() {
 }
 
 @test "composite action treats hostile container and upstream version as data" {
-    local marker="$TEST_DIR/executed"
     local hostile_container hostile_version result
-    hostile_container='victim'\''$(touch '"$marker"')'\''x`:`'
-    hostile_version='v1'\''$(touch '"$marker"')'\''x`:`'
+    hostile_container='victim'\''$(touch container-expression-executed)'\''`touch container-backtick-executed`; && | $IFS'
+    hostile_version='-v1'\''$(touch upstream-expression-executed)'\''`touch upstream-backtick-executed`; && | $IFS'
     result=$(jq -cn \
         --arg container "$hostile_container" \
         --arg version "$hostile_version" \
@@ -108,7 +124,11 @@ run_action() {
     run run_action "$hostile_container"
     [ "$status" -eq 0 ]
     [[ "$output" == *"update_count=1"* ]]
-    [ ! -e "$marker" ]
+    assert_byte_for_byte "$result" "$(version_info_output)" "version_info must preserve the hostile record byte-for-byte"
+    [ ! -e "$TEST_DIR/container-expression-executed" ]
+    [ ! -e "$TEST_DIR/container-backtick-executed" ]
+    [ ! -e "$TEST_DIR/upstream-expression-executed" ]
+    [ ! -e "$TEST_DIR/upstream-backtick-executed" ]
 }
 
 @test "composite action excludes an entry whose registry lookup failed" {
