@@ -558,16 +558,15 @@ DOCKER
 }
 
 # =============================================================================
-# Finding #1 (gate r5 copilot MEDIUM): ARG expansion cap must clear _BASE_IMAGE_REF
-# Pre-fix: cap fires, emits warning, but execution continues with unresolved literal.
-# Post-fix: cap fires → _BASE_IMAGE_REF is set to "" (or "unknown") AND a warning is
-# emitted.  Caller can detect failure via empty string.
+# An ARG expansion cap must not let a
+# partially-expanded literal reach a lineage record. The resolver may retain
+# that identity internally; emission records it as an unresolved external base.
 # =============================================================================
 
-@test "Expanding build_args chain hits iteration cap and clears _BASE_IMAGE_REF" {
+@test "Expansion cap prevents a partially-expanded literal in the lineage record" {
     # A self-referential chain where each substitution introduces a new placeholder
     # without converging: A=x${A}y — the value grows each iteration, never stabilising.
-    # The 10-iteration cap must fire AND _BASE_IMAGE_REF must be cleared to empty.
+    # The 10-iteration cap must fire without putting the growing literal in lineage.
     #
     # A symmetric bidirectional chain (A=${B}, B=${A}) converges instantly because
     # the value after each iteration equals the value before it — the cap is not reached.
@@ -586,10 +585,16 @@ DOCKER
     stderr_out=$(cat "$stderr_file")
     rm -f "$stderr_file"
 
-    # Post-fix: _BASE_IMAGE_REF must be empty (not the leaked growing literal)
-    [[ -z "$_BASE_IMAGE_REF" ]] || {
-        echo "FAIL: expected empty _BASE_IMAGE_REF after cap hit, got: '$_BASE_IMAGE_REF'"
-        echo "  (pre-fix: unresolved literal propagates to lineage file)"
+    _emit_build_lineage "cap-test" "1.0" "1.0" "" "./Dockerfile" \
+        "linux/amd64" "test-runtime" "docker.io/test/cap-test" "ghcr.io/test/cap-test"
+    local lineage_file="$TEST_DIR/.build-lineage/cap-test-1.0.json"
+
+    [[ "$(jq -r '.base_image_kind' "$lineage_file")" == "unresolved_external_base" ]] || {
+        echo "FAIL: cap-hit lineage must record unresolved_external_base"
+        return 1
+    }
+    [[ "$(jq 'has("base_image_ref")' "$lineage_file")" == "false" ]] || {
+        echo "FAIL: partially-expanded literal propagated to lineage file"
         return 1
     }
 
