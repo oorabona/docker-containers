@@ -385,7 +385,7 @@ EOF
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
 
     [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "error" ]
-    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "registry did not answer within 1s" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "registry_probe_timeout" ]
 }
 
 @test "probe-retry: final 401 replaces an earlier timeout reason" {
@@ -425,7 +425,7 @@ STUB_EOF
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
 
     [ "$(<"$counter_file")" -eq 3 ]
-    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "stub: 401 unauthorized" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "registry_probe_failed" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -590,6 +590,27 @@ EOF
 
     status_val=$(printf '%s' "$result" | jq -r '.[0].variants[0].status')
     [ "$status_val" = "legacy" ]
+}
+
+@test "baseline-only: marker-bearing entries emit only legacy records" {
+    local lineage_dir="$TEST_TEMP_DIR/baseline-markers/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/foo-scratch.json" <<'EOF'
+{"container":"foo","tag":"scratch","base_image_kind":"no_external_base"}
+EOF
+    cat > "$lineage_dir/bar-unresolved.json" <<'EOF'
+{"container":"bar","tag":"unresolved","base_image_kind":"unresolved_external_base","base_image_ref":"${REMOTE_CR}/library/debian:trixie-slim"}
+EOF
+    cat > "$lineage_dir/foo-current.json" <<'EOF'
+{"container":"foo","tag":"current","base_image_kind":"no_external_base","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+EOF
+
+    local result
+    result=$(bash "${DETECTOR_SCRIPT}" --baseline-only "$lineage_dir" 2>/dev/null)
+
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 2 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status != "legacy")] | length')" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -841,12 +862,12 @@ EOF
 
 # ---------------------------------------------------------------------------
 # Fix r4-1: Container name validation — poisoning prevention
-# Lineage entries whose .container field is NOT in `./make list` output must
-# be skipped with a ::warning::, never processed.
+# Lineage entries whose .container field is NOT in `./make list` output cannot
+# be attached safely to an output record, so the detector must fail closed.
 # Regression: a corrupted entry with container: "docs" (or ".github", or a
 # path with "/") would otherwise cause the bot to act on non-container dirs.
 # ---------------------------------------------------------------------------
-@test "container-validation: entry with invalid container name 'docs' is skipped" {
+@test "container-validation: invalid container name fails closed" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -862,14 +883,15 @@ EOF
 EOF
 
     # Unset override: "docs" is not in the real ./make list
+    local rc=0
     result=$(unset _VALID_CONTAINERS_OVERRIDE && PROBE_CMD="/bin/false" \
-        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
 
-    # Invalid container must be filtered out — output must be empty
-    [ "$result" = "[]" ]
+    [ "$rc" -eq 1 ]
+    [ -z "$result" ]
 }
 
-@test "container-validation: entry with invalid container name 'docs' emits ::warning:: to stderr" {
+@test "container-validation: invalid container name emits ::error:: to stderr" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -888,11 +910,10 @@ EOF
     unset _VALID_CONTAINERS_OVERRIDE
     PROBE_CMD="/bin/false" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log" >/dev/null || true
 
-    # stderr must contain ::warning:: about invalid container
-    grep -q '::warning::' "$stderr_log"
+    grep -q '::error::' "$stderr_log"
 }
 
-@test "container-validation: entry with container name containing slash is skipped" {
+@test "container-validation: container name containing slash fails closed" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -908,11 +929,12 @@ EOF
 EOF
 
     # Unset override: "../docs" is certainly not in ./make list
+    local rc=0
     result=$(unset _VALID_CONTAINERS_OVERRIDE && PROBE_CMD="/bin/false" \
-        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
 
-    # Path-traversal container name must be filtered out
-    [ "$result" = "[]" ]
+    [ "$rc" -eq 1 ]
+    [ -z "$result" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1608,77 +1630,6 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Defect L regression lock: error_containers_csv derivation
-#
-# The detect-digest-drift step must emit error_containers_csv alongside
-# drift_containers_csv.  The jq expression is:
-#   '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")'
-# This test verifies that a drift_json with mixed status:error / status:drift
-# entries correctly populates only the errored containers in the CSV output,
-# and that the drifting containers are NOT included in error_containers_csv.
-# ---------------------------------------------------------------------------
-@test "error_containers_csv jq — error containers appear, drift containers do not" {
-    # Simulate the drift_json that the workflow step has in memory.
-    # foo = all variants errored; bar = drifting; baz = stable.
-    local drift_json
-    drift_json=$(cat <<'EOF'
-[
-  {"container": "foo", "variants": [{"status": "error"}, {"status": "error"}]},
-  {"container": "bar", "variants": [{"status": "drift"}, {"status": "stable"}]},
-  {"container": "baz", "variants": [{"status": "stable"}]}
-]
-EOF
-)
-
-    # This is the exact jq expression used in the workflow step.
-    error_csv=$(printf '%s' "$drift_json" | jq -r \
-        '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
-        || echo "JQFAIL")
-
-    # foo must appear (has error variant)
-    [[ "$error_csv" == *"foo"* ]]
-    # bar must NOT appear (only drift, no error)
-    [[ "$error_csv" != *"bar"* ]]
-    # baz must NOT appear (stable only)
-    [[ "$error_csv" != *"baz"* ]]
-}
-
-@test "error_containers_csv jq — mixed error+drift container appears in error CSV" {
-    # A container with both error and drift variants must appear in error_containers_csv.
-    local drift_json
-    drift_json=$(cat <<'EOF'
-[
-  {"container": "php", "variants": [{"status": "error"}, {"status": "drift"}]}
-]
-EOF
-)
-
-    error_csv=$(printf '%s' "$drift_json" | jq -r \
-        '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
-        || echo "JQFAIL")
-
-    [[ "$error_csv" == *"php"* ]]
-}
-
-@test "error_containers_csv jq — empty when no errors" {
-    # When all containers are stable or drifting (no errors), error_containers_csv is empty.
-    local drift_json
-    drift_json=$(cat <<'EOF'
-[
-  {"container": "bar", "variants": [{"status": "drift"}]},
-  {"container": "baz", "variants": [{"status": "stable"}]}
-]
-EOF
-)
-
-    error_csv=$(printf '%s' "$drift_json" | jq -r \
-        '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
-        || echo "JQFAIL")
-
-    [ -z "$error_csv" ]
-}
-
-# ---------------------------------------------------------------------------
 # Fix r7-4a: ./make list hard-fail in detect-base-digest-drift.sh
 # Regression guard: when _VALID_CONTAINERS_OVERRIDE is explicitly empty (not set
 # at all, so the script falls through to ./make list), and ./make list fails,
@@ -2051,13 +2002,9 @@ bar" \
         PROBE_CMD="/bin/false" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
 
-    # Script exits 0 (a single rejected entry is not fatal)
-    [ "$rc" -eq 0 ]
-
-    # Output must be empty array (the entry was rejected, not passed through)
-    local result_len
-    result_len=$(printf '%s' "$result" | jq 'length')
-    [ "$result_len" -eq 0 ]
+    # An unsafe identity cannot become an empty, successful scan.
+    [ "$rc" -eq 1 ]
+    [ -z "$result" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -2483,7 +2430,7 @@ EOF
     [ ! -f "$marker" ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].status')" = "error" ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].current_digest // "absent"')" = "absent" ]
-    [[ "$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')" == *"base not synced this cycle"* ]]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')" = "base_sync_failed" ]
 }
 
 @test "sync-manifest: absent docker.io record emits error without probe" {
@@ -2520,7 +2467,7 @@ EOF
     [ ! -f "$marker" ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].status')" = "error" ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].current_digest // "absent"')" = "absent" ]
-    [[ "$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')" == *"base not synced this cycle"* ]]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')" = "base_sync_record_absent" ]
 }
 
 @test "sync-manifest: failed ghcr mirror record emits error without probe" {
@@ -2559,7 +2506,7 @@ EOF
     [ ! -f "$marker" ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].status')" = "error" ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].current_digest // "absent"')" = "absent" ]
-    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')" = "GHCR mirror not synced this cycle (sync failed/digestless); drift unknown, re-checked next sync" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')" = "ghcr_mirror_sync_failed" ]
 }
 
 @test "sync-manifest: synced ghcr mirror record uses recorded digest without probe" {
@@ -2865,17 +2812,14 @@ STUB
         PROBE_CMD="$probe_stub" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$TEST_TEMP_DIR/r21a2-stderr.txt") || rc=$?
 
-    # Must exit 0 (invalid container is a warning, not fatal)
-    [ "$rc" -eq 0 ]
+    # An unsafe identity cannot become a successful empty scan.
+    [ "$rc" -eq 1 ]
 
     # Probe must NOT have been called
     run grep -c "PROBE CALLED on --help container" "$TEST_TEMP_DIR/r21a2-stderr.txt"
     [ "$output" = "0" ]
 
-    # Result is empty
-    local result_len
-    result_len=$(printf '%s' "$result" | jq 'length')
-    [ "$result_len" -eq 0 ]
+    [ -z "$result" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -3257,13 +3201,13 @@ EOF
 
 # ---------------------------------------------------------------------------
 # GHA workflow-command escape — rejected container / tag values
-# Regression guard for Defect A (gate r25): the rejection-path ::warning::
+# Regression guard for Defect A (gate r25): the rejection-path ::error::
 # must route poisoned values through _escape_gha_command, NOT printf '%q'.
-# A value containing a literal %0A must appear as %250A in the warning
+# A value containing a literal %0A must appear as %250A in the error annotation
 # (% → %25 then 0A suffix), not as a raw newline or %0A command separator.
 # A value embedding ::add-mask:: must not reintroduce that command.
 # ---------------------------------------------------------------------------
-@test "container name with literal %0A is not passed raw in ::warning::" {
+@test "container name with literal %0A fails with an escaped ::error:: annotation" {
     # Build a lineage file where container field contains the literal string %0A
     # (percent-zero-A — a GHA encoded newline that would inject a new command).
     local lineage_dir="$TEST_TEMP_DIR/r25a1/.build-lineage"
@@ -3284,7 +3228,7 @@ EOF
 }
 EOF
 
-    # Container name contains control char (%0A is not a cntrl byte here, but
+    # Container name contains an invalid percent-encoded newline (%0A is not a cntrl byte here, but
     # the rejection path for invalid-container (not in ./make list) is the
     # relevant site).  Use an empty override so the validation fast-path fires.
     local stderr_output rc=0
@@ -3292,25 +3236,38 @@ EOF
         _VALID_CONTAINERS_OVERRIDE="foo" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>&1 >/dev/null) || rc=$?
 
-    # The ::warning:: line must NOT contain a literal %0A sequence that would
-    # inject a workflow command.  After _escape_gha_command it becomes %250A.
-    # grep -F matches fixed strings — if %0A appears verbatim the test fails.
-    if printf '%s' "$stderr_output" | grep -qF '::warning::' 2>/dev/null; then
-        # Extract only the warning line(s) and verify %0A is escaped.
-        local warning_lines
-        warning_lines=$(printf '%s' "$stderr_output" | grep -F '::warning::' || true)
-        # Must NOT contain bare %0A in the value portion
-        ! printf '%s' "$warning_lines" | grep -qF '%0Abar'
-        # Must contain the escaped form %250A (% was encoded first)
-        printf '%s' "$warning_lines" | grep -qF '%250Abar'
-    fi
+    [ "$rc" -eq 1 ]
+    local error_lines
+    error_lines=$(printf '%s' "$stderr_output" | grep -F '::error::')
+    # Must NOT contain bare %0A in the value portion.
+    ! printf '%s' "$error_lines" | grep -qF '%0Abar'
+    # Must contain the escaped form %250A (% was encoded first).
+    printf '%s' "$error_lines" | grep -qF '%250Abar'
 }
 
-@test "tag with newline cntrl char — ::warning:: must not contain raw newline after rejection" {
+@test "Detect drift stderr replay preserves an unterminated diagnostic" {
+    local workflow_run replay_helper buffered_stderr replayed_stderr
+    workflow_run=$(yq -r '.jobs."detect-digest-drift".steps[] | select(.id == "detect") | .run' \
+        "$PROJECT_ROOT/.github/workflows/upstream-monitor.yaml")
+    replay_helper=$(sed -n '/^replay_drift_stderr() {/,/^}/p' <<<"$workflow_run")
+    [ -n "$replay_helper" ]
+
+    buffered_stderr="$TEST_TEMP_DIR/drift-detector-stderr"
+    replayed_stderr="$TEST_TEMP_DIR/replayed-stderr"
+    bash -c 'printf "detector stopped mid-diagnostic" >&2; kill -TERM "$$"' \
+        2>"$buffered_stderr" >/dev/null || true
+
+    eval "$replay_helper"
+    replay_drift_stderr "$buffered_stderr" 2>"$replayed_stderr"
+
+    [ "$(cat "$replayed_stderr")" = "detector stopped mid-diagnostic" ]
+}
+
+@test "tag with newline cntrl char fails with an escaped ::error:: annotation" {
     # Build a lineage file with a tag containing an embedded newline (cntrl char).
-    # The rejection path at the cntrl-char check must emit the value through
+    # The fatal rejection path at the cntrl-char check must emit the value through
     # _escape_gha_command so the newline becomes %0A (literal percent-zero-A),
-    # NOT a real newline that would terminate the ::warning:: command and inject
+    # NOT a real newline that would terminate the ::error:: command and inject
     # the next line as a workflow command.
     local lineage_dir="$TEST_TEMP_DIR/r25a2/.build-lineage"
     mkdir -p "$lineage_dir"
@@ -3333,11 +3290,13 @@ pathlib.Path('${lineage_dir}/foo-1.0.json').write_text(json.dumps(d))
         _VALID_CONTAINERS_OVERRIDE="foo" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>&1 >/dev/null) || rc=$?
 
-    # The emitted warning must NOT contain the injection payload as a separate
+    [ "$rc" -eq 1 ]
+    # The emitted error must NOT contain the injection payload as a separate
     # workflow command.  If the newline was not escaped, ::add-mask:: would
     # appear on its own line as a parseable GHA command.
     # We assert: no line in the output starts with ::add-mask::
     ! printf '%s' "$stderr_output" | grep -qE '^::add-mask::'
+    printf '%s' "$stderr_output" | grep -qF '::error::'
 }
 
 # ---------------------------------------------------------------------------
@@ -3622,7 +3581,8 @@ EOF
 
     [ "$rc" -eq 0 ]
     [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 3 ]
-    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status == "error" and .error_reason == "missing_base_image_ref")] | length')" -eq 2 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status == "error" and .error_reason == "missing_base_image_ref")] | length')" -eq 1 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status == "error" and .error_reason == "unknown_base_image_ref")] | length')" -eq 1 ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "empty") | .base_image_ref')" = "" ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "unknown") | .base_image_ref')" = "unknown" ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "valid") | .status')" = "unchanged" ]
@@ -3632,15 +3592,196 @@ EOF
 # workflow. This covers the coverage gate, scoping, notices, and its success
 # exits without requiring a live workflow dispatch.
 _load_drift_consumer() {
-    local workflow_run notice_helper consumer_helper
+    local workflow_run statuses_helper validator_helper notice_helper consumer_helper
     workflow_run=$(yq -r '.jobs."detect-digest-drift".steps[] | select(.id == "detect") | .run' \
         "$PROJECT_ROOT/.github/workflows/upstream-monitor.yaml")
+    statuses_helper=$(sed -n '/^evaluated_drift_statuses() {/,/^}/p' <<<"$workflow_run")
+    validator_helper=$(sed -n '/^validate_drift_result() {/,/^}/p' <<<"$workflow_run")
     notice_helper=$(sed -n '/^emit_drift_notice() {/,/^}/p' <<<"$workflow_run")
     consumer_helper=$(sed -n '/^consume_drift_result() {/,/^}/p' <<<"$workflow_run")
+    [ -n "$statuses_helper" ] || return 1
+    [ -n "$validator_helper" ] || return 1
     [ -n "$notice_helper" ] || return 1
     [ -n "$consumer_helper" ] || return 1
+    source "$PROJECT_ROOT/helpers/gha.sh"
+    eval "$statuses_helper"
+    eval "$validator_helper"
     eval "$notice_helper"
     eval "$consumer_helper"
+}
+
+@test "active lineage with no tag fails instead of emitting an invalid empty variant_tag" {
+    local lineage_dir="$TEST_TEMP_DIR/missing-tag/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/myimage-missing-tag.json" <<'EOF'
+{"container":"myimage","base_image_ref":"alpine:3.21","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+EOF
+
+    local rc=0 result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+    [ "$rc" -eq 1 ]
+    [ -z "$result" ]
+}
+
+@test "active lineage with a control-only tag fails instead of emitting an invalid empty variant_tag" {
+    local lineage_dir="$TEST_TEMP_DIR/control-tag/.build-lineage"
+    mkdir -p "$lineage_dir"
+    printf '%s\n' '{"container":"myimage","tag":"\u0001\u0002","base_image_ref":"alpine:3.21","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+        > "$lineage_dir/myimage-control-tag.json"
+
+    local rc=0 result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+    [ "$rc" -eq 1 ]
+    [ -z "$result" ]
+}
+
+@test "well-formed lineage still exits 0" {
+    local lineage_dir="$TEST_TEMP_DIR/well-formed-tag/.build-lineage"
+    mkdir -p "$lineage_dir"
+    printf '%s\n' '{"container":"myimage","tag":"stable","base_image_ref":"alpine:3.21","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+        > "$lineage_dir/myimage-stable.json"
+
+    local probe_stub rc=0 result
+    probe_stub=$(_make_digest_probe_stub "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" PROBE_CMD="$probe_stub" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "unchanged" ]
+}
+
+@test "malformed active lineage payload fails instead of producing an empty scan" {
+    local lineage_dir="$TEST_TEMP_DIR/malformed-lineage/.build-lineage"
+    mkdir -p "$lineage_dir"
+    printf '{not-json\n' > "$lineage_dir/myimage-bad.json"
+
+    local rc=0 result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+    [ "$rc" -eq 1 ]
+    [ -z "$result" ]
+}
+
+@test "active lineage with no container fails instead of producing an empty scan" {
+    local lineage_dir="$TEST_TEMP_DIR/missing-container/.build-lineage"
+    mkdir -p "$lineage_dir"
+    printf '{"tag":"latest"}\n' > "$lineage_dir/missing-container.json"
+
+    local rc=0 result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+    [ "$rc" -eq 1 ]
+    [ -z "$result" ]
+}
+
+@test "base_image_kind no_external_base is non-actionable and does not fail coverage" {
+    local lineage_dir="$TEST_TEMP_DIR/base-image-kind-no-external"
+    local same_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    mkdir -p "$lineage_dir"
+    jq -cn --arg digest "$same_digest" \
+        '{container: "control", tag: "latest", base_image_ref: "alpine:3.21", base_image_digest: $digest}' \
+        > "$lineage_dir/control.json"
+    jq -cn '{container: "sslh", tag: "latest", base_image_kind: "no_external_base"}' \
+        > "$lineage_dir/sslh.json"
+    local probe_stub="$TEST_TEMP_DIR/probe-base-image-kind-no-external"
+    printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'"'"'\n' > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    result=$(_VALID_CONTAINERS_OVERRIDE=$'sslh\ncontrol' \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='sslh control' \
+        PROBE_CMD="$probe_stub" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+    [ "$(printf '%s' "$result" | jq -r '.[] | select(.container == "sslh") | .variants[0].status')" = "no_external_base" ]
+    # Control without base_image_kind still reaches the normal digest comparison.
+    [ "$(printf '%s' "$result" | jq -r '.[] | select(.container == "control") | .variants[0].status')" = "unchanged" ]
+
+    _load_drift_consumer
+    validate_drift_result "$result"
+    GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
+    : > "$GITHUB_OUTPUT"
+    run consume_drift_result "$result" ''
+    [ "$status" -eq 0 ]
+    [ "$output" = "::notice::No base image digest drift detected" ]
+    [ "$(get_output drift_containers)" = "[]" ]
+    [ "$(get_output drift_matrix)" = "[]" ]
+}
+
+@test "a no_external_base-only result is evaluated unscoped and when scoped" {
+    _load_drift_consumer
+
+    local drift_json output rc=0
+    drift_json='[{"container":"sslh","internal_deps":[],"variants":[{"variant_tag":"latest","status":"no_external_base"}]}]'
+    validate_drift_result "$drift_json"
+    GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
+    : > "$GITHUB_OUTPUT"
+
+    output=$(consume_drift_result "$drift_json" '') || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$output" = "::notice::No base image digest drift detected" ]
+    [[ "$output" != *"nothing to evaluate"* ]]
+
+    rc=0
+    : > "$GITHUB_OUTPUT"
+    output=$(consume_drift_result "$drift_json" 'sslh') || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$output" = "::notice::No base image digest drift detected" ]
+    [ "$(get_output drift_containers)" = "[]" ]
+}
+
+@test "base_image_kind unresolved_external_base fails coverage with its own reason" {
+    local lineage_dir="$TEST_TEMP_DIR/base-image-kind-unresolved"
+    local same_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    mkdir -p "$lineage_dir"
+    jq -cn '{container: "unresolved", tag: "latest", base_image_kind: "unresolved_external_base"}' \
+        > "$lineage_dir/unresolved.json"
+    jq -cn --arg digest "$same_digest" \
+        '{container: "control", tag: "latest", base_image_ref: "alpine:3.21", base_image_digest: $digest}' \
+        > "$lineage_dir/control.json"
+    local probe_stub="$TEST_TEMP_DIR/probe-base-image-kind-unresolved"
+    printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'"'"'\n' > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    result=$(_VALID_CONTAINERS_OVERRIDE=$'unresolved\ncontrol' \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='unresolved control' \
+        PROBE_CMD="$probe_stub" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+    [ "$(printf '%s' "$result" | jq -r '.[] | select(.container == "unresolved") | .variants[0].status')" = "error" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | select(.container == "unresolved") | .variants[0].error_reason')" = "unresolved_external_base" ]
+    # Control without the marker still reaches comparison instead of this branch.
+    [ "$(printf '%s' "$result" | jq -r '.[] | select(.container == "control") | .variants[0].status')" = "unchanged" ]
+
+    _load_drift_consumer
+    validate_drift_result "$result"
+    local rc=0 notice
+    notice=$(emit_drift_notice "$result") || rc=$?
+    [ "$rc" -eq 1 ]
+    [[ "$notice" == *"coverage incomplete"* ]]
+}
+
+@test "consumer schema rejects every relied-on malformed record shape" {
+    _load_drift_consumer
+
+    local malformed rc=0
+    for malformed in \
+        '{}' \
+        '[{"container":"myimage","internal_deps":[],"variants":[{"variant_tag":"latest","status":"skipped"}]}]' \
+        '[{"container":"myimage","internal_deps":[],"variants":[{"variant_tag":"latest","status":"error"}]}]' \
+        '[{"container":"myimage","variants":[{"variant_tag":"latest","status":"unchanged"}]}]' \
+        '[{"container":"myimage","internal_deps":"base","variants":[{"variant_tag":"latest","status":"unchanged"}]}]' \
+        '[{"container":"myimage","internal_deps":[],"variants":[{"variant_tag":"latest","status":"unchanged"}]},{"container":"myimage","internal_deps":[],"variants":[{"variant_tag":"next","status":"unchanged"}]}]' \
+        '[{"container":"bad;key","internal_deps":[],"variants":[{"variant_tag":"latest","status":"unchanged"}]}]'; do
+        rc=0
+        validate_drift_result "$malformed" || rc=$?
+        [ "$rc" -eq 1 ]
+    done
+
+    validate_drift_result '[{"container":"myimage","internal_deps":["base"],"variants":[{"variant_tag":"latest","status":"unchanged"}]}]'
+}
+
+@test "container-level dependency failure is a coverage record, not a variant" {
+    _load_drift_consumer
+
+    local result notice rc=0
+    result='[{"container":"myimage","variants":[{"variant_tag":"latest","status":"unchanged"}],"error_reason":"dep_graph_unavailable"}]'
+    validate_drift_result "$result"
+    notice=$(emit_drift_notice "$result") || rc=$?
+    [ "$rc" -eq 1 ]
+    [ "$notice" = "::notice::Base image digest drift coverage incomplete: 1 comparison record(s) evaluated; 1 coverage record(s) could not be evaluated" ]
+    [ "$(printf '%s' "$result" | jq '.[] | .variants | length')" -eq 1 ]
 }
 
 @test "coverage-incomplete closing notice reports counts and fails the workflow step" {
@@ -3651,7 +3792,7 @@ _load_drift_consumer() {
     notice=$(emit_drift_notice "$incomplete_json") || rc=$?
 
     [ "$rc" -eq 1 ]
-    [ "$notice" = "::notice::Base image digest drift coverage incomplete: 1 variant(s) evaluated; 1 could not be evaluated" ]
+    [ "$notice" = "::notice::Base image digest drift coverage incomplete: 1 comparison record(s) evaluated; 1 coverage record(s) could not be evaluated" ]
     [[ "$notice" != *"No base image digest drift detected"* ]]
 
     clean_json='[{"container":"myimage","variants":[{"variant_tag":"valid","status":"unchanged"}]}]'
@@ -3670,26 +3811,49 @@ _load_drift_consumer() {
     ]'
     GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
     : > "$GITHUB_OUTPUT"
-    output=$(consume_drift_result "$drift_json" "clean") || rc=$?
+    output=$(consume_drift_result "$drift_json" "clean" 2>&1) || rc=$?
 
     [ "$rc" -eq 1 ]
-    [[ "$output" == *"Base image digest drift coverage incomplete: 1 variant(s) evaluated; 1 could not be evaluated"* ]]
+    [[ "$output" == *"Base image digest drift coverage incomplete: 1 comparison record(s) evaluated; 1 coverage record(s) could not be evaluated"* ]]
     [[ "$output" != *"No drift detected for requested container clean"* ]]
 }
 
-@test "scoped clean container still succeeds with its existing no-drift notice" {
+@test "scoped request absent from a populated result fails rather than reporting clean" {
     _load_drift_consumer
 
     local drift_json output rc=0
     drift_json='[{"container":"other","variants":[{"variant_tag":"latest","status":"unchanged"}]}]'
     GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
     : > "$GITHUB_OUTPUT"
+    output=$(consume_drift_result "$drift_json" "clean" 2>&1) || rc=$?
+
+    [ "$rc" -eq 1 ]
+    [[ "$output" == *"Requested container clean has no evaluated drift variants"* ]]
+    [[ "$output" != *"No drift detected for requested container clean"* ]]
+    [ "$(get_output drift_containers_csv)" = "" ]
+}
+
+@test "scoped clean container still succeeds" {
+    _load_drift_consumer
+
+    local drift_json output rc=0
+    drift_json='[
+      {"container":"clean","internal_deps":[],"variants":[{"variant_tag":"latest","status":"unchanged"}]},
+      {"container":"drifting","internal_deps":[],"variants":[{"variant_tag":"latest","status":"drift"}]}
+    ]'
+    validate_drift_result "$drift_json"
+    GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
+    : > "$GITHUB_OUTPUT"
     output=$(consume_drift_result "$drift_json" "clean") || rc=$?
 
     [ "$rc" -eq 0 ]
-    [[ "$output" == *"No drift detected for requested container clean"* ]]
-    [[ "$output" != *"Base image digest drift coverage incomplete"* ]]
-    [ "$(<"$GITHUB_OUTPUT")" = $'drift_containers_csv=\nerror_containers_csv=\ndrift_containers=[]' ]
+    [ "$output" = "::notice::No base image digest drift detected" ]
+    [ "$(get_output drift_containers)" = "[]" ]
+    [ "$(get_output drift_matrix)" = "[]" ]
+    [ "$(get_output drift_matrix_leaves)" = "[]" ]
+    [ "$(get_output drift_matrix_consumers)" = "[]" ]
+    # This remains unfiltered so cascade evaluation sees the full fleet.
+    [ "$(get_output drift_containers_csv)" = "drifting" ]
 }
 
 @test "empty unscoped drift result announces nothing to evaluate once and writes every output" {
@@ -3704,22 +3868,24 @@ _load_drift_consumer() {
     notice_count=$(printf '%s\n' "$output" | awk '/^::notice::/ { count++ } END { print count + 0 }')
     [ "$notice_count" -eq 1 ]
     [ "$output" = "::notice::No base image digest drift evaluation was performed — nothing to evaluate" ]
-    [ "$(<"$GITHUB_OUTPUT")" = $'drift_containers=[]\ndrift_matrix=[]\ndrift_matrix_leaves=[]\ndrift_matrix_consumers=[]\ndrift_containers_csv=\nerror_containers_csv=' ]
+    [ "$(get_output drift_containers)" = "[]" ]
+    [ "$(get_output drift_matrix)" = "[]" ]
+    [ "$(get_output drift_matrix_leaves)" = "[]" ]
+    [ "$(get_output drift_matrix_consumers)" = "[]" ]
+    [ "$(get_output drift_containers_csv)" = "" ]
 }
 
-@test "empty scoped drift result announces nothing to evaluate once and writes every output" {
+@test "empty scoped drift result fails rather than reporting a clean request" {
     _load_drift_consumer
 
     local output rc=0 notice_count
     GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
     : > "$GITHUB_OUTPUT"
-    output=$(consume_drift_result '[]' 'foo') || rc=$?
+    output=$(consume_drift_result '[]' 'foo' 2>&1) || rc=$?
 
-    [ "$rc" -eq 0 ]
-    notice_count=$(printf '%s\n' "$output" | awk '/^::notice::/ { count++ } END { print count + 0 }')
-    [ "$notice_count" -eq 1 ]
-    [ "$output" = "::notice::No base image digest drift evaluation was performed — nothing to evaluate" ]
-    [ "$(<"$GITHUB_OUTPUT")" = $'drift_containers=[]\ndrift_matrix=[]\ndrift_matrix_leaves=[]\ndrift_matrix_consumers=[]\ndrift_containers_csv=\nerror_containers_csv=' ]
+    [ "$rc" -eq 1 ]
+    [[ "$output" == *"Requested container foo has no evaluated drift variants"* ]]
+    [ ! -s "$GITHUB_OUTPUT" ]
 }
 
 @test "populated all-clean drift result keeps the clean notice" {
@@ -3902,7 +4068,7 @@ STUBEOF
 }
 
 # ---------------------------------------------------------------------------
-# Defect B.1 fix: _depgraph_get_deps failure → detect script emits an error record
+# Defect B.1 fix: _depgraph_get_deps failure → detect script emits a container error record
 #
 # When a ghcr.io/<owner>/... ref requires owner resolution but no owner source is
 # available, the dep-graph helper returns non-zero. The detect script must surface
@@ -3911,9 +4077,8 @@ STUBEOF
 # ---------------------------------------------------------------------------
 @test "internal_deps: owner unresolvable in dep-graph → detect exits 0, container emitted as error record (F2 regression-lock)" {
     # FIX 2: dep-graph failure must NOT abort the whole run (old behaviour: exit 1).
-    # The failing container must be surfaced as status:error with error_reason:dep_graph_unavailable
-    # and no internal_deps field — so it is excluded from the leaf/consumer matrices and
-    # downstream _eval_parent_state State B0 treats it as in_flux (conservative).
+    # The failing container must carry error_reason:dep_graph_unavailable at
+    # container scope and omit internal_deps, so it cannot enter either matrix.
     local fake_root="$TEST_TEMP_DIR/depgraph-fail"
     mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
@@ -3954,20 +4119,23 @@ EOF
     # Output must be valid JSON
     printf '%s' "$result" | jq '.' >/dev/null
 
-    # myapp must appear in output (as an error record, not dropped)
+    # myapp must appear in output (as a container error record, not dropped)
     container=$(printf '%s' "$result" | jq -r '.[0].container')
     [ "$container" = "myapp" ]
 
-    # Status must be "error"
-    status_val=$(printf '%s' "$result" | jq -r '.[0].variants[0].status')
-    [ "$status_val" = "error" ]
+    # A dependency-graph error must be at container scope, never in variants.
+    dep_graph_error_count=$(printf '%s' "$result" | jq \
+        '[.[] | select(.container == "myapp" and .error_reason == "dep_graph_unavailable")] | length')
+    [ "$dep_graph_error_count" -eq 1 ]
 
-    # error_reason must be dep_graph_unavailable
-    err_reason=$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')
-    [ "$err_reason" = "dep_graph_unavailable" ]
+    # The variant evaluated before the dependency failure must survive it.
+    original_variant_count=$(printf '%s' "$result" | jq \
+        '[.[] | select(.container == "myapp") | .variants[] | select(.variant_tag == "1.0" and .error_reason == "registry_probe_failed")] | length')
+    [ "$original_variant_count" -eq 1 ]
 
     # internal_deps must NOT be present (no empty-deps leaf)
-    has_internal_deps=$(printf '%s' "$result" | jq '.[0] | has("internal_deps")')
+    has_internal_deps=$(printf '%s' "$result" | \
+        jq '.[] | select(.container == "myapp") | has("internal_deps")')
     [ "$has_internal_deps" = "false" ]
 }
 
@@ -3977,7 +4145,7 @@ EOF
 #
 # Invariants:
 #   overall exit code is 0 (not aborted)
-#   failing container is surfaced as status:error, error_reason:dep_graph_unavailable
+#   failing container has container-level error_reason:dep_graph_unavailable
 #   failing container does NOT have internal_deps field (no unsafe leaf)
 #   succeeding container still appears with its normal drift/unchanged record
 #   succeeding container IS NOT emitted as normal record with internal_deps:[]
@@ -4075,14 +4243,19 @@ STUB
     total=$(printf '%s' "$result" | jq 'length')
     [ "$total" -eq 2 ]
 
-    # failcontainer surfaced as status:error with dep_graph_unavailable reason
+    # The evaluated drift record survives; the dependency failure is not appended
+    # as a made-up variant.
     fail_status=$(printf '%s' "$result" | \
         jq -r '.[] | select(.container == "failcontainer") | .variants[0].status')
-    [ "$fail_status" = "error" ]
+    [ "$fail_status" = "drift" ]
 
     fail_reason=$(printf '%s' "$result" | \
-        jq -r '.[] | select(.container == "failcontainer") | .variants[0].error_reason')
+        jq -r '.[] | select(.container == "failcontainer") | .error_reason')
     [ "$fail_reason" = "dep_graph_unavailable" ]
+
+    fail_variant_count=$(printf '%s' "$result" | \
+        jq '.[] | select(.container == "failcontainer") | .variants | length')
+    [ "$fail_variant_count" -eq 1 ]
 
     # failcontainer does NOT have internal_deps (no unsafe empty-deps leaf)
     fail_has_deps=$(printf '%s' "$result" | \
@@ -4191,7 +4364,7 @@ EOF
 # Mutation guard: removing the charset gate causes the metachar container to
 # appear in the output (the test catches the regression).
 # ---------------------------------------------------------------------------
-@test "container name with semicolon (web;rm) is rejected, excluded from output" {
+@test "container name with semicolon (web;rm) fails closed" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage-f1a"
     mkdir -p "$lineage_dir"
 
@@ -4209,17 +4382,17 @@ EOF
     # Override valid containers to include the dangerous name so grep -xF would
     # pass if the charset gate did not exist — the gate is what we are testing.
     local stderr_log="$TEST_TEMP_DIR/f1a-stderr.log"
+    local rc=0
     result=$(
         _VALID_CONTAINERS_OVERRIDE="web;rm" \
         PROBE_CMD="/bin/false" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log"
-    )
+    ) || rc=$?
 
-    # Output must be empty: the container was rejected before processing
-    [ "$result" = "[]" ]
+    [ "$rc" -eq 1 ]
+    [ -z "$result" ]
 
-    # A ::warning:: must have been emitted to stderr naming the invalid chars
-    grep -q '::warning::' "$stderr_log"
+    grep -q '::error::' "$stderr_log"
 }
 
 @test "container name with only valid chars (web-shell) passes the charset gate" {
