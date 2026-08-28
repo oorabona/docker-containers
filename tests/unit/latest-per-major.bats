@@ -564,6 +564,8 @@ list_containers() {
         2>/dev/null | xargs -I{} basename {} 2>/dev/null
 }
 has_dockerfile()  { return 0; }
+dockerhub_get_tag_sizes() { printf '%s\n' "$3" >> "$SIZE_TAG_LOG"; }
+ghcr_get_manifest_sizes() { printf '%s\n' "$2" >> "$SIZE_TAG_LOG"; }
 EOF
 
     cat > helpers/sbom-utils.sh <<'EOF'
@@ -900,6 +902,61 @@ EOF
     [[ "$status_6" == "new-container" ]]
 }
 
+@test "check_updates multi-entry: a non-version upstream value cannot create a retained-major container" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "__NO_MATCH__" "7.0.0-alpine" "error: rate limited"
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')" == "upstream-version-rejected" ]]
+}
+
+@test "check_updates multi-entry: failed upstream lookup discards partial candidate" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.0-alpine" "6.9.5-alpine"
+    cat > wordpress/version.sh <<'EOF'
+#!/bin/bash
+if [[ "$1" == "--major" && "$2" == "7" ]]; then echo "7.0.0-alpine"; exit 0; fi
+if [[ "$1" == "--major" && "$2" == "6" ]]; then echo "6.9.5-alpine"; exit 23; fi
+exit 1
+EOF
+    chmod +x wordpress/version.sh
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')" == "upstream-lookup-failed" ]]
+}
+
+@test "check_updates multi-entry: empty successful upstream lookup is a no-match" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.0-alpine" "6.9.5-alpine"
+    cat > wordpress/version.sh <<'EOF'
+#!/bin/bash
+if [[ "$1" == "--major" && "$2" == "7" ]]; then echo "7.0.0-alpine"; exit 0; fi
+if [[ "$1" == "--major" && "$2" == "6" ]]; then exit 0; fi
+exit 1
+EOF
+    chmod +x wordpress/version.sh
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .upstream_lookup')" == "no-match" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')" == "up_to_date" ]]
+}
+
 @test "check_updates default path: genuine newer latest is an update" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
@@ -913,6 +970,76 @@ EOF
     status_value=$(echo "$output" | jq -r '.[0].status')
     [[ "$update_available" == "true" ]]
     [[ "$status_value" == "update-available" ]]
+}
+
+@test "check_updates default path: an uncomparable upstream value cannot become an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "error: rate limited"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "downgrade-guard-failed" ]]
+}
+
+@test "check_updates default path: a non-version upstream value cannot create a container" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "__NO_PUBLISHED__" "error: rate limited"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-version-rejected" ]]
+}
+
+@test "check_updates default path: failed upstream lookup discards partial candidate" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    cat > ansible/version.sh <<'EOF'
+#!/bin/bash
+if [[ "$1" == "--registry-pattern" ]]; then echo '^[0-9]+\\.[0-9]+\\.[0-9]+-ubuntu$'; exit 0; fi
+echo "1.1.0-ubuntu"
+exit 23
+EOF
+    chmod +x ansible/version.sh
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "" ]]
+    [[ "$(echo "$output" | jq -r '.[0].upstream_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "upstream-lookup-failed" ]]
+}
+
+@test "sizes: failed upstream lookup discards partial tag and falls back to latest" {
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    cat > ansible/version.sh <<'EOF'
+#!/bin/bash
+echo "1.1.0-ubuntu"
+exit 23
+EOF
+    chmod +x ansible/version.sh
+    mkdir -p bin
+    cat > bin/docker <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+    chmod +x bin/docker
+    export PATH="$TEST_DIR/bin:$PATH"
+    export SIZE_TAG_LOG="$TEST_DIR/size-tags"
+
+    run ./make sizes ansible
+    [ "$status" -eq 0 ]
+    [[ "$(sort -u "$SIZE_TAG_LOG")" == "latest" ]]
 }
 
 # Positive control for registry-pattern refusal cases below: a version.sh that
@@ -1434,7 +1561,7 @@ EOF
     [[ "$(echo "$output" | jq -r '.[0].status')" == "downgrade-guard-failed" ]]
 }
 
-@test "check_updates default path: testing and stable labels without numeric alias remain permissive" {
+@test "check_updates default path: uncomparable labels without numeric aliases fail closed" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
@@ -1445,8 +1572,8 @@ EOF
 
     update_available=$(echo "$output" | jq -r '.[0].update_available')
     status_value=$(echo "$output" | jq -r '.[0].status')
-    [[ "$update_available" == "true" ]]
-    [[ "$status_value" == "update-available" ]]
+    [[ "$update_available" == "false" ]]
+    [[ "$status_value" == "downgrade-guard-failed" ]]
 }
 
 @test "check_updates default path: equal versions are not an update" {

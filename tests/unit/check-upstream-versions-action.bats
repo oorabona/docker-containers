@@ -145,6 +145,24 @@ assert_byte_for_byte() {
     [[ "$output" == *"Registry lookup did not conclude"* ]]
 }
 
+@test "composite action reports an indeterminate version comparison without claiming it is up to date" {
+    write_make_result '[{"container":"debian","current_version":"trixie","latest_version":"bookworm","update_available":false,"actionable":false,"registry_lookup":"matched","status":"downgrade-guard-failed"}]'
+
+    run run_action
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Version comparison did not conclude"* ]]
+    [[ "$output" != *"✅ Up to date"* ]]
+}
+
+@test "composite action reports a rejected upstream value without claiming it is up to date" {
+    write_make_result '[{"container":"ansible","current_version":"","latest_version":"error: rate limited","update_available":false,"actionable":false,"registry_lookup":"no-match","status":"upstream-version-rejected"}]'
+
+    run run_action
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"does not match the declared version pattern"* ]]
+    [[ "$output" != *"✅ Up to date"* ]]
+}
+
 @test "composite action rejects an entry without a container" {
     write_make_result '[{"actionable":true,"update_available":true,"registry_lookup":"matched"}]'
 
