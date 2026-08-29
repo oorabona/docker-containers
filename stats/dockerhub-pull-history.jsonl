@@ -1335,3 +1335,17 @@
 {"ts":"2026-08-28T08:15:40Z","date":"2026-08-28","container":"vector","pull_count":6150,"star_count":0,"source":"dockerhub"}
 {"ts":"2026-08-28T08:15:40Z","date":"2026-08-28","container":"web-shell","pull_count":8751,"star_count":0,"source":"dockerhub"}
 {"ts":"2026-08-28T08:15:40Z","date":"2026-08-28","container":"wordpress","pull_count":9044,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"ansible","pull_count":11585,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"debian","pull_count":3616,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"github-runner","pull_count":93047,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"jekyll","pull_count":3652,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"openresty","pull_count":8816,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"openvpn","pull_count":8680,"star_count":1,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"php","pull_count":9931,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"postgres","pull_count":150364,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"sslh","pull_count":85120,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"terraform","pull_count":91545,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"tor","pull_count":2032,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"vector","pull_count":6728,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"web-shell","pull_count":9449,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-08-29T12:51:17Z","date":"2026-08-29","container":"wordpress","pull_count":9479,"star_count":0,"source":"dockerhub"}
