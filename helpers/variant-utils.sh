@@ -292,25 +292,49 @@ variant_image_tag() {
 # Compute the set of TAG SUFFIXES for a build cell — the rolling-tag-routing
 # decision, independent of registry. This is the single source of truth for
 # "which tags does this cell get": the versioned tag plus, when applicable,
-# the rolling :latest / :latest-<flavor> alias. Reused by compute_cell_tags
+# a declared major alias and the rolling :latest / :latest-<flavor> alias.
+# Reused by compute_cell_tags
 # (build path, both registries), the bake generator (single registry +
 # arch suffix), and the manifest-merge job (both registries, multi-arch).
 #
 # Rules (tag != "latest"):
+#   versions[].major_alias declared  -> + major_alias plus the cell's variant
+#                                       suffix, if any
 #   is_default == "true"            -> + "latest"
 #   is_default != "true", flavor set -> + "latest-<flavor>"
 #   is_default != "true", no flavor  -> + "latest"
 # When tag == "latest", only the versioned suffix is emitted (no alias).
 #
-# Usage: compute_cell_tag_suffixes <tag> <flavor> <is_default>
-# Output: one tag suffix per line (e.g. "18-alpine", "latest", "latest-vector").
+# Usage: compute_cell_tag_suffixes <tag> <flavor> <is_default> [container_dir]
+#   container_dir: its versions[].major_alias values declare the rolling
+#                  major aliases this cell publishes. The version declaration,
+#                  rather than a tag-format heuristic, supplies the alias.
+# Output: one tag suffix per line (e.g. "18.6-alpine", "18-alpine", "latest",
+#         "latest-vector").
 compute_cell_tag_suffixes() {
     local tag="$1"
     local flavor="$2"
     local is_default="$3"
+    local container_dir="${4:-}"
 
     # Versioned suffix — always present
     printf '%s\n' "$tag"
+
+    # A rolling major alias is an explicit per-version publication decision.
+    # Match the configured source tag and preserve only the variant suffix
+    # appended by this build cell. This deliberately assumes neither a version
+    # component count nor a base-image suffix such as "-alpine".
+    local source_tag major_alias
+    if [[ -n "$container_dir" && -f "$container_dir/variants.yaml" ]]; then
+        while IFS=$'\t' read -r source_tag major_alias; do
+            [[ -n "$source_tag" && -n "$major_alias" ]] || continue
+            if [[ "$tag" == "$source_tag" || "$tag" == "${source_tag}-"* ]]; then
+                printf '%s%s\n' "$major_alias" "${tag#"$source_tag"}"
+                break
+            fi
+        done < <(yq -r '.versions[] | select(.major_alias != null) | [.tag, .major_alias] | @tsv' \
+            "$container_dir/variants.yaml" 2>/dev/null || true)
+    fi
 
     # Rolling latest suffix — only when this is not already a "latest" tag
     if [[ "$tag" != "latest" ]]; then
@@ -340,7 +364,7 @@ compute_cell_tag_suffixes() {
 #       • is_default != "true" AND flavor empty
 #           → also emit :latest on both registries.
 #
-# Usage: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image>
+# Usage: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image> [container_dir]
 #   tag             : image tag for this build cell (e.g. "18-alpine", "1.14.6-alpine")
 #   flavor          : the variants.yaml `.flavor` field for this variant — the rolling-tag suffix source
 #                     (e.g. "base", "ubuntu-2404", "") — empty for no-flavor containers.
@@ -350,6 +374,8 @@ compute_cell_tag_suffixes() {
 #                     Caller computes this via variant_property <dir> <variant_name> "default".
 #   dockerhub_image : docker.io/<owner>/<container>  (no tag)
 #   ghcr_image      : ghcr.io/<owner>/<container>   (no tag)
+#   container_dir   : optional variants directory; its declared major aliases
+#                     are used by compute_cell_tag_suffixes.
 #
 # Output: one fully-qualified image ref per line (no leading "-t").
 #         Caller reads into an array and prepends "-t" as needed.
@@ -359,11 +385,12 @@ compute_cell_tags() {
     local is_default="$3"
     local dockerhub_image="$4"
     local ghcr_image="$5"
+    local container_dir="${6:-}"
 
     local _sfx
     local _suffixes_file
     _suffixes_file=$(mktemp "${TMPDIR:-/tmp}/compute-cell-tags-suffixes.XXXXXX") || return 1
-    if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$tag" "$flavor" "$is_default"; then
+    if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$tag" "$flavor" "$is_default" "$container_dir"; then
         rm -f "$_suffixes_file"
         printf 'compute_cell_tags: could not enumerate tag suffixes\n' >&2
         return 1

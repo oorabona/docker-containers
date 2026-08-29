@@ -116,13 +116,37 @@ VEOF
     chmod +x "$dir/version.sh"
 }
 
-@test "postgres declares its upstream monitor non-actionable pending #1512" {
+@test "postgres uses latest_per_major resolver declarations and leaves its monitor actionable" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
 
-    run yq -r '.build.upstream_monitor_actionable' "$ORIG_DIR/postgres/variants.yaml"
+    run yq -r '[.build.retention_strategy, .build.retained_majors, (.build | has("upstream_monitor_actionable")), [.versions[] | [.tag, .major_alias]] ] | @json' "$ORIG_DIR/postgres/variants.yaml"
     [ "$status" -eq 0 ]
-    [ "$output" = "false" ]
-    grep -q '#1512' "$ORIG_DIR/postgres/variants.yaml"
+    [ "$output" = '["latest_per_major",[18,17,16],false,[["18.6-alpine","18-alpine"],["17.11-alpine","17-alpine"],["16.15-alpine","16-alpine"]]]' ]
+}
+
+@test "postgres latest_per_major declaration converges with its per-major resolver namespace" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+
+    mkdir -p postgres
+    cp "$ORIG_DIR/postgres/variants.yaml" postgres/variants.yaml
+    cat > postgres/version.sh <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "--major" ]]; then
+    case "$2" in
+        18) printf '%s\n' '18.6-alpine' ;;
+        17) printf '%s\n' '17.11-alpine' ;;
+        16) printf '%s\n' '16.15-alpine' ;;
+        *) exit 1 ;;
+    esac
+fi
+EOF
+    chmod +x postgres/version.sh
+
+    run latest_per_major_versions postgres
+    [ "$status" -eq 0 ]
+    [ "$output" = $'18.6-alpine\n17.11-alpine\n16.15-alpine' ]
+    declared=$(yq -r '.versions[].tag' postgres/variants.yaml)
+    [ "$output" = "$declared" ]
 }
 
 # ----------------------------------------------------------------
@@ -361,6 +385,106 @@ VEOF
     tag1=$(yq -r '.versions[1].tag' myapp/variants.yaml)
     [[ "$tag0" == "7.0.0-alpine" ]]
     [[ "$tag1" == "6.9.4-alpine" ]]
+}
+
+@test "rotate: latest_per_major keeps per-version declarations while updating tags" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    mkdir -p preserved-declarations
+    cat > preserved-declarations/variants.yaml <<'EOF'
+build:
+  retention_strategy: latest_per_major
+  retained_majors: [7, 6]
+versions:
+  - tag: 7.0.0-alpine
+    major_alias: 7-alpine
+  - tag: 6.9.4-alpine
+    major_alias: 6-alpine
+EOF
+    create_mock_version_sh preserved-declarations
+
+    run scripts/rotate-versions.sh preserved-declarations ignored
+    [ "$status" -eq 0 ]
+
+    run yq -r '[.versions[] | [.tag, .major_alias]] | @json' preserved-declarations/variants.yaml
+    [ "$status" -eq 0 ]
+    [ "$output" = '[["7.0.0-alpine","7-alpine"],["6.9.4-alpine","6-alpine"]]' ]
+}
+
+@test "rotate: latest_per_major pairs declarations by major when versions[] is ascending" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    mkdir -p ascending-declarations
+    cat > ascending-declarations/variants.yaml <<'EOF'
+build:
+  retention_strategy: latest_per_major
+  retained_majors: [7, 6]
+versions:
+  - tag: 6.9.0-alpine
+    major_alias: 6-alpine
+  - tag: 7.0.0-alpine
+    major_alias: 7-alpine
+EOF
+    create_mock_version_sh ascending-declarations
+
+    run scripts/rotate-versions.sh ascending-declarations ignored
+    [ "$status" -eq 0 ]
+
+    run yq -r '[.versions[] | [.tag, .major_alias]] | @json' ascending-declarations/variants.yaml
+    [ "$status" -eq 0 ]
+    [ "$output" = '[["7.0.0-alpine","7-alpine"],["6.9.4-alpine","6-alpine"]]' ]
+}
+
+@test "rotate: latest_per_major refuses an unmatched existing major" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    mkdir -p changed-retained-set
+    cat > changed-retained-set/variants.yaml <<'EOF'
+build:
+  retention_strategy: latest_per_major
+  retained_majors: [7]
+versions:
+  - tag: 7.0.0-alpine
+    major_alias: 7-alpine
+  - tag: 6.9.4-alpine
+    major_alias: 6-alpine
+EOF
+    create_mock_version_sh changed-retained-set
+
+    run scripts/rotate-versions.sh changed-retained-set ignored
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"latest_per_major declaration pairing failed"* ]]
+
+    run yq -r '[.versions[] | [.tag, .major_alias]] | @json' changed-retained-set/variants.yaml
+    [ "$status" -eq 0 ]
+    [ "$output" = '[["7.0.0-alpine","7-alpine"],["6.9.4-alpine","6-alpine"]]' ]
+}
+
+@test "rotate: latest_per_major refuses a resolved major with no existing entry" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    mkdir -p missing-existing-entry
+    cat > missing-existing-entry/variants.yaml <<'EOF'
+build:
+  retention_strategy: latest_per_major
+  retained_majors: [7, 6]
+versions:
+  - tag: 7.0.0-alpine
+    major_alias: 7-alpine
+EOF
+    create_mock_version_sh missing-existing-entry
+
+    run scripts/rotate-versions.sh missing-existing-entry ignored
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"latest_per_major declaration pairing failed"* ]]
+
+    run yq -r '[.versions[] | [.tag, .major_alias]] | @json' missing-existing-entry/variants.yaml
+    [ "$status" -eq 0 ]
+    [ "$output" = '[["7.0.0-alpine","7-alpine"]]' ]
 }
 
 @test "rotate: latest_per_major exit code 2 is NOT returned (strategy takes over from count-based)" {

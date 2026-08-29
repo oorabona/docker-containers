@@ -699,9 +699,9 @@ YAML
     [ "$target_count" -eq 21 ]
 
     local base_inline vector_inline timeseries_inline
-    base_inline=$(echo "$output" | jq -r '.target.postgres_18_base["dockerfile-inline"] // ""')
-    vector_inline=$(echo "$output" | jq -r '.target.postgres_18_vector["dockerfile-inline"] // ""')
-    timeseries_inline=$(echo "$output" | jq -r '.target.postgres_18_timeseries["dockerfile-inline"] // ""')
+    base_inline=$(echo "$output" | jq -r '.target.postgres_18_6_alpine_base["dockerfile-inline"] // ""')
+    vector_inline=$(echo "$output" | jq -r '.target.postgres_18_6_alpine_vector["dockerfile-inline"] // ""')
+    timeseries_inline=$(echo "$output" | jq -r '.target.postgres_18_6_alpine_timeseries["dockerfile-inline"] // ""')
 
     [ -n "$base_inline" ]
     [ -n "$vector_inline" ]
@@ -731,7 +731,7 @@ YAML
     grep -Fxq "FROM ghcr.io/oorabona/ext-timescaledb:pg18-${timescaledb_ver} AS ext-timescaledb" <<< "$timeseries_inline"
 }
 
-@test "postgres bake VERSION build arg carries base_suffix (matches the non-bake base image)" {
+@test "postgres bake VERSION build arg carries the resolver's complete alpine tag" {
     local lineage_root
     lineage_root=$(mktemp -d)
     _make_timescaledb_lineage_root "$lineage_root"
@@ -740,13 +740,12 @@ YAML
     rm -rf "$lineage_root"
     [ "$status" -eq 0 ]
 
-    # postgres declares base_suffix "-alpine" + FROM library/postgres:${VERSION};
-    # the bake VERSION arg must be "<major>-alpine", not the bare major, else the
-    # build pulls the Debian base and publishes *-alpine tags backed by it.
-    [ "$(echo "$output" | jq -r '.target.postgres_18_base.args.VERSION')" = "18-alpine" ]
-    [ "$(echo "$output" | jq -r '.target.postgres_17_vector.args.VERSION')" = "17-alpine" ]
-    [ "$(echo "$output" | jq -r '.target.postgres_16_full.args.VERSION')" = "16-alpine" ]
-    [ "$(echo "$output" | jq -r '.target.postgres_18_base.args.MAJOR_VERSION')" = "18" ]
+    # The resolver now owns -alpine, so the tag is passed verbatim. Appending
+    # a legacy base_suffix here would pull a nonexistent -alpine-alpine base.
+    [ "$(echo "$output" | jq -r '.target.postgres_18_6_alpine_base.args.VERSION')" = "18.6-alpine" ]
+    [ "$(echo "$output" | jq -r '.target.postgres_17_11_alpine_vector.args.VERSION')" = "17.11-alpine" ]
+    [ "$(echo "$output" | jq -r '.target.postgres_16_15_alpine_full.args.VERSION')" = "16.15-alpine" ]
+    [ "$(echo "$output" | jq -r '.target.postgres_18_6_alpine_base.args.MAJOR_VERSION')" = "18" ]
 }
 
 @test "postgres inline Dockerfiles escape bake interpolation triggers" {

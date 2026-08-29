@@ -120,16 +120,14 @@ image_identity_resolve() {
     local harness_dir matrix real_version cell version variant flavor
     harness_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [[ -n "$selected_cell" ]]; then
-        # This is an internal hand-off from resolve_e2e_image. It still has to
-        # name the reference tag exactly, so an unrelated selected cell cannot
-        # be attached to this image accidentally.
-        if ! cell=$(jq -c -e -r --arg tag "$tag" '
-            if type == "object" and .tag == $tag then .
-            else error("does not name the reference tag") end
-        ' <<<"$selected_cell"); then
+        # This is an internal hand-off from resolve_e2e_image. Preserve the
+        # one-cell boundary, then use compute_cell_tag_suffixes below to test
+        # both its versioned tag and any aliases it publishes.
+        if ! cell=$(jq -c -e -r 'if type == "object" then . else error("not a cell") end' <<<"$selected_cell"); then
             printf 'image identity: %s does not resolve to one declared cell\n' "$reference" >&2
             return 1
         fi
+        matrix="[$cell]"
     else
         # Match the workflow's latest declaration handling: it resolves the
         # current version and falls back to the literal latest only if that
@@ -152,17 +150,44 @@ image_identity_resolve() {
             printf 'image identity: list_build_matrix failed for %s\n' "$container_dir" >&2
             return 1
         fi
-        if ! cell=$(jq -c -e -r --arg tag "$tag" '
-            if type != "array" then error("build matrix is not an array")
-            else [.[] | select(.tag == $tag)] as $matches |
-              if ($matches | length) == 1 then $matches[0]
-              elif ($matches | length) == 0 then error("does not name a declared cell")
-              else error("matches more than one declared cell") end
-            end
-        ' <<<"$matrix"); then
-            printf 'image identity: %s does not resolve to one declared cell\n' "$reference" >&2
+    fi
+
+    # A published major alias is not a second declared cell. Enumerate every
+    # declared cell through the same suffix helper used by publishers instead
+    # of reconstructing alias spellings here.
+    local candidate candidate_tag candidate_variant candidate_flavor candidate_default routing_suffix suffixes
+    local matches='[]'
+    while IFS= read -r candidate; do
+        [[ -n "$candidate" ]] || continue
+        if ! candidate_tag=$(jq -er '.tag | strings' <<<"$candidate") || \
+           ! candidate_variant=$(jq -er '.variant | strings' <<<"$candidate") || \
+           ! candidate_flavor=$(jq -er '.flavor | strings' <<<"$candidate"); then
+            printf 'image identity: %s has an invalid declared build cell\n' "$reference" >&2
             return 1
         fi
+        candidate_default=$(jq -r 'if .is_default then "true" else "false" end' <<<"$candidate")
+        routing_suffix="${candidate_variant:-$candidate_flavor}"
+        # A selected cell is an exact workflow hand-off. Its major alias is
+        # still that cell, but fleet-wide latest aliases can be shared by
+        # multiple retained cells and must not let an unrelated selected cell
+        # attach to the reference.
+        if [[ -n "$selected_cell" && "$tag" != "$candidate_tag" && "$tag" == latest* ]]; then
+            continue
+        fi
+        if suffixes=$(source "$harness_dir/../helpers/variant-utils.sh" && \
+                compute_cell_tag_suffixes "$candidate_tag" "$routing_suffix" "$candidate_default" "$container_dir" 2>/dev/null) && \
+                grep -qxF -- "$tag" <<<"$suffixes"; then
+            matches=$(jq -c --argjson candidate "$candidate" '. + [$candidate]' <<<"$matches")
+        fi
+    done < <(jq -c '.[]' <<<"$matrix")
+
+    if ! cell=$(jq -c -e -r '
+        if length == 1 then .[0]
+        elif length == 0 then error("does not name a declared cell")
+        else error("matches more than one declared cell") end
+    ' <<<"$matches"); then
+        printf 'image identity: %s does not resolve to one declared cell\n' "$reference" >&2
+        return 1
     fi
     if ! version=$(jq -er '.version | strings' <<<"$cell") || \
         ! variant=$(jq -er '.variant | strings' <<<"$cell") || \

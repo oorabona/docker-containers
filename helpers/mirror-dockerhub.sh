@@ -215,7 +215,7 @@ mirror_to_dockerhub() {
         local sfx
         local suffixes_file
         suffixes_file=$(mktemp "${TMPDIR:-/tmp}/mirror-dockerhub-suffixes.XXXXXX") || return 1
-        if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$routing_suffix" "$is_default"; then
+        if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$routing_suffix" "$is_default" "${_root}/${container}"; then
             rm -f "$suffixes_file"
             printf '::warning::mirror-dockerhub: could not enumerate all tags for %s:%s; mirroring none for this cell\n' \
                 "$container" "$tag" >&2

@@ -228,7 +228,9 @@ if [[ "$strategy" == "latest_per_major" ]]; then
 
     # ── Full re-resolution path ──────────────────────────────────────────────
     # No major_line provided: resolve ALL retained majors via version.sh and
-    # rewrite the entire versions[] list.  Used for periodic rotation passes.
+    # rewrite the entire versions[] list while retaining each entry's
+    # declarations other than its resolved tag. Used for periodic rotation
+    # passes.
 
     # Capture rc safely under `set -e`: assignment inside the if-condition
     # is exempt, so a non-zero exit from latest_per_major_versions reaches
@@ -243,10 +245,44 @@ if [[ "$strategy" == "latest_per_major" ]]; then
         exit 0
     fi
 
-    # Rewrite variants.yaml versions[] from resolved list (compact JSON avoids
-    # multi-line env-var edge cases when passed through to `yq -i`).
+    # Rewrite tags while preserving declarations from the entry with the same
+    # major. The resolver deliberately sorts its output, whereas versions[] is
+    # operator input and may be ordered arbitrarily. Refuse to rewrite if either
+    # side has an unmatched or duplicate major: retaining a declaration on the
+    # wrong image is worse than leaving the prior, coherent list untouched.
     versions_json=$(printf '%s' "$resolved" | jq -c -R -s 'split("\n") | map(select(length>0)) | map({tag: .})')
-    VERSIONS="$versions_json" yq -i '.versions = env(VERSIONS)' "$variants_file"
+    existing_json=$(yq -o=json '.versions' "$variants_file")
+    if ! paired_versions=$(EXISTING="$existing_json" RESOLVED="$versions_json" jq -nce '
+        def major:
+            .tag | capture("^(?<value>[0-9]+)\\.").value;
+        def with_major:
+            map(. + {__major: major});
+
+        (env.EXISTING | fromjson | with_major) as $existing
+        | (env.RESOLVED | fromjson | with_major) as $resolved
+        | ($existing | map(.__major) | sort) as $existing_majors
+        | ($resolved | map(.__major) | sort) as $resolved_majors
+        | if ($existing_majors | length) != ($existing_majors | unique | length)
+             or ($resolved_majors | length) != ($resolved_majors | unique | length) then
+            error("each side must contain exactly one entry per major")
+          elif $existing_majors != $resolved_majors then
+            error("existing majors " + ($existing_majors | join(","))
+                  + " do not match resolved majors " + ($resolved_majors | join(",")))
+          else
+            [
+                $resolved | to_entries[]
+                | .key as $resolved_index
+                | .value as $resolved_entry
+                | ($existing[] | select(.__major == $resolved_entry.__major)
+                   | del(.tag, .__major)) as $declarations
+                | ($resolved_entry | del(.__major)) + $declarations
+            ]
+          end
+    '); then
+        echo "::error::latest_per_major declaration pairing failed for $container_dir; retained majors changed or are ambiguous" >&2
+        exit 1
+    fi
+    VERSIONS="$paired_versions" yq -i '.versions = env(VERSIONS)' "$variants_file"
     echo "✅ Updated $variants_file via latest_per_major: $(printf '%s' "$resolved" | tr '\n' ' ')" >&2
     exit 0
 fi

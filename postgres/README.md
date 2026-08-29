@@ -41,6 +41,12 @@ docker pull ghcr.io/oorabona/postgres:17-distributed-alpine
 docker pull ghcr.io/oorabona/postgres:17-alpine-full
 ```
 
+## Tags and immutable identity
+
+PostgreSQL publishes both a major-line alias and the resolved build version for every flavor. For example, `18-alpine` and `18.6-alpine` name the base image, while `18-alpine-full` and `18.6-alpine-full` name the full flavor.
+
+Both forms are rolling tags: `18-alpine` follows the PostgreSQL 18 line, and `18.6-alpine` can also move when its Alpine base or compiled extensions are rebuilt. Use the image digest, together with its attestation, when you need an immutable identity.
+
 ## Available Flavors
 
 | Flavor | Description | Extensions | Use Case |
@@ -182,14 +188,17 @@ All extensions for development and testing. Includes everything from all other f
 ### Image Tags
 
 ```
-ghcr.io/oorabona/postgres:{version}-{flavor}-alpine
+ghcr.io/oorabona/postgres:{major}-alpine[-{flavor}]
+ghcr.io/oorabona/postgres:{resolved_version}-alpine[-{flavor}]
 ```
 
 Examples:
-- `17-alpine` or `17-base-alpine` - PG17 base
-- `17-alpine-vector` - PG17 with pgvector
-- `16-analytics-alpine` - PG16 with analytics extensions
-- `17-alpine-full` - PG17 with all extensions
+- `17-alpine` and `17.11-alpine` - PG17 base
+- `17-alpine-vector` and `17.11-alpine-vector` - PG17 with pgvector
+- `16-alpine-analytics` and `16.15-alpine-analytics` - PG16 with analytics extensions
+- `17-alpine-full` and `17.11-alpine-full` - PG17 with all extensions
+
+Both spellings roll; a digest and its attestation, not either tag, identify one immutable build.
 
 ## Usage
 

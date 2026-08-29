@@ -113,7 +113,7 @@ _merge_cell() {
     local sfx
     local suffixes_file
     suffixes_file=$(mktemp "${TMPDIR:-/tmp}/bake-merge-cell-suffixes.XXXXXX") || return 1
-    if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$variant" "$is_default"; then
+    if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$variant" "$is_default" "$PROJECT_ROOT/$container"; then
         rm -f "$suffixes_file"
         printf '::error::Could not enumerate all GHCR refs for %s:%s — skipping cell\n' \
             "$container" "$tag" >&2
@@ -243,7 +243,7 @@ main() {
         local _sfx
         local _suffixes_file
         _suffixes_file=$(mktemp "${TMPDIR:-/tmp}/bake-merge-duplicate-suffixes.XXXXXX") || exit 1
-        if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$_chk_tag" "$_routing_suffix" "$_chk_default"; then
+        if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$_chk_tag" "$_routing_suffix" "$_chk_default" "$PROJECT_ROOT/$_chk_c"; then
             rm -f "$_suffixes_file"
             printf '::error::Could not enumerate all final refs for duplicate detection — aborting\n' >&2
             exit 1
