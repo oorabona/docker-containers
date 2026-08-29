@@ -119,9 +119,9 @@ VEOF
 @test "postgres uses latest_per_major resolver declarations and leaves its monitor actionable" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
 
-    run yq -r '[.build.retention_strategy, .build.retained_majors, (.build | has("upstream_monitor_actionable")), [.versions[] | [.tag, .major_alias]] ] | @json' "$ORIG_DIR/postgres/variants.yaml"
+    run yq -r '[.build.retention_strategy, .build.retained_majors, (.build | has("upstream_monitor_actionable")), [.versions[] | [.tag, .major, .major_alias]] ] | @json' "$ORIG_DIR/postgres/variants.yaml"
     [ "$status" -eq 0 ]
-    [ "$output" = '["latest_per_major",[18,17,16],false,[["18.6-alpine","18-alpine"],["17.11-alpine","17-alpine"],["16.15-alpine","16-alpine"]]]' ]
+    [ "$output" = '["latest_per_major",[18,17,16],false,[["18.6-alpine",18,"18-alpine"],["17.11-alpine",17,"17-alpine"],["16.15-alpine",16,"16-alpine"]]]' ]
 }
 
 @test "postgres latest_per_major declaration converges with its per-major resolver namespace" {

@@ -37,26 +37,32 @@ for container_dir in "$PROJECT_ROOT"/*/; do
         echo "::notice::Container $container requires extensions"
         containers_with_extensions="$containers_with_extensions $container"
 
-        # Get versions that have non-base variants
+        # Get declared major inputs for cells that have non-base variants.
+        # `major` is a cell-level contract: extension builds consume the numeric
+        # PostgreSQL major, never the container image tag.
         versions_needing_extensions=""
-        while IFS= read -r major_version; do
-            [[ -z "$major_version" ]] && continue
+        while IFS=$'\t' read -r version_tag major_version; do
+            [[ -z "$version_tag" ]] && continue
+            if [[ ! "$major_version" =~ ^[0-9]+$ ]]; then
+                echo "::error::Container $container version $version_tag must declare a numeric major for extension builds" >&2
+                exit 1
+            fi
 
             has_extension_variants=false
             while IFS= read -r variant; do
                 [[ -z "$variant" ]] && continue
-                flavor=$(variant_property "$container_dir" "$variant" "flavor" "$major_version")
+                flavor=$(variant_property "$container_dir" "$variant" "flavor" "$version_tag")
                 if [[ "$flavor" != "base" ]]; then
                     has_extension_variants=true
                     break
                 fi
-            done < <(list_variants "$container_dir" "$major_version")
+            done < <(list_variants "$container_dir" "$version_tag")
 
             if [[ "$has_extension_variants" == "true" ]]; then
                 versions_needing_extensions="$versions_needing_extensions $major_version"
                 echo "  -> v$major_version needs extensions"
             fi
-        done < <(list_versions "$container_dir")
+        done < <(yq -r '.versions[] | [.tag, (.major // "")] | @tsv' "$container_dir/variants.yaml")
 
         versions_by_container="$versions_by_container|$container:$(echo $versions_needing_extensions | xargs | tr ' ' ',')"
     fi
