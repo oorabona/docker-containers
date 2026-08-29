@@ -534,8 +534,10 @@ EOF
     # version.sh: returns per-major or global latest via argument matching
     # Use printf to avoid quoting issues with the EOF markers
     printf '#!/bin/bash\n' > wordpress/version.sh
-    printf 'REGISTRY_PATTERN="^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$"\n' >> wordpress/version.sh
-    printf 'if [[ "$1" == "--registry-pattern" ]]; then echo "$REGISTRY_PATTERN"; exit 0; fi\n' >> wordpress/version.sh
+    printf 'if [[ "$1" == "--registry-pattern" ]]; then\n' >> wordpress/version.sh
+    printf '  [[ "$2" =~ ^[0-9]+$ ]] || exit 1\n' >> wordpress/version.sh
+    printf '  echo "^${2}\\.[0-9]+\\.[0-9]+-alpine$"; exit 0\n' >> wordpress/version.sh
+    printf 'fi\n' >> wordpress/version.sh
     printf 'if [[ "$1" == "--major" ]]; then\n' >> wordpress/version.sh
     printf '  case "$2" in\n' >> wordpress/version.sh
     printf '    7) echo "%s" ; exit 0 ;;\n' "${mock_latest_7}" >> wordpress/version.sh
@@ -625,6 +627,45 @@ EOF
     # This ensures `source "$(dirname "$0")/helpers/..."` resolves to the TEST_DIR stubs.
     cp "$ORIG_DIR/make" ./make
     chmod +x ./make
+}
+
+# PostgreSQL's retained-major tags have two numeric components, unlike the
+# three-component WordPress tags used by the general fixture above.
+create_postgres_check_updates_fixture() {
+    create_check_updates_fixture
+    rm -rf wordpress
+    mkdir -p postgres
+
+    cat > postgres/variants.yaml <<'EOF'
+build:
+  retention_strategy: latest_per_major
+  retained_majors: [18]
+versions:
+  - tag: 18.6-alpine
+EOF
+
+    cat > postgres/version.sh <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "--registry-pattern" ]]; then
+    [[ "${2:-}" == "18" ]] || exit 21
+    printf '%s\n' '^18\.[0-9]+-alpine$'
+    exit 0
+fi
+if [[ "${1:-}" == "--major" && "${2:-}" == "18" ]]; then
+    printf '%s\n' '18.7-alpine'
+    exit 0
+fi
+exit 22
+EOF
+    chmod +x postgres/version.sh
+
+    cat > helpers/latest-docker-tag <<'EOF'
+#!/bin/bash
+[[ "${1:-}" == "ghcr.io/oorabona/postgres" ]] || exit 31
+[[ "${2:-}" == '^18\.[0-9]+-alpine$' ]] || exit 32
+printf '%s\n' '18.6-alpine'
+EOF
+    chmod +x helpers/latest-docker-tag
 }
 
 # Run check_updates inside the fixture and capture JSON output to stdout.
@@ -919,6 +960,74 @@ EOF
     [[ "$ml1" == "6" ]]
 }
 
+@test "check_updates multi-entry: postgres uses its two-component per-major registry pattern" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_postgres_check_updates_fixture
+
+    run run_check_updates postgres
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].current_version')" == "18.6-alpine" ]]
+    [[ "$(echo "$output" | jq -r '.[0].latest_version')" == "18.7-alpine" ]]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "true" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "update-available" ]]
+}
+
+@test "check_updates multi-entry: an empty per-major registry pattern is an inconclusive lookup" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.0-alpine" "6.9.5-alpine"
+    cat > wordpress/version.sh <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "--registry-pattern" ]]; then
+    case "${2:-}" in
+        7) printf '%s\n' '^7\.[0-9]+\.[0-9]+-alpine$' ;;
+        6) exit 0 ;;
+        *) exit 23 ;;
+    esac
+    exit 0
+fi
+if [[ "${1:-}" == "--major" && "${2:-}" == "7" ]]; then printf '%s\n' '7.0.0-alpine'; exit 0; fi
+if [[ "${1:-}" == "--major" && "${2:-}" == "6" ]]; then printf '%s\n' '6.9.5-alpine'; exit 0; fi
+exit 24
+EOF
+    chmod +x wordpress/version.sh
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .registry_lookup')" == "failed" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')" == "registry-lookup-failed" ]]
+}
+
+@test "check_updates multi-entry: wordpress still resolves retained majors with its three-component patterns" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.1-alpine" "6.9.5-alpine"
+    cat > wordpress/version.sh <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "--registry-pattern" ]]; then
+    case "${2:-}" in
+        7|6) printf '^%s\\.[0-9]+\\.[0-9]+-alpine$\n' "$2" ;;
+        *) exit 25 ;;
+    esac
+    exit 0
+fi
+if [[ "${1:-}" == "--major" && "${2:-}" == "7" ]]; then printf '%s\n' '7.0.1-alpine'; exit 0; fi
+if [[ "${1:-}" == "--major" && "${2:-}" == "6" ]]; then printf '%s\n' '6.9.5-alpine'; exit 0; fi
+exit 26
+EOF
+    chmod +x wordpress/version.sh
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "7") | .update_available')" == "true" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')" == "true" ]]
+}
+
 @test "check_updates multi-entry: update_available=true only for 6.x when 6.x has new patch" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
@@ -1048,6 +1157,7 @@ EOF
     create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.0-alpine" "6.9.5-alpine"
     cat > wordpress/version.sh <<'EOF'
 #!/bin/bash
+if [[ "$1" == "--registry-pattern" && "$2" =~ ^[0-9]+$ ]]; then echo "^${2}\.[0-9]+\.[0-9]+-alpine$"; exit 0; fi
 if [[ "$1" == "--major" && "$2" == "7" ]]; then echo "7.0.0-alpine"; exit 0; fi
 if [[ "$1" == "--major" && "$2" == "6" ]]; then echo "6.9.5-alpine"; exit 23; fi
 exit 1
@@ -1070,6 +1180,7 @@ EOF
     create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.0-alpine" "6.9.5-alpine"
     cat > wordpress/version.sh <<'EOF'
 #!/bin/bash
+if [[ "$1" == "--registry-pattern" && "$2" =~ ^[0-9]+$ ]]; then echo "^${2}\.[0-9]+\.[0-9]+-alpine$"; exit 0; fi
 if [[ "$1" == "--major" && "$2" == "7" ]]; then echo "7.0.0-alpine"; exit 0; fi
 if [[ "$1" == "--major" && "$2" == "6" ]]; then exit 0; fi
 exit 1
