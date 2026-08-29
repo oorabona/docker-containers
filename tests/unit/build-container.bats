@@ -46,6 +46,25 @@ assert_single_variant_result() {
         <<< "$result_lines" >/dev/null
 }
 
+@test "build-container enables strict mode before loading helpers" {
+    local fixture_root
+    fixture_root="$BATS_TEST_TMPDIR/build-container-strict-mode"
+    mkdir -p "$fixture_root/scripts" "$fixture_root/helpers"
+    cp "$SCRIPTS_DIR/build-container.sh" "$fixture_root/scripts/build-container.sh"
+    for helper in logging.sh collect-lines.sh variant-utils.sh build-cache-utils.sh build-args-utils.sh template-utils.sh extension-utils.sh extension-duration-utils.sh; do
+        printf '#!/usr/bin/env bash\n' > "$fixture_root/helpers/$helper"
+    done
+
+    run bash -c '
+        source "$1"
+        false
+        printf "continued\\n"
+    ' _ "$fixture_root/scripts/build-container.sh"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"continued"* ]]
+}
+
 # =============================================================================
 # build_container_variants no-variants status tests
 # =============================================================================

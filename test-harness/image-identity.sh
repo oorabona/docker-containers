@@ -3,6 +3,8 @@
 # the source of truth for cells and generated tags; this harness only looks one
 # up and derives the component version from that declared value.
 
+set -euo pipefail
+
 # _image_identity_emit_record <reference> <tag> <version> <variant> <flavor> <container-dir>
 _image_identity_emit_record() {
     local reference="$1" tag="$2" version="$3" variant="$4" flavor="$5" container_dir="$6"

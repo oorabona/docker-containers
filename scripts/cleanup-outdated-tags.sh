@@ -9,6 +9,12 @@ if ! source "$_cleanup_outdated_tags_root/helpers/version-record-validation.sh";
   unset _cleanup_outdated_tags_root
   return 1 2>/dev/null || exit 1
 fi
+# shellcheck source=../helpers/variant-utils.sh
+if ! source "$_cleanup_outdated_tags_root/helpers/variant-utils.sh"; then
+  echo "Failed to source tag routing helper: $_cleanup_outdated_tags_root/helpers/variant-utils.sh" >&2
+  unset _cleanup_outdated_tags_root
+  return 1 2>/dev/null || exit 1
+fi
 unset _cleanup_outdated_tags_root
 
 script_root() {
@@ -18,7 +24,7 @@ script_root() {
 }
 
 build_valid_tags() {
-  local container="$1" builds_json tags variant_tags flavor_tags
+  local container="$1" builds_json tags rolling_tags
   if ! builds_json=$("$ROOT_DIR/make" list-builds "$container" 2>/dev/null); then
     return 1
   fi
@@ -34,15 +40,7 @@ build_valid_tags() {
       and (.flavor | type == "string" and (. == "" or valid_tag))
       and (.os == "linux" or .os == "windows")
       and (.is_default | type == "boolean")
-      and (.is_latest_version | type == "boolean")
-      and (if .variant != "" and .is_latest_version == true
-           then ("latest-" + .variant | valid_tag)
-           else true
-           end)
-      and (if .os == "windows" and .is_default != true and .flavor != "" and .is_latest_version == true
-           then ("latest-" + .flavor | valid_tag)
-           else true
-           end))
+      and (.is_latest_version | type == "boolean"))
   ' >/dev/null <<< "$builds_json"; then
     return 1
   fi
@@ -50,19 +48,31 @@ build_valid_tags() {
     return 1
   fi
   tags+=$'\nlatest\nbuildcache'
-  if ! variant_tags=$(set -o pipefail; jq -r '.[] | select(.variant != "" and .is_latest_version == true) | "latest-" + .variant' <<< "$builds_json" | sort -u); then
+  if ! rolling_tags=$(
+    while IFS=$'\x1f' read -r cell_tag cell_os cell_variant cell_flavor cell_is_default; do
+      local cell_suffixes suffix
+      if ! cell_suffixes=$(compute_cell_tag_suffixes "$cell_tag" "$cell_os" "$cell_variant" "$cell_flavor" "$cell_is_default"); then
+        exit 1
+      fi
+      while IFS= read -r suffix; do
+        # Versioned tags and bare latest are accounted for above. Every
+        # latest-* alias comes from the shared cell routing helper.
+        [[ "$suffix" == "$cell_tag" || "$suffix" == "latest" ]] && continue
+        printf '%s\n' "$suffix"
+      done <<< "$cell_suffixes"
+    done < <(jq -r '.[] | select(.is_latest_version == true) | [.tag, .os, .variant, .flavor, (if .is_default then "true" else "false" end)] | join("\u001f")' <<< "$builds_json")
+  ); then
     return 1
   fi
-  if [[ -n "$variant_tags" ]]; then
-    tags+=$'\n'"$variant_tags"
-  fi
-  # Publisher creates latest-<flavor> on any version for non-default Windows builds with a non-empty flavor.
-  # This script's is_latest_version filter is narrower; #1395 tracks the difference.
-  if ! flavor_tags=$(set -o pipefail; jq -r '.[] | select(.os == "windows" and .is_default != true and .flavor != "" and .is_latest_version == true) | "latest-" + .flavor' <<< "$builds_json" | sort -u); then
-    return 1
-  fi
-  if [[ -n "$flavor_tags" ]]; then
-    tags+=$'\n'"$flavor_tags"
+  if [[ -n "$rolling_tags" ]]; then
+    if ! jq -eRn --arg tags "$rolling_tags" '
+      def valid_tag:
+        test("^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}\\z");
+      $tags | split("\n") | all(.[]; valid_tag)
+    ' >/dev/null; then
+      return 1
+    fi
+    tags+=$'\n'"$rolling_tags"
   fi
   printf '%s\n' "$tags" | sort -u
 }

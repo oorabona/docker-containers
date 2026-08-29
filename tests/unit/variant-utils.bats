@@ -25,6 +25,19 @@ teardown() {
     rm -rf "$TEST_DIR"
 }
 
+@test "sourcing variant-utils leaves the caller shell options unchanged" {
+    run bash -c '
+        set -e
+        before=$(set +o)
+        source "$1"
+        after=$(set +o)
+        [[ "$before" == "$after" ]]
+    ' _ "$ORIG_DIR/helpers/variant-utils.sh"
+
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
 # --- Helper to create a postgres-like variants.yaml ---
 
 create_postgres_variants() {
@@ -1134,8 +1147,8 @@ setup_fallback_test() {
 #
 # Four cases per the spec:
 #   (a) no-flavor container (flavor="", is_default="false") → versioned + :latest (both registries)
-#   (b) flavor non-empty + is_default="true"  → versioned + :latest (both registries)
-#   (c) flavor non-empty + is_default="false" → versioned + :latest-<flavor> (both registries)
+#   (b) default variant                       → versioned + :latest + :latest-<variant> (both registries)
+#   (c) Windows non-default with both keys    → versioned + both rolling aliases (both registries)
 #   (d) tag == "latest"                       → only versioned refs, no rolling latest
 
 @test "compute_cell_tags: an emission that fails is not reported as a full tag set" {
@@ -1179,16 +1192,16 @@ setup_fallback_test() {
     [[ "$output" != *"latest-"* ]]
 }
 
-@test "compute_cell_tags: (b) flavor + is_default=true → versioned + :latest on both registries" {
+@test "compute_cell_tags: (b) default variant → bare latest and variant alias on both registries" {
     run compute_cell_tags "1.0.0-base" "base" "true" "docker.io/owner/myapp" "ghcr.io/owner/myapp"
     [ "$status" -eq 0 ]
-    [ "$(echo "$output" | wc -l)" -eq 4 ]
+    [ "$(echo "$output" | wc -l)" -eq 6 ]
     [[ "$output" == *"docker.io/owner/myapp:1.0.0-base"* ]]
     [[ "$output" == *"ghcr.io/owner/myapp:1.0.0-base"* ]]
     [[ "$output" == *"docker.io/owner/myapp:latest"* ]]
     [[ "$output" == *"ghcr.io/owner/myapp:latest"* ]]
-    # Must NOT emit :latest-base (that's the non-default flavor path)
-    [[ "$output" != *"latest-base"* ]]
+    [[ "$output" == *"docker.io/owner/myapp:latest-base"* ]]
+    [[ "$output" == *"ghcr.io/owner/myapp:latest-base"* ]]
 }
 
 @test "compute_cell_tags: (c) flavor + is_default=false → versioned + :latest-<flavor> on both registries" {
@@ -1214,32 +1227,33 @@ setup_fallback_test() {
     [[ "$output" == *"ghcr.io/owner/plain2:latest"* ]]
 }
 
-@test "compute_cell_tags: github-runner default variant (name!=flavor) → bare :latest via is_default=true" {
+@test "compute_cell_tags: github-runner default variant (name!=flavor) → bare latest and variant alias" {
     # Regression: github-runner variant ubuntu-2404-base has flavor=ubuntu-2404.
     # Old code called variant_property(dir, "ubuntu-2404", "default") — wrong (flavor, not name).
     # New code: caller passes is_default computed from variant NAME ubuntu-2404-base → "true".
     run compute_cell_tags "2.334.0" "ubuntu-2404" "true" "docker.io/owner/github-runner" "ghcr.io/owner/github-runner"
     [ "$status" -eq 0 ]
-    [ "$(echo "$output" | wc -l)" -eq 4 ]
+    [ "$(echo "$output" | wc -l)" -eq 6 ]
     [[ "$output" == *"docker.io/owner/github-runner:2.334.0"* ]]
     [[ "$output" == *"ghcr.io/owner/github-runner:2.334.0"* ]]
-    # Default variant must get bare :latest, NOT :latest-ubuntu-2404
+    # Default variants get bare :latest and their variant alias, not a flavor alias.
     [[ "$output" == *"docker.io/owner/github-runner:latest"* ]]
     [[ "$output" == *"ghcr.io/owner/github-runner:latest"* ]]
-    local flavor_latest_count
-    flavor_latest_count=$(echo "$output" | grep -c "latest-ubuntu-2404" || true)
-    [ "$flavor_latest_count" -eq 0 ]
+    [[ "$output" == *"docker.io/owner/github-runner:latest-ubuntu-2404"* ]]
+    [[ "$output" == *"ghcr.io/owner/github-runner:latest-ubuntu-2404"* ]]
 }
 
-@test "compute_cell_tags: github-runner non-default variant → :latest-<flavor>" {
-    # ubuntu-2404-dev has flavor=ubuntu-2404 but is NOT default → latest-ubuntu-2404
+@test "compute_cell_tags: github-runner non-default Windows variant → both rolling aliases" {
+    # ubuntu-2404-dev has variant=ubuntu-2404-dev and flavor=ubuntu-2404.
     run compute_cell_tags "2.334.0-dev" "ubuntu-2404" "false" "docker.io/owner/github-runner" "ghcr.io/owner/github-runner" "windows" "ubuntu-2404-dev"
     [ "$status" -eq 0 ]
-    [ "$(echo "$output" | wc -l)" -eq 4 ]
+    [ "$(echo "$output" | wc -l)" -eq 6 ]
     [[ "$output" == *"docker.io/owner/github-runner:2.334.0-dev"* ]]
     [[ "$output" == *"ghcr.io/owner/github-runner:2.334.0-dev"* ]]
     [[ "$output" == *"docker.io/owner/github-runner:latest-ubuntu-2404"* ]]
     [[ "$output" == *"ghcr.io/owner/github-runner:latest-ubuntu-2404"* ]]
+    [[ "$output" == *"docker.io/owner/github-runner:latest-ubuntu-2404-dev"* ]]
+    [[ "$output" == *"ghcr.io/owner/github-runner:latest-ubuntu-2404-dev"* ]]
     # Must NOT emit bare :latest
     local bare_latest_count
     bare_latest_count=$(echo "$output" | grep -cxF "docker.io/owner/github-runner:latest" || true)
@@ -1266,7 +1280,7 @@ setup_fallback_test() {
 # Unit tests for the registry-independent suffix helper. Four cases:
 #   (a) no-routing-key non-default      → versioned + "latest"
 #   (b) a default cell                  → versioned + "latest"
-#   (c) Linux routes by variant; Windows by flavor
+#   (c) variants route by variant; Windows can also route by flavor
 #   (d) tag already == "latest"         → only versioned suffix, no alias
 
 @test "compute_cell_tag_suffixes: (a) no-routing-key non-default → versioned + bare latest" {
@@ -1282,21 +1296,22 @@ setup_fallback_test() {
     [[ "$output" != *"latest-"* ]]
 }
 
-@test "compute_cell_tag_suffixes: (b) a default cell on either OS → versioned + bare latest" {
+@test "compute_cell_tag_suffixes: (b) a default cell gets bare latest and its variant alias" {
     run compute_cell_tag_suffixes "1.0.0-base" "linux" "base" "base" "true"
     [ "$status" -eq 0 ]
-    # Exactly 2 lines
-    [ "$(echo "$output" | wc -l)" -eq 2 ]
+    # Exactly 3 lines
+    [ "$(echo "$output" | wc -l)" -eq 3 ]
     # Line 1: versioned suffix
     [ "$(echo "$output" | sed -n '1p')" = "1.0.0-base" ]
-    # Line 2: bare latest (NOT latest-base)
+    # Line 2: bare latest
     [ "$(echo "$output" | sed -n '2p')" = "latest" ]
-    [[ "$output" != *"latest-base"* ]]
+    [ "$(echo "$output" | sed -n '3p')" = "latest-base" ]
 
     run compute_cell_tag_suffixes "1.0.0-base" "windows" "windows-ltsc2022-base" "windows-ltsc2022" "true"
     [ "$status" -eq 0 ]
-    [ "$(echo "$output" | sed -n '2p')" = "latest" ]
-    [[ "$output" != *"latest-windows-ltsc2022"* ]]
+    [ "$output" = $'1.0.0-base\nlatest\nlatest-windows-ltsc2022-base' ]
+    # The Windows flavor alias is only for non-default cells.
+    ! grep -qxF "latest-windows-ltsc2022" <<< "$output"
 }
 
 @test "compute_cell_tag_suffixes: (c) Linux non-default routes by variant, not flavor" {
@@ -1322,20 +1337,19 @@ setup_fallback_test() {
     [ "$(echo "$output" | sed -n '1p')" = "latest" ]
 }
 
-@test "compute_cell_tag_suffixes: Windows non-default routes by flavor, not variant" {
+@test "compute_cell_tag_suffixes: Windows non-default emits independent variant and flavor aliases" {
     run compute_cell_tag_suffixes "2.337.0-windows-ltsc2022-dev" "windows" "windows-ltsc2022-dev" "windows-ltsc2022" "false"
 
     [ "$status" -eq 0 ]
-    [ "$output" = $'2.337.0-windows-ltsc2022-dev\nlatest-windows-ltsc2022' ]
-    [[ "$output" != *"latest-windows-ltsc2022-dev"* ]]
+    [ "$output" = $'2.337.0-windows-ltsc2022-dev\nlatest-windows-ltsc2022-dev\nlatest-windows-ltsc2022' ]
 }
 
-@test "compute_cell_tag_suffixes: every current github-runner and postgres cell keeps its rolling alias" {
+@test "compute_cell_tag_suffixes: every current newest github-runner and postgres cell keeps every rolling alias" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
     hash -r
 
-    local container matrix cell tag os variant flavor is_default routing_key expected suffixes checked=0
+    local container matrix cell tag os variant flavor is_default is_latest_version suffixes expected_suffixes checked=0
     for container in github-runner postgres; do
         matrix=$(list_build_matrix "$ORIG_DIR/$container" "" true)
         while IFS= read -r cell; do
@@ -1344,21 +1358,27 @@ setup_fallback_test() {
             variant=$(jq -r '.variant' <<< "$cell")
             flavor=$(jq -r '.flavor' <<< "$cell")
             is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
+            is_latest_version=$(jq -r 'if .is_latest_version then "true" else "false" end' <<< "$cell")
             suffixes=$(compute_cell_tag_suffixes "$tag" "$os" "$variant" "$flavor" "$is_default")
 
+            [[ "$is_latest_version" == "true" ]] || continue
+
+            expected_suffixes="$tag"
             if [[ "$is_default" == "true" ]]; then
-                expected="latest"
-            else
-                routing_key="$variant"
-                [[ "$os" == "windows" ]] && routing_key="$flavor"
-                if [[ -n "$routing_key" ]]; then
-                    expected="latest-$routing_key"
-                else
-                    expected="latest"
-                fi
+                expected_suffixes+=$'\nlatest'
+            fi
+            if [[ -n "$variant" ]]; then
+                expected_suffixes+=$'\nlatest-'"$variant"
+            fi
+            if [[ "$os" == "windows" && "$is_default" != "true" && -n "$flavor" ]]; then
+                expected_suffixes+=$'\nlatest-'"$flavor"
+            fi
+            if [[ "$is_default" != "true" && -z "$variant" &&
+                ! ( "$os" == "windows" && -n "$flavor" ) ]]; then
+                expected_suffixes+=$'\nlatest'
             fi
 
-            [ "$suffixes" = "$tag"$'\n'"$expected" ]
+            [ "$suffixes" = "$expected_suffixes" ]
             checked=$((checked + 1))
         done < <(jq -c '.[]' <<< "$matrix")
     done

@@ -11,6 +11,17 @@ teardown() {
     teardown_temp_dir
 }
 
+@test "image-identity enables strict mode before using helpers" {
+    run bash -c '
+        source "$1"
+        false
+        printf "continued\\n"
+    ' _ "$RESOLVER"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"continued"* ]]
+}
+
 resolve() {
     run bash -c 'source "$1"; image_identity_resolve "$2" "$3"' _ \
         "$RESOLVER" "$1" "$2"
@@ -91,8 +102,11 @@ assert_reported_component_version() {
         E2E_IMAGE_IDENTITY="$2"
         th_init --name "identity assertion" --report tap --no-color
         e2e_assert_reported_component_version 7.1
-        th_summary
-        summary_status=$?
+        if th_summary; then
+            summary_status=0
+        else
+            summary_status=$?
+        fi
         printf "caller-stub-defined\n"
         exit "$summary_status"
     ' _ "$PROJECT_ROOT" "$record"

@@ -97,13 +97,25 @@ make_valid_tags() {
         "latest-windows-ltsc2022" \
         "latest-windows-ltsc2022-dev")
 
+    if ! is_valid_tag "latest-windows-ltsc2022-dev" "$valid_tags"; then
+        echo "ASSERTION FAILED: cleanup must keep the variant rolling alias from a Windows github-runner cell (latest-windows-ltsc2022-dev)" >&2
+        return 1
+    fi
+    if ! is_valid_tag "latest-windows-ltsc2022" "$valid_tags"; then
+        echo "ASSERTION FAILED: cleanup must keep the independent Windows flavor rolling alias (latest-windows-ltsc2022)" >&2
+        return 1
+    fi
+    if ! is_valid_tag "latest-debian-trixie-base" "$valid_tags"; then
+        echo "ASSERTION FAILED: cleanup must keep a Linux rolling alias by variant (latest-debian-trixie-base)" >&2
+        return 1
+    fi
+    if is_valid_tag "latest-nonexistent" "$valid_tags"; then
+        echo "ASSERTION FAILED: cleanup must delete a rolling alias that no cell produces (latest-nonexistent)" >&2
+        return 1
+    fi
     [[ "$valid_tags" == "$expected_tags" ]]
-    is_valid_tag "latest-windows-ltsc2022" "$valid_tags"
-    is_valid_tag "latest-windows-ltsc2022-dev" "$valid_tags"
-    is_valid_tag "latest-debian-trixie-base" "$valid_tags"
     run ! is_valid_tag "latest-debian-trixie" "$valid_tags"
     run ! is_valid_tag "latest-windows-ltsc2025" "$valid_tags"
-    run ! is_valid_tag "latest-nonexistent" "$valid_tags"
     run ! is_valid_tag "latest-windows-ltsc2019" "$valid_tags"
 }
 
@@ -1425,8 +1437,10 @@ run_invalid_build_case() {
 
     run build_valid_tags example
 
-    [[ "$status" -eq 1 ]]
-    [[ "$output" != *"latest-"* ]]
+    if [[ "$status" -ne 1 || "$output" == *"latest-"* ]]; then
+        echo "ASSERTION FAILED: invalid build data must return 1 without emitting a rolling alias (status=$status, output=$output)" >&2
+        return 1
+    fi
 }
 
 @test "build_valid_tags rejects os darwin without emitting latest-" {
@@ -1458,7 +1472,7 @@ run_invalid_build_case() {
     root_dir="$BATS_TEST_TMPDIR/build-alias-length-root"
     mkdir -p "$root_dir"
     export ROOT_DIR="$root_dir"
-    build_json="[{\"tag\":\"release\",\"variant\":\"$variant_121\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":true,\"is_latest_version\":true}]"
+    build_json="[{\"tag\":\"release\",\"variant\":\"$variant_121\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":false,\"is_latest_version\":true}]"
     printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' '$build_json'" > "$root_dir/make"
     chmod +x "$root_dir/make"
 
@@ -1467,5 +1481,5 @@ run_invalid_build_case() {
     [[ "$status" -eq 0 ]]
     [[ "$output" == *"latest-$variant_121"* ]]
 
-    run_invalid_build_case "[{\"tag\":\"release\",\"variant\":\"$variant_122\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":true,\"is_latest_version\":true}]"
+    run_invalid_build_case "[{\"tag\":\"release\",\"variant\":\"$variant_122\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":false,\"is_latest_version\":true}]"
 }

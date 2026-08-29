@@ -5,8 +5,6 @@
 # Containers with variants.yaml produce multiple images from one Dockerfile
 # Structure supports multiple PostgreSQL versions with different variants per version
 
-set -euo pipefail
-
 # shellcheck source=./collect-lines.sh
 # shellcheck disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/collect-lines.sh"
@@ -298,14 +296,14 @@ variant_image_tag() {
 #
 # Rules (tag != "latest"):
 #   is_default == "true"                         -> + "latest"
-#   is_default != "true", Linux variant set      -> + "latest-<variant>"
-#   is_default != "true", Windows flavor set     -> + "latest-<flavor>"
-#   is_default != "true", selected key empty     -> + "latest"
+#   variant set                                    -> + "latest-<variant>"
+#   Windows non-default cell with flavor set       -> + "latest-<flavor>"
+#   non-default cell with neither alias key set    -> + "latest"
 # When tag == "latest", only the versioned suffix is emitted (no alias).
 #
-# The cell itself supplies the routing inputs. Callers must not choose a
-# routing field and pass it as a generic suffix: Linux routes by variant,
-# Windows by flavor. The other planners that carry this same rule are:
+# The variant and Windows-flavor aliases are independent: a non-default Windows
+# cell with both fields set gets both aliases. The cell itself supplies the
+# routing inputs. The other planners that carry this same rule are:
 #   .github/actions/build-container/action.yaml
 #   .github/workflows/auto-build.yaml
 #   scripts/cleanup-outdated-tags.sh
@@ -326,19 +324,19 @@ compute_cell_tag_suffixes() {
     if [[ "$tag" != "latest" ]]; then
         if [[ "$is_default" == "true" ]]; then
             printf 'latest\n'
-        else
-            local routing_key=""
-            if [[ "$os" == "windows" ]]; then
-                routing_key="$flavor"
-            else
-                routing_key="$variant"
-            fi
+        fi
 
-            if [[ -n "$routing_key" ]]; then
-                printf 'latest-%s\n' "$routing_key"
-            else
-                printf 'latest\n'
-            fi
+        if [[ -n "$variant" ]]; then
+            printf 'latest-%s\n' "$variant"
+        fi
+
+        if [[ "$os" == "windows" && "$is_default" != "true" && -n "$flavor" ]]; then
+            printf 'latest-%s\n' "$flavor"
+        fi
+
+        if [[ "$is_default" != "true" && -z "$variant" &&
+            ! ( "$os" == "windows" && -n "$flavor" ) ]]; then
+            printf 'latest\n'
         fi
     fi
 }
@@ -354,10 +352,11 @@ compute_cell_tag_suffixes() {
 #   - When tag != "latest":
 #       • is_default == "true"
 #           → also emit :latest on both registries.
-#       • is_default != "true" AND the OS-selected routing key is non-empty
-#           → also emit :latest-<variant> (Linux) or :latest-<flavor> (Windows)
-#             on both registries.
-#       • is_default != "true" AND the OS-selected routing key is empty
+#       • variant non-empty
+#           → also emit :latest-<variant> on both registries.
+#       • Windows, is_default != "true", and flavor non-empty
+#           → also emit :latest-<flavor> on both registries as well.
+#       • is_default != "true" and neither alias key is set
 #           → also emit :latest on both registries.
 #
 # Usage: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image> [os] [variant]
