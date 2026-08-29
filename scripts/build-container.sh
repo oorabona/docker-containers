@@ -462,7 +462,7 @@ build_container() {
     # see that function for the full rule-set.
     local _cell_refs_file _cell_refs _ref
     _cell_refs_file=$(mktemp "${TMPDIR:-/tmp}/build-container-cell-refs.XXXXXX") || return 1
-    if ! collect_lines "$_cell_refs_file" -- compute_cell_tags "$tag" "$flavor" "$is_default" "$dockerhub_image" "$ghcr_image"; then
+    if ! collect_lines "$_cell_refs_file" -- compute_cell_tags "$tag" "$flavor" "$is_default" "$dockerhub_image" "$ghcr_image" "$PROJECT_ROOT/$container"; then
         rm -f "$_cell_refs_file"
         log_error "Could not enumerate image tags; refusing to invoke docker build without tags"
         return 1

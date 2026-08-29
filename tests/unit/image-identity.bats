@@ -394,15 +394,25 @@ versions:
     [ "$(jq -r '.variant + ":" + .flavor' <<<"$output")" = "ubuntu-2404-dev:ubuntu-2404" ]
 }
 
-@test "accepts only postgres's generated base-before-variant tag order" {
+@test "postgres major aliases and versioned tags resolve to the same base-before-variant cell" {
     # 17 is a long-lived major stream (always_all_versions: true), and this
     # assertion requires that major to declare vector. Deriving it would trade
     # this stable pin for a fragile choice among supported majors.
+    local versioned_17
+    versioned_17=$(yq -r '.versions[].tag' "$PROJECT_ROOT/postgres/variants.yaml" | awk '/^17\./ { print; exit }')
+    [ -n "$versioned_17" ]
+
     resolve "$PROJECT_ROOT/postgres" "postgres:17-alpine-vector"
     [ "$status" -eq 0 ]
     [ "$(jq -r '.variant' <<<"$output")" = "vector" ]
+    [ "$(jq -r '.component_version' <<<"$output")" = "${versioned_17%-alpine}" ]
 
-    resolve "$PROJECT_ROOT/postgres" "postgres:17-vector-alpine"
+    resolve "$PROJECT_ROOT/postgres" "postgres:${versioned_17}-vector"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.variant' <<<"$output")" = "vector" ]
+    [ "$(jq -r '.component_version' <<<"$output")" = "${versioned_17%-alpine}" ]
+
+    resolve "$PROJECT_ROOT/postgres" "postgres:${versioned_17%-alpine}-vector-alpine"
     [ "$status" -ne 0 ]
     [[ "$output" == *"does not name a declared cell"* ]]
 }

@@ -1264,10 +1264,11 @@ setup_fallback_test() {
 # --- compute_cell_tag_suffixes ---
 #
 # Unit tests for the registry-independent suffix helper. Four cases:
-#   (a) no-flavor non-default           → versioned + "latest"
-#   (b) flavor set + is_default=true    → versioned + "latest"  (flavor ignored for default)
-#   (c) flavor set + is_default=false   → versioned + "latest-<flavor>"
+#   (a) newest no-flavor non-default    → versioned + "latest"
+#   (b) newest flavor + is_default=true → versioned + "latest"  (flavor ignored for default)
+#   (c) newest flavor + is_default=false → versioned + "latest-<flavor>"
 #   (d) tag already == "latest"         → only versioned suffix, no alias
+#   (e) declared PostgreSQL major alias → versioned + major alias for every line
 
 @test "compute_cell_tag_suffixes: (a) no-flavor non-default → versioned + bare latest" {
     run compute_cell_tag_suffixes "2.3.1" "" "false"
@@ -1315,4 +1316,142 @@ setup_fallback_test() {
     # Exactly 1 line — the versioned "latest" suffix with no additional rolling alias
     [ "$(echo "$output" | wc -l)" -eq 1 ]
     [ "$(echo "$output" | sed -n '1p')" = "latest" ]
+}
+
+@test "compute_cell_tag_suffixes: every postgres cell emits its exact and declared alias; only newest cells emit globals" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    local matrix count
+    matrix=$(list_build_matrix "$ORIG_DIR/postgres" "" true)
+    count=$(jq 'length' <<<"$matrix")
+    [ "$count" -eq 21 ]
+
+    local cell tag variant flavor is_default is_latest_version source_tag expected_alias expected_global suffixes verified=0
+    while IFS= read -r cell; do
+        tag=$(jq -r '.tag' <<<"$cell")
+        source_tag=$(jq -r '.version' <<<"$cell")
+        variant=$(jq -r '.variant' <<<"$cell")
+        flavor=$(jq -r '.flavor' <<<"$cell")
+        is_default=$(jq -r 'if .is_default then "true" else "false" end' <<<"$cell")
+        is_latest_version=$(jq -r 'if .is_latest_version then "true" else "false" end' <<<"$cell")
+        suffixes=$(compute_cell_tag_suffixes "$tag" "${variant:-$flavor}" "$is_default" "$ORIG_DIR/postgres" "$is_latest_version")
+
+        # The versioned spelling and its explicitly declared major alias are
+        # both emitted by this one cell; no caller recreates either form.
+        grep -qxF -- "$tag" <<<"$suffixes"
+        expected_alias=$(SOURCE_TAG="$source_tag" yq -r \
+            '.versions[] | select(.tag == strenv(SOURCE_TAG)) | .major_alias' \
+            "$ORIG_DIR/postgres/variants.yaml")
+        expected_alias+="${tag#"$source_tag"}"
+        grep -qxF -- "$expected_alias" <<<"$suffixes"
+
+        if [[ "$is_default" == "true" ]]; then
+            expected_global="latest"
+        else
+            expected_global="latest-${variant:-$flavor}"
+        fi
+        if [[ "$is_latest_version" == "true" ]]; then
+            grep -qxF -- "$expected_global" <<<"$suffixes"
+        else
+            ! grep -qxF -- "$expected_global" <<<"$suffixes"
+        fi
+        verified=$((verified + 1))
+    done < <(jq -c '.[]' <<<"$matrix")
+
+    [ "$verified" -eq 21 ]
+}
+
+@test "compute_cell_tag_suffixes: alias-free terraform and github-runner retain their current newest-line sets" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    local container matrix cell tag variant flavor is_default suffixes expected_global verified=0
+    for container in terraform github-runner; do
+        matrix=$(list_build_matrix "$ORIG_DIR/$container" "" false)
+        while IFS= read -r cell; do
+            tag=$(jq -r '.tag' <<<"$cell")
+            variant=$(jq -r '.variant // ""' <<<"$cell")
+            flavor=$(jq -r '.flavor // ""' <<<"$cell")
+            is_default=$(jq -r 'if .is_default then "true" else "false" end' <<<"$cell")
+            suffixes=$(compute_cell_tag_suffixes "$tag" "${variant:-$flavor}" "$is_default" "$ORIG_DIR/$container" "true")
+
+            if [[ "$is_default" == "true" || -z "${variant:-$flavor}" ]]; then
+                expected_global="latest"
+            else
+                expected_global="latest-${variant:-$flavor}"
+            fi
+            [ "$suffixes" = "$tag"$'\n'"$expected_global" ]
+            verified=$((verified + 1))
+        done < <(jq -c '.[]' <<<"$matrix")
+    done
+
+    [ "$verified" -gt 0 ]
+}
+
+@test "compute_cell_tag_suffixes: removing postgres's declared major alias stops that alias" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    mkdir -p postgres-without-alias
+    cp "$ORIG_DIR/postgres/variants.yaml" postgres-without-alias/variants.yaml
+    yq -i 'del(.versions[0].major_alias)' postgres-without-alias/variants.yaml
+
+    run compute_cell_tag_suffixes "18.6-alpine" "base" "true" postgres-without-alias
+    [ "$status" -eq 0 ]
+    [ "$output" = $'18.6-alpine\nlatest' ]
+}
+
+@test "compute_cell_tag_suffixes: wordpress has no alias until its fixture declares one" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    mkdir -p wordpress-fixture
+    cp "$ORIG_DIR/wordpress/variants.yaml" wordpress-fixture/variants.yaml
+
+    run compute_cell_tag_suffixes "7.1.0-alpine" "" "true" wordpress-fixture
+    [ "$status" -eq 0 ]
+    [ "$output" = $'7.1.0-alpine\nlatest' ]
+
+    yq -i '.versions[0].major_alias = "7-alpine"' wordpress-fixture/variants.yaml
+    run compute_cell_tag_suffixes "7.1.0-alpine" "" "true" wordpress-fixture
+    [ "$status" -eq 0 ]
+    [ "$output" = $'7.1.0-alpine\n7-alpine\nlatest' ]
+}
+
+@test "compute_cell_tag_suffixes: declared aliases do not assume an Alpine tag" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    mkdir -p non-alpine
+    cat > non-alpine/variants.yaml <<'EOF'
+versions:
+  - tag: release-2026r3
+    major_alias: current-release
+EOF
+
+    run compute_cell_tag_suffixes "release-2026r3-tools" "tools" "false" non-alpine
+    [ "$status" -eq 0 ]
+    [ "$output" = $'release-2026r3-tools\ncurrent-release-tools\nlatest-tools' ]
+}
+
+@test "compute_cell_tags: postgres publishes its resolved and major-alias forms on both registries" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    run compute_cell_tags "18.6-alpine-full" "full" "false" \
+        "docker.io/owner/postgres" "ghcr.io/owner/postgres" "$ORIG_DIR/postgres"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | wc -l)" -eq 6 ]
+    for registry in docker.io/owner/postgres ghcr.io/owner/postgres; do
+        grep -qxF -- "${registry}:18.6-alpine-full" <<<"$output"
+        grep -qxF -- "${registry}:18-alpine-full" <<<"$output"
+        grep -qxF -- "${registry}:latest-full" <<<"$output"
+    done
 }

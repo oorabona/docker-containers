@@ -27,6 +27,8 @@ Production-ready Docker images with **zero-touch upstream monitoring** — when 
 
 All images are published to [GHCR](https://github.com/oorabona?tab=packages) and [Docker Hub](https://hub.docker.com/u/oorabona).
 
+PostgreSQL keeps its major aliases (for example `postgres:18-alpine`) rolling and also publishes resolved forms such as `postgres:18.6-alpine`. Both tags can move when the image is rebuilt; use an image digest and its attestation when you need an immutable identity.
+
 ## How it works
 
 ```

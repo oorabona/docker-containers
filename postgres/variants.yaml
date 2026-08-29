@@ -1,29 +1,34 @@
 # PostgreSQL Container Variants
 # Defines multiple image variants per PostgreSQL major version
 #
-# Each version+variant produces a separate image tag:
-#   ghcr.io/oorabona/postgres:18-alpine         (v18 base)
-#   ghcr.io/oorabona/postgres:17-vector-alpine  (v17 vector)
+# Each resolved version+variant produces a separate image tag and a major-line
+# alias:
+#   ghcr.io/oorabona/postgres:18.6-alpine         (v18 base)
+#   ghcr.io/oorabona/postgres:18-alpine           (rolling v18 base alias)
 #   etc.
 
 # Build configuration
 build:
+  # Retain one current resolver result for every supported PostgreSQL major.
+  # The resolver's -alpine suffix is part of the declared, published tag.
+  retention_strategy: latest_per_major
+  retained_majors: [18, 17, 16]
   # Dependencies: extension images must exist before building variants with extensions
   requires_extensions: true
-  # Base image suffix (appended to version tag)
-  base_suffix: "-alpine"
   # Postgres builds all supported PG majors on every push (not just the latest line).
   # Rationale: each major is a long-lived supported release stream, not a rolling history.
   always_all_versions: true
-  # #1512 will migrate the registry matcher; until then this lookup must not
-  # authorize a monitor-created PR even when an upstream version is available.
-  upstream_monitor_actionable: false
   # Explicit bake opt-in for the FINAL image only. Extension compilation remains
   # owned by build-extensions; bake only consumes pre-built extension images.
   bake_final_build: true
 # Versions to build (all maintained PostgreSQL releases)
 versions:
-  - tag: "18"
+  - tag: "18.6-alpine"
+    # Numeric extension-build input for this retained major line.  It is
+    # declared beside the resolved tag, rather than inferred from its shape.
+    major: 18
+    # The rolling major-line tag published beside this resolved tag.
+    major_alias: "18-alpine"
     # PG18 - full extension support (Citus 14.0.0 adds PG 18 compatibility)
     variants:
       - name: base
@@ -62,7 +67,11 @@ versions:
         flavor: full
         description: "PostgreSQL with all compiled extensions"
         when_to_use: All extensions enabled — pick when prototyping or when scope is not yet defined.
-  - tag: "17"
+  - tag: "17.11-alpine"
+    # Numeric extension-build input for this retained major line.
+    major: 17
+    # The rolling major-line tag published beside this resolved tag.
+    major_alias: "17-alpine"
     # PG17 - full extension support
     variants:
       - name: base
@@ -101,7 +110,11 @@ versions:
         flavor: full
         description: "PostgreSQL with all compiled extensions"
         when_to_use: All extensions enabled — pick when prototyping or when scope is not yet defined.
-  - tag: "16"
+  - tag: "16.15-alpine"
+    # Numeric extension-build input for this retained major line.
+    major: 16
+    # The rolling major-line tag published beside this resolved tag.
+    major_alias: "16-alpine"
     # PG16 - full extension support
     variants:
       - name: base

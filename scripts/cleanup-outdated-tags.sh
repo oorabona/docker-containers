@@ -9,6 +9,28 @@ if ! source "$_cleanup_outdated_tags_root/helpers/version-record-validation.sh";
   unset _cleanup_outdated_tags_root
   return 1 2>/dev/null || exit 1
 fi
+# shellcheck source=../helpers/variant-utils.sh
+_cleanup_outdated_tags_had_errexit=false
+_cleanup_outdated_tags_had_nounset=false
+_cleanup_outdated_tags_had_pipefail=false
+case "$-" in *e*) _cleanup_outdated_tags_had_errexit=true ;; esac
+case "$-" in *u*) _cleanup_outdated_tags_had_nounset=true ;; esac
+if set -o | grep -q '^pipefail[[:space:]]*on$'; then
+  _cleanup_outdated_tags_had_pipefail=true
+fi
+if ! source "$_cleanup_outdated_tags_root/helpers/variant-utils.sh"; then
+  if [[ "$_cleanup_outdated_tags_had_errexit" == true ]]; then set -e; else set +e; fi
+  if [[ "$_cleanup_outdated_tags_had_nounset" == true ]]; then set -u; else set +u; fi
+  if [[ "$_cleanup_outdated_tags_had_pipefail" == true ]]; then set -o pipefail; else set +o pipefail; fi
+  unset _cleanup_outdated_tags_had_errexit _cleanup_outdated_tags_had_nounset _cleanup_outdated_tags_had_pipefail
+  echo "Failed to source tag plan helper: $_cleanup_outdated_tags_root/helpers/variant-utils.sh" >&2
+  unset _cleanup_outdated_tags_root
+  return 1 2>/dev/null || exit 1
+fi
+if [[ "$_cleanup_outdated_tags_had_errexit" == true ]]; then set -e; else set +e; fi
+if [[ "$_cleanup_outdated_tags_had_nounset" == true ]]; then set -u; else set +u; fi
+if [[ "$_cleanup_outdated_tags_had_pipefail" == true ]]; then set -o pipefail; else set +o pipefail; fi
+unset _cleanup_outdated_tags_had_errexit _cleanup_outdated_tags_had_nounset _cleanup_outdated_tags_had_pipefail
 unset _cleanup_outdated_tags_root
 
 script_root() {
@@ -18,7 +40,8 @@ script_root() {
 }
 
 build_valid_tags() {
-  local container="$1" builds_json tags variant_tags flavor_tags
+  local container="$1" builds_json cells_file suffixes_file tags_file
+  local tag variant flavor is_default is_latest_version routing_suffix suffix
   if ! builds_json=$("$ROOT_DIR/make" list-builds "$container" 2>/dev/null); then
     return 1
   fi
@@ -35,36 +58,52 @@ build_valid_tags() {
       and (.os == "linux" or .os == "windows")
       and (.is_default | type == "boolean")
       and (.is_latest_version | type == "boolean")
-      and (if .variant != "" and .is_latest_version == true
-           then ("latest-" + .variant | valid_tag)
-           else true
-           end)
-      and (if .os == "windows" and .is_default != true and .flavor != "" and .is_latest_version == true
-           then ("latest-" + .flavor | valid_tag)
-           else true
-           end))
+      )
   ' >/dev/null <<< "$builds_json"; then
     return 1
   fi
-  if ! tags=$(jq -r '.[].tag' <<< "$builds_json"); then
+
+  # The matrix is the container plan.  Each cell's entire published tag set is
+  # decided by compute_cell_tag_suffixes; cleanup only unions those answers.
+  # Keep the same variant-first routing used by both manifest publishers.
+  cells_file=$(mktemp "${TMPDIR:-/tmp}/cleanup-outdated-tags-cells.XXXXXX") || return 1
+  suffixes_file=$(mktemp "${TMPDIR:-/tmp}/cleanup-outdated-tags-suffixes.XXXXXX") || {
+    rm -f "$cells_file"
+    return 1
+  }
+  tags_file=$(mktemp "${TMPDIR:-/tmp}/cleanup-outdated-tags-tags.XXXXXX") || {
+    rm -f "$cells_file" "$suffixes_file"
+    return 1
+  }
+  if ! jq -r '.[] | [.tag, .variant, .flavor, (if .is_default then "true" else "false" end), (if .is_latest_version then "true" else "false" end)] | @tsv' \
+      <<< "$builds_json" > "$cells_file"; then
+    rm -f "$cells_file" "$suffixes_file" "$tags_file"
     return 1
   fi
-  tags+=$'\nlatest\nbuildcache'
-  if ! variant_tags=$(set -o pipefail; jq -r '.[] | select(.variant != "" and .is_latest_version == true) | "latest-" + .variant' <<< "$builds_json" | sort -u); then
+
+  while IFS=$'\t' read -r tag variant flavor is_default is_latest_version; do
+    routing_suffix="${variant:-$flavor}"
+    if ! compute_cell_tag_suffixes "$tag" "$routing_suffix" "$is_default" \
+        "$ROOT_DIR/$container" "$is_latest_version" > "$suffixes_file"; then
+      rm -f "$cells_file" "$suffixes_file" "$tags_file"
+      return 1
+    fi
+    while IFS= read -r suffix; do
+      [[ -n "$suffix" ]] && printf '%s\n' "$suffix" >> "$tags_file"
+    done < "$suffixes_file"
+  done < "$cells_file"
+
+  # These are cache refs, not cell publication tags.  is_valid_tag derives
+  # architecture-qualified cache refs from the underlying planned tag.
+  if ! printf '%s\n' 'buildcache' >> "$tags_file"; then
+    rm -f "$cells_file" "$suffixes_file" "$tags_file"
     return 1
   fi
-  if [[ -n "$variant_tags" ]]; then
-    tags+=$'\n'"$variant_tags"
-  fi
-  # Publisher creates latest-<flavor> on any version for non-default Windows builds with a non-empty flavor.
-  # This script's is_latest_version filter is narrower; #1395 tracks the difference.
-  if ! flavor_tags=$(set -o pipefail; jq -r '.[] | select(.os == "windows" and .is_default != true and .flavor != "" and .is_latest_version == true) | "latest-" + .flavor' <<< "$builds_json" | sort -u); then
+  if ! sort -u "$tags_file"; then
+    rm -f "$cells_file" "$suffixes_file" "$tags_file"
     return 1
   fi
-  if [[ -n "$flavor_tags" ]]; then
-    tags+=$'\n'"$flavor_tags"
-  fi
-  printf '%s\n' "$tags" | sort -u
+  rm -f "$cells_file" "$suffixes_file" "$tags_file"
 }
 
 is_valid_tag() {

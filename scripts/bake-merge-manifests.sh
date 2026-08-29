@@ -21,8 +21,8 @@
 # fails the cell and the overall run.
 #
 # Tag routing: delegates to helpers/variant-utils.sh::compute_cell_tag_suffixes
-# (GHCR-only, routing helper).  Rolling :latest/:latest-<flavor> aliases are
-# gated on is_latest_version==true to prevent retained versions clobbering :latest.
+# (GHCR-only, routing helper), which decides the entire tag set including the
+# newest-release-line restriction for global aliases.
 #
 # Dry-run: set DRY_RUN=true (or DOCKER="echo docker") to emit the
 # imagetools create command lines without executing them.
@@ -74,11 +74,9 @@ REMOTE_CR="${REMOTE_CR:-ghcr.io/oorabona}"
 # GHCR: strict / fail-closed.  Requires both -amd64 and -arm64 sources.
 # No single-arch fallback (ADR-013 §4).
 #
-# F2 / is_latest_version gate: when true, all suffixes from
-# compute_cell_tag_suffixes are published (versioned + rolling aliases).
-# When false (retained non-latest version), ONLY the versioned suffix is
-# published — rolling :latest/:latest-<variant> are suppressed to prevent
-# older retained versions from clobbering the :latest pointer.
+# is_latest_version is passed to compute_cell_tag_suffixes, which emits every
+# declared line alias for retained cells and global aliases only for the newest
+# release line. This publisher applies that answer verbatim.
 #
 # FIX F: rolling aliases route by VARIANT (not flavor) to match production
 # latest-$VARIANT (helpers/create-manifest.sh).  Flavor is non-unique for
@@ -106,14 +104,12 @@ _merge_cell() {
     # Compute GHCR final tag refs via compute_cell_tag_suffixes.
     # FIX F: pass $variant (not $flavor) as the rolling-alias discriminator
     # so each cell gets a unique latest-<variant> alias.
-    # F2: when is_latest_version==false, keep ONLY the versioned suffix
-    # (first line from compute_cell_tag_suffixes); drop rolling aliases.
     # ------------------------------------------------------------------
     local -a ghcr_refs=()
     local sfx
     local suffixes_file
     suffixes_file=$(mktemp "${TMPDIR:-/tmp}/bake-merge-cell-suffixes.XXXXXX") || return 1
-    if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$variant" "$is_default"; then
+    if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$variant" "$is_default" "$PROJECT_ROOT/$container" "$is_latest_version"; then
         rm -f "$suffixes_file"
         printf '::error::Could not enumerate all GHCR refs for %s:%s — skipping cell\n' \
             "$container" "$tag" >&2
@@ -121,11 +117,6 @@ _merge_cell() {
     fi
     while IFS= read -r sfx; do
         [[ -n "$sfx" ]] || continue
-        # F2 gate: for retained non-latest cells, publish only the versioned
-        # suffix (which equals $tag, the first line from the helper).
-        if [[ "$is_latest_version" != "true" && "$sfx" != "$tag" ]]; then
-            continue
-        fi
         ghcr_refs+=("${ghcr_image}:${sfx}")
     done < "$suffixes_file"
     rm -f "$suffixes_file"
@@ -243,16 +234,13 @@ main() {
         local _sfx
         local _suffixes_file
         _suffixes_file=$(mktemp "${TMPDIR:-/tmp}/bake-merge-duplicate-suffixes.XXXXXX") || exit 1
-        if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$_chk_tag" "$_routing_suffix" "$_chk_default"; then
+        if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$_chk_tag" "$_routing_suffix" "$_chk_default" "$PROJECT_ROOT/$_chk_c" "$_chk_latest"; then
             rm -f "$_suffixes_file"
             printf '::error::Could not enumerate all final refs for duplicate detection — aborting\n' >&2
             exit 1
         fi
         while IFS= read -r _sfx; do
             [[ -n "$_sfx" ]] || continue
-            if [[ "$_chk_latest" != "true" && "$_sfx" != "$_chk_tag" ]]; then
-                continue
-            fi
             local _fref="${REMOTE_CR}/${_chk_c}:${_sfx}"
             local _cell_id="${_chk_c}:${_chk_tag}(${_routing_suffix})"
             if [[ -n "${_seen_refs[$_fref]+set}" ]]; then

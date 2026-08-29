@@ -651,11 +651,17 @@ check_updates() {
         # Composite key used in the container field for routing
         local composite_key="${container}:${major}"
 
-        # Current published version on GHCR matching ^N\. pattern for this major
+        # Ask the resolver which published tags belong to this major.  Version
+        # shapes vary by container, so never reconstruct this from the major.
         local major_pattern
-        major_pattern="^${major}\\.[0-9]+\\.[0-9]+-alpine\$"
         local current_version registry_lookup lookup_info
-        lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "$major_pattern")
+        lookup_info=$'failed\t'
+        if major_pattern=$(./version.sh --registry-pattern "$major" 2>/dev/null); then
+          major_pattern=$(printf '%s' "$major_pattern" | head -1 | tr -d '\n')
+          if [[ -n "$major_pattern" ]]; then
+            lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "$major_pattern")
+          fi
+        fi
         registry_lookup=${lookup_info%%$'\t'*}
         current_version=${lookup_info#*$'\t'}
 
