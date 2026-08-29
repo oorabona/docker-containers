@@ -28,10 +28,27 @@ teardown() {
 @test "sourcing variant-utils leaves the caller shell options unchanged" {
     run bash -c '
         set -e
-        before=$(set +o)
+        before=$-
         source "$1"
-        after=$(set +o)
+        after=$-
         [[ "$before" == "$after" ]]
+    ' _ "$ORIG_DIR/helpers/variant-utils.sh"
+
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "sourcing variant-utils leaves a relaxed caller shell options unchanged" {
+    run bash -c '
+        set +e +u +o pipefail
+        before=$-
+        before_pipefail=$(set -o | grep -E "^pipefail")
+        source "$1"
+        after=$-
+        after_pipefail=$(set -o | grep -E "^pipefail")
+        [[ "$before" == "$after" ]]
+        [[ "$before_pipefail" =~ [[:space:]]off$ ]]
+        [[ "$after_pipefail" =~ [[:space:]]off$ ]]
     ' _ "$ORIG_DIR/helpers/variant-utils.sh"
 
     [ "$status" -eq 0 ]
@@ -1146,9 +1163,9 @@ setup_fallback_test() {
 # VARIANT NAME via variant_property — not looked up internally.
 #
 # Four cases per the spec:
-#   (a) no-flavor container (flavor="", is_default="false") → versioned + :latest (both registries)
-#   (b) default variant                       → versioned + :latest + :latest-<variant> (both registries)
-#   (c) Windows non-default with both keys    → versioned + both rolling aliases (both registries)
+#   (a) no-routing-key non-default → versioned + bare :latest (both registries)
+#   (b) default variant                       → versioned + :latest (both registries)
+#   (c) non-default with both keys            → versioned + variant rolling alias (both registries)
 #   (d) tag == "latest"                       → only versioned refs, no rolling latest
 
 @test "compute_cell_tags: an emission that fails is not reported as a full tag set" {
@@ -1178,7 +1195,7 @@ setup_fallback_test() {
     [ "$(echo "$output" | wc -l)" -eq 4 ]
 }
 
-@test "compute_cell_tags: (a) no-flavor → versioned + :latest on both registries" {
+@test "compute_cell_tags: (a) no-routing-key non-default → versioned + bare latest" {
     # No variants.yaml needed — function is now pure (no yq lookup)
     run compute_cell_tags "2.3.1" "" "false" "docker.io/owner/plain" "ghcr.io/owner/plain"
     [ "$status" -eq 0 ]
@@ -1192,16 +1209,16 @@ setup_fallback_test() {
     [[ "$output" != *"latest-"* ]]
 }
 
-@test "compute_cell_tags: (b) default variant → bare latest and variant alias on both registries" {
+@test "compute_cell_tags: (b) default variant → bare latest only on both registries" {
     run compute_cell_tags "1.0.0-base" "base" "true" "docker.io/owner/myapp" "ghcr.io/owner/myapp"
     [ "$status" -eq 0 ]
-    [ "$(echo "$output" | wc -l)" -eq 6 ]
+    [ "$(echo "$output" | wc -l)" -eq 4 ]
     [[ "$output" == *"docker.io/owner/myapp:1.0.0-base"* ]]
     [[ "$output" == *"ghcr.io/owner/myapp:1.0.0-base"* ]]
     [[ "$output" == *"docker.io/owner/myapp:latest"* ]]
     [[ "$output" == *"ghcr.io/owner/myapp:latest"* ]]
-    [[ "$output" == *"docker.io/owner/myapp:latest-base"* ]]
-    [[ "$output" == *"ghcr.io/owner/myapp:latest-base"* ]]
+    [[ "$output" != *"docker.io/owner/myapp:latest-base"* ]]
+    [[ "$output" != *"ghcr.io/owner/myapp:latest-base"* ]]
 }
 
 @test "compute_cell_tags: (c) flavor + is_default=false → versioned + :latest-<flavor> on both registries" {
@@ -1227,43 +1244,53 @@ setup_fallback_test() {
     [[ "$output" == *"ghcr.io/owner/plain2:latest"* ]]
 }
 
-@test "compute_cell_tags: github-runner default variant (name!=flavor) → bare latest and variant alias" {
+@test "compute_cell_tags: github-runner default variant (name!=flavor) → bare latest only" {
     # Regression: github-runner variant ubuntu-2404-base has flavor=ubuntu-2404.
     # Old code called variant_property(dir, "ubuntu-2404", "default") — wrong (flavor, not name).
     # New code: caller passes is_default computed from variant NAME ubuntu-2404-base → "true".
     run compute_cell_tags "2.334.0" "ubuntu-2404" "true" "docker.io/owner/github-runner" "ghcr.io/owner/github-runner"
     [ "$status" -eq 0 ]
-    [ "$(echo "$output" | wc -l)" -eq 6 ]
+    [ "$(echo "$output" | wc -l)" -eq 4 ]
     [[ "$output" == *"docker.io/owner/github-runner:2.334.0"* ]]
     [[ "$output" == *"ghcr.io/owner/github-runner:2.334.0"* ]]
-    # Default variants get bare :latest and their variant alias, not a flavor alias.
+    # Default variants get bare :latest, never a flavor or variant alias.
     [[ "$output" == *"docker.io/owner/github-runner:latest"* ]]
     [[ "$output" == *"ghcr.io/owner/github-runner:latest"* ]]
-    [[ "$output" == *"docker.io/owner/github-runner:latest-ubuntu-2404"* ]]
-    [[ "$output" == *"ghcr.io/owner/github-runner:latest-ubuntu-2404"* ]]
+    ! grep -qxF "docker.io/owner/github-runner:latest-ubuntu-2404" <<< "$output"
+    ! grep -qxF "ghcr.io/owner/github-runner:latest-ubuntu-2404" <<< "$output"
 }
 
-@test "compute_cell_tags: github-runner non-default Windows variant → both rolling aliases" {
-    # ubuntu-2404-dev has variant=ubuntu-2404-dev and flavor=ubuntu-2404.
-    run compute_cell_tags "2.334.0-dev" "ubuntu-2404" "false" "docker.io/owner/github-runner" "ghcr.io/owner/github-runner" "windows" "ubuntu-2404-dev"
+@test "compute_cell_tags: local Windows build uses its variant alias, not both CI aliases" {
+    run compute_cell_tags "2.337.0-windows-ltsc2022-dev" "windows-ltsc2022" "false" \
+        "docker.io/owner/github-runner" "ghcr.io/owner/github-runner" "windows" "windows-ltsc2022-dev"
     [ "$status" -eq 0 ]
-    [ "$(echo "$output" | wc -l)" -eq 6 ]
-    [[ "$output" == *"docker.io/owner/github-runner:2.334.0-dev"* ]]
-    [[ "$output" == *"ghcr.io/owner/github-runner:2.334.0-dev"* ]]
-    [[ "$output" == *"docker.io/owner/github-runner:latest-ubuntu-2404"* ]]
-    [[ "$output" == *"ghcr.io/owner/github-runner:latest-ubuntu-2404"* ]]
-    [[ "$output" == *"docker.io/owner/github-runner:latest-ubuntu-2404-dev"* ]]
-    [[ "$output" == *"ghcr.io/owner/github-runner:latest-ubuntu-2404-dev"* ]]
+    [ "$(echo "$output" | wc -l)" -eq 4 ]
+    [[ "$output" == *"docker.io/owner/github-runner:2.337.0-windows-ltsc2022-dev"* ]]
+    [[ "$output" == *"ghcr.io/owner/github-runner:2.337.0-windows-ltsc2022-dev"* ]]
+    [[ "$output" == *"docker.io/owner/github-runner:latest-windows-ltsc2022-dev"* ]]
+    [[ "$output" == *"ghcr.io/owner/github-runner:latest-windows-ltsc2022-dev"* ]]
+    ! grep -qxF "docker.io/owner/github-runner:latest-windows-ltsc2022" <<< "$output"
+    ! grep -qxF "ghcr.io/owner/github-runner:latest-windows-ltsc2022" <<< "$output"
     # Must NOT emit bare :latest
     local bare_latest_count
     bare_latest_count=$(echo "$output" | grep -cxF "docker.io/owner/github-runner:latest" || true)
     [ "$bare_latest_count" -eq 0 ]
 }
 
+@test "compute_cell_tags: local build falls back from an empty variant to flavor" {
+    run compute_cell_tags "2.337.0-windows-ltsc2022-dev" "windows-ltsc2022" "false" \
+        "docker.io/owner/github-runner" "ghcr.io/owner/github-runner" "windows" ""
+
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | wc -l)" -eq 4 ]
+    [[ "$output" == *"docker.io/owner/github-runner:latest-windows-ltsc2022"* ]]
+    [[ "$output" == *"ghcr.io/owner/github-runner:latest-windows-ltsc2022"* ]]
+}
+
 @test "compute_cell_tags: a short suffix enumeration returns failure and emits no partial refs [catches process-substitution partial publish]" {
-    # Mutation caught: restoring `done < <(compute_cell_tag_suffixes ...)`
+    # Mutation caught: restoring `done < <(compute_local_build_tag_suffixes ...)`
     # emits refs for "partial" and returns success despite this producer failure.
-    compute_cell_tag_suffixes() {
+    compute_local_build_tag_suffixes() {
         printf 'partial\n'
         return 1
     }
@@ -1279,38 +1306,108 @@ setup_fallback_test() {
 #
 # Unit tests for the registry-independent suffix helper. Four cases:
 #   (a) no-routing-key non-default      → versioned + "latest"
-#   (b) a default cell                  → versioned + "latest"
+#   (b) a default cell                  → versioned + "latest" only
 #   (c) variants route by variant; Windows can also route by flavor
 #   (d) tag already == "latest"         → only versioned suffix, no alias
 
-@test "compute_cell_tag_suffixes: (a) no-routing-key non-default → versioned + bare latest" {
+@test "list_cell_publisher_rolling_aliases: a failed producer returns failure without a partial alias set" {
+    list_cell_rolling_aliases() {
+        printf 'linux-manifest\tlatest-vector\n'
+        return 23
+    }
+
+    run list_cell_publisher_rolling_aliases "linux-manifest" "18-alpine-vector" "linux" "vector" "alpine" "false"
+
+    [ "$status" -eq 23 ]
+    [ -z "$output" ]
+}
+
+@test "list_cell_publisher_rolling_aliases: a failed alias write returns failure" {
+    run bash -c '
+        source "$1"
+        list_cell_publisher_rolling_aliases linux-manifest 18-alpine-vector linux vector alpine false > /dev/full 2>/dev/null
+    ' _ "$ORIG_DIR/helpers/variant-utils.sh"
+
+    [ "$status" -ne 0 ]
+}
+
+@test "list_cell_publisher_rolling_aliases rejects an unrecognised publisher" {
+    run list_cell_publisher_rolling_aliases "linux-manfiest" "18-alpine-vector" "linux" "vector" "alpine" "false"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unrecognised publisher"* ]]
+}
+
+@test "list_cell_rolling_aliases rejects an unrecognised OS and noncanonical boolean" {
+    run list_cell_rolling_aliases "18-alpine-vector" "darwin" "vector" "alpine" "false"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unrecognised OS"* ]]
+
+    run list_cell_rolling_aliases "18-alpine-vector" "linux" "vector" "alpine" "TRUE"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is_default must be true or false"* ]]
+}
+
+@test "list_cell_rolling_aliases rejects an invalid composed Docker tag" {
+    run list_cell_rolling_aliases "18-alpine-vector" "linux" $'vector\nsecond-record' "alpine" "false"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"composed alias is not a valid Docker tag"* ]]
+}
+
+@test "compute_cell_publisher_tag_suffixes includes the versioned ref and only its aliases" {
+    run compute_cell_publisher_tag_suffixes "windows-manifest" \
+        "2.337.0-windows-ltsc2022-dev" "windows" "windows-ltsc2022-dev" "windows-ltsc2022" "false"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = $'2.337.0-windows-ltsc2022-dev\nlatest-windows-ltsc2022-dev' ]
+}
+
+@test "compute_cell_tag_suffixes: a failed alias pipeline stage returns failure without the versioned prefix" {
+    cut() { return 23; }
+
+    run compute_cell_tag_suffixes "18-alpine-vector" "linux" "vector" "alpine" "false"
+
+    [ "$status" -eq 23 ]
+    [[ "$output" != *"18-alpine-vector"* ]]
+}
+
+@test "compute_cell_tag_suffixes: a failed suffix write returns failure" {
+    run bash -c '
+        source "$1"
+        compute_cell_tag_suffixes 18-alpine-vector linux vector alpine false > /dev/full 2>/dev/null
+    ' _ "$ORIG_DIR/helpers/variant-utils.sh"
+
+    [ "$status" -ne 0 ]
+}
+
+@test "compute_cell_tag_suffixes: (a) no-routing-key non-default → versioned only" {
     run compute_cell_tag_suffixes "2.3.1" "linux" "" "" "false"
     [ "$status" -eq 0 ]
-    # Exactly 2 lines
-    [ "$(echo "$output" | wc -l)" -eq 2 ]
+    # Exactly 1 line
+    [ "$(echo "$output" | wc -l)" -eq 1 ]
     # Line 1: versioned suffix
     [ "$(echo "$output" | sed -n '1p')" = "2.3.1" ]
-    # Line 2: bare latest
-    [ "$(echo "$output" | sed -n '2p')" = "latest" ]
+    ! grep -qxF "latest" <<< "$output"
     # Must NOT contain any "latest-" flavor alias
     [[ "$output" != *"latest-"* ]]
 }
 
-@test "compute_cell_tag_suffixes: (b) a default cell gets bare latest and its variant alias" {
+@test "compute_cell_tag_suffixes: (b) a default cell gets bare latest and no variant alias" {
     run compute_cell_tag_suffixes "1.0.0-base" "linux" "base" "base" "true"
     [ "$status" -eq 0 ]
-    # Exactly 3 lines
-    [ "$(echo "$output" | wc -l)" -eq 3 ]
+    # Exactly 2 lines
+    [ "$(echo "$output" | wc -l)" -eq 2 ]
     # Line 1: versioned suffix
     [ "$(echo "$output" | sed -n '1p')" = "1.0.0-base" ]
     # Line 2: bare latest
     [ "$(echo "$output" | sed -n '2p')" = "latest" ]
-    [ "$(echo "$output" | sed -n '3p')" = "latest-base" ]
+    ! grep -qxF "latest-base" <<< "$output"
 
     run compute_cell_tag_suffixes "1.0.0-base" "windows" "windows-ltsc2022-base" "windows-ltsc2022" "true"
     [ "$status" -eq 0 ]
-    [ "$output" = $'1.0.0-base\nlatest\nlatest-windows-ltsc2022-base' ]
-    # The Windows flavor alias is only for non-default cells.
+    [ "$output" = $'1.0.0-base\nlatest' ]
+    ! grep -qxF "latest-windows-ltsc2022-base" <<< "$output"
     ! grep -qxF "latest-windows-ltsc2022" <<< "$output"
 }
 
@@ -1344,14 +1441,27 @@ setup_fallback_test() {
     [ "$output" = $'2.337.0-windows-ltsc2022-dev\nlatest-windows-ltsc2022-dev\nlatest-windows-ltsc2022' ]
 }
 
+@test "compute_cell_tag_suffixes: emits an equal Windows variant and flavor suffix once" {
+    run compute_cell_tag_suffixes "2.337.0-windows-ltsc2022" "windows" "windows-ltsc2022" "windows-ltsc2022" "false"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = $'2.337.0-windows-ltsc2022\nlatest-windows-ltsc2022' ]
+    [ "$(grep -cxF "latest-windows-ltsc2022" <<< "$output")" -eq 1 ]
+}
+
 @test "compute_cell_tag_suffixes: every current newest github-runner and postgres cell keeps every rolling alias" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
     hash -r
 
-    local container matrix cell tag os variant flavor is_default is_latest_version suffixes expected_suffixes checked=0
+    local container matrix cells_file cell tag os variant flavor is_default is_latest_version suffixes expected_suffixes checked=0
     for container in github-runner postgres; do
         matrix=$(list_build_matrix "$ORIG_DIR/$container" "" true)
+        cells_file=$(mktemp "$BATS_TEST_TMPDIR/variant-utils-cells.XXXXXX")
+        if ! collect_lines "$cells_file" -- jq -c '.[]' <<< "$matrix"; then
+            rm -f "$cells_file"
+            fail "could not enumerate build matrix cells for $container"
+        fi
         while IFS= read -r cell; do
             tag=$(jq -r '.tag' <<< "$cell")
             os=$(jq -r '.os' <<< "$cell")
@@ -1366,21 +1476,17 @@ setup_fallback_test() {
             expected_suffixes="$tag"
             if [[ "$is_default" == "true" ]]; then
                 expected_suffixes+=$'\nlatest'
-            fi
-            if [[ -n "$variant" ]]; then
+            elif [[ -n "$variant" ]]; then
                 expected_suffixes+=$'\nlatest-'"$variant"
             fi
-            if [[ "$os" == "windows" && "$is_default" != "true" && -n "$flavor" ]]; then
+            if [[ "$os" == "windows" && "$is_default" != "true" && -n "$flavor" && "$flavor" != "$variant" ]]; then
                 expected_suffixes+=$'\nlatest-'"$flavor"
-            fi
-            if [[ "$is_default" != "true" && -z "$variant" &&
-                ! ( "$os" == "windows" && -n "$flavor" ) ]]; then
-                expected_suffixes+=$'\nlatest'
             fi
 
             [ "$suffixes" = "$expected_suffixes" ]
             checked=$((checked + 1))
-        done < <(jq -c '.[]' <<< "$matrix")
+        done < "$cells_file"
+        rm -f "$cells_file"
     done
 
     [ "$checked" -gt 0 ]

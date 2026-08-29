@@ -258,6 +258,22 @@ CALLER
     [[ "$create_line" == *"ghcr.io/oorabona/debian:latest"* ]]
 }
 
+@test "a Windows bake cell publishes only the Windows manifest ownership share" {
+    export REMOTE_CR="ghcr.io/oorabona"
+
+    _call_merge_cell "github-runner" "2.337.0-windows-ltsc2022-dev" \
+        "windows-ltsc2022" "false" \
+        "ghcr.io/oorabona/github-runner:2.337.0-windows-ltsc2022-dev" "true" \
+        "windows-ltsc2022-dev" "windows"
+
+    [ "$status" -eq 0 ]
+    local create_line
+    create_line=$(grep "imagetools create" "$DOCKER_LOG")
+    [[ "$create_line" == *":2.337.0-windows-ltsc2022-dev"* ]]
+    [[ "$create_line" == *":latest-windows-ltsc2022-dev"* ]]
+    [[ "$create_line" != *":latest-windows-ltsc2022 "* ]]
+}
+
 # ---------------------------------------------------------------------------
 # FIX F / MM9: github-runner dry-run merge emits distinct rolling aliases.
 # debian-trixie-base and debian-trixie-dev must NOT share latest-debian-trixie.
@@ -334,7 +350,7 @@ CALLER
 #!/usr/bin/env bash
 set -euo pipefail
 source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
-compute_cell_tag_suffixes() { printf 'partial\n'; return 1; }
+compute_cell_publisher_tag_suffixes() { printf 'partial\n'; return 1; }
 _merge_cell debian trixie '' true ghcr.io/oorabona/debian:trixie true
 EOF
     chmod +x "$caller_script"
@@ -357,7 +373,7 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
-compute_cell_tag_suffixes() { printf 'partial\n'; return 1; }
+compute_cell_publisher_tag_suffixes() { printf 'partial\n'; return 1; }
 SCRIPT_DIR="${TEST_TEMP_DIR}/bin"
 main
 EOF
@@ -376,7 +392,7 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
-compute_cell_tag_suffixes() { return 0; }
+compute_cell_publisher_tag_suffixes() { return 0; }
 _merge_cell debian trixie '' true ghcr.io/oorabona/debian:trixie true
 EOF
     chmod +x "$caller_script"

@@ -969,11 +969,11 @@ runs:
           retry_with_backoff 5 30 docker buildx imagetools create --tag "$dh_dst" "$dh_src"
         fi
 
-        # Windows is single-arch, so publish every shared routing-helper alias
-        # here. Linux manifests publish their aliases in the workflow.
+        # Windows flavor aliases are single-arch and owned by this action.
+        # Linux aliases and Windows variant aliases are published elsewhere.
         if [[ "$runner_os" == "Windows" ]]; then
           rolling_suffixes=$(./scripts/list-cell-rolling-tag-suffixes.sh \
-            "$current_tag" "windows" "$variant" "$flavor" "$is_default")
+            "windows-action" "$current_tag" "windows" "$variant" "$flavor" "$is_default")
           while IFS= read -r latest_tag; do
             [[ -z "$latest_tag" ]] && continue
             echo "::notice::Creating Windows rolling tag: ghcr.io/$image_name:$latest_tag"

@@ -46,23 +46,39 @@ assert_single_variant_result() {
         <<< "$result_lines" >/dev/null
 }
 
-@test "build-container enables strict mode before loading helpers" {
-    local fixture_root
-    fixture_root="$BATS_TEST_TMPDIR/build-container-strict-mode"
-    mkdir -p "$fixture_root/scripts" "$fixture_root/helpers"
-    cp "$SCRIPTS_DIR/build-container.sh" "$fixture_root/scripts/build-container.sh"
-    for helper in logging.sh collect-lines.sh variant-utils.sh build-cache-utils.sh build-args-utils.sh template-utils.sh extension-utils.sh extension-duration-utils.sh; do
-        printf '#!/usr/bin/env bash\n' > "$fixture_root/helpers/$helper"
-    done
-
+@test "sourcing build-container preserves an enabled errexit" {
     run bash -c '
+        set -e
+        before=$-
         source "$1"
-        false
-        printf "continued\\n"
-    ' _ "$fixture_root/scripts/build-container.sh"
+        after=$-
+        [[ "$before" == *e* ]]
+        [[ "$after" == *e* ]]
+    ' _ "$SCRIPTS_DIR/build-container.sh"
 
-    [ "$status" -ne 0 ]
-    [[ "$output" != *"continued"* ]]
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "sourcing build-container enables master's strict-mode options for a relaxed caller" {
+    run bash -c '
+        set +e +u +o pipefail
+        before=$-
+        before_pipefail=$(set -o | grep -E "^pipefail")
+        source "$1"
+        after=$-
+        after_pipefail=$(set -o | grep -E "^pipefail")
+        [[ "$before" != *e* ]]
+        [[ "$before" != *u* ]]
+        [[ "$before_pipefail" =~ [[:space:]]off$ ]]
+        [[ "$after" == *e* ]]
+        [[ "$after" == *h* ]]
+        [[ "$after" == *u* ]]
+        [[ "$after_pipefail" =~ [[:space:]]on$ ]]
+    ' _ "$SCRIPTS_DIR/build-container.sh"
+
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
 }
 
 # =============================================================================
@@ -614,11 +630,11 @@ EOF
 
     # Mutation caught: the old process substitution made compute_cell_tags
     # report success after emitting this one suffix, so docker built it anyway.
-    compute_cell_tag_suffixes() {
+    compute_local_build_tag_suffixes() {
         printf 'partial\n'
         return 1
     }
-    export -f compute_cell_tag_suffixes
+    export -f compute_local_build_tag_suffixes
 
     cd "$TEST_TEMP_DIR"
     run build_container "testcontainer" "1.0.0" "1.0.0"

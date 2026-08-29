@@ -1472,7 +1472,7 @@ run_invalid_build_case() {
     root_dir="$BATS_TEST_TMPDIR/build-alias-length-root"
     mkdir -p "$root_dir"
     export ROOT_DIR="$root_dir"
-    build_json="[{\"tag\":\"release\",\"variant\":\"$variant_121\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":false,\"is_latest_version\":true}]"
+    build_json="[{\"tag\":\"release\",\"variant\":\"$variant_121\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":true,\"is_latest_version\":true}]"
     printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' '$build_json'" > "$root_dir/make"
     chmod +x "$root_dir/make"
 
@@ -1481,5 +1481,5 @@ run_invalid_build_case() {
     [[ "$status" -eq 0 ]]
     [[ "$output" == *"latest-$variant_121"* ]]
 
-    run_invalid_build_case "[{\"tag\":\"release\",\"variant\":\"$variant_122\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":false,\"is_latest_version\":true}]"
+    run_invalid_build_case "[{\"tag\":\"release\",\"variant\":\"$variant_122\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":true,\"is_latest_version\":true}]"
 }

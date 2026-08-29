@@ -1650,10 +1650,10 @@ jobs:
             echo "::notice::Creating Windows tag alias: $ghcr_dst"
             docker buildx imagetools create -t "$ghcr_dst" "$ghcr_src" || echo "::warning::Failed to create tag alias"
 
-            # The routing helper supplies every rolling alias for this cell.
+            # The Windows manifest path owns the variant alias only.
             if [[ "${IS_LATEST_VERSION}" == "true" ]]; then
               rolling_suffixes=$(./scripts/list-cell-rolling-tag-suffixes.sh \
-                "$TAG" "$CELL_OS" "$VARIANT" "$FLAVOR" "$IS_DEFAULT")
+                "windows-manifest" "$TAG" "$CELL_OS" "$VARIANT" "$FLAVOR" "$IS_DEFAULT")
               while IFS= read -r latest_tag; do
                 [[ -z "$latest_tag" ]] && continue
                 echo "::notice::Creating Windows rolling tag: ghcr.io/$GITHUB_USERNAME/$CONTAINER:$latest_tag"
@@ -1697,10 +1697,10 @@ jobs:
             echo "::notice::Creating Windows Docker Hub tag alias: $dh_dst"
             docker buildx imagetools create -t "$dh_dst" "$dh_src" || echo "::warning::Failed to create Docker Hub tag alias"
 
-            # The routing helper supplies every rolling alias for this cell.
+            # The Windows manifest path owns the variant alias only.
             if [[ "${IS_LATEST_VERSION}" == "true" ]]; then
               rolling_suffixes=$(./scripts/list-cell-rolling-tag-suffixes.sh \
-                "$TAG" "$CELL_OS" "$VARIANT" "$FLAVOR" "$IS_DEFAULT")
+                "windows-manifest" "$TAG" "$CELL_OS" "$VARIANT" "$FLAVOR" "$IS_DEFAULT")
               while IFS= read -r latest_tag; do
                 [[ -z "$latest_tag" ]] && continue
                 echo "::notice::Creating Windows Docker Hub rolling tag: docker.io/$DOCKERHUB_USERNAME/$CONTAINER:$latest_tag"

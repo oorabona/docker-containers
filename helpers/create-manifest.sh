@@ -70,17 +70,16 @@ _compute_tag_args() {
         fi
     fi
 
-    # Rolling aliases only for the newest line. The shared cell router owns
-    # their selection; this manifest helper only turns returned suffixes into
-    # registry-specific -t arguments.
+    # The Linux manifest owns Linux rolling aliases. The helper decides both
+    # the alias name and its owner; this publisher only requests its share.
     if [[ "${IS_LATEST_VERSION:-}" == "true" ]]; then
         local routing_suffixes suffix
-        if ! routing_suffixes=$(compute_cell_tag_suffixes "$TAG" "${CELL_OS:-linux}" "${VARIANT:-}" "${FLAVOR:-}" "${IS_DEFAULT:-false}"); then
+        if ! routing_suffixes=$(list_cell_publisher_rolling_aliases "linux-manifest" "$TAG" "${CELL_OS:-linux}" "${VARIANT:-}" "${FLAVOR:-}" "${IS_DEFAULT:-false}"); then
             printf 'Could not enumerate rolling manifest tag suffixes\n' >&2
             return 1
         fi
         while IFS= read -r suffix; do
-            [[ "$suffix" == "$TAG" ]] && continue
+            [[ -z "$suffix" ]] && continue
             tag_args="$tag_args -t $target_image:$suffix"
         done <<< "$routing_suffixes"
     fi

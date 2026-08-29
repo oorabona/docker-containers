@@ -11,9 +11,8 @@
 # For each bake-managed container the function mirrors its canonical GHCR final tags
 # to docker.io/oorabona/<container>:<tag> using `docker buildx imagetools create`.
 #
-# Tag set: identical to what bake-merge-manifests.sh publishes — versioned + rolling
-# aliases, gated on is_latest_version (retained non-latest versions only get the
-# versioned tag; no rolling :latest/:latest-<variant> to avoid clobbering).
+# Tag set: identical to what bake-merge-manifests.sh publishes — versioned + the
+# manifest publisher's rolling aliases, gated on is_latest_version.
 #
 # BEST-EFFORT (default): a failure on any individual tag emits ::warning:: and continues.
 # The function returns 0 even when individual mirrors fail — it never gates the build.
@@ -207,13 +206,20 @@ mirror_to_dockerhub() {
         # The final merged GHCR manifest ref (no arch suffix) is the source for the mirror.
         local ghcr_src="${remote_cr}/${container}:${tag}"
 
-        # Enumerate tags from the cell attributes; compute_cell_tag_suffixes
-        # selects variant on Linux and flavor on Windows.
+        # Enumerate tags from the cell's manifest publisher ownership view.
         # For retained non-latest cells, publish ONLY the versioned tag.
-        local sfx
+        local publisher sfx
+        if ! publisher=$(cell_manifest_publisher_for_os "$os"); then
+            printf '::warning::mirror-dockerhub: could not select a manifest publisher for %s:%s; mirroring none for this cell\n' \
+                "$container" "$tag" >&2
+            if [[ "$_strict" == "true" ]]; then
+                return 1
+            fi
+            continue
+        fi
         local suffixes_file
         suffixes_file=$(mktemp "${TMPDIR:-/tmp}/mirror-dockerhub-suffixes.XXXXXX") || return 1
-        if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$os" "$variant" "$flavor" "$is_default"; then
+        if ! collect_lines "$suffixes_file" -- compute_cell_publisher_tag_suffixes "$publisher" "$tag" "$os" "$variant" "$flavor" "$is_default"; then
             rm -f "$suffixes_file"
             printf '::warning::mirror-dockerhub: could not enumerate all tags for %s:%s; mirroring none for this cell\n' \
                 "$container" "$tag" >&2

@@ -4,8 +4,6 @@
 # Part of make script decomposition for better Single Responsibility
 # Supports multi-variant containers via variants.yaml
 
-set -euo pipefail
-
 # Source shared logging utilities
 # Use BASH_SOURCE[0] instead of $0 to work correctly when sourced
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -11,15 +11,32 @@ teardown() {
     teardown_temp_dir
 }
 
-@test "image-identity enables strict mode before using helpers" {
+@test "sourcing image-identity leaves the caller shell options unchanged" {
     run bash -c '
+        set -e
+        before=$-
         source "$1"
-        false
-        printf "continued\\n"
+        after=$-
+        [[ "$before" == "$after" ]]
     ' _ "$RESOLVER"
 
-    [ "$status" -ne 0 ]
-    [[ "$output" != *"continued"* ]]
+    [ "$status" -eq 0 ]
+}
+
+@test "sourcing image-identity leaves a relaxed caller shell options unchanged" {
+    run bash -c '
+        set +e +u +o pipefail
+        before=$-
+        before_pipefail=$(set -o | grep -E "^pipefail")
+        source "$1"
+        after=$-
+        after_pipefail=$(set -o | grep -E "^pipefail")
+        [[ "$before" == "$after" ]]
+        [[ "$before_pipefail" =~ [[:space:]]off$ ]]
+        [[ "$after_pipefail" =~ [[:space:]]off$ ]]
+    ' _ "$RESOLVER"
+
+    [ "$status" -eq 0 ]
 }
 
 resolve() {
@@ -102,17 +119,10 @@ assert_reported_component_version() {
         E2E_IMAGE_IDENTITY="$2"
         th_init --name "identity assertion" --report tap --no-color
         e2e_assert_reported_component_version 7.1
-        if th_summary; then
-            summary_status=0
-        else
-            summary_status=$?
-        fi
-        printf "caller-stub-defined\n"
-        exit "$summary_status"
+        th_summary
     ' _ "$PROJECT_ROOT" "$record"
 
     [ "$status" -ne 0 ]
-    [[ "$output" == *"caller-stub-defined"* ]]
     [[ "$output" == *"not ok 1 - the reported component version matches the resolved image release"* ]]
 }
 

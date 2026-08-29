@@ -139,6 +139,23 @@ _run_mirror() {
          false)
 }
 
+@test "a Windows mirror cell publishes only the Windows manifest ownership share" {
+    local generator="${TEST_LOG_DIR}/windows-cell-generator.sh"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"container":"github-runner","tag":"2.337.0-windows-ltsc2022-dev","os":"windows","flavor":"windows-ltsc2022","variant":"windows-ltsc2022-dev","is_default":false,"is_latest_version":true,"intermediate_ref":"ghcr.io/oorabona/github-runner:2.337.0-windows-ltsc2022-dev"}]'
+EOF
+    chmod +x "$generator"
+    export _MDH_GENERATOR_OVERRIDE="$generator"
+
+    run _run_mirror "github-runner"
+
+    [ "$status" -eq 0 ]
+    grep -q "docker.io/testuser/github-runner:2.337.0-windows-ltsc2022-dev" "$DOCKER_LOG"
+    grep -q "docker.io/testuser/github-runner:latest-windows-ltsc2022-dev" "$DOCKER_LOG"
+    ! grep -q "docker.io/testuser/github-runner:latest-windows-ltsc2022 " "$DOCKER_LOG"
+}
+
 @test "short suffix enumeration mirrors no Docker Hub tags [catches partial imagetools publish]" {
     local generator="${TEST_LOG_DIR}/short-enumeration-generator.sh"
     cat > "$generator" <<'EOF'
@@ -150,7 +167,7 @@ EOF
 
     run bash -c '
         source "$1"
-        compute_cell_tag_suffixes() { printf "partial\\n"; return 1; }
+        compute_cell_publisher_tag_suffixes() { printf "partial\\n"; return 1; }
         mirror_to_dockerhub web-shell
     ' bash "$MDH"
 
@@ -248,6 +265,7 @@ GEN_EOF
                 os=\$(jq -r '.os // \"linux\"' <<< \"\$cell\")
                 is_default=\$(jq -r 'if .is_default then \"true\" else \"false\" end' <<< \"\$cell\")
                 is_latest_version=\$(jq -r 'if has(\"is_latest_version\") then (if .is_latest_version then \"true\" else \"false\" end) else \"true\" end' <<< \"\$cell\")
+                publisher=\$(cell_manifest_publisher_for_os \"\$os\")
                 while IFS= read -r sfx; do
                     [[ -n \"\$sfx\" ]] || continue
                     if [[ \"\$is_latest_version\" != \"true\" && \"\$sfx\" != \"\$tag\" ]]; then
@@ -256,7 +274,7 @@ GEN_EOF
                     dh_dst=\"docker.io/\${DOCKERHUB_USERNAME}/\${container}:\${sfx}\"
                     ghcr_src=\"\${REMOTE_CR}/\${container}:\${tag}\"
                     printf '%s\n' \"buildx imagetools create -t \$dh_dst \$ghcr_src\" >> '${DOCKER_LOG}'
-                done < <(compute_cell_tag_suffixes \"\$tag\" \"\$os\" \"\$variant\" \"\$flavor\" \"\$is_default\")
+                done < <(compute_cell_publisher_tag_suffixes \"\$publisher\" \"\$tag\" \"\$os\" \"\$variant\" \"\$flavor\" \"\$is_default\")
             done
         " > "${TEST_LOG_DIR}/run.log" 2>&1
     )
@@ -540,7 +558,7 @@ EOF
     run bash -c '
         source "$1"
         # Successfully empty, defined after the source so nothing overwrites it.
-        compute_cell_tag_suffixes() { return 0; }
+        compute_cell_publisher_tag_suffixes() { return 0; }
         mirror_to_dockerhub web-shell
     ' bash "$MDH"
 

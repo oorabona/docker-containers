@@ -20,9 +20,9 @@
 # GHCR publish is STRICT (fail-closed): both arch sources required; any failure
 # fails the cell and the overall run.
 #
-# Tag routing: delegates to helpers/variant-utils.sh::compute_cell_tag_suffixes
-# (GHCR-only, routing helper).  Rolling :latest/:latest-<flavor> aliases are
-# gated on is_latest_version==true to prevent retained versions clobbering :latest.
+# Tag routing delegates to helpers/variant-utils.sh's publisher view. Rolling
+# aliases are gated on is_latest_version==true to prevent retained versions
+# clobbering :latest.
 #
 # Dry-run: set DRY_RUN=true (or DOCKER="echo docker") to emit the
 # imagetools create command lines without executing them.
@@ -75,7 +75,8 @@ REMOTE_CR="${REMOTE_CR:-ghcr.io/oorabona}"
 # No single-arch fallback (ADR-013 §4).
 #
 # F2 / is_latest_version gate: when true, all suffixes from
-# compute_cell_tag_suffixes are published (versioned + rolling aliases).
+# compute_cell_publisher_tag_suffixes are published (versioned + only this
+# manifest publisher's rolling aliases).
 # When false (retained non-latest version), ONLY the versioned suffix is
 # published — rolling :latest/:latest-<variant> are suppressed to prevent
 # older retained versions from clobbering the :latest pointer.
@@ -102,17 +103,20 @@ _merge_cell() {
     local src_arm64="${intermediate_ref}-arm64"
 
     # ------------------------------------------------------------------
-    # Compute GHCR final tag refs via compute_cell_tag_suffixes.
-    # Pass the cell attributes; the helper selects variant on Linux and flavor
-    # on Windows.
+    # Compute GHCR final tag refs via the manifest publisher's ownership view.
     # F2: when is_latest_version==false, keep ONLY the versioned suffix
-    # (first line from compute_cell_tag_suffixes); drop rolling aliases.
+    # (first line from compute_cell_publisher_tag_suffixes); drop rolling aliases.
     # ------------------------------------------------------------------
     local -a ghcr_refs=()
-    local sfx
+    local publisher sfx
+    if ! publisher=$(cell_manifest_publisher_for_os "$os"); then
+        printf '::error::Could not select a manifest publisher for %s:%s — skipping cell\n' \
+            "$container" "$tag" >&2
+        return 1
+    fi
     local suffixes_file
     suffixes_file=$(mktemp "${TMPDIR:-/tmp}/bake-merge-cell-suffixes.XXXXXX") || return 1
-    if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$os" "$variant" "$flavor" "$is_default"; then
+    if ! collect_lines "$suffixes_file" -- compute_cell_publisher_tag_suffixes "$publisher" "$tag" "$os" "$variant" "$flavor" "$is_default"; then
         rm -f "$suffixes_file"
         printf '::error::Could not enumerate all GHCR refs for %s:%s — skipping cell\n' \
             "$container" "$tag" >&2
@@ -241,7 +245,9 @@ main() {
         local _sfx
         local _suffixes_file
         _suffixes_file=$(mktemp "${TMPDIR:-/tmp}/bake-merge-duplicate-suffixes.XXXXXX") || exit 1
-        if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$_chk_tag" "$_chk_os" "$_chk_variant" "$_chk_flavor" "$_chk_default"; then
+        local _chk_publisher
+        if ! _chk_publisher=$(cell_manifest_publisher_for_os "$_chk_os") \
+            || ! collect_lines "$_suffixes_file" -- compute_cell_publisher_tag_suffixes "$_chk_publisher" "$_chk_tag" "$_chk_os" "$_chk_variant" "$_chk_flavor" "$_chk_default"; then
             rm -f "$_suffixes_file"
             printf '::error::Could not enumerate all final refs for duplicate detection — aborting\n' >&2
             exit 1
