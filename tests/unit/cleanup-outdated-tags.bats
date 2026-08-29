@@ -73,7 +73,7 @@ make_valid_tags() {
     printf '%s\n' "$@"
 }
 
-@test "build_valid_tags mirrors rolling aliases from Linux variants and Windows flavors" {
+@test "build_valid_tags consumes the shared tag plan for containers without declared aliases" {
     local root_dir="$BATS_TEST_TMPDIR/build-valid-tags-root"
     mkdir -p "$root_dir"
     export ROOT_DIR="$root_dir"
@@ -94,17 +94,69 @@ make_valid_tags() {
         "buildcache" \
         "latest" \
         "latest-debian-trixie-base" \
-        "latest-windows-ltsc2022" \
         "latest-windows-ltsc2022-dev")
 
     [[ "$valid_tags" == "$expected_tags" ]]
-    is_valid_tag "latest-windows-ltsc2022" "$valid_tags"
     is_valid_tag "latest-windows-ltsc2022-dev" "$valid_tags"
     is_valid_tag "latest-debian-trixie-base" "$valid_tags"
     run ! is_valid_tag "latest-debian-trixie" "$valid_tags"
     run ! is_valid_tag "latest-windows-ltsc2025" "$valid_tags"
+    run ! is_valid_tag "latest-windows-ltsc2022" "$valid_tags"
     run ! is_valid_tag "latest-nonexistent" "$valid_tags"
     run ! is_valid_tag "latest-windows-ltsc2019" "$valid_tags"
+}
+
+@test "build_valid_tags keeps every exact and declared postgres tag from all 21 cells" {
+    local root_dir="$BATS_TEST_TMPDIR/build-postgres-aliases-root"
+    local cells='[]' version flavor tag is_default is_latest valid_tags alias expected_count
+    local -a versions=("18.6" "17.11" "16.15")
+    local -a flavors=("base" "vector" "analytics" "timeseries" "spatial" "distributed" "full")
+
+    mkdir -p "$root_dir/postgres"
+    cp "$PROJECT_ROOT/postgres/variants.yaml" "$root_dir/postgres/variants.yaml"
+    for version in "${versions[@]}"; do
+        for flavor in "${flavors[@]}"; do
+            tag="${version}-alpine"
+            [[ "$flavor" == "base" ]] || tag+="-${flavor}"
+            is_default=false
+            [[ "$flavor" == "base" ]] && is_default=true
+            is_latest=false
+            [[ "$version" == "18.6" ]] && is_latest=true
+            cells=$(jq -cn --argjson cells "$cells" --arg tag "$tag" --arg flavor "$flavor" \
+                --argjson is_default "$is_default" --argjson is_latest_version "$is_latest" \
+                '$cells + [{tag: $tag, variant: $flavor, flavor: $flavor, os: "linux", is_default: $is_default, is_latest_version: $is_latest_version}]')
+        done
+    done
+    printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' '$cells'" > "$root_dir/make"
+    chmod +x "$root_dir/make"
+    export ROOT_DIR="$root_dir"
+
+    valid_tags=$(build_valid_tags postgres)
+    expected_count=50 # 21 exact + 21 declared aliases + 7 global aliases + buildcache
+    if [[ "$(wc -l <<< "$valid_tags")" -ne "$expected_count" ]]; then
+        echo "ASSERTION FAILED: cleanup must keep the 50 tags planned for all 21 postgres cells" >&2
+        return 1
+    fi
+
+    for version in "${versions[@]}"; do
+        for flavor in "${flavors[@]}"; do
+            tag="${version}-alpine"
+            alias="${version%%.*}-alpine"
+            [[ "$flavor" == "base" ]] || {
+                tag+="-${flavor}"
+                alias+="-${flavor}"
+            }
+            if ! is_valid_tag "$tag" "$valid_tags"; then
+                echo "ASSERTION FAILED: cleanup must retain the exact postgres tag $tag" >&2
+                return 1
+            fi
+            if ! is_valid_tag "$alias" "$valid_tags"; then
+                echo "ASSERTION FAILED: cleanup must retain the declared postgres alias $alias" >&2
+                return 1
+            fi
+        done
+    done
+    run ! is_valid_tag "19-alpine" "$valid_tags"
 }
 
 assert_tag_decode_failure_stops_before_delete() {
@@ -1410,7 +1462,7 @@ EOF
     run build_valid_tags example
 
     [[ "$status" -eq 0 ]]
-    [[ "$output" == *"latest-debian"* ]]
+    [[ "$output" == *"latest"* ]]
 }
 
 run_invalid_build_case() {
@@ -1451,21 +1503,21 @@ run_invalid_build_case() {
     run_invalid_build_case '[{"tag":"release","variant":"","flavor":"release\n","os":"windows","is_default":false,"is_latest_version":true}]'
 }
 
-@test "build_valid_tags validates the full emitted latest alias length" {
-    local variant_121 variant_122 root_dir build_json
-    variant_121=$(printf '%*s' 121 '' | tr ' ' a)
-    variant_122=$(printf '%*s' 122 '' | tr ' ' a)
+@test "build_valid_tags validates the shared helper routing input length" {
+    local variant_128 variant_129 root_dir build_json
+    variant_128=$(printf '%*s' 128 '' | tr ' ' a)
+    variant_129=$(printf '%*s' 129 '' | tr ' ' a)
     root_dir="$BATS_TEST_TMPDIR/build-alias-length-root"
     mkdir -p "$root_dir"
     export ROOT_DIR="$root_dir"
-    build_json="[{\"tag\":\"release\",\"variant\":\"$variant_121\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":true,\"is_latest_version\":true}]"
+    build_json="[{\"tag\":\"release\",\"variant\":\"$variant_128\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":true,\"is_latest_version\":true}]"
     printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' '$build_json'" > "$root_dir/make"
     chmod +x "$root_dir/make"
 
     run build_valid_tags example
 
     [[ "$status" -eq 0 ]]
-    [[ "$output" == *"latest-$variant_121"* ]]
+    [[ "$output" == *"latest"* ]]
 
-    run_invalid_build_case "[{\"tag\":\"release\",\"variant\":\"$variant_122\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":true,\"is_latest_version\":true}]"
+    run_invalid_build_case "[{\"tag\":\"release\",\"variant\":\"$variant_129\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":true,\"is_latest_version\":true}]"
 }
