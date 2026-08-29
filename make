@@ -171,7 +171,10 @@ check_updates_current_blocks_latest() {
     return 3
   fi
 
-  return 1
+  # A non-numeric pair without declared numeric aliases was not compared.
+  # Return the same indeterminate outcome used for failed alias resolution;
+  # only return 1 after a completed comparison concludes current does not block.
+  return 3
 }
 
 # Show project-internal dependency graph for a container
@@ -320,9 +323,16 @@ show_sizes() {
     echo "   └── Registries:"
 
     # Get latest tag from version.sh if available, fallback to "latest"
-    local latest_tag
+    local latest_tag=""
     if [[ -f "$container/version.sh" ]]; then
-      latest_tag=$("$container/version.sh" 2>/dev/null | head -1)
+      # Preserve the resolver's status: only a successful resolver supplies a
+      # tag. This deliberately does not bound time; a resolver that writes one
+      # line and then hangs is tracked separately in #1556.
+      if latest_tag=$("$container/version.sh" 2>/dev/null | head -1; exit "${PIPESTATUS[0]}"); then
+        :
+      else
+        latest_tag=""
+      fi
     fi
     [[ -z "$latest_tag" ]] && latest_tag="latest"
 
@@ -646,11 +656,33 @@ check_updates() {
         major_pattern="^${major}\\.[0-9]+\\.[0-9]+-alpine\$"
         local current_version registry_lookup lookup_info
         lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "$major_pattern")
-        IFS=$'\t' read -r registry_lookup current_version <<< "$lookup_info"
+        registry_lookup=${lookup_info%%$'\t'*}
+        current_version=${lookup_info#*$'\t'}
 
         # Latest upstream version for this major line
-        local latest_version
-        latest_version=$(./version.sh --major "$major" 2>/dev/null | head -1 | tr -d '\n' || echo "")
+        local latest_version="" upstream_lookup upstream_rc
+        # Keep only the first line while recovering the resolver's status.
+        # Time is intentionally unbounded here: the one-line-then-hang case is
+        # #1556, not a reason to reintroduce a timeout harness.
+        if latest_version=$(./version.sh --major "$major" 2>/dev/null | head -1; exit "${PIPESTATUS[0]}"); then
+          upstream_rc=0
+        else
+          upstream_rc=$?
+          latest_version=""
+        fi
+        if [[ "$upstream_rc" -eq 0 && -n "$latest_version" ]]; then
+          upstream_lookup="matched"
+        elif [[ "$upstream_rc" -eq 0 ]]; then
+          upstream_lookup="no-match"
+        else
+          upstream_lookup="failed"
+        fi
+        # Admission happens at the state-machine boundary, before this value
+        # reaches either comparison or first-publication branch (or JSON).
+        if [[ "$upstream_lookup" == "matched" && ! "$latest_version" =~ $major_pattern ]]; then
+          upstream_lookup="failed"
+          latest_version=""
+        fi
 
         # Determine update status
         local update_available="false"
@@ -659,11 +691,14 @@ check_updates() {
 
         if [[ "$registry_lookup" == "failed" ]]; then
           status="registry-lookup-failed"
+        elif [[ "$upstream_lookup" == "failed" ]]; then
+          status="upstream-lookup-failed"
+        elif [[ "$upstream_lookup" == "no-match" ]]; then
+          status="upstream-no-match"
         elif [[ "$registry_lookup" == "no-match" ]]; then
-          if [ -n "$latest_version" ]; then
-            update_available="true"
-            status="new-container"
-          fi
+          # The candidate was admitted before entering this branch.
+          update_available="true"
+          status="new-container"
         elif [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
           if check_updates_current_blocks_latest "$current_version" "$latest_version"; then
             :
@@ -678,7 +713,7 @@ check_updates() {
           fi
         fi
 
-        if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$declared_actionable" == "true" ]]; then
+        if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$upstream_lookup" != "failed" && "$declared_actionable" == "true" ]]; then
           actionable="true"
         fi
 
@@ -694,6 +729,7 @@ check_updates() {
           --argjson update_available "$update_available" \
           --argjson actionable "$actionable" \
           --arg registry_lookup "$registry_lookup" \
+          --arg upstream_lookup "$upstream_lookup" \
           --arg status "$status" \
           '{
             container: $container,
@@ -703,6 +739,7 @@ check_updates() {
             update_available: $update_available,
             actionable: $actionable,
             registry_lookup: $registry_lookup,
+            upstream_lookup: $upstream_lookup,
             status: $status
           }')
 
@@ -724,8 +761,30 @@ check_updates() {
         lookup_info=$(check_updates_current_version "ghcr.io/oorabona/$container" "$pattern")
       fi
     fi
-    IFS=$'\t' read -r registry_lookup current_version <<< "$lookup_info"
-    latest_version=$(./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "")
+    registry_lookup=${lookup_info%%$'\t'*}
+    current_version=${lookup_info#*$'\t'}
+    local upstream_lookup upstream_rc
+    # Keep only the first line while recovering the resolver's status. Time is
+    # intentionally unbounded: the one-line-then-hang case is tracked in #1556.
+    if latest_version=$(./version.sh 2>/dev/null | head -1; exit "${PIPESTATUS[0]}"); then
+      upstream_rc=0
+    else
+      upstream_rc=$?
+      latest_version=""
+    fi
+    if [[ "$upstream_rc" -eq 0 && -n "$latest_version" ]]; then
+      upstream_lookup="matched"
+    elif [[ "$upstream_rc" -eq 0 ]]; then
+      upstream_lookup="no-match"
+    else
+      upstream_lookup="failed"
+    fi
+    # Admission happens at the state-machine boundary, before this value
+    # reaches either comparison or first-publication branch (or JSON).
+    if [[ "$upstream_lookup" == "matched" && ! "$latest_version" =~ $pattern ]]; then
+      upstream_lookup="failed"
+      latest_version=""
+    fi
 
     # Determine update status
     local update_available="false"
@@ -734,11 +793,14 @@ check_updates() {
 
     if [[ "$registry_lookup" == "failed" ]]; then
       status="registry-lookup-failed"
+    elif [[ "$upstream_lookup" == "failed" ]]; then
+      status="upstream-lookup-failed"
+    elif [[ "$upstream_lookup" == "no-match" ]]; then
+      status="upstream-no-match"
     elif [[ "$registry_lookup" == "no-match" ]]; then
-      if [ -n "$latest_version" ]; then
-        update_available="true"
-        status="new-container"
-      fi
+      # The candidate was admitted before entering this branch.
+      update_available="true"
+      status="new-container"
     elif [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
       if check_updates_current_blocks_latest "$current_version" "$latest_version"; then
         :
@@ -753,7 +815,7 @@ check_updates() {
       fi
     fi
 
-    if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$declared_actionable" == "true" ]]; then
+    if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$upstream_lookup" != "failed" && "$declared_actionable" == "true" ]]; then
       actionable="true"
     fi
 
@@ -765,6 +827,7 @@ check_updates() {
       --argjson update_available "$update_available" \
       --argjson actionable "$actionable" \
       --arg registry_lookup "$registry_lookup" \
+      --arg upstream_lookup "$upstream_lookup" \
       --arg status "$status" \
       '{
         container: $container,
@@ -773,6 +836,7 @@ check_updates() {
         update_available: $update_available,
         actionable: $actionable,
         registry_lookup: $registry_lookup,
+        upstream_lookup: $upstream_lookup,
         status: $status
       }')
 
