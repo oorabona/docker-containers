@@ -1128,7 +1128,7 @@ setup_fallback_test() {
 
 # --- compute_cell_tags ---
 #
-# New signature: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image>
+# Signature: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image> [os] [variant]
 # is_default is now a caller-supplied boolean ("true"/"false"), computed from the
 # VARIANT NAME via variant_property — not looked up internally.
 #
@@ -1233,7 +1233,7 @@ setup_fallback_test() {
 
 @test "compute_cell_tags: github-runner non-default variant → :latest-<flavor>" {
     # ubuntu-2404-dev has flavor=ubuntu-2404 but is NOT default → latest-ubuntu-2404
-    run compute_cell_tags "2.334.0-dev" "ubuntu-2404" "false" "docker.io/owner/github-runner" "ghcr.io/owner/github-runner"
+    run compute_cell_tags "2.334.0-dev" "ubuntu-2404" "false" "docker.io/owner/github-runner" "ghcr.io/owner/github-runner" "windows" "ubuntu-2404-dev"
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | wc -l)" -eq 4 ]
     [[ "$output" == *"docker.io/owner/github-runner:2.334.0-dev"* ]]
@@ -1264,13 +1264,13 @@ setup_fallback_test() {
 # --- compute_cell_tag_suffixes ---
 #
 # Unit tests for the registry-independent suffix helper. Four cases:
-#   (a) no-flavor non-default           → versioned + "latest"
-#   (b) flavor set + is_default=true    → versioned + "latest"  (flavor ignored for default)
-#   (c) flavor set + is_default=false   → versioned + "latest-<flavor>"
+#   (a) no-routing-key non-default      → versioned + "latest"
+#   (b) a default cell                  → versioned + "latest"
+#   (c) Linux routes by variant; Windows by flavor
 #   (d) tag already == "latest"         → only versioned suffix, no alias
 
-@test "compute_cell_tag_suffixes: (a) no-flavor non-default → versioned + bare latest" {
-    run compute_cell_tag_suffixes "2.3.1" "" "false"
+@test "compute_cell_tag_suffixes: (a) no-routing-key non-default → versioned + bare latest" {
+    run compute_cell_tag_suffixes "2.3.1" "linux" "" "" "false"
     [ "$status" -eq 0 ]
     # Exactly 2 lines
     [ "$(echo "$output" | wc -l)" -eq 2 ]
@@ -1282,8 +1282,8 @@ setup_fallback_test() {
     [[ "$output" != *"latest-"* ]]
 }
 
-@test "compute_cell_tag_suffixes: (b) flavor + is_default=true → versioned + bare latest (flavor ignored)" {
-    run compute_cell_tag_suffixes "1.0.0-base" "base" "true"
+@test "compute_cell_tag_suffixes: (b) a default cell on either OS → versioned + bare latest" {
+    run compute_cell_tag_suffixes "1.0.0-base" "linux" "base" "base" "true"
     [ "$status" -eq 0 ]
     # Exactly 2 lines
     [ "$(echo "$output" | wc -l)" -eq 2 ]
@@ -1292,16 +1292,21 @@ setup_fallback_test() {
     # Line 2: bare latest (NOT latest-base)
     [ "$(echo "$output" | sed -n '2p')" = "latest" ]
     [[ "$output" != *"latest-base"* ]]
+
+    run compute_cell_tag_suffixes "1.0.0-base" "windows" "windows-ltsc2022-base" "windows-ltsc2022" "true"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | sed -n '2p')" = "latest" ]
+    [[ "$output" != *"latest-windows-ltsc2022"* ]]
 }
 
-@test "compute_cell_tag_suffixes: (c) flavor + is_default=false → versioned + latest-<flavor>" {
-    run compute_cell_tag_suffixes "18-alpine-vector" "vector" "false"
+@test "compute_cell_tag_suffixes: (c) Linux non-default routes by variant, not flavor" {
+    run compute_cell_tag_suffixes "18-alpine-vector" "linux" "vector" "alpine" "false"
     [ "$status" -eq 0 ]
     # Exactly 2 lines
     [ "$(echo "$output" | wc -l)" -eq 2 ]
     # Line 1: versioned suffix
     [ "$(echo "$output" | sed -n '1p')" = "18-alpine-vector" ]
-    # Line 2: flavor rolling alias
+    # Line 2: variant rolling alias
     [ "$(echo "$output" | sed -n '2p')" = "latest-vector" ]
     # Must NOT contain bare :latest line
     local bare_latest_count
@@ -1310,9 +1315,53 @@ setup_fallback_test() {
 }
 
 @test "compute_cell_tag_suffixes: (d) tag==latest → single line, no alias added" {
-    run compute_cell_tag_suffixes "latest" "" "false"
+    run compute_cell_tag_suffixes "latest" "linux" "vector" "alpine" "false"
     [ "$status" -eq 0 ]
     # Exactly 1 line — the versioned "latest" suffix with no additional rolling alias
     [ "$(echo "$output" | wc -l)" -eq 1 ]
     [ "$(echo "$output" | sed -n '1p')" = "latest" ]
+}
+
+@test "compute_cell_tag_suffixes: Windows non-default routes by flavor, not variant" {
+    run compute_cell_tag_suffixes "2.337.0-windows-ltsc2022-dev" "windows" "windows-ltsc2022-dev" "windows-ltsc2022" "false"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = $'2.337.0-windows-ltsc2022-dev\nlatest-windows-ltsc2022' ]
+    [[ "$output" != *"latest-windows-ltsc2022-dev"* ]]
+}
+
+@test "compute_cell_tag_suffixes: every current github-runner and postgres cell keeps its rolling alias" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    local container matrix cell tag os variant flavor is_default routing_key expected suffixes checked=0
+    for container in github-runner postgres; do
+        matrix=$(list_build_matrix "$ORIG_DIR/$container" "" true)
+        while IFS= read -r cell; do
+            tag=$(jq -r '.tag' <<< "$cell")
+            os=$(jq -r '.os' <<< "$cell")
+            variant=$(jq -r '.variant' <<< "$cell")
+            flavor=$(jq -r '.flavor' <<< "$cell")
+            is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
+            suffixes=$(compute_cell_tag_suffixes "$tag" "$os" "$variant" "$flavor" "$is_default")
+
+            if [[ "$is_default" == "true" ]]; then
+                expected="latest"
+            else
+                routing_key="$variant"
+                [[ "$os" == "windows" ]] && routing_key="$flavor"
+                if [[ -n "$routing_key" ]]; then
+                    expected="latest-$routing_key"
+                else
+                    expected="latest"
+                fi
+            fi
+
+            [ "$suffixes" = "$tag"$'\n'"$expected" ]
+            checked=$((checked + 1))
+        done < <(jq -c '.[]' <<< "$matrix")
+    done
+
+    [ "$checked" -gt 0 ]
 }

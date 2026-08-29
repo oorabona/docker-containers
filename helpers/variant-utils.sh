@@ -292,22 +292,32 @@ variant_image_tag() {
 # Compute the set of TAG SUFFIXES for a build cell — the rolling-tag-routing
 # decision, independent of registry. This is the single source of truth for
 # "which tags does this cell get": the versioned tag plus, when applicable,
-# the rolling :latest / :latest-<flavor> alias. Reused by compute_cell_tags
+# the rolling :latest / :latest-<routing-key> alias. Reused by compute_cell_tags
 # (build path, both registries), the bake generator (single registry +
 # arch suffix), and the manifest-merge job (both registries, multi-arch).
 #
 # Rules (tag != "latest"):
-#   is_default == "true"            -> + "latest"
-#   is_default != "true", flavor set -> + "latest-<flavor>"
-#   is_default != "true", no flavor  -> + "latest"
+#   is_default == "true"                         -> + "latest"
+#   is_default != "true", Linux variant set      -> + "latest-<variant>"
+#   is_default != "true", Windows flavor set     -> + "latest-<flavor>"
+#   is_default != "true", selected key empty     -> + "latest"
 # When tag == "latest", only the versioned suffix is emitted (no alias).
 #
-# Usage: compute_cell_tag_suffixes <tag> <flavor> <is_default>
+# The cell itself supplies the routing inputs. Callers must not choose a
+# routing field and pass it as a generic suffix: Linux routes by variant,
+# Windows by flavor. The other planners that carry this same rule are:
+#   .github/actions/build-container/action.yaml
+#   .github/workflows/auto-build.yaml
+#   scripts/cleanup-outdated-tags.sh
+#
+# Usage: compute_cell_tag_suffixes <tag> <os> <variant> <flavor> <is_default>
 # Output: one tag suffix per line (e.g. "18-alpine", "latest", "latest-vector").
 compute_cell_tag_suffixes() {
     local tag="$1"
-    local flavor="$2"
-    local is_default="$3"
+    local os="$2"
+    local variant="$3"
+    local flavor="$4"
+    local is_default="$5"
 
     # Versioned suffix — always present
     printf '%s\n' "$tag"
@@ -316,10 +326,19 @@ compute_cell_tag_suffixes() {
     if [[ "$tag" != "latest" ]]; then
         if [[ "$is_default" == "true" ]]; then
             printf 'latest\n'
-        elif [[ -n "$flavor" ]]; then
-            printf 'latest-%s\n' "$flavor"
         else
-            printf 'latest\n'
+            local routing_key=""
+            if [[ "$os" == "windows" ]]; then
+                routing_key="$flavor"
+            else
+                routing_key="$variant"
+            fi
+
+            if [[ -n "$routing_key" ]]; then
+                printf 'latest-%s\n' "$routing_key"
+            else
+                printf 'latest\n'
+            fi
         fi
     fi
 }
@@ -335,21 +354,21 @@ compute_cell_tag_suffixes() {
 #   - When tag != "latest":
 #       • is_default == "true"
 #           → also emit :latest on both registries.
-#       • is_default != "true" AND flavor non-empty
-#           → also emit :latest-<flavor> on both registries.
-#       • is_default != "true" AND flavor empty
+#       • is_default != "true" AND the OS-selected routing key is non-empty
+#           → also emit :latest-<variant> (Linux) or :latest-<flavor> (Windows)
+#             on both registries.
+#       • is_default != "true" AND the OS-selected routing key is empty
 #           → also emit :latest on both registries.
 #
-# Usage: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image>
+# Usage: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image> [os] [variant]
 #   tag             : image tag for this build cell (e.g. "18-alpine", "1.14.6-alpine")
-#   flavor          : the variants.yaml `.flavor` field for this variant — the rolling-tag suffix source
-#                     (e.g. "base", "ubuntu-2404", "") — empty for no-flavor containers.
-#                     Distinct from `build_flavor` (the --build-arg FLAVOR value); for containers like
-#                     github-runner the variant name ("ubuntu-2404-base") differs from this flavor field.
+#   flavor          : the variants.yaml `.flavor` field for this variant.
 #   is_default      : "true" if this variant is the default; any other value means non-default.
 #                     Caller computes this via variant_property <dir> <variant_name> "default".
 #   dockerhub_image : docker.io/<owner>/<container>  (no tag)
 #   ghcr_image      : ghcr.io/<owner>/<container>   (no tag)
+#   os              : cell OS; defaults to linux for legacy direct callers.
+#   variant         : cell variant; defaults to flavor for legacy direct callers.
 #
 # Output: one fully-qualified image ref per line (no leading "-t").
 #         Caller reads into an array and prepends "-t" as needed.
@@ -359,11 +378,13 @@ compute_cell_tags() {
     local is_default="$3"
     local dockerhub_image="$4"
     local ghcr_image="$5"
+    local os="${6:-linux}"
+    local variant="${7:-$flavor}"
 
     local _sfx
     local _suffixes_file
     _suffixes_file=$(mktemp "${TMPDIR:-/tmp}/compute-cell-tags-suffixes.XXXXXX") || return 1
-    if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$tag" "$flavor" "$is_default"; then
+    if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$tag" "$os" "$variant" "$flavor" "$is_default"; then
         rm -f "$_suffixes_file"
         printf 'compute_cell_tags: could not enumerate tag suffixes\n' >&2
         return 1

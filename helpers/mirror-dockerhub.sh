@@ -190,11 +190,12 @@ mirror_to_dockerhub() {
         local cell
         cell=$(jq -c ".[$i]" <<< "$cells_json")
 
-        local container tag variant flavor is_default is_latest_version intermediate_ref
+        local container tag variant flavor os is_default is_latest_version intermediate_ref
         container=$(jq -r '.container'        <<< "$cell")
         tag=$(jq -r '.tag'                    <<< "$cell")
         variant=$(jq -r '.variant // ""'      <<< "$cell")
         flavor=$(jq -r '.flavor // ""'        <<< "$cell")
+        os=$(jq -r '.os // "linux"'           <<< "$cell")
         is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
         # Gate rolling aliases on is_latest_version (same logic as _merge_cell)
         is_latest_version=$(jq -r 'if has("is_latest_version") then (if .is_latest_version then "true" else "false" end) else "true" end' <<< "$cell")
@@ -206,16 +207,13 @@ mirror_to_dockerhub() {
         # The final merged GHCR manifest ref (no arch suffix) is the source for the mirror.
         local ghcr_src="${remote_cr}/${container}:${tag}"
 
-        # Compute the rolling-alias discriminator: variant preferred over flavor
-        # (matches bake-merge-manifests.sh FIX F routing logic).
-        local routing_suffix="${variant:-${flavor}}"
-
-        # Enumerate tags using the same routing as compute_cell_tag_suffixes.
+        # Enumerate tags from the cell attributes; compute_cell_tag_suffixes
+        # selects variant on Linux and flavor on Windows.
         # For retained non-latest cells, publish ONLY the versioned tag.
         local sfx
         local suffixes_file
         suffixes_file=$(mktemp "${TMPDIR:-/tmp}/mirror-dockerhub-suffixes.XXXXXX") || return 1
-        if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$routing_suffix" "$is_default"; then
+        if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$os" "$variant" "$flavor" "$is_default"; then
             rm -f "$suffixes_file"
             printf '::warning::mirror-dockerhub: could not enumerate all tags for %s:%s; mirroring none for this cell\n' \
                 "$container" "$tag" >&2

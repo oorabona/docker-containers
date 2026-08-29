@@ -228,6 +228,7 @@ GEN_EOF
             cells_json=\$(jq -cn '[{
                 \"container\": \"web-shell\",
                 \"tag\": \"1.0.0-alpine\",
+                \"os\": \"linux\",
                 \"flavor\": \"alpine\",
                 \"variant\": \"alpine\",
                 \"is_default\": false,
@@ -244,9 +245,9 @@ GEN_EOF
                 tag=\$(jq -r '.tag' <<< \"\$cell\")
                 variant=\$(jq -r '.variant // \"\"' <<< \"\$cell\")
                 flavor=\$(jq -r '.flavor // \"\"' <<< \"\$cell\")
+                os=\$(jq -r '.os // \"linux\"' <<< \"\$cell\")
                 is_default=\$(jq -r 'if .is_default then \"true\" else \"false\" end' <<< \"\$cell\")
                 is_latest_version=\$(jq -r 'if has(\"is_latest_version\") then (if .is_latest_version then \"true\" else \"false\" end) else \"true\" end' <<< \"\$cell\")
-                routing_suffix=\"\${variant:-\${flavor}}\"
                 while IFS= read -r sfx; do
                     [[ -n \"\$sfx\" ]] || continue
                     if [[ \"\$is_latest_version\" != \"true\" && \"\$sfx\" != \"\$tag\" ]]; then
@@ -255,7 +256,7 @@ GEN_EOF
                     dh_dst=\"docker.io/\${DOCKERHUB_USERNAME}/\${container}:\${sfx}\"
                     ghcr_src=\"\${REMOTE_CR}/\${container}:\${tag}\"
                     printf '%s\n' \"buildx imagetools create -t \$dh_dst \$ghcr_src\" >> '${DOCKER_LOG}'
-                done < <(compute_cell_tag_suffixes \"\$tag\" \"\$routing_suffix\" \"\$is_default\")
+                done < <(compute_cell_tag_suffixes \"\$tag\" \"\$os\" \"\$variant\" \"\$flavor\" \"\$is_default\")
             done
         " > "${TEST_LOG_DIR}/run.log" 2>&1
     )

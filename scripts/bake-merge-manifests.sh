@@ -80,12 +80,10 @@ REMOTE_CR="${REMOTE_CR:-ghcr.io/oorabona}"
 # published — rolling :latest/:latest-<variant> are suppressed to prevent
 # older retained versions from clobbering the :latest pointer.
 #
-# FIX F: rolling aliases route by VARIANT (not flavor) to match production
-# latest-$VARIANT (helpers/create-manifest.sh).  Flavor is non-unique for
-# multi-build_flavor containers like github-runner (debian-trixie-base and
-# debian-trixie-dev share flavor="debian-trixie" but have distinct variants).
+# Rolling aliases route by variant on Linux and flavor on Windows, matching the
+# production planners. The helper receives both fields and chooses.
 #
-# Args: <container> <tag> <flavor> <is_default> <intermediate_ref> <is_latest_version> <variant>
+# Args: <container> <tag> <flavor> <is_default> <intermediate_ref> <is_latest_version> <variant> <os>
 #   intermediate_ref has the literal "${REMOTE_CR}" token already expanded.
 # ---------------------------------------------------------------------------
 _merge_cell() {
@@ -95,7 +93,8 @@ _merge_cell() {
     local is_default="$4"
     local intermediate_ref="$5"
     local is_latest_version="${6:-true}"   # default true for backward compat
-    local variant="${7:-$flavor}"          # FIX F: variant for rolling-alias suffix; fall back to flavor
+    local variant="${7:-$flavor}"
+    local os="${8:-linux}"
 
     local ghcr_image="${REMOTE_CR}/${container}"
 
@@ -104,8 +103,8 @@ _merge_cell() {
 
     # ------------------------------------------------------------------
     # Compute GHCR final tag refs via compute_cell_tag_suffixes.
-    # FIX F: pass $variant (not $flavor) as the rolling-alias discriminator
-    # so each cell gets a unique latest-<variant> alias.
+    # Pass the cell attributes; the helper selects variant on Linux and flavor
+    # on Windows.
     # F2: when is_latest_version==false, keep ONLY the versioned suffix
     # (first line from compute_cell_tag_suffixes); drop rolling aliases.
     # ------------------------------------------------------------------
@@ -113,7 +112,7 @@ _merge_cell() {
     local sfx
     local suffixes_file
     suffixes_file=$(mktemp "${TMPDIR:-/tmp}/bake-merge-cell-suffixes.XXXXXX") || return 1
-    if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$variant" "$is_default"; then
+    if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$os" "$variant" "$flavor" "$is_default"; then
         rm -f "$suffixes_file"
         printf '::error::Could not enumerate all GHCR refs for %s:%s — skipping cell\n' \
             "$container" "$tag" >&2
@@ -229,21 +228,20 @@ main() {
     for (( _ci=0; _ci<ncells; _ci++ )); do
         local _chk_cell
         _chk_cell=$(jq -c ".[$_ci]" <<< "$cells_json")
-        local _chk_c _chk_tag _chk_flavor _chk_variant _chk_default _chk_latest _chk_iref
+        local _chk_c _chk_tag _chk_flavor _chk_variant _chk_os _chk_default _chk_latest _chk_iref
         _chk_c=$(jq -r '.container'     <<< "$_chk_cell")
         _chk_tag=$(jq -r '.tag'         <<< "$_chk_cell")
         _chk_flavor=$(jq -r '.flavor // ""'  <<< "$_chk_cell")
         _chk_variant=$(jq -r '.variant // ""' <<< "$_chk_cell")
+        _chk_os=$(jq -r '.os // "linux"' <<< "$_chk_cell")
         _chk_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$_chk_cell")
         _chk_latest=$(jq -r 'if has("is_latest_version") then (if .is_latest_version then "true" else "false" end) else "true" end' <<< "$_chk_cell")
         _chk_iref=$(jq -r '.intermediate_ref' <<< "$_chk_cell")
         _chk_iref="${_chk_iref//\$\{REMOTE_CR\}/${REMOTE_CR}}"
-        # Use the same routing logic as _merge_cell (variant for rolling suffix)
-        local _routing_suffix="${_chk_variant:-$_chk_flavor}"
         local _sfx
         local _suffixes_file
         _suffixes_file=$(mktemp "${TMPDIR:-/tmp}/bake-merge-duplicate-suffixes.XXXXXX") || exit 1
-        if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$_chk_tag" "$_routing_suffix" "$_chk_default"; then
+        if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$_chk_tag" "$_chk_os" "$_chk_variant" "$_chk_flavor" "$_chk_default"; then
             rm -f "$_suffixes_file"
             printf '::error::Could not enumerate all final refs for duplicate detection — aborting\n' >&2
             exit 1
@@ -254,7 +252,7 @@ main() {
                 continue
             fi
             local _fref="${REMOTE_CR}/${_chk_c}:${_sfx}"
-            local _cell_id="${_chk_c}:${_chk_tag}(${_routing_suffix})"
+            local _cell_id="${_chk_c}:${_chk_tag}(${_chk_os},${_chk_variant},${_chk_flavor})"
             if [[ -n "${_seen_refs[$_fref]+set}" ]]; then
                 printf '::error::Duplicate final ref detected: %s would be published by both %s and %s — aborting\n' \
                     "$_fref" "${_seen_refs[$_fref]}" "$_cell_id" >&2
@@ -275,12 +273,13 @@ main() {
         local cell
         cell=$(jq -c ".[$i]" <<< "$cells_json")
 
-        local container tag flavor variant is_default intermediate_ref is_latest_version
+        local container tag flavor variant os is_default intermediate_ref is_latest_version
         container=$(jq -r '.container'        <<< "$cell")
         tag=$(jq -r '.tag'                    <<< "$cell")
         flavor=$(jq -r '.flavor // ""'        <<< "$cell")
         # FIX F: variant is the unique per-cell name for rolling-alias routing
         variant=$(jq -r '.variant // ""'      <<< "$cell")
+        os=$(jq -r '.os // "linux"'            <<< "$cell")
         is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
         # F2: read is_latest_version; default to "true" for backward compat when field absent.
         is_latest_version=$(jq -r 'if has("is_latest_version") then (if .is_latest_version then "true" else "false" end) else "true" end' <<< "$cell")
@@ -289,7 +288,7 @@ main() {
         intermediate_ref="${intermediate_ref//\$\{REMOTE_CR\}/${REMOTE_CR}}"
 
         if ! _merge_cell "$container" "$tag" "$flavor" "$is_default" \
-                "$intermediate_ref" "$is_latest_version" "$variant"; then
+                "$intermediate_ref" "$is_latest_version" "$variant" "$os"; then
             printf '::error::Cell merge FAILED: %s:%s\n' "$container" "$tag" >&2
             failed=$(( failed + 1 ))
         fi
