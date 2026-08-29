@@ -1264,11 +1264,11 @@ setup_fallback_test() {
 # --- compute_cell_tag_suffixes ---
 #
 # Unit tests for the registry-independent suffix helper. Four cases:
-#   (a) no-flavor non-default           → versioned + "latest"
-#   (b) flavor set + is_default=true    → versioned + "latest"  (flavor ignored for default)
-#   (c) flavor set + is_default=false   → versioned + "latest-<flavor>"
+#   (a) newest no-flavor non-default    → versioned + "latest"
+#   (b) newest flavor + is_default=true → versioned + "latest"  (flavor ignored for default)
+#   (c) newest flavor + is_default=false → versioned + "latest-<flavor>"
 #   (d) tag already == "latest"         → only versioned suffix, no alias
-#   (e) declared PostgreSQL major alias → versioned + major alias
+#   (e) declared PostgreSQL major alias → versioned + major alias for every line
 
 @test "compute_cell_tag_suffixes: (a) no-flavor non-default → versioned + bare latest" {
     run compute_cell_tag_suffixes "2.3.1" "" "false"
@@ -1318,7 +1318,7 @@ setup_fallback_test() {
     [ "$(echo "$output" | sed -n '1p')" = "latest" ]
 }
 
-@test "compute_cell_tag_suffixes: postgres publishes the aliases declared for each resolved version" {
+@test "compute_cell_tag_suffixes: every postgres cell emits its exact and declared alias; only newest cells emit globals" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
     hash -r
@@ -1328,14 +1328,15 @@ setup_fallback_test() {
     count=$(jq 'length' <<<"$matrix")
     [ "$count" -eq 21 ]
 
-    local cell tag variant flavor is_default source_tag expected_alias suffixes verified=0
+    local cell tag variant flavor is_default is_latest_version source_tag expected_alias expected_global suffixes verified=0
     while IFS= read -r cell; do
         tag=$(jq -r '.tag' <<<"$cell")
         source_tag=$(jq -r '.version' <<<"$cell")
         variant=$(jq -r '.variant' <<<"$cell")
         flavor=$(jq -r '.flavor' <<<"$cell")
         is_default=$(jq -r 'if .is_default then "true" else "false" end' <<<"$cell")
-        suffixes=$(compute_cell_tag_suffixes "$tag" "${variant:-$flavor}" "$is_default" "$ORIG_DIR/postgres")
+        is_latest_version=$(jq -r 'if .is_latest_version then "true" else "false" end' <<<"$cell")
+        suffixes=$(compute_cell_tag_suffixes "$tag" "${variant:-$flavor}" "$is_default" "$ORIG_DIR/postgres" "$is_latest_version")
 
         # The versioned spelling and its explicitly declared major alias are
         # both emitted by this one cell; no caller recreates either form.
@@ -1345,10 +1346,49 @@ setup_fallback_test() {
             "$ORIG_DIR/postgres/variants.yaml")
         expected_alias+="${tag#"$source_tag"}"
         grep -qxF -- "$expected_alias" <<<"$suffixes"
+
+        if [[ "$is_default" == "true" ]]; then
+            expected_global="latest"
+        else
+            expected_global="latest-${variant:-$flavor}"
+        fi
+        if [[ "$is_latest_version" == "true" ]]; then
+            grep -qxF -- "$expected_global" <<<"$suffixes"
+        else
+            ! grep -qxF -- "$expected_global" <<<"$suffixes"
+        fi
         verified=$((verified + 1))
     done < <(jq -c '.[]' <<<"$matrix")
 
     [ "$verified" -eq 21 ]
+}
+
+@test "compute_cell_tag_suffixes: alias-free terraform and github-runner retain their current newest-line sets" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    local container matrix cell tag variant flavor is_default suffixes expected_global verified=0
+    for container in terraform github-runner; do
+        matrix=$(list_build_matrix "$ORIG_DIR/$container" "" false)
+        while IFS= read -r cell; do
+            tag=$(jq -r '.tag' <<<"$cell")
+            variant=$(jq -r '.variant // ""' <<<"$cell")
+            flavor=$(jq -r '.flavor // ""' <<<"$cell")
+            is_default=$(jq -r 'if .is_default then "true" else "false" end' <<<"$cell")
+            suffixes=$(compute_cell_tag_suffixes "$tag" "${variant:-$flavor}" "$is_default" "$ORIG_DIR/$container" "true")
+
+            if [[ "$is_default" == "true" || -z "${variant:-$flavor}" ]]; then
+                expected_global="latest"
+            else
+                expected_global="latest-${variant:-$flavor}"
+            fi
+            [ "$suffixes" = "$tag"$'\n'"$expected_global" ]
+            verified=$((verified + 1))
+        done < <(jq -c '.[]' <<<"$matrix")
+    done
+
+    [ "$verified" -gt 0 ]
 }
 
 @test "compute_cell_tag_suffixes: removing postgres's declared major alias stops that alias" {

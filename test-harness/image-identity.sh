@@ -155,7 +155,7 @@ image_identity_resolve() {
     # A published major alias is not a second declared cell. Enumerate every
     # declared cell through the same suffix helper used by publishers instead
     # of reconstructing alias spellings here.
-    local candidate candidate_tag candidate_variant candidate_flavor candidate_default routing_suffix suffixes
+    local candidate candidate_tag candidate_variant candidate_flavor candidate_default candidate_latest routing_suffix suffixes
     local matches='[]'
     while IFS= read -r candidate; do
         [[ -n "$candidate" ]] || continue
@@ -166,6 +166,7 @@ image_identity_resolve() {
             return 1
         fi
         candidate_default=$(jq -r 'if .is_default then "true" else "false" end' <<<"$candidate")
+        candidate_latest=$(jq -r 'if .is_latest_version then "true" else "false" end' <<<"$candidate")
         routing_suffix="${candidate_variant:-$candidate_flavor}"
         # A selected cell is an exact workflow hand-off. Its major alias is
         # still that cell, but fleet-wide latest aliases can be shared by
@@ -175,7 +176,7 @@ image_identity_resolve() {
             continue
         fi
         if suffixes=$(source "$harness_dir/../helpers/variant-utils.sh" && \
-                compute_cell_tag_suffixes "$candidate_tag" "$routing_suffix" "$candidate_default" "$container_dir" 2>/dev/null) && \
+                compute_cell_tag_suffixes "$candidate_tag" "$routing_suffix" "$candidate_default" "$container_dir" "$candidate_latest" 2>/dev/null) && \
                 grep -qxF -- "$tag" <<<"$suffixes"; then
             matches=$(jq -c --argjson candidate "$candidate" '. + [$candidate]' <<<"$matches")
         fi

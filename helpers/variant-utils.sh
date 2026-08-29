@@ -291,8 +291,9 @@ variant_image_tag() {
 
 # Compute the set of TAG SUFFIXES for a build cell — the rolling-tag-routing
 # decision, independent of registry. This is the single source of truth for
-# "which tags does this cell get": the versioned tag plus, when applicable,
-# a declared major alias and the rolling :latest / :latest-<flavor> alias.
+# "which tags does this cell get": the versioned tag plus every declared line
+# alias and, only for the newest release line, the global
+# :latest / :latest-<flavor> alias.
 # Reused by compute_cell_tags
 # (build path, both registries), the bake generator (single registry +
 # arch suffix), and the manifest-merge job (both registries, multi-arch).
@@ -300,22 +301,29 @@ variant_image_tag() {
 # Rules (tag != "latest"):
 #   versions[].major_alias declared  -> + major_alias plus the cell's variant
 #                                       suffix, if any
-#   is_default == "true"            -> + "latest"
-#   is_default != "true", flavor set -> + "latest-<flavor>"
-#   is_default != "true", no flavor  -> + "latest"
+#   is_latest_version == "true" and is_default == "true" -> + "latest"
+#   is_latest_version == "true" and is_default != "true", flavor set
+#                                             -> + "latest-<flavor>"
+#   is_latest_version == "true" and is_default != "true", no flavor
+#                                             -> + "latest"
+#   is_latest_version != "true"      -> no global alias
 # When tag == "latest", only the versioned suffix is emitted (no alias).
 #
-# Usage: compute_cell_tag_suffixes <tag> <flavor> <is_default> [container_dir]
+# Usage: compute_cell_tag_suffixes <tag> <flavor> <is_default> [container_dir] [is_latest_version]
 #   container_dir: its versions[].major_alias values declare the rolling
 #                  major aliases this cell publishes. The version declaration,
 #                  rather than a tag-format heuristic, supplies the alias.
+#   is_latest_version: "true" only for the newest release line. Defaults to
+#                      "true" for direct legacy callers that build one current cell.
 # Output: one tag suffix per line (e.g. "18.6-alpine", "18-alpine", "latest",
-#         "latest-vector").
+#         "latest-vector"). Callers consume this list verbatim; they must not
+#         infer suffix kinds from their spelling or filter it themselves.
 compute_cell_tag_suffixes() {
     local tag="$1"
     local flavor="$2"
     local is_default="$3"
     local container_dir="${4:-}"
+    local is_latest_version="${5:-true}"
 
     # Versioned suffix — always present
     printf '%s\n' "$tag"
@@ -336,8 +344,9 @@ compute_cell_tag_suffixes() {
             "$container_dir/variants.yaml" 2>/dev/null || true)
     fi
 
-    # Rolling latest suffix — only when this is not already a "latest" tag
-    if [[ "$tag" != "latest" ]]; then
+    # Global rolling suffixes belong only to the newest release line. Declared
+    # aliases above remain valid for every retained line, regardless of spelling.
+    if [[ "$is_latest_version" == "true" && "$tag" != "latest" ]]; then
         if [[ "$is_default" == "true" ]]; then
             printf 'latest\n'
         elif [[ -n "$flavor" ]]; then
@@ -356,15 +365,16 @@ compute_cell_tag_suffixes() {
 #
 # Rules:
 #   - Always emit the versioned ref on both docker.io and ghcr.io.
-#   - When tag != "latest":
+#   - When is_latest_version == "true" and tag != "latest":
 #       • is_default == "true"
 #           → also emit :latest on both registries.
 #       • is_default != "true" AND flavor non-empty
 #           → also emit :latest-<flavor> on both registries.
 #       • is_default != "true" AND flavor empty
 #           → also emit :latest on both registries.
+#   - Declared line aliases are emitted for every release line.
 #
-# Usage: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image> [container_dir]
+# Usage: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image> [container_dir] [is_latest_version]
 #   tag             : image tag for this build cell (e.g. "18-alpine", "1.14.6-alpine")
 #   flavor          : the variants.yaml `.flavor` field for this variant — the rolling-tag suffix source
 #                     (e.g. "base", "ubuntu-2404", "") — empty for no-flavor containers.
@@ -376,6 +386,8 @@ compute_cell_tag_suffixes() {
 #   ghcr_image      : ghcr.io/<owner>/<container>   (no tag)
 #   container_dir   : optional variants directory; its declared major aliases
 #                     are used by compute_cell_tag_suffixes.
+#   is_latest_version: optional newest-release-line flag; defaults to "true"
+#                     for legacy direct callers.
 #
 # Output: one fully-qualified image ref per line (no leading "-t").
 #         Caller reads into an array and prepends "-t" as needed.
@@ -386,11 +398,12 @@ compute_cell_tags() {
     local dockerhub_image="$4"
     local ghcr_image="$5"
     local container_dir="${6:-}"
+    local is_latest_version="${7:-true}"
 
     local _sfx
     local _suffixes_file
     _suffixes_file=$(mktemp "${TMPDIR:-/tmp}/compute-cell-tags-suffixes.XXXXXX") || return 1
-    if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$tag" "$flavor" "$is_default" "$container_dir"; then
+    if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$tag" "$flavor" "$is_default" "$container_dir" "$is_latest_version"; then
         rm -f "$_suffixes_file"
         printf 'compute_cell_tags: could not enumerate tag suffixes\n' >&2
         return 1

@@ -6,7 +6,7 @@
 #   Include single-arch fallback path → strict guard violated
 #   Pass only -amd64 or only -arm64 → merge source always lists both arches
 #   Cell set diverges from generator bake mode → parity assertion fails
-#   Publish :latest for non-latest retained cell → retained version clobbers :latest (F2)
+#   Drop a retained cell's declared alias → live major-line alias stops rolling
 #   Emit a docker.io ref → GHCR-only contract violated (egress-containment ADR-013)
 #   Route rolling alias by flavor → github-runner debian-trixie-base and -dev collide (FIX F)
 #   Skip duplicate-ref guard → silent manifest corruption on variant.yaml mistakes (FIX F guard)
@@ -223,11 +223,10 @@ CALLER
 }
 
 # ---------------------------------------------------------------------------
-# F2 / MM7: retained non-latest cell must NOT publish :latest.
-# Catches MG7: if the is_latest_version gate is missing, both trixie and
-# bookworm would claim :latest, with the last-merged (older) version winning.
+# A retained non-latest cell must not publish a global alias. The shared helper
+# owns this decision; the publisher only applies its emitted suffixes.
 # ---------------------------------------------------------------------------
-@test "F2 — retained non-latest cell publishes versioned ref only, not :latest" {
+@test "retained non-latest cell publishes no global :latest alias" {
     export REMOTE_CR="ghcr.io/oorabona"
 
     _call_merge_cell "debian" "bookworm" "" "true" \
@@ -240,8 +239,52 @@ CALLER
     [[ -n "$create_line" ]]
     [[ "$create_line" == *"ghcr.io/oorabona/debian:bookworm"* ]]
 
-    # Must NOT contain :latest (no rolling alias for non-latest cell)
+    # Must NOT contain :latest (the helper suppresses global aliases for this line)
     [[ "$create_line" != *"ghcr.io/oorabona/debian:latest"* ]]
+}
+
+@test "postgres retained cells publish exact and declared aliases; only newest cells publish globals" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    _run_merge --all-retained --include-final-build postgres
+    [ "$status" -eq 0 ]
+
+    local cells_json cell tag source_tag configured_alias variant flavor is_default is_latest_version expected_alias expected_global create_line verified=0
+    cells_json=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained --include-final-build postgres)
+    [ "$(jq 'length' <<<"$cells_json")" -eq 21 ]
+
+    while IFS= read -r cell; do
+        tag=$(jq -r '.tag' <<<"$cell")
+        variant=$(jq -r '.variant // ""' <<<"$cell")
+        flavor=$(jq -r '.flavor // ""' <<<"$cell")
+        is_default=$(jq -r 'if .is_default then "true" else "false" end' <<<"$cell")
+        is_latest_version=$(jq -r 'if .is_latest_version then "true" else "false" end' <<<"$cell")
+        source_tag=""
+        configured_alias=""
+        while IFS=$'\t' read -r source_tag configured_alias; do
+            [[ "$tag" == "$source_tag" || "$tag" == "${source_tag}-"* ]] && break
+            source_tag=""
+            configured_alias=""
+        done < <(yq -r '.versions[] | [.tag, .major_alias] | @tsv' "${PROJECT_ROOT}/postgres/variants.yaml")
+        [[ -n "$source_tag" && -n "$configured_alias" ]]
+        expected_alias="${configured_alias}${tag#"$source_tag"}"
+        create_line=$(grep -F -- "ghcr.io/oorabona/postgres:${tag}" "$DOCKER_LOG" | head -1)
+        [[ -n "$create_line" ]]
+        [[ "$create_line" == *"ghcr.io/oorabona/postgres:${expected_alias}"* ]]
+
+        if [[ "$is_default" == "true" ]]; then
+            expected_global="latest"
+        else
+            expected_global="latest-${variant:-$flavor}"
+        fi
+        if [[ "$is_latest_version" == "true" ]]; then
+            [[ "$create_line" == *"ghcr.io/oorabona/postgres:${expected_global}"* ]]
+        else
+            [[ "$create_line" != *"ghcr.io/oorabona/postgres:${expected_global}"* ]]
+        fi
+        verified=$((verified + 1))
+    done < <(jq -c '.[]' <<<"$cells_json")
+
+    [ "$verified" -eq 21 ]
 }
 
 @test "F2 — latest cell (is_latest_version=true) DOES publish :latest" {

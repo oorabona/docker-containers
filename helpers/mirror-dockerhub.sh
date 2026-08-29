@@ -11,9 +11,9 @@
 # For each bake-managed container the function mirrors its canonical GHCR final tags
 # to docker.io/oorabona/<container>:<tag> using `docker buildx imagetools create`.
 #
-# Tag set: identical to what bake-merge-manifests.sh publishes — versioned + rolling
-# aliases, gated on is_latest_version (retained non-latest versions only get the
-# versioned tag; no rolling :latest/:latest-<variant> to avoid clobbering).
+# Tag set: identical to what bake-merge-manifests.sh publishes. The shared
+# helper emits versioned and declared line aliases for every retained cell, and
+# global aliases only for the newest release line.
 #
 # BEST-EFFORT (default): a failure on any individual tag emits ::warning:: and continues.
 # The function returns 0 even when individual mirrors fail — it never gates the build.
@@ -196,7 +196,7 @@ mirror_to_dockerhub() {
         variant=$(jq -r '.variant // ""'      <<< "$cell")
         flavor=$(jq -r '.flavor // ""'        <<< "$cell")
         is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
-        # Gate rolling aliases on is_latest_version (same logic as _merge_cell)
+        # The helper uses this release-line flag to decide global aliases.
         is_latest_version=$(jq -r 'if has("is_latest_version") then (if .is_latest_version then "true" else "false" end) else "true" end' <<< "$cell")
         # intermediate_ref holds the GHCR per-arch base ref (token already expanded
         # by --cells for the default REMOTE_CR; override expansion when REMOTE_CR differs)
@@ -210,12 +210,12 @@ mirror_to_dockerhub() {
         # (matches bake-merge-manifests.sh FIX F routing logic).
         local routing_suffix="${variant:-${flavor}}"
 
-        # Enumerate tags using the same routing as compute_cell_tag_suffixes.
-        # For retained non-latest cells, publish ONLY the versioned tag.
+        # Enumerate the complete tag set. The shared helper owns every suffix
+        # decision, so this publisher consumes the result verbatim.
         local sfx
         local suffixes_file
         suffixes_file=$(mktemp "${TMPDIR:-/tmp}/mirror-dockerhub-suffixes.XXXXXX") || return 1
-        if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$routing_suffix" "$is_default" "${_MDH_SCRIPT_DIR}/../${container}"; then
+        if ! collect_lines "$suffixes_file" -- compute_cell_tag_suffixes "$tag" "$routing_suffix" "$is_default" "${_MDH_SCRIPT_DIR}/../${container}" "$is_latest_version"; then
             rm -f "$suffixes_file"
             printf '::warning::mirror-dockerhub: could not enumerate all tags for %s:%s; mirroring none for this cell\n' \
                 "$container" "$tag" >&2
@@ -226,11 +226,6 @@ mirror_to_dockerhub() {
         fi
         while IFS= read -r sfx; do
             [[ -n "$sfx" ]] || continue
-            # F2 gate: retained non-latest → versioned tag only
-            if [[ "$is_latest_version" != "true" && "$sfx" != "$tag" ]]; then
-                continue
-            fi
-
             local dh_dst="docker.io/${DOCKERHUB_USERNAME}/${container}:${sfx}"
 
             # Dry-run: explicit branch prints the command and skips execution.

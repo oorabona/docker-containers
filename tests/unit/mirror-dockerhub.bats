@@ -4,7 +4,7 @@
 # Mutation guards (named per test):
 #   Default latest cell mirrors both versioned AND :latest from GHCR
 #   Non-default flavored cell mirrors :latest-<variant> instead of :latest
-#   Retained non-latest cell mirrors ONLY the versioned tag (no rolling alias)
+#   Retained non-latest cell mirrors its versioned and declared aliases, but no global alias
 #   Function skips when DOCKERHUB_USERNAME is unset
 #   A single mirror failure does NOT fail the function (best-effort; rc=0)
 #   BAKE_GENERATE_ALL_RETAINED ignored → retained GHCR tags absent on DockerHub
@@ -161,119 +161,89 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Retained non-latest cell mirrors ONLY the versioned tag.
-# Catches: MD3
+# Retained non-latest cells retain their declared aliases but no global alias.
+# Catches the former publisher-side gate when it is restored.
 # ---------------------------------------------------------------------------
-@test "retained non-latest cell mirrors only versioned tag" {
-    # Use a synthetic bake-managed container that has retained non-latest versions.
-    # We test this by checking the mirror logic directly: for a cell with
-    # is_latest_version=false, only the versioned suffix ($tag) is published.
-    #
-    # Strategy: mock generate-bake-hcl.sh to return one retained cell.
-    export MOCK_GENERATOR="${TEST_LOG_DIR}/generate-bake-hcl.sh"
-    # A cell with is_latest_version=false, versioned tag "1.0.0-alpine", variant="alpine"
-    cat > "$MOCK_GENERATOR" <<'GEN_EOF'
+@test "retained non-latest cell mirrors exact and declared alias, not global alias" {
+    export _MDH_GENERATOR_OVERRIDE="${TEST_LOG_DIR}/generate-bake-hcl.sh"
+    cat > "$_MDH_GENERATOR_OVERRIDE" <<'GEN_EOF'
 #!/usr/bin/env bash
-# Synthetic --cells output: one retained (non-latest) cell
 if [[ "$1" == "--cells" ]]; then
     jq -cn '[{
-        "container": "web-shell",
-        "tag": "1.0.0-alpine",
-        "flavor": "alpine",
-        "variant": "alpine",
-        "is_default": false,
+        "container": "postgres",
+        "tag": "17.11-alpine",
+        "flavor": "base",
+        "variant": "base",
+        "is_default": true,
         "is_latest_version": false,
-        "intermediate_ref": "${REMOTE_CR}/web-shell:1.0.0-alpine",
-        "target_id": "web_shell_1_0_0_alpine"
+        "intermediate_ref": "${REMOTE_CR}/postgres:17.11-alpine",
+        "target_id": "postgres_17_11_alpine"
     }]'
     exit 0
 fi
 exit 1
 GEN_EOF
-    chmod +x "$MOCK_GENERATOR"
+    chmod +x "$_MDH_GENERATOR_OVERRIDE"
 
-    # Patch the generator path inside the script — we do this by overriding
-    # the _MDH_SCRIPT_DIR so the sourced script resolves the mock generator.
-    (
-        export DOCKER
-        export DOCKER_LOG
-        export DOCKERHUB_USERNAME
-        export REMOTE_CR
-        export DRY_RUN
-        export GITHUB_ACTIONS
-        export _DEPGRAPH_LINEAGE_DIR
+    run _run_mirror postgres
+    [ "$status" -eq 0 ]
 
-        # Override generator resolution by symlinking into the test dir
-        mkdir -p "${TEST_LOG_DIR}/scripts"
-        ln -sf "$MOCK_GENERATOR" "${TEST_LOG_DIR}/scripts/generate-bake-hcl.sh"
-
-        # Temporarily override the HELPERS_DIR path resolution inside the script
-        # by patching _MDH_SCRIPT_DIR to point to our test dir which has scripts/.
-        export _MDH_OVERRIDE_SCRIPTS_DIR="${TEST_LOG_DIR}"
-
-        # Run via bash with an override that patches the generator path
-        bash -c "
-            set -euo pipefail
-            source '${HELPERS_DIR}/logging.sh'
-            source '${HELPERS_DIR}/variant-utils.sh'
-            DOCKER='${DOCKER}'
-            DOCKER_LOG='${DOCKER_LOG}'
-            DOCKERHUB_USERNAME='${DOCKERHUB_USERNAME}'
-            REMOTE_CR='${REMOTE_CR}'
-            DRY_RUN='${DRY_RUN}'
-            GITHUB_ACTIONS=''
-            _DEPGRAPH_LINEAGE_DIR=/nonexistent
-
-            # Inject the cells JSON directly to bypass the generator
-            cells_json=\$(jq -cn '[{
-                \"container\": \"web-shell\",
-                \"tag\": \"1.0.0-alpine\",
-                \"flavor\": \"alpine\",
-                \"variant\": \"alpine\",
-                \"is_default\": false,
-                \"is_latest_version\": false,
-                \"intermediate_ref\": \"\${REMOTE_CR}/web-shell:1.0.0-alpine\",
-                \"target_id\": \"web_shell_1_0_0_alpine\"
-            }]')
-
-            # Execute the mirror loop inline (mirrors the function body)
-            ncells=\$(jq 'length' <<< \"\$cells_json\")
-            for (( i=0; i<ncells; i++ )); do
-                cell=\$(jq -c \".[\$i]\" <<< \"\$cells_json\")
-                container=\$(jq -r '.container' <<< \"\$cell\")
-                tag=\$(jq -r '.tag' <<< \"\$cell\")
-                variant=\$(jq -r '.variant // \"\"' <<< \"\$cell\")
-                flavor=\$(jq -r '.flavor // \"\"' <<< \"\$cell\")
-                is_default=\$(jq -r 'if .is_default then \"true\" else \"false\" end' <<< \"\$cell\")
-                is_latest_version=\$(jq -r 'if has(\"is_latest_version\") then (if .is_latest_version then \"true\" else \"false\" end) else \"true\" end' <<< \"\$cell\")
-                routing_suffix=\"\${variant:-\${flavor}}\"
-                while IFS= read -r sfx; do
-                    [[ -n \"\$sfx\" ]] || continue
-                    if [[ \"\$is_latest_version\" != \"true\" && \"\$sfx\" != \"\$tag\" ]]; then
-                        continue
-                    fi
-                    dh_dst=\"docker.io/\${DOCKERHUB_USERNAME}/\${container}:\${sfx}\"
-                    ghcr_src=\"\${REMOTE_CR}/\${container}:\${tag}\"
-                    printf '%s\n' \"buildx imagetools create -t \$dh_dst \$ghcr_src\" >> '${DOCKER_LOG}'
-                done < <(compute_cell_tag_suffixes \"\$tag\" \"\$routing_suffix\" \"\$is_default\")
-            done
-        " > "${TEST_LOG_DIR}/run.log" 2>&1
-    )
-
-    # Should have exactly one docker call (versioned only, no :latest or :latest-alpine)
+    # The helper supplies both retained-line tags. Restoring the old gate drops
+    # the declared 17-alpine alias and fails this assertion.
     call_count=$(wc -l < "$DOCKER_LOG" || echo 0)
-    [ "$call_count" -eq 1 ] || \
-        (echo "Expected exactly 1 mirror call for retained non-latest, got $call_count:" >&2
+    [ "$call_count" -eq 2 ] || \
+        (echo "Expected exactly 2 mirror calls for retained non-latest, got $call_count:" >&2
          cat "$DOCKER_LOG" >&2
          false)
 
-    # That single call must be the versioned tag
-    grep -q "docker.io/testuser/web-shell:1.0.0-alpine" "$DOCKER_LOG" || \
-        (echo "Expected versioned tag call not found:" >&2; cat "$DOCKER_LOG" >&2; false)
-
-    # No :latest or :latest-alpine call
+    grep -q "docker.io/testuser/postgres:17.11-alpine" "$DOCKER_LOG"
+    grep -q "docker.io/testuser/postgres:17-alpine" "$DOCKER_LOG"
     ! grep -q ":latest" "$DOCKER_LOG" || \
         (echo "Unexpected :latest call found for retained non-latest cell:" >&2; cat "$DOCKER_LOG" >&2; false)
+}
+
+@test "postgres mirrors exact and declared aliases for all retained cells; globals only for newest cells" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export BAKE_GENERATE_ALL_RETAINED=true
+    run _run_mirror postgres
+    [ "$status" -eq 0 ]
+
+    local cells_json cell tag source_tag configured_alias variant flavor is_default is_latest_version expected_alias expected_global verified=0
+    cells_json=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained --include-final-build postgres)
+    [ "$(jq 'length' <<<"$cells_json")" -eq 21 ]
+
+    while IFS= read -r cell; do
+        tag=$(jq -r '.tag' <<<"$cell")
+        variant=$(jq -r '.variant // ""' <<<"$cell")
+        flavor=$(jq -r '.flavor // ""' <<<"$cell")
+        is_default=$(jq -r 'if .is_default then "true" else "false" end' <<<"$cell")
+        is_latest_version=$(jq -r 'if .is_latest_version then "true" else "false" end' <<<"$cell")
+        source_tag=""
+        configured_alias=""
+        while IFS=$'\t' read -r source_tag configured_alias; do
+            [[ "$tag" == "$source_tag" || "$tag" == "${source_tag}-"* ]] && break
+            source_tag=""
+            configured_alias=""
+        done < <(yq -r '.versions[] | [.tag, .major_alias] | @tsv' "${PROJECT_ROOT}/postgres/variants.yaml")
+        [[ -n "$source_tag" && -n "$configured_alias" ]]
+        expected_alias="${configured_alias}${tag#"$source_tag"}"
+        grep -Fq -- "docker.io/testuser/postgres:${tag}" "$DOCKER_LOG"
+        grep -Fq -- "docker.io/testuser/postgres:${expected_alias}" "$DOCKER_LOG"
+
+        if [[ "$is_default" == "true" ]]; then
+            expected_global="latest"
+        else
+            expected_global="latest-${variant:-$flavor}"
+        fi
+        if [[ "$is_latest_version" == "true" ]]; then
+            grep -Fq -- "docker.io/testuser/postgres:${expected_global}" "$DOCKER_LOG"
+        else
+            ! grep -Fq -- "docker.io/testuser/postgres:${expected_global}" "$DOCKER_LOG"
+        fi
+        verified=$((verified + 1))
+    done < <(jq -c '.[]' <<<"$cells_json")
+
+    [ "$verified" -eq 21 ]
 }
 
 # ---------------------------------------------------------------------------
