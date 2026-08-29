@@ -303,10 +303,7 @@ variant_image_tag() {
 #
 # The variant and Windows-flavor aliases are independent: a non-default Windows
 # cell with both fields set gets both aliases. The cell itself supplies the
-# routing inputs. The other planners that carry this same rule are:
-#   .github/actions/build-container/action.yaml
-#   .github/workflows/auto-build.yaml
-#   scripts/cleanup-outdated-tags.sh
+# routing inputs. No other planner independently decides rolling aliases.
 #
 # Usage: compute_cell_tag_suffixes <tag> <os> <variant> <flavor> <is_default>
 # Output: one tag suffix per line (e.g. "18-alpine", "latest", "latest-vector").

@@ -3,6 +3,7 @@
 # Consolidates manifest logic used by auto-build.yaml and recreate-manifests.yaml
 #
 # Requires env vars: TAG, VERSION, FULL_VERSION, VARIANT, IS_DEFAULT, IS_LATEST_VERSION
+# Optional cell routing env vars: CELL_OS (defaults to linux), FLAVOR (defaults empty)
 #
 # Usage:
 #   source helpers/create-manifest.sh
@@ -18,6 +19,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/logging.sh"
 # shellcheck source=retry.sh
 source "$SCRIPT_DIR/retry.sh"
+# shellcheck source=variant-utils.sh
+source "$SCRIPT_DIR/variant-utils.sh"
 
 # Compute tag arguments for manifest creation
 # Reads from env: TAG, VERSION, FULL_VERSION, VARIANT, IS_DEFAULT, IS_LATEST_VERSION
@@ -67,15 +70,19 @@ _compute_tag_args() {
         fi
     fi
 
-    # Rolling tags only for the latest version
-    # Add :latest tag for default variant of the latest version
-    if [[ "${IS_DEFAULT:-}" == "true" && "${IS_LATEST_VERSION:-}" == "true" ]]; then
-        tag_args="$tag_args -t $target_image:latest"
-    fi
-
-    # Add :latest-{variant} tag for non-default variants of the latest version
-    if [[ -n "${VARIANT:-}" && "${IS_DEFAULT:-}" != "true" && "${IS_LATEST_VERSION:-}" == "true" ]]; then
-        tag_args="$tag_args -t $target_image:latest-$VARIANT"
+    # Rolling aliases only for the newest line. The shared cell router owns
+    # their selection; this manifest helper only turns returned suffixes into
+    # registry-specific -t arguments.
+    if [[ "${IS_LATEST_VERSION:-}" == "true" ]]; then
+        local routing_suffixes suffix
+        if ! routing_suffixes=$(compute_cell_tag_suffixes "$TAG" "${CELL_OS:-linux}" "${VARIANT:-}" "${FLAVOR:-}" "${IS_DEFAULT:-false}"); then
+            printf 'Could not enumerate rolling manifest tag suffixes\n' >&2
+            return 1
+        fi
+        while IFS= read -r suffix; do
+            [[ "$suffix" == "$TAG" ]] && continue
+            tag_args="$tag_args -t $target_image:$suffix"
+        done <<< "$routing_suffixes"
     fi
 
     echo "$tag_args"
