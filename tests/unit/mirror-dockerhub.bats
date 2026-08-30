@@ -139,7 +139,7 @@ _run_mirror() {
          false)
 }
 
-@test "a Windows mirror cell publishes only the Windows manifest ownership share" {
+@test "a Windows manifest mirror requests only its assigned rolling refs" {
     local generator="${TEST_LOG_DIR}/windows-cell-generator.sh"
     cat > "$generator" <<'EOF'
 #!/usr/bin/env bash
@@ -151,9 +151,27 @@ EOF
     run _run_mirror "github-runner"
 
     [ "$status" -eq 0 ]
-    grep -q "docker.io/testuser/github-runner:2.337.0-windows-ltsc2022-dev" "$DOCKER_LOG"
-    grep -q "docker.io/testuser/github-runner:latest-windows-ltsc2022-dev" "$DOCKER_LOG"
-    ! grep -q "docker.io/testuser/github-runner:latest-windows-ltsc2022 " "$DOCKER_LOG"
+    local image="docker.io/testuser/github-runner"
+    local versioned_ref="${image}:2.337.0-windows-ltsc2022-dev"
+    local variant_ref="${image}:latest-windows-ltsc2022-dev"
+    local flavor_ref="${image}:latest-windows-ltsc2022"
+
+    grep -Fq -- "-t ${versioned_ref}" "$DOCKER_LOG" || {
+        echo "Expected Windows manifest mirror to request versioned ref ${versioned_ref}" >&2
+        cat "$DOCKER_LOG" >&2
+        false
+    }
+    grep -Fq -- "-t ${variant_ref}" "$DOCKER_LOG" || {
+        echo "Expected Windows manifest mirror to request variant ref ${variant_ref}" >&2
+        cat "$DOCKER_LOG" >&2
+        false
+    }
+    local escaped_flavor_ref="${flavor_ref//./\\.}"
+    if grep -Eq -- "-t ${escaped_flavor_ref}( |$)" "$DOCKER_LOG"; then
+        echo "Windows manifest mirror must never request flavor ref ${flavor_ref}" >&2
+        cat "$DOCKER_LOG" >&2
+        return 1
+    fi
 }
 
 @test "short suffix enumeration mirrors no Docker Hub tags [catches partial imagetools publish]" {
