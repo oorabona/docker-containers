@@ -69,6 +69,26 @@ assert_byte_for_byte() {
     fi
 }
 
+assert_action_rejected() {
+    local assertion="$1"
+
+    [ "$status" -ne 0 ] || {
+        printf 'ASSERTION FAILED: %s\nExpected: non-zero action status\nActual: %s\n' \
+            "$assertion" "$status" >&2
+        return 1
+    }
+    [[ "$output" == *"invalid or unauthorized version_info entry"* ]] || {
+        printf 'ASSERTION FAILED: %s\nExpected invalid-entry diagnostic\nActual: %s\n' \
+            "$assertion" "$output" >&2
+        return 1
+    }
+    [[ "$output" != *"update_count="* ]] || {
+        printf 'ASSERTION FAILED: %s\nMalformed record published outputs: %s\n' \
+            "$assertion" "$output" >&2
+        return 1
+    }
+}
+
 @test "the check-versions step binds REQUESTED_CONTAINER from its container input" {
     local container_binding
     container_binding=$(yq -r '.runs.steps[] | select(.id == "check-versions") | .env.REQUESTED_CONTAINER // ""' \
@@ -116,14 +136,106 @@ assert_byte_for_byte() {
     [[ "$output" == *"update_count=1"* ]]
 }
 
-@test "composite action treats hostile container and upstream version as data" {
-    local hostile_container hostile_version result
+@test "composite action selects an actionable new container with a missing registry version" {
+    write_make_result '[{"container":"new-postgres","current_version":"","latest_version":"16.1","update_available":true,"actionable":true,"registry_lookup":"no-match","upstream_lookup":"matched","status":"new-container"}]'
+
+    run run_action
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'containers_with_updates=["new-postgres"]'* ]]
+    [[ "$output" == *"update_count=1"* ]]
+}
+
+@test "composite action rejects an actionable new container with a matched registry version" {
+    write_make_result '[{"container":"postgres","current_version":"16.0","latest_version":"16.1","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"matched","status":"new-container"}]'
+
+    run run_action
+    assert_action_rejected "new-container must have no registry match and no current version"
+}
+
+@test "composite action rejects an actionable update with no registry version" {
+    write_make_result '[{"container":"postgres","current_version":"","latest_version":"16.1","update_available":true,"actionable":true,"registry_lookup":"no-match","upstream_lookup":"matched","status":"update-available"}]'
+
+    run run_action
+    assert_action_rejected "update-available must have a registry match and a current version"
+}
+
+@test "composite action rejects an actionable record without versions" {
+    write_make_result '[{"container":"postgres","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"matched","status":"update-available"}]'
+
+    run run_action
+    assert_action_rejected "actionable records without current and latest versions must fail before the monitor can classify null"
+}
+
+@test "composite action rejects an actionable record without a current version" {
+    write_make_result '[{"container":"postgres","latest_version":"16.1","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"matched","status":"update-available"}]'
+
+    run run_action
+    assert_action_rejected "actionable records require a string current_version"
+}
+
+@test "composite action rejects an actionable record with an empty latest version" {
+    write_make_result '[{"container":"postgres","current_version":"16.0","latest_version":"","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"matched","status":"update-available"}]'
+
+    run run_action
+    assert_action_rejected "actionable records require a non-empty latest_version"
+}
+
+@test "composite action rejects unusable or unchanged actionable update versions" {
+    local name latest_version
+    local -a cases=(
+        'null-sentinel|null'
+        'unchanged|1.0'
+        'unknown-sentinel|unknown'
+        'latest-sentinel|latest'
+    )
+
+    for case_data in "${cases[@]}"; do
+        IFS='|' read -r name latest_version <<< "$case_data"
+        write_make_result "[{\"container\":\"postgres\",\"current_version\":\"1.0\",\"latest_version\":\"$latest_version\",\"update_available\":true,\"actionable\":true,\"registry_lookup\":\"matched\",\"upstream_lookup\":\"matched\",\"status\":\"update-available\"}]"
+
+        run run_action
+        assert_action_rejected "$name update versions must be usable and distinct"
+    done
+}
+
+@test "composite action selects an actionable update with distinct usable versions" {
+    write_make_result '[{"container":"postgres","current_version":"1.0","latest_version":"1.1","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"matched","status":"update-available"}]'
+
+    run run_action
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'containers_with_updates=["postgres"]'* ]]
+    [[ "$output" == *"update_count=1"* ]]
+}
+
+@test "composite action rejects an actionable record whose status disagrees with authorization" {
+    write_make_result '[{"container":"postgres","current_version":"16.0","latest_version":"16.1","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"matched","status":"up_to_date"}]'
+
+    run run_action
+    assert_action_rejected "an actionable record must use a monitor-actionable status"
+}
+
+@test "composite action rejects duplicate downstream operation identities" {
+    write_make_result '[{"container":"postgres","current_version":"16.0","latest_version":"16.1","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"matched","status":"update-available"},{"container":"postgres:","current_version":"16.0","latest_version":"16.2","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"matched","status":"update-available"}]'
+
+    run run_action
+    assert_action_rejected "keys resolving to the same downstream operation must fail before two monitor PR operations race"
+}
+
+@test "composite action permits distinct downstream major-line identities" {
+    write_make_result '[{"container":"postgres:16","current_version":"16.0","latest_version":"16.1","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"matched","status":"update-available"},{"container":"postgres:17","current_version":"17.0","latest_version":"17.1","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"matched","status":"update-available"}]'
+
+    run run_action
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'containers_with_updates=["postgres:16","postgres:17"]'* ]]
+    [[ "$output" == *"update_count=2"* ]]
+}
+
+@test "composite action treats a hostile container name as data" {
+    local hostile_container result
     hostile_container='victim'\''$(touch container-expression-executed)'\''`touch container-backtick-executed`; && | $IFS'
-    hostile_version='-v1'\''$(touch upstream-expression-executed)'\''`touch upstream-backtick-executed`; && | $IFS'
     result=$(jq -cn \
         --arg container "$hostile_container" \
-        --arg version "$hostile_version" \
-        '[{container: $container, current_version: "1.0.0", latest_version: $version, update_available: true, actionable: true, registry_lookup: "matched", upstream_lookup: "matched", status: "update-available"}]')
+        '[{container: $container, current_version: "1.0.0", latest_version: "2.0.0-alpine", update_available: true, actionable: true, registry_lookup: "matched", upstream_lookup: "matched", status: "update-available"}]')
     write_make_result "$result"
 
     run run_action "$hostile_container"
@@ -132,8 +244,55 @@ assert_byte_for_byte() {
     assert_byte_for_byte "$result" "$(version_info_output)" "version_info must preserve the hostile record byte-for-byte"
     [ ! -e "$TEST_DIR/container-expression-executed" ]
     [ ! -e "$TEST_DIR/container-backtick-executed" ]
-    [ ! -e "$TEST_DIR/upstream-expression-executed" ]
-    [ ! -e "$TEST_DIR/upstream-backtick-executed" ]
+}
+
+@test "composite action rejects actionable latest versions outside the Docker tag grammar" {
+    local description latest_version result
+
+    while IFS= read -r description; do
+        case "$description" in
+            newline) latest_version=$'2.0.0\nchange_type=minor' ;;
+            carriage-return) latest_version=$'2.0.0\rchange_type=minor' ;;
+            non-ascii) latest_version='é2.0' ;;
+            whitespace) latest_version='2.0.0 alpine' ;;
+            invalid-tag-character) latest_version='2.0.0+build' ;;
+            too-long) latest_version=$(printf 'v%.0s' {1..129}) ;;
+        esac
+        result=$(jq -cn \
+            --arg version "$latest_version" \
+            '[{container: "postgres", current_version: "1.0.0", latest_version: $version, update_available: true, actionable: true, registry_lookup: "matched", upstream_lookup: "matched", status: "update-available"}]')
+        write_make_result "$result"
+
+        run run_action
+        assert_action_rejected "$description latest_version must be a one-line Docker tag"
+    done <<'CASES'
+newline
+carriage-return
+non-ascii
+whitespace
+invalid-tag-character
+too-long
+CASES
+}
+
+@test "composite action rejects an actionable current version outside the Docker tag grammar" {
+    local result
+    result=$(jq -cn \
+        --arg version $'1.0.0\nchange_type=minor' \
+        '[{container: "postgres", current_version: $version, latest_version: "2.0.0-alpine", update_available: true, actionable: true, registry_lookup: "matched", upstream_lookup: "matched", status: "update-available"}]')
+    write_make_result "$result"
+
+    run run_action
+    assert_action_rejected "current_version must be a one-line Docker tag"
+}
+
+@test "composite action accepts an actionable Docker-tag version" {
+    write_make_result '[{"container":"postgres","current_version":"1.0.0","latest_version":"2.0.0-alpine","update_available":true,"actionable":true,"registry_lookup":"matched","upstream_lookup":"matched","status":"update-available"}]'
+
+    run run_action
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'containers_with_updates=["postgres"]'* ]]
+    [[ "$output" == *"update_count=1"* ]]
 }
 
 @test "composite action excludes an entry whose registry lookup failed" {
@@ -217,13 +376,11 @@ assert_byte_for_byte() {
     [[ "$output" != *"update_count="* ]]
 }
 
-@test "composite action reports an unrecognised status without claiming it is up to date" {
-    write_make_result '[{"container":"unknown-state","current_version":"1.0.0","latest_version":"1.1.0","update_available":true,"actionable":false,"registry_lookup":"matched","upstream_lookup":"matched","status":"future-failure-status"}]'
+@test "composite action rejects an unrecognised status" {
+    write_make_result '[{"container":"unknown-state","current_version":"1.0.0","latest_version":"1.1.0","update_available":false,"actionable":false,"registry_lookup":"matched","upstream_lookup":"matched","status":"future-failure-status"}]'
 
     run run_action
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Unrecognised status 'future-failure-status'"* ]]
-    [[ "$output" != *"✅ Up to date"* ]]
+    assert_action_rejected "status must remain in make check-updates' closed vocabulary"
 }
 
 @test "composite action reports zero updates for a well-formed empty array" {
