@@ -129,7 +129,8 @@ get_label_args() {
     local flavor="${2:-}"
 
     local digest
-    digest=$(compute_build_digest "$dockerfile" "$flavor")
+    digest=$(compute_build_digest "$dockerfile" "$flavor") || return 1
+    [[ -n "$digest" ]] || return 1
     echo "--label $BUILD_DIGEST_LABEL=$digest"
 }
 
@@ -160,7 +161,10 @@ push_ghcr() {
         return 1
     }
     local label_args
-    label_args=$(get_label_args)
+    label_args=$(get_label_args) || {
+        log_error "build digest computation failed; aborting GHCR push"
+        return 1
+    }
 
     # Prepare tags
     local tag_args="-t $ghcr_image:$effective_tag"
@@ -229,6 +233,15 @@ push_dockerhub() {
     get_platform_config "$tag"
     local effective_tag="$PLATFORM_CONFIG_EFFECTIVE_TAG"
 
+    # Compute provenance before selecting the copy or rebuild implementation.
+    # The skopeo path cannot attach this label, but it must not publish unless
+    # the digest has been established; the buildx fallback reuses it below.
+    local label_args
+    label_args=$(get_label_args) || {
+        log_error "build digest computation failed; aborting Docker Hub push"
+        return 1
+    }
+
     # Preferred: skopeo copy from GHCR (no rebuild, exact same image)
     if command -v skopeo >/dev/null 2>&1; then
         log_info "Using skopeo copy: GHCR → Docker Hub (no rebuild)"
@@ -262,8 +275,10 @@ push_dockerhub() {
                 fi
                 $SKOPEO copy --all \
                     "docker://$ghcr_image:$effective_tag" \
-                    "docker://$dockerhub_image:latest" 2>/dev/null || \
-                    log_warning "Failed to tag latest on Docker Hub"
+                    "docker://$dockerhub_image:latest" 2>/dev/null || {
+                    log_warning "Failed to tag Docker Hub image: $dockerhub_image:latest"
+                    return 1
+                }
             fi
 
             return 0
@@ -282,9 +297,6 @@ push_dockerhub() {
         log_error "build arg preparation failed (invalid build_args/cache config); aborting Docker Hub push"
         return 1
     }
-    local label_args
-    label_args=$(get_label_args)
-
     local tag_args="-t $dockerhub_image:$effective_tag"
     if [[ -z "$platform_suffix" && "$wanted" == "latest" ]]; then
         tag_args="$tag_args -t $dockerhub_image:latest"
