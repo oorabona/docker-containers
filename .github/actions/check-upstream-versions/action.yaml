@@ -69,15 +69,72 @@ runs:
         # loop. Validate the complete producer payload first so malformed JSON
         # cannot be published as a successful zero-update observation.
         if ! jq -e '
+          # The producer (make check-updates) emits this closed status set.
+          # up_to_date means the version comparison concluded with no update;
+          # update-available means it concluded with an update. new-container
+          # also represents an available update (the first publication).
+          def valid_status:
+            . == "registry-lookup-failed" or
+            . == "upstream-lookup-failed" or
+            . == "upstream-no-match" or
+            . == "new-container" or
+            . == "update-available" or
+            . == "downgrade-guard-failed" or
+            . == "up_to_date";
+
+          # The create-update-prs matrix resolves its downstream operation
+          # identity by splitting the key on the first colon. Keep this
+          # validation in lockstep so aliases such as "postgres" and
+          # "postgres:" cannot schedule the same operation twice.
+          def downstream_identity:
+            .container as $key |
+            if ($key | type) == "string" then
+              if ($key | contains(":")) then
+                ($key
+                 | capture("^(?<container_name>[^:]*):(?<major_line>.*)$")
+                 | [.container_name, .major_line])
+              else
+                [$key, ""]
+              end
+            else
+              ["invalid-container-type", $key]
+            end;
+
+          # Actionable versions are copied to single-line workflow outputs,
+          # branch names, and Docker tags. Match the Docker tag grammar and
+          # retain its reserved sentinels.
+          def usable_version:
+            type == "string" and
+            test("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$") and
+            . != "null" and
+            . != "unknown" and
+            . != "latest";
+
           type == "array" and
+          ([.[] | downstream_identity] | length == (unique | length)) and
           all(.[];
             type == "object" and
             (.container | type == "string" and length > 0) and
             (.update_available | type == "boolean") and
             (.actionable | type == "boolean") and
+            (.status | type == "string" and valid_status) and
+            (if .status == "new-container" or .status == "update-available" then
+              .update_available
+            else
+              (.update_available | not)
+            end) and
             (if .actionable then
               .update_available and
+              (.latest_version | usable_version) and
+              (.status == "new-container" or .status == "update-available") and
               (.registry_lookup | type == "string" and (. == "matched" or . == "no-match")) and
+              (if .status == "new-container" then
+                .registry_lookup == "no-match" and .current_version == ""
+              else
+                .registry_lookup == "matched" and
+                (.current_version | usable_version) and
+                .current_version != .latest_version
+              end) and
               (.upstream_lookup | type == "string" and . == "matched")
             else
               true
@@ -119,7 +176,9 @@ runs:
           elif [ "$status" = "up_to_date" ]; then
             echo "   ✅ Up to date"
           else
-            echo "   ⚠️ Unrecognised status '$status' — no PR from this entry"
+            # The closed-status validation above makes this unreachable.
+            echo "::error::validated version_info reached an impossible status: $status" >&2
+            exit 1
           fi
           
         done < <(echo "$version_info" | jq -c '.[]')

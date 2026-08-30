@@ -133,24 +133,37 @@ jobs:
           github_token: ${{ env.GITHUB_TOKEN }}
 
       - name: Display test results
+        env:
+          REQUESTED_CONTAINER: ${{ github.event.inputs.container || '' }}
         run: |
           echo "## 🧪 Version Script Validation Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "All version.sh scripts have been tested and validated." >> $GITHUB_STEP_SUMMARY
+          if [[ -n "$REQUESTED_CONTAINER" ]]; then
+            echo "The \`$REQUESTED_CONTAINER/version.sh\` script passed its validation checks." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "All version.sh scripts passed their validation checks." >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Validation completed:** ✅ All version scripts working correctly" >> $GITHUB_STEP_SUMMARY
+          if [[ -n "$REQUESTED_CONTAINER" ]]; then
+            echo "- **Validation completed:** ✅ \`$REQUESTED_CONTAINER/version.sh\` passed validation" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Validation completed:** ✅ All version.sh scripts passed validation" >> $GITHUB_STEP_SUMMARY
+          fi
           
           # Show which containers were used for upstream monitoring tests
           container_count="${{ steps.detect-containers.outputs.count }}"
           if [ "$container_count" -gt 0 ]; then
             if [[ "${{ steps.test-upstream.outputs.test_single }}" == "true" ]]; then
               first_container="${{ steps.test-upstream.outputs.first_container }}"
+              # shellcheck disable=SC2129
               echo "- **Upstream monitoring test target:** \`$first_container\`" >> $GITHUB_STEP_SUMMARY
+              echo "- **Upstream monitoring action:** Selected-container check completed through make" >> $GITHUB_STEP_SUMMARY
+              echo "- **Integration check:** Existing make script infrastructure exercised" >> $GITHUB_STEP_SUMMARY
             else
               echo "- **Upstream monitoring test:** Single container test skipped (no valid container found)" >> $GITHUB_STEP_SUMMARY
             fi
-            if [ "$container_count" -gt 1 ]; then
+            if [[ -z "$REQUESTED_CONTAINER" && "$container_count" -gt 1 ]]; then
               echo "- **Additional tests:** All-container upstream check" >> $GITHUB_STEP_SUMMARY
             fi
           else
@@ -158,7 +171,9 @@ jobs:
           fi
           
           echo "### ✅ What was tested:" >> $GITHUB_STEP_SUMMARY
-          echo "- Each version.sh script can retrieve latest upstream versions" >> $GITHUB_STEP_SUMMARY
-          echo "- Each version.sh script can validate specific versions" >> $GITHUB_STEP_SUMMARY
-          echo "- The upstream monitoring action works with dynamically detected containers" >> $GITHUB_STEP_SUMMARY
-          echo "- Integration with the existing make script infrastructure" >> $GITHUB_STEP_SUMMARY
+          if [[ -n "$REQUESTED_CONTAINER" ]]; then
+            echo "- \`$REQUESTED_CONTAINER/version.sh\` was checked for shell syntax, dependencies, upstream version retrieval, and output format" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Each version.sh script was checked for shell syntax and dependencies" >> $GITHUB_STEP_SUMMARY
+            echo "- Each version.sh script was checked for upstream version retrieval and output format" >> $GITHUB_STEP_SUMMARY
+          fi
