@@ -139,6 +139,41 @@ _run_mirror() {
          false)
 }
 
+@test "a Windows manifest mirror requests only its assigned rolling refs" {
+    local generator="${TEST_LOG_DIR}/windows-cell-generator.sh"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"container":"github-runner","tag":"2.337.0-windows-ltsc2022-dev","os":"windows","flavor":"windows-ltsc2022","variant":"windows-ltsc2022-dev","is_default":false,"is_latest_version":true,"intermediate_ref":"ghcr.io/oorabona/github-runner:2.337.0-windows-ltsc2022-dev"}]'
+EOF
+    chmod +x "$generator"
+    export _MDH_GENERATOR_OVERRIDE="$generator"
+
+    run _run_mirror "github-runner"
+
+    [ "$status" -eq 0 ]
+    local image="docker.io/testuser/github-runner"
+    local versioned_ref="${image}:2.337.0-windows-ltsc2022-dev"
+    local variant_ref="${image}:latest-windows-ltsc2022-dev"
+    local flavor_ref="${image}:latest-windows-ltsc2022"
+
+    grep -Fq -- "-t ${versioned_ref}" "$DOCKER_LOG" || {
+        echo "Expected Windows manifest mirror to request versioned ref ${versioned_ref}" >&2
+        cat "$DOCKER_LOG" >&2
+        false
+    }
+    grep -Fq -- "-t ${variant_ref}" "$DOCKER_LOG" || {
+        echo "Expected Windows manifest mirror to request variant ref ${variant_ref}" >&2
+        cat "$DOCKER_LOG" >&2
+        false
+    }
+    local escaped_flavor_ref="${flavor_ref//./\\.}"
+    if grep -Eq -- "-t ${escaped_flavor_ref}( |$)" "$DOCKER_LOG"; then
+        echo "Windows manifest mirror must never request flavor ref ${flavor_ref}" >&2
+        cat "$DOCKER_LOG" >&2
+        return 1
+    fi
+}
+
 @test "short suffix enumeration mirrors no Docker Hub tags [catches partial imagetools publish]" {
     local generator="${TEST_LOG_DIR}/short-enumeration-generator.sh"
     cat > "$generator" <<'EOF'
@@ -150,7 +185,7 @@ EOF
 
     run bash -c '
         source "$1"
-        compute_cell_tag_suffixes() { printf "partial\\n"; return 1; }
+        compute_cell_publisher_tag_suffixes() { printf "partial\\n"; return 1; }
         mirror_to_dockerhub web-shell
     ' bash "$MDH"
 
@@ -228,6 +263,7 @@ GEN_EOF
             cells_json=\$(jq -cn '[{
                 \"container\": \"web-shell\",
                 \"tag\": \"1.0.0-alpine\",
+                \"os\": \"linux\",
                 \"flavor\": \"alpine\",
                 \"variant\": \"alpine\",
                 \"is_default\": false,
@@ -244,9 +280,10 @@ GEN_EOF
                 tag=\$(jq -r '.tag' <<< \"\$cell\")
                 variant=\$(jq -r '.variant // \"\"' <<< \"\$cell\")
                 flavor=\$(jq -r '.flavor // \"\"' <<< \"\$cell\")
+                os=\$(jq -r '.os // \"linux\"' <<< \"\$cell\")
                 is_default=\$(jq -r 'if .is_default then \"true\" else \"false\" end' <<< \"\$cell\")
                 is_latest_version=\$(jq -r 'if has(\"is_latest_version\") then (if .is_latest_version then \"true\" else \"false\" end) else \"true\" end' <<< \"\$cell\")
-                routing_suffix=\"\${variant:-\${flavor}}\"
+                publisher=\$(cell_manifest_publisher_for_os \"\$os\")
                 while IFS= read -r sfx; do
                     [[ -n \"\$sfx\" ]] || continue
                     if [[ \"\$is_latest_version\" != \"true\" && \"\$sfx\" != \"\$tag\" ]]; then
@@ -255,7 +292,7 @@ GEN_EOF
                     dh_dst=\"docker.io/\${DOCKERHUB_USERNAME}/\${container}:\${sfx}\"
                     ghcr_src=\"\${REMOTE_CR}/\${container}:\${tag}\"
                     printf '%s\n' \"buildx imagetools create -t \$dh_dst \$ghcr_src\" >> '${DOCKER_LOG}'
-                done < <(compute_cell_tag_suffixes \"\$tag\" \"\$routing_suffix\" \"\$is_default\")
+                done < <(compute_cell_publisher_tag_suffixes \"\$publisher\" \"\$tag\" \"\$os\" \"\$variant\" \"\$flavor\" \"\$is_default\")
             done
         " > "${TEST_LOG_DIR}/run.log" 2>&1
     )
@@ -539,7 +576,7 @@ EOF
     run bash -c '
         source "$1"
         # Successfully empty, defined after the source so nothing overwrites it.
-        compute_cell_tag_suffixes() { return 0; }
+        compute_cell_publisher_tag_suffixes() { return 0; }
         mirror_to_dockerhub web-shell
     ' bash "$MDH"
 

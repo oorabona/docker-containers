@@ -5,8 +5,6 @@
 # Containers with variants.yaml produce multiple images from one Dockerfile
 # Structure supports multiple PostgreSQL versions with different variants per version
 
-set -euo pipefail
-
 # shellcheck source=./collect-lines.sh
 # shellcheck disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/collect-lines.sh"
@@ -289,67 +287,255 @@ variant_image_tag() {
     fi
 }
 
-# Compute the set of TAG SUFFIXES for a build cell — the rolling-tag-routing
-# decision, independent of registry. This is the single source of truth for
-# "which tags does this cell get": the versioned tag plus, when applicable,
-# the rolling :latest / :latest-<flavor> alias. Reused by compute_cell_tags
-# (build path, both registries), the bake generator (single registry +
-# arch suffix), and the manifest-merge job (both registries, multi-arch).
+# List the rolling aliases for a cell and the publisher that owns each one.
 #
-# Rules (tag != "latest"):
-#   is_default == "true"            -> + "latest"
-#   is_default != "true", flavor set -> + "latest-<flavor>"
-#   is_default != "true", no flavor  -> + "latest"
-# When tag == "latest", only the versioned suffix is emitted (no alias).
+# This deliberately models the producers, not cleanup's broader keep-set:
+#   Linux manifest:      default -> latest; non-default -> latest-<variant>
+#   Windows action:      default -> latest; non-default -> latest-<flavor>
+#   Windows manifest:    non-default -> latest-<variant>
 #
-# Usage: compute_cell_tag_suffixes <tag> <flavor> <is_default>
-# Output: one tag suffix per line (e.g. "18-alpine", "latest", "latest-vector").
+# An alias shared by the Windows variant and flavor inputs has one owner. The
+# composite action retains ownership because it was the original Windows
+# latest-* publisher. Callers pass a publisher identifier to ask for their
+# share; they never choose an alias naming rule.
+#
+# Usage: list_cell_rolling_aliases <tag> <os> <variant> <flavor> <is_default>
+# Output: <publisher><TAB><tag suffix>, one per line.
+_cell_routing_error() {
+    printf 'cell tag routing: %s\n' "$1" >&2
+    return 1
+}
+
+_is_valid_docker_tag() {
+    [[ "$1" =~ ^[[:alnum:]_][[:alnum:]_.-]{0,127}$ ]]
+}
+
+_validate_cell_tag_route() {
+    local tag="$1"
+    local os="$2"
+    local is_default="$5"
+
+    if ! _is_valid_docker_tag "$tag"; then
+        _cell_routing_error "tag is not a valid Docker tag: $tag"
+        return 1
+    fi
+    case "$os" in
+        linux|windows) ;;
+        *) _cell_routing_error "unrecognised OS: $os"; return 1 ;;
+    esac
+    case "$is_default" in
+        true|false) ;;
+        *) _cell_routing_error "is_default must be true or false: $is_default"; return 1 ;;
+    esac
+}
+
+_emit_cell_rolling_alias() {
+    local publisher="$1"
+    local suffix="$2"
+
+    if ! _is_valid_docker_tag "$suffix"; then
+        _cell_routing_error "composed alias is not a valid Docker tag: $suffix"
+        return 1
+    fi
+    printf '%s\t%s\n' "$publisher" "$suffix"
+}
+
+list_cell_rolling_aliases() {
+    if [[ "$#" -ne 5 ]]; then
+        _cell_routing_error "expected tag, os, variant, flavor, and is_default"
+        return 1
+    fi
+    local tag="$1"
+    local os="$2"
+    local variant="$3"
+    local flavor="$4"
+    local is_default="$5"
+
+    _validate_cell_tag_route "$@" || return 1
+    [[ "$tag" != "latest" ]] || return 0
+
+    if [[ "$is_default" == "true" ]]; then
+        if [[ "$os" == "windows" ]]; then
+            _emit_cell_rolling_alias "windows-action" "latest"
+        else
+            _emit_cell_rolling_alias "linux-manifest" "latest"
+        fi
+        return 0
+    fi
+
+    if [[ "$os" == "windows" ]]; then
+        # Keep the full-set listing in producer order: the workflow's variant
+        # alias first, then the action's flavor alias.
+        if [[ -n "$variant" && "$variant" != "$flavor" ]]; then
+            _emit_cell_rolling_alias "windows-manifest" "latest-${variant}" || return 1
+        fi
+        if [[ -n "$flavor" ]]; then
+            _emit_cell_rolling_alias "windows-action" "latest-${flavor}" || return 1
+        fi
+    elif [[ -n "$variant" ]]; then
+        _emit_cell_rolling_alias "linux-manifest" "latest-${variant}"
+    fi
+}
+
+# List only the rolling aliases owned by one publisher.
+# Usage: list_cell_publisher_rolling_aliases <publisher> <tag> <os> <variant> <flavor> <is_default>
+list_cell_publisher_rolling_aliases() {
+    local publisher="$1"
+    local _aliases_file
+    local _collect_status
+    local _emit_status=0
+    shift
+
+    case "$publisher" in
+        linux-manifest|windows-manifest|windows-action) ;;
+        *) _cell_routing_error "unrecognised publisher: $publisher"; return 1 ;;
+    esac
+
+    _aliases_file=$(mktemp "${TMPDIR:-/tmp}/cell-publisher-rolling-aliases.XXXXXX") || return 1
+    if collect_lines "$_aliases_file" -- list_cell_rolling_aliases "$@"; then
+        :
+    else
+        _collect_status=$?
+        rm -f "$_aliases_file"
+        return "$_collect_status"
+    fi
+
+    local owner suffix
+    while IFS=$'\t' read -r owner suffix; do
+        if [[ "$owner" == "$publisher" ]]; then
+            printf '%s\n' "$suffix" || _emit_status=$?
+        fi
+    done < "$_aliases_file"
+    rm -f "$_aliases_file"
+    return "$_emit_status"
+}
+
+# Name the manifest publisher for a cell OS.  Callers use this to select their
+# own manifest producer role and reject an OS that has no such producer.
+# Usage: cell_manifest_publisher_for_os <os>
+cell_manifest_publisher_for_os() {
+    case "$1" in
+        linux) printf '%s\n' "linux-manifest" ;;
+        windows) printf '%s\n' "windows-manifest" ;;
+        *) _cell_routing_error "unrecognised OS: $1"; return 1 ;;
+    esac
+}
+
+# Preserve failures from every stage of the full-set alias pipeline. This runs
+# in a subshell so pipefail does not alter callers that source this helper.
+_list_cell_tag_rolling_aliases() (
+    set -o pipefail
+    list_cell_rolling_aliases "$@" | cut -f2- | awk '!seen[$0]++'
+)
+
+# Compute the versioned suffix plus every rolling alias a cell produces.
+# This full-set view is for non-publisher callers; publisher paths must use
+# list_cell_publisher_rolling_aliases so that each ref has one writer.
+#
+# Usage: compute_cell_tag_suffixes <tag> <os> <variant> <flavor> <is_default>
+# Output: one unique tag suffix per line (e.g. "18-alpine", "latest", "latest-vector").
 compute_cell_tag_suffixes() {
     local tag="$1"
-    local flavor="$2"
-    local is_default="$3"
+    local suffix
+    local _aliases_file
+    local _collect_status
+    local _emit_status=0
 
-    # Versioned suffix — always present
+    _aliases_file=$(mktemp "${TMPDIR:-/tmp}/cell-tag-suffixes.XXXXXX") || return 1
+    if collect_lines "$_aliases_file" -- _list_cell_tag_rolling_aliases "$@"; then
+        :
+    else
+        _collect_status=$?
+        rm -f "$_aliases_file"
+        return "$_collect_status"
+    fi
+
+    printf '%s\n' "$tag" || _emit_status=$?
+    while IFS= read -r suffix; do
+        printf '%s\n' "$suffix" || _emit_status=$?
+    done < "$_aliases_file"
+    rm -f "$_aliases_file"
+    return "$_emit_status"
+}
+
+# Compute the versioned suffix plus only the rolling aliases owned by one
+# publisher.  Registry writers must use this ownership view.
+# Usage: compute_cell_publisher_tag_suffixes <publisher> <tag> <os> <variant> <flavor> <is_default>
+compute_cell_publisher_tag_suffixes() {
+    local tag="$2"
+    local suffix
+    local _aliases_file
+    local _collect_status
+    local _emit_status=0
+
+    _aliases_file=$(mktemp "${TMPDIR:-/tmp}/cell-publisher-tag-suffixes.XXXXXX") || return 1
+    if collect_lines "$_aliases_file" -- list_cell_publisher_rolling_aliases "$@"; then
+        :
+    else
+        _collect_status=$?
+        rm -f "$_aliases_file"
+        return "$_collect_status"
+    fi
+
+    printf '%s\n' "$tag" || _emit_status=$?
+    while IFS= read -r suffix; do
+        printf '%s\n' "$suffix" || _emit_status=$?
+    done < "$_aliases_file"
+    rm -f "$_aliases_file"
+    return "$_emit_status"
+}
+
+# Compute the suffixes tagged by the local `./make build` path.
+#
+# This intentionally does not delegate to compute_cell_tag_suffixes: that is
+# the CI full-set view, including each Windows publisher's distinct alias.
+# CI publishers use compute_cell_publisher_tag_suffixes, while the sole caller
+# of compute_cell_tags is scripts/build-container.sh. Preserve that local
+# path's base routing here: variant, then flavor, then bare latest.
+#
+# Usage: compute_local_build_tag_suffixes <tag> <variant> <flavor> <is_default>
+compute_local_build_tag_suffixes() {
+    local tag="$1"
+    local variant="$2"
+    local flavor="$3"
+    local is_default="$4"
+    local routing_suffix
+
     printf '%s\n' "$tag"
+    [[ "$tag" != "latest" ]] || return 0
 
-    # Rolling latest suffix — only when this is not already a "latest" tag
-    if [[ "$tag" != "latest" ]]; then
-        if [[ "$is_default" == "true" ]]; then
-            printf 'latest\n'
-        elif [[ -n "$flavor" ]]; then
-            printf 'latest-%s\n' "$flavor"
-        else
-            printf 'latest\n'
-        fi
+    if [[ "$is_default" == "true" ]]; then
+        printf 'latest\n'
+        return 0
+    fi
+
+    routing_suffix="${variant:-$flavor}"
+    if [[ -n "$routing_suffix" ]]; then
+        printf 'latest-%s\n' "$routing_suffix"
+    else
+        printf 'latest\n'
     fi
 }
 
 # Compute the full set of image refs to tag for one build cell.
 #
-# This is the single source of truth for tag-set logic; build-container.sh
-# and any future bake-HCL generator must call this function instead of
-# duplicating the rules.
+# This is the local developer-build source of truth. CI publishers instead use
+# list_cell_publisher_rolling_aliases so every rolling ref has one writer.
 #
-# Rules:
+# Local-build rules:
 #   - Always emit the versioned ref on both docker.io and ghcr.io.
-#   - When tag != "latest":
-#       • is_default == "true"
-#           → also emit :latest on both registries.
-#       • is_default != "true" AND flavor non-empty
-#           → also emit :latest-<flavor> on both registries.
-#       • is_default != "true" AND flavor empty
-#           → also emit :latest on both registries.
+#   - When tag != "latest": default → :latest; non-default →
+#     :latest-<variant>, falling back to flavor and then bare :latest.
 #
-# Usage: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image>
+# Usage: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image> [os] [variant]
 #   tag             : image tag for this build cell (e.g. "18-alpine", "1.14.6-alpine")
-#   flavor          : the variants.yaml `.flavor` field for this variant — the rolling-tag suffix source
-#                     (e.g. "base", "ubuntu-2404", "") — empty for no-flavor containers.
-#                     Distinct from `build_flavor` (the --build-arg FLAVOR value); for containers like
-#                     github-runner the variant name ("ubuntu-2404-base") differs from this flavor field.
+#   flavor          : the variants.yaml `.flavor` field for this variant.
 #   is_default      : "true" if this variant is the default; any other value means non-default.
 #                     Caller computes this via variant_property <dir> <variant_name> "default".
 #   dockerhub_image : docker.io/<owner>/<container>  (no tag)
 #   ghcr_image      : ghcr.io/<owner>/<container>   (no tag)
+#   os              : accepted for the legacy call shape; local routing is OS-independent.
+#   variant         : optional cell variant; an empty value falls back to flavor.
 #
 # Output: one fully-qualified image ref per line (no leading "-t").
 #         Caller reads into an array and prepends "-t" as needed.
@@ -359,11 +545,12 @@ compute_cell_tags() {
     local is_default="$3"
     local dockerhub_image="$4"
     local ghcr_image="$5"
+    local variant="${7:-}"
 
     local _sfx
     local _suffixes_file
     _suffixes_file=$(mktemp "${TMPDIR:-/tmp}/compute-cell-tags-suffixes.XXXXXX") || return 1
-    if ! collect_lines "$_suffixes_file" -- compute_cell_tag_suffixes "$tag" "$flavor" "$is_default"; then
+    if ! collect_lines "$_suffixes_file" -- compute_local_build_tag_suffixes "$tag" "$variant" "$flavor" "$is_default"; then
         rm -f "$_suffixes_file"
         printf 'compute_cell_tags: could not enumerate tag suffixes\n' >&2
         return 1
@@ -845,4 +1032,6 @@ latest_per_major_versions() {
 export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
 export -f variant_property default_variant base_suffix version_retention
 export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_container_builds list_variant_tags
-export -f always_all_versions compute_cell_tag_suffixes compute_cell_tags compute_expand_retained_map latest_per_major_versions
+export -f always_all_versions list_cell_rolling_aliases list_cell_publisher_rolling_aliases cell_manifest_publisher_for_os _list_cell_tag_rolling_aliases
+export -f compute_local_build_tag_suffixes
+export -f compute_cell_tag_suffixes compute_cell_publisher_tag_suffixes compute_cell_tags compute_expand_retained_map latest_per_major_versions

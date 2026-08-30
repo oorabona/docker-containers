@@ -933,14 +933,20 @@ runs:
         IMAGE_NAME: ${{ steps.check-build.outputs.image_name }}
         CURRENT_TAG: ${{ steps.check-build.outputs.current_tag }}
         PLATFORM_SUFFIX: ${{ steps.check-build.outputs.platform_suffix }}
+        VARIANT: ${{ inputs.variant }}
         FLAVOR: ${{ steps.check-build.outputs.flavor }}
         IS_DEFAULT: ${{ steps.check-build.outputs.is_default }}
+        RUNNER_OS_VALUE: ${{ runner.os }}
+        DOCKERHUB_PUSH_SUCCEEDED: ${{ steps.push-dockerhub.outputs.success }}
       run: |
         image_name="$IMAGE_NAME"
         current_tag="$CURRENT_TAG"
         platform_suffix="$PLATFORM_SUFFIX"
+        variant="$VARIANT"
         flavor="$FLAVOR"
         is_default="$IS_DEFAULT"
+        runner_os="$RUNNER_OS_VALUE"
+        dockerhub_push_succeeded="$DOCKERHUB_PUSH_SUCCEEDED"
 
         # shellcheck disable=SC1091
         source ./helpers/retry.sh
@@ -957,32 +963,27 @@ runs:
         #        and historically caused docker.io 429 rate-limit failures.
         # Windows: the manifest job does not handle Windows variants, so we must create
         #          the docker.io tag here. Use retry to absorb transient rate limits.
-        if [[ "${{ runner.os }}" == "Windows" && "${{ steps.push-dockerhub.outputs.success }}" == "true" ]]; then
+        if [[ "$runner_os" == "Windows" && "$dockerhub_push_succeeded" == "true" ]]; then
           dh_src="docker.io/$image_name:$current_tag-$platform_suffix"
           dh_dst="docker.io/$image_name:$current_tag"
           retry_with_backoff 5 30 docker buildx imagetools create --tag "$dh_dst" "$dh_src"
         fi
 
-        # Create latest-* rolling tags for Windows (single-arch — manifest job won't handle these)
-        # For Linux: manifest job creates the authoritative multi-arch latest tags
-        if [[ "${{ runner.os }}" == "Windows" ]]; then
-          if [[ "$is_default" == "true" ]]; then
-            latest_tag="latest"
-          elif [[ -n "$flavor" ]]; then
-            latest_tag="latest-$flavor"
-          else
-            latest_tag=""
-          fi
-
-          if [[ -n "$latest_tag" ]]; then
+        # Windows flavor aliases are single-arch and owned by this action.
+        # Linux aliases and Windows variant aliases are published elsewhere.
+        if [[ "$runner_os" == "Windows" ]]; then
+          rolling_suffixes=$(./scripts/list-cell-rolling-tag-suffixes.sh \
+            "windows-action" "$current_tag" "windows" "$variant" "$flavor" "$is_default")
+          while IFS= read -r latest_tag; do
+            [[ -z "$latest_tag" ]] && continue
             echo "::notice::Creating Windows rolling tag: ghcr.io/$image_name:$latest_tag"
             retry_with_backoff 3 5 docker buildx imagetools create --tag "ghcr.io/$image_name:$latest_tag" "$ghcr_src"
 
-            if [[ "${{ steps.push-dockerhub.outputs.success }}" == "true" ]]; then
+            if [[ "$dockerhub_push_succeeded" == "true" ]]; then
               dh_src="docker.io/$image_name:$current_tag-$platform_suffix"
               retry_with_backoff 5 30 docker buildx imagetools create --tag "docker.io/$image_name:$latest_tag" "$dh_src"
             fi
-          fi
+          done <<< "$rolling_suffixes"
         fi
 
     - name: Skip push for pull request or disabled publishing

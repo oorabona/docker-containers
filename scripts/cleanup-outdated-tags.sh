@@ -56,8 +56,7 @@ build_valid_tags() {
   if [[ -n "$variant_tags" ]]; then
     tags+=$'\n'"$variant_tags"
   fi
-  # Publisher creates latest-<flavor> on any version for non-default Windows builds with a non-empty flavor.
-  # This script's is_latest_version filter is narrower; #1395 tracks the difference.
+  # Cleanup deliberately retains the broader historical Windows flavor set.
   if ! flavor_tags=$(set -o pipefail; jq -r '.[] | select(.os == "windows" and .is_default != true and .flavor != "" and .is_latest_version == true) | "latest-" + .flavor' <<< "$builds_json" | sort -u); then
     return 1
   fi

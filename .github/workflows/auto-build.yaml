@@ -1636,34 +1636,31 @@ jobs:
           VERSION: ${{ matrix.build.version }}
           FULL_VERSION: ${{ matrix.build.full_version }}
           VARIANT: ${{ matrix.build.variant }}
+          FLAVOR: ${{ matrix.build.flavor }}
           IS_DEFAULT: ${{ matrix.build.is_default }}
           IS_LATEST_VERSION: ${{ matrix.build.is_latest_version }}
+          CELL_OS: ${{ matrix.build.os }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
           set -e
           # Windows containers are single-arch — create tag alias instead of multi-arch manifest
-          if [[ "${{ matrix.build.os }}" == "windows" ]]; then
+          if [[ "$CELL_OS" == "windows" ]]; then
             ghcr_src="ghcr.io/$GITHUB_USERNAME/$CONTAINER:$TAG-amd64"
             ghcr_dst="ghcr.io/$GITHUB_USERNAME/$CONTAINER:$TAG"
             echo "::notice::Creating Windows tag alias: $ghcr_dst"
             docker buildx imagetools create -t "$ghcr_dst" "$ghcr_src" || echo "::warning::Failed to create tag alias"
 
-            # Create latest-* rolling tags for Windows (only for the latest version)
+            # The Windows manifest path owns the variant alias only.
             if [[ "${IS_LATEST_VERSION}" == "true" ]]; then
-              if [[ "${IS_DEFAULT}" == "true" ]]; then
-                latest_tag="latest"
-              elif [[ -n "${VARIANT}" ]]; then
-                latest_tag="latest-${VARIANT}"
-              else
-                latest_tag=""
-              fi
-
-              if [[ -n "$latest_tag" ]]; then
+              rolling_suffixes=$(./scripts/list-cell-rolling-tag-suffixes.sh \
+                "windows-manifest" "$TAG" "$CELL_OS" "$VARIANT" "$FLAVOR" "$IS_DEFAULT")
+              while IFS= read -r latest_tag; do
+                [[ -z "$latest_tag" ]] && continue
                 echo "::notice::Creating Windows rolling tag: ghcr.io/$GITHUB_USERNAME/$CONTAINER:$latest_tag"
                 docker buildx imagetools create \
                   -t "ghcr.io/$GITHUB_USERNAME/$CONTAINER:$latest_tag" \
                   "$ghcr_src" || echo "::warning::Failed to create rolling tag $latest_tag"
-              fi
+              done <<< "$rolling_suffixes"
             fi
             exit 0
           fi
@@ -1681,8 +1678,10 @@ jobs:
           VERSION: ${{ matrix.build.version }}
           FULL_VERSION: ${{ matrix.build.full_version }}
           VARIANT: ${{ matrix.build.variant }}
+          FLAVOR: ${{ matrix.build.flavor }}
           IS_DEFAULT: ${{ matrix.build.is_default }}
           IS_LATEST_VERSION: ${{ matrix.build.is_latest_version }}
+          CELL_OS: ${{ matrix.build.os }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
@@ -1692,28 +1691,23 @@ jobs:
           fi
 
           # Windows containers are single-arch — create tag alias + latest-* rolling tags
-          if [[ "${{ matrix.build.os }}" == "windows" ]]; then
+          if [[ "$CELL_OS" == "windows" ]]; then
             dh_src="docker.io/$DOCKERHUB_USERNAME/$CONTAINER:$TAG-amd64"
             dh_dst="docker.io/$DOCKERHUB_USERNAME/$CONTAINER:$TAG"
             echo "::notice::Creating Windows Docker Hub tag alias: $dh_dst"
             docker buildx imagetools create -t "$dh_dst" "$dh_src" || echo "::warning::Failed to create Docker Hub tag alias"
 
-            # Create latest-* rolling tags for Windows (only for the latest version)
+            # The Windows manifest path owns the variant alias only.
             if [[ "${IS_LATEST_VERSION}" == "true" ]]; then
-              if [[ "${IS_DEFAULT}" == "true" ]]; then
-                latest_tag="latest"
-              elif [[ -n "${VARIANT}" ]]; then
-                latest_tag="latest-${VARIANT}"
-              else
-                latest_tag=""
-              fi
-
-              if [[ -n "$latest_tag" ]]; then
+              rolling_suffixes=$(./scripts/list-cell-rolling-tag-suffixes.sh \
+                "windows-manifest" "$TAG" "$CELL_OS" "$VARIANT" "$FLAVOR" "$IS_DEFAULT")
+              while IFS= read -r latest_tag; do
+                [[ -z "$latest_tag" ]] && continue
                 echo "::notice::Creating Windows Docker Hub rolling tag: docker.io/$DOCKERHUB_USERNAME/$CONTAINER:$latest_tag"
                 docker buildx imagetools create \
                   -t "docker.io/$DOCKERHUB_USERNAME/$CONTAINER:$latest_tag" \
                   "$dh_src" || true
-              fi
+              done <<< "$rolling_suffixes"
             fi
             exit 0
           fi

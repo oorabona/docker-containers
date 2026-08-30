@@ -258,6 +258,58 @@ CALLER
     [[ "$create_line" == *"ghcr.io/oorabona/debian:latest"* ]]
 }
 
+@test "a Windows manifest merge requests only its assigned rolling refs" {
+    export REMOTE_CR="ghcr.io/oorabona"
+
+    # This non-default Windows cell deliberately has distinct variant and
+    # flavor values.  The complete cell set therefore has three refs, while
+    # this manifest publisher owns only the versioned and variant refs.
+    local generator="${TEST_TEMP_DIR}/bin/generate-bake-hcl.sh"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"container":"github-runner","tag":"2.337.0-windows-ltsc2022-dev","os":"windows","flavor":"windows-ltsc2022","variant":"windows-ltsc2022-dev","is_default":false,"is_latest_version":true,"intermediate_ref":"ghcr.io/oorabona/github-runner:2.337.0-windows-ltsc2022-dev"}]'
+EOF
+    chmod +x "$generator"
+
+    # Source with main() suppressed, then direct the caller-facing main path
+    # to the stubbed generator.  The Docker mock makes this a registry-free
+    # dry run while preserving each requested -t ref in DOCKER_LOG.
+    local caller_script="${TEST_TEMP_DIR}/_windows_manifest_caller.sh"
+    cat > "$caller_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
+SCRIPT_DIR="${TEST_TEMP_DIR}/bin"
+main github-runner
+EOF
+    chmod +x "$caller_script"
+
+    run bash "$caller_script"
+
+    [ "$status" -eq 0 ]
+    local image="ghcr.io/oorabona/github-runner"
+    local versioned_ref="${image}:2.337.0-windows-ltsc2022-dev"
+    local variant_ref="${image}:latest-windows-ltsc2022-dev"
+    local flavor_ref="${image}:latest-windows-ltsc2022"
+
+    grep -Fq -- "-t ${versioned_ref}" "$DOCKER_LOG" || {
+        echo "Expected Windows manifest merge to request versioned ref ${versioned_ref}" >&2
+        cat "$DOCKER_LOG" >&2
+        false
+    }
+    grep -Fq -- "-t ${variant_ref}" "$DOCKER_LOG" || {
+        echo "Expected Windows manifest merge to request variant ref ${variant_ref}" >&2
+        cat "$DOCKER_LOG" >&2
+        false
+    }
+    local escaped_flavor_ref="${flavor_ref//./\\.}"
+    if grep -Eq -- "-t ${escaped_flavor_ref}( |$)" "$DOCKER_LOG"; then
+        echo "Windows manifest merge must never request flavor ref ${flavor_ref}" >&2
+        cat "$DOCKER_LOG" >&2
+        return 1
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # FIX F / MM9: github-runner dry-run merge emits distinct rolling aliases.
 # debian-trixie-base and debian-trixie-dev must NOT share latest-debian-trixie.
@@ -334,7 +386,7 @@ CALLER
 #!/usr/bin/env bash
 set -euo pipefail
 source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
-compute_cell_tag_suffixes() { printf 'partial\n'; return 1; }
+compute_cell_publisher_tag_suffixes() { printf 'partial\n'; return 1; }
 _merge_cell debian trixie '' true ghcr.io/oorabona/debian:trixie true
 EOF
     chmod +x "$caller_script"
@@ -357,7 +409,7 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
-compute_cell_tag_suffixes() { printf 'partial\n'; return 1; }
+compute_cell_publisher_tag_suffixes() { printf 'partial\n'; return 1; }
 SCRIPT_DIR="${TEST_TEMP_DIR}/bin"
 main
 EOF
@@ -376,7 +428,7 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
-compute_cell_tag_suffixes() { return 0; }
+compute_cell_publisher_tag_suffixes() { return 0; }
 _merge_cell debian trixie '' true ghcr.io/oorabona/debian:trixie true
 EOF
     chmod +x "$caller_script"

@@ -11,6 +11,34 @@ teardown() {
     teardown_temp_dir
 }
 
+@test "sourcing image-identity leaves the caller shell options unchanged" {
+    run bash -c '
+        set -e
+        before=$-
+        source "$1"
+        after=$-
+        [[ "$before" == "$after" ]]
+    ' _ "$RESOLVER"
+
+    [ "$status" -eq 0 ]
+}
+
+@test "sourcing image-identity leaves a relaxed caller shell options unchanged" {
+    run bash -c '
+        set +e +u +o pipefail
+        before=$-
+        before_pipefail=$(set -o | grep -E "^pipefail")
+        source "$1"
+        after=$-
+        after_pipefail=$(set -o | grep -E "^pipefail")
+        [[ "$before" == "$after" ]]
+        [[ "$before_pipefail" =~ [[:space:]]off$ ]]
+        [[ "$after_pipefail" =~ [[:space:]]off$ ]]
+    ' _ "$RESOLVER"
+
+    [ "$status" -eq 0 ]
+}
+
 resolve() {
     run bash -c 'source "$1"; image_identity_resolve "$2" "$3"' _ \
         "$RESOLVER" "$1" "$2"
@@ -92,13 +120,9 @@ assert_reported_component_version() {
         th_init --name "identity assertion" --report tap --no-color
         e2e_assert_reported_component_version 7.1
         th_summary
-        summary_status=$?
-        printf "caller-stub-defined\n"
-        exit "$summary_status"
     ' _ "$PROJECT_ROOT" "$record"
 
     [ "$status" -ne 0 ]
-    [[ "$output" == *"caller-stub-defined"* ]]
     [[ "$output" == *"not ok 1 - the reported component version matches the resolved image release"* ]]
 }
 

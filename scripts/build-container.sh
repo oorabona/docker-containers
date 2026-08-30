@@ -394,12 +394,13 @@ _emit_build_lineage() {
 }
 
 # Build container function
-# Usage: build_container <container> <version> <tag> [flavor] [dockerfile] [build_flavor] [is_default]
-# flavor:       distro name from variants.yaml (e.g. ubuntu-2404) — used for tag logic
+# Usage: build_container <container> <version> <tag> [flavor] [dockerfile] [build_flavor] [is_default] [variant] [os]
+# flavor:       distro name from variants.yaml (e.g. ubuntu-2404)
 # build_flavor: the value passed as --build-arg FLAVOR (e.g. base, dev)
 #               falls back to flavor when not provided (backward-compatible)
 # is_default:   "true" if this variant is the default (gets bare :latest); defaults to "false"
 #               Caller computes via variant_property <dir> <variant_name> "default"
+# variant/os:   cell attributes used by compute_cell_tags for rolling-alias routing.
 # If dockerfile is provided, uses -f <dockerfile> instead of default Dockerfile
 build_container() {
     local container="$1"
@@ -409,6 +410,9 @@ build_container() {
     local dockerfile="${5:-Dockerfile}"
     local build_flavor="${6:-$flavor}"
     local is_default="${7:-}"
+    local variant="${8:-${VARIANT:-$flavor}}"
+    local os="${9:-linux}"
+    [[ "${RUNNER_OS:-}" == "Windows" ]] && os="windows"
     # Self-heal (best-effort legacy-parity fallback for direct/6-arg callers):
     # When is_default is omitted — e.g. `./make build github-runner <v> --flavor ubuntu-2404`
     # without --is-default — derive it from variant config keyed by FLAVOR, matching
@@ -462,7 +466,7 @@ build_container() {
     # see that function for the full rule-set.
     local _cell_refs_file _cell_refs _ref
     _cell_refs_file=$(mktemp "${TMPDIR:-/tmp}/build-container-cell-refs.XXXXXX") || return 1
-    if ! collect_lines "$_cell_refs_file" -- compute_cell_tags "$tag" "$flavor" "$is_default" "$dockerhub_image" "$ghcr_image"; then
+    if ! collect_lines "$_cell_refs_file" -- compute_cell_tags "$tag" "$flavor" "$is_default" "$dockerhub_image" "$ghcr_image" "$os" "$variant"; then
         rm -f "$_cell_refs_file"
         log_error "Could not enumerate image tags; refusing to invoke docker build without tags"
         return 1
@@ -734,6 +738,9 @@ build_container_variants() {
         variant_tag=$(variant_image_tag "$major_version" "$variant_name" "$container_dir")
         local flavor
         flavor=$(variant_property "$container_dir" "$variant_name" "flavor" "$major_version")
+        local variant_os
+        variant_os=$(variant_property "$container_dir" "$variant_name" "os" "$major_version")
+        [[ -z "$variant_os" ]] && variant_os="linux"
         local build_flavor
         build_flavor=$(variant_property "$container_dir" "$variant_name" "build_flavor" "$major_version")
         local description
@@ -756,7 +763,7 @@ build_container_variants() {
         # build_flavor (e.g. base/dev) is passed as --build-arg FLAVOR; flavor (distro) is kept for tag logic
         # is_default is passed so compute_cell_tags uses the correct variant-name-based value
         local status="built"
-        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor" "$dockerfile" "$build_flavor" "$is_default"; then
+        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor" "$dockerfile" "$build_flavor" "$is_default" "$variant_name" "$variant_os"; then
             log_error "Failed to build variant: $variant_name"
             status="failed"
             failed=true
