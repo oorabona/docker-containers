@@ -20,6 +20,23 @@ _digest_log() {
     fi
 }
 
+# Read a required digest input without allowing partial command-substitution
+# output to become a valid input.  Callers must return its status explicitly:
+# compute_build_digest is often invoked from a conditional, where Bash disables
+# errexit for the duration of the calling function.
+_digest_read_file() {
+    local path="$1"
+    local output_var="$2"
+    local content
+
+    if ! content=$(cat -- "$path"); then
+        log_error "  digest input: failed to read $path"
+        return 1
+    fi
+
+    printf -v "$output_var" '%s' "$content"
+}
+
 # Compute a per-flavor build digest from source files
 # Auto-detects container type from cwd and collects only the inputs
 # relevant to the specified flavor.
@@ -43,13 +60,14 @@ compute_build_digest() {
     local -a digest_inputs=()
 
     # --- Input 1: Dockerfile content ---
-    if [[ -f "$dockerfile" ]]; then
-        digest_inputs+=("FILE:Dockerfile=$(cat "$dockerfile")")
-        _digest_log "  digest input: Dockerfile ($(wc -c < "$dockerfile") bytes)"
-    else
-        log_warning "  digest input: Dockerfile not found at $dockerfile"
-        digest_inputs+=("FILE:Dockerfile=")
+    if [[ ! -f "$dockerfile" ]]; then
+        log_error "  digest input: Dockerfile not found at $dockerfile"
+        return 1
     fi
+    local dockerfile_content
+    _digest_read_file "$dockerfile" dockerfile_content || return 1
+    digest_inputs+=("FILE:Dockerfile=$dockerfile_content")
+    _digest_log "  digest input: Dockerfile (${#dockerfile_content} bytes)"
 
     # A file a Dockerfile bind-mounts is a build input this digest does not see.
     # It is not covered here, and the gap is #1103: nothing that reaches this
@@ -69,25 +87,37 @@ compute_build_digest() {
         _digest_log "  digest type: postgres-style (flavors/${flavor}.yaml)"
 
         # Add flavor file content
-        digest_inputs+=("FILE:flavor=$(cat "flavors/${flavor}.yaml")")
+        local flavor_content
+        _digest_read_file "flavors/${flavor}.yaml" flavor_content || return 1
+        digest_inputs+=("FILE:flavor=$flavor_content")
         _digest_log "  digest input: flavors/${flavor}.yaml"
 
         # Extract extension list from flavor file, get version for each
         local extensions
         if command -v yq &>/dev/null; then
-            extensions=$(yq -r '.extensions[]' "flavors/${flavor}.yaml" 2>/dev/null || true)
+            if ! extensions=$(yq -r '.extensions[]' "flavors/${flavor}.yaml" 2>/dev/null); then
+                log_error "  digest input: failed to parse extensions from flavors/${flavor}.yaml"
+                return 1
+            fi
         else
             log_warning "  yq not available, falling back to raw flavor file content"
             extensions=""
         fi
 
-        if [[ -n "$extensions" && -f "extensions/config.yaml" ]]; then
+        if [[ -n "$extensions" ]]; then
+            if [[ ! -f "extensions/config.yaml" ]]; then
+                log_error "  digest input: extensions/config.yaml not found"
+                return 1
+            fi
             local ext_pairs=""
             local ext
             for ext in $extensions; do
                 local version
                 if command -v yq &>/dev/null; then
-                    version=$(yq -r ".extensions.${ext}.version // \"unknown\"" "extensions/config.yaml" 2>/dev/null)
+                    if ! version=$(yq -r ".extensions.${ext}.version // \"unknown\"" "extensions/config.yaml" 2>/dev/null); then
+                        log_error "  digest input: failed to query extension '$ext' in extensions/config.yaml"
+                        return 1
+                    fi
                 else
                     version="unknown"
                 fi
@@ -98,19 +128,56 @@ compute_build_digest() {
                 _digest_log "  digest input: ${ext}=${version}"
             done
             # Sort for determinism
-            digest_inputs+=("$(echo -n "$ext_pairs" | sort)")
+            local sorted_ext_pairs
+            if ! sorted_ext_pairs=$(printf '%s' "$ext_pairs" | sort); then
+                log_error "  digest input: failed to sort extension versions"
+                return 1
+            fi
+            digest_inputs+=("$sorted_ext_pairs")
         fi
 
-    elif [[ -f "variants.yaml" ]] && _has_build_args_include; then
+    else
+        local has_variant_build_args=1
+        if [[ -f "variants.yaml" ]]; then
+            if _has_build_args_include; then
+                has_variant_build_args=0
+            else
+                local has_variant_build_args_status=$?
+                if [[ "$has_variant_build_args_status" -gt 1 ]]; then
+                    log_error "  digest input: failed to query variants.yaml"
+                    return 1
+                fi
+            fi
+        fi
+
+        local has_config_build_args=1
+        if [[ -f "config.yaml" ]]; then
+            if _has_build_args; then
+                has_config_build_args=0
+            else
+                local has_config_build_args_status=$?
+                if [[ "$has_config_build_args_status" -gt 1 ]]; then
+                    log_error "  digest input: failed to query config.yaml"
+                    return 1
+                fi
+            fi
+        fi
+
+        if [[ "$has_variant_build_args" -eq 0 ]]; then
         # TYPE 2: Terraform-style — build_args_include per variant from config.yaml
         _digest_log "  digest type: terraform-style (variants.yaml + config.yaml)"
 
         local args
         if command -v yq &>/dev/null; then
-            args=$(yq -r ".versions[].variants[] | select(.flavor == \"$flavor\") | .build_args_include[]" variants.yaml 2>/dev/null || true)
+            if ! args=$(yq -r ".versions[].variants[] | select(.flavor == \"$flavor\") | .build_args_include[]" variants.yaml 2>/dev/null); then
+                log_error "  digest input: failed to query build args from variants.yaml"
+                return 1
+            fi
         else
             log_warning "  yq not available, falling back to raw variants.yaml content"
-            digest_inputs+=("FILE:variants=$(cat variants.yaml)")
+            local variants_content
+            _digest_read_file variants.yaml variants_content || return 1
+            digest_inputs+=("FILE:variants=$variants_content")
             args=""
         fi
 
@@ -118,13 +185,20 @@ compute_build_digest() {
             log_warning "  no build_args found for flavor '$flavor'"
         fi
 
-        if [[ -n "$args" && -f "config.yaml" ]]; then
+        if [[ -n "$args" ]]; then
+            if [[ ! -f "config.yaml" ]]; then
+                log_error "  digest input: config.yaml not found for declared build args"
+                return 1
+            fi
             local arg_pairs=""
             local arg
             for arg in $args; do
                 local value
                 if command -v yq &>/dev/null; then
-                    value=$(yq -r ".build_args.${arg} // \"unknown\"" "config.yaml" 2>/dev/null)
+                    if ! value=$(yq -r ".build_args.${arg} // \"unknown\"" "config.yaml" 2>/dev/null); then
+                        log_error "  digest input: failed to query build arg '$arg' in config.yaml"
+                        return 1
+                    fi
                 else
                     value="unknown"
                 fi
@@ -135,36 +209,55 @@ compute_build_digest() {
                 _digest_log "  digest input: ${arg}=${value}"
             done
             # Sort for determinism
-            digest_inputs+=("$(echo -n "$arg_pairs" | sort)")
+            local sorted_arg_pairs
+            if ! sorted_arg_pairs=$(printf '%s' "$arg_pairs" | sort); then
+                log_error "  digest input: failed to sort build args"
+                return 1
+            fi
+            digest_inputs+=("$sorted_arg_pairs")
         fi
 
-    elif [[ -f "config.yaml" ]] && _has_build_args; then
+        elif [[ "$has_config_build_args" -eq 0 ]]; then
         # TYPE 3: Simple container — all build_args from config.yaml
         _digest_log "  digest type: simple (config.yaml build_args)"
 
         local arg_pairs=""
         if command -v yq &>/dev/null; then
             local keys
-            keys=$(yq -r '.build_args | keys | .[]' "config.yaml" 2>/dev/null || true)
+            if ! keys=$(yq -r '.build_args | keys | .[]' "config.yaml" 2>/dev/null); then
+                log_error "  digest input: failed to query build arg keys from config.yaml"
+                return 1
+            fi
             local key
             for key in $keys; do
                 local value
-                value=$(yq -r ".build_args.${key}" "config.yaml" 2>/dev/null)
+                if ! value=$(yq -r ".build_args.${key}" "config.yaml" 2>/dev/null); then
+                    log_error "  digest input: failed to query build arg '$key' in config.yaml"
+                    return 1
+                fi
                 arg_pairs+="${key}=${value}"$'\n'
                 _digest_log "  digest input: ${key}=${value}"
             done
         else
             log_warning "  yq not available, falling back to raw config.yaml content"
-            digest_inputs+=("FILE:config=$(cat config.yaml)")
+            local config_content
+            _digest_read_file config.yaml config_content || return 1
+            digest_inputs+=("FILE:config=$config_content")
         fi
 
         if [[ -n "$arg_pairs" ]]; then
-            digest_inputs+=("$(echo -n "$arg_pairs" | sort)")
+            local sorted_arg_pairs
+            if ! sorted_arg_pairs=$(printf '%s' "$arg_pairs" | sort); then
+                log_error "  digest input: failed to sort build args"
+                return 1
+            fi
+            digest_inputs+=("$sorted_arg_pairs")
         fi
 
-    else
+        else
         # TYPE 4: Dockerfile-only
         _digest_log "  digest type: dockerfile-only"
+        fi
     fi
 
     # --- Input: CUSTOM_BUILD_ARGS (if set) ---
@@ -186,23 +279,50 @@ compute_build_digest() {
     local last_rebuild_path="$PWD/LAST_REBUILD.md"
     if [[ -f "$last_rebuild_path" ]]; then
         local last_rebuild_hash
-        last_rebuild_hash=$(sha256sum "$last_rebuild_path" | awk '{print $1}')
+        if ! last_rebuild_hash=$(sha256sum "$last_rebuild_path" | awk '{print $1}'); then
+            log_error "  digest input: failed to hash $last_rebuild_path"
+            return 1
+        fi
+        if [[ ! "$last_rebuild_hash" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            log_error "  digest input: invalid hash for $last_rebuild_path"
+            return 1
+        fi
         digest_inputs+=("LAST_REBUILD.md=$last_rebuild_hash")
         _digest_log "  digest input: LAST_REBUILD.md=$last_rebuild_hash"
     fi
 
     # --- Compute hash ---
     local concatenated
-    concatenated=$(printf '%s\n' "${digest_inputs[@]}")
-    echo -n "$concatenated" | sha256sum | cut -c1-12
+    if ! concatenated=$(printf '%s\n' "${digest_inputs[@]}"); then
+        log_error "  digest input: failed to assemble digest inputs"
+        return 1
+    fi
+    local full_digest
+    if ! full_digest=$(printf '%s' "$concatenated" | sha256sum); then
+        log_error "  digest computation: sha256sum failed"
+        return 1
+    fi
+    full_digest="${full_digest%%[[:space:]]*}"
+    if [[ ! "$full_digest" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        log_error "  digest computation: sha256sum returned an invalid hash"
+        return 1
+    fi
+    printf '%s\n' "${full_digest:0:12}"
 }
 
 # Helper: check if any variant in variants.yaml has build_args_include entries
 _has_build_args_include() {
     if command -v yq &>/dev/null; then
+        yq '.' variants.yaml &>/dev/null || return 2
         yq -e '.versions[].variants[] | select(.build_args_include | length > 0)' variants.yaml &>/dev/null
+        local status=$?
+        [[ "$status" -le 1 ]] && return "$status"
+        return 2
     else
         grep -q 'build_args_include' variants.yaml 2>/dev/null
+        local status=$?
+        [[ "$status" -le 1 ]] && return "$status"
+        return 2
     fi
 }
 
@@ -210,10 +330,17 @@ _has_build_args_include() {
 _has_build_args() {
     if command -v yq &>/dev/null; then
         local count
-        count=$(yq -r '.build_args | length' "config.yaml" 2>/dev/null)
-        [[ -n "$count" && "$count" -gt 0 ]]
+        yq '.' config.yaml &>/dev/null || return 2
+        if ! count=$(yq -r '.build_args | length' "config.yaml" 2>/dev/null); then
+            return 2
+        fi
+        [[ "$count" =~ ^[0-9]+$ ]] || return 2
+        [[ "$count" -gt 0 ]]
     else
         grep -q 'build_args:' config.yaml 2>/dev/null
+        local status=$?
+        [[ "$status" -le 1 ]] && return "$status"
+        return 2
     fi
 }
 

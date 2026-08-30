@@ -247,7 +247,7 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_ghcr "testcontainer" "1.0.0" "1.0.0" "latest"
 
     [ "$status" -eq 0 ]
@@ -275,7 +275,7 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_ghcr "testcontainer" "1.0.0" "1.0.0" "latest"
 
     [ "$status" -eq 0 ]
@@ -285,6 +285,96 @@ EOF
 # =============================================================================
 # push_dockerhub tests (mocked docker)
 # =============================================================================
+
+@test "push_dockerhub refuses the skopeo copy when digest computation fails" {
+    export BUILD_PLATFORM="linux/amd64"
+    export GITHUB_ACTIONS=true
+    source_push_script
+
+    export GITHUB_REPOSITORY_OWNER="testowner"
+    compute_build_digest() { return 1; }
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/skopeo" << 'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$TEST_TEMP_DIR/skopeo_calls.log"
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/skopeo"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    create_mock_container "testcontainer" "1.0.0"
+
+    cd "$TEST_TEMP_DIR/testcontainer"
+    run push_dockerhub "testcontainer" "1.0.0" "1.0.0" "latest"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"build digest computation failed; aborting Docker Hub push"* ]]
+    if [[ -e "$TEST_TEMP_DIR/skopeo_calls.log" ]]; then
+        echo "skopeo copy ran without a computed build digest" >&2
+        return 1
+    fi
+}
+
+@test "push_dockerhub copies with skopeo after a digest is computed" {
+    export BUILD_PLATFORM="linux/amd64"
+    export GITHUB_ACTIONS=true
+    source_push_script
+
+    export GITHUB_REPOSITORY_OWNER="testowner"
+    compute_build_digest() { printf '%s\n' "0123456789ab"; }
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    cat > "$TEST_TEMP_DIR/bin/skopeo" << 'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$TEST_TEMP_DIR/skopeo_calls.log"
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/skopeo"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    create_mock_container "testcontainer" "1.0.0"
+
+    cd "$TEST_TEMP_DIR/testcontainer"
+    run push_dockerhub "testcontainer" "1.0.0" "1.0.0" "latest"
+
+    [ "$status" -eq 0 ]
+    grep -q "docker.io/testowner/testcontainer:1.0.0-amd64" "$TEST_TEMP_DIR/skopeo_calls.log"
+}
+
+@test "push_dockerhub fallback computes the digest once" {
+    export BUILD_PLATFORM="linux/amd64"
+    export GITHUB_ACTIONS=true
+    source_push_script
+
+    export GITHUB_REPOSITORY_OWNER="testowner"
+    compute_build_digest() {
+        printf x >> "$TEST_TEMP_DIR/digest_calls.log"
+        printf '%s\n' "0123456789ab"
+    }
+    get_build_args() { printf '%s\n' "--build-arg TEST=1"; }
+    retry_with_backoff() { local _max=$1 _delay=$2; shift 2; "$@"; }
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$TEST_TEMP_DIR/docker_calls.log"
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+
+    create_mock_container "testcontainer" "1.0.0"
+    export PATH="$TEST_TEMP_DIR/bin"
+
+    cd "$TEST_TEMP_DIR/testcontainer"
+    run push_dockerhub "testcontainer" "1.0.0" "1.0.0" "latest"
+
+    [ "$status" -eq 0 ]
+    [[ "$(< "$TEST_TEMP_DIR/digest_calls.log")" == "x" ]]
+    [[ "$(< "$TEST_TEMP_DIR/docker_calls.log")" == *"--label org.opencontainers.image.build-digest=0123456789ab"* ]]
+}
 
 @test "push_dockerhub calls docker buildx build with correct registry" {
     export MULTIPLATFORM_SUPPORTED=false
@@ -320,7 +410,7 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_dockerhub "testcontainer" "1.0.0" "1.0.0" "latest"
 
     [ "$status" -eq 0 ]
@@ -356,18 +446,312 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_dockerhub "testcontainer" "1.0.0" "1.0.0" "latest"
 
     [ "$status" -eq 0 ]
     grep -q "cache-from" "$TEST_TEMP_DIR/docker_calls.log"
     # Should NOT have cache-to (read-only for Docker Hub)
-    ! grep -q "cache-to" "$TEST_TEMP_DIR/docker_calls.log"
+    if grep -q "cache-to" "$TEST_TEMP_DIR/docker_calls.log"; then
+        echo "Docker Hub build unexpectedly wrote cache" >&2
+        return 1
+    fi
 }
 
 # =============================================================================
 # push_container tests (integration of both)
 # =============================================================================
+
+_setup_public_digest_push() {
+    export BUILD_PLATFORM="linux/amd64"
+    source_push_script
+
+    export GITHUB_REPOSITORY_OWNER="testowner"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+echo "DOCKER: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    cat > "$TEST_TEMP_DIR/bin/skopeo" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/skopeo"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    retry_with_backoff() { local _max=$1 _delay=$2; shift 2; "$@"; }
+
+    create_mock_container "testcontainer" "1.0.0"
+    cd "$TEST_TEMP_DIR/testcontainer"
+}
+
+_compute_build_digest_with_test_flavor() {
+    # The public FLAVOR path is untested: push_container does not forward it to get_label_args.
+    eval "$(declare -f compute_build_digest | sed '1s/compute_build_digest/compute_build_digest_with_test_flavor/')"
+    compute_build_digest() {
+        compute_build_digest_with_test_flavor "$1" "$DIGEST_TEST_FLAVOR"
+    }
+}
+
+@test "push_container refuses a partial LAST_REBUILD hash from sha256sum" {
+    _setup_public_digest_push
+    printf '%s\n' 'rebuild provenance' > LAST_REBUILD.md
+
+    export REAL_SHA256SUM="$(command -v sha256sum)"
+    cat > "$TEST_TEMP_DIR/bin/sha256sum" << 'EOF'
+#!/bin/bash
+if [[ "${1:-}" == */LAST_REBUILD.md ]]; then
+    printf '%s\n' 'partial-hash'
+    exit 23
+fi
+exec "$REAL_SHA256SUM" "$@"
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/sha256sum"
+
+    run push_container "testcontainer" "1.0.0" "1.0.0" "latest"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"failed to hash"* ]]
+    [[ "$output" == *"Primary registry (GHCR) push failed - aborting"* ]]
+    if grep -q "buildx build.*--push" "$TEST_TEMP_DIR/docker_calls.log" 2>/dev/null; then
+        echo "Forbidden buildx build ran after partial LAST_REBUILD hash" >&2
+        return 1
+    fi
+}
+
+@test "push_container refuses a Dockerfile read failure" {
+    _setup_public_digest_push
+
+    cat > "$TEST_TEMP_DIR/bin/cat" << 'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "--" ]]; then
+    shift
+fi
+printf '%s\n' 'partial Dockerfile'
+exit 1
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/cat"
+    hash -r
+
+    run push_container "testcontainer" "1.0.0" "1.0.0" "latest"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"failed to read Dockerfile"* ]]
+    [[ "$output" == *"Primary registry (GHCR) push failed - aborting"* ]]
+    if grep -q "buildx build.*--push" "$TEST_TEMP_DIR/docker_calls.log" 2>/dev/null; then
+        echo "Forbidden buildx build ran after Dockerfile read failure" >&2
+        return 1
+    fi
+}
+
+@test "test-only digest flavor adapter makes push_container refuse a flavor file yq parse failure" {
+    _setup_public_digest_push
+    mkdir -p flavors
+    printf '%s\n' 'extensions: [' > flavors/broken.yaml
+    export DIGEST_TEST_FLAVOR="broken"
+    _compute_build_digest_with_test_flavor
+
+    run push_container "testcontainer" "1.0.0" "1.0.0" "latest"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"failed to parse extensions from flavors/broken.yaml"* ]]
+    [[ "$output" == *"Primary registry (GHCR) push failed - aborting"* ]]
+    if grep -q "buildx build.*--push" "$TEST_TEMP_DIR/docker_calls.log" 2>/dev/null; then
+        echo "Forbidden buildx build ran after test-only flavor digest parse failure" >&2
+        return 1
+    fi
+}
+
+@test "test-only digest flavor adapter lets push_container accept a valid flavor file with no extensions" {
+    _setup_public_digest_push
+    mkdir -p flavors
+    printf '%s\n' 'extensions: []' > flavors/empty.yaml
+    export DIGEST_TEST_FLAVOR="empty"
+    _compute_build_digest_with_test_flavor
+
+    run push_container "testcontainer" "1.0.0" "1.0.0" "latest"
+
+    [ "$status" -eq 0 ]
+    grep -q "ghcr.io/testowner/testcontainer" "$TEST_TEMP_DIR/docker_calls.log"
+    grep -q "docker.io/testowner/testcontainer" "$TEST_TEMP_DIR/docker_calls.log"
+}
+
+@test "push_container aborts before any push when digest computation fails" {
+    export BUILD_PLATFORM="linux/amd64"
+    source_push_script
+
+    export GITHUB_REPOSITORY_OWNER="testowner"
+    compute_build_digest() { return 1; }
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+echo "DOCKER: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    cat > "$TEST_TEMP_DIR/bin/skopeo" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/skopeo"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    retry_with_backoff() { local _max=$1 _delay=$2; shift 2; "$@"; }
+
+    create_mock_container "testcontainer" "1.0.0"
+
+    cd "$TEST_TEMP_DIR/testcontainer"
+    run push_container "testcontainer" "1.0.0" "1.0.0" "latest"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"aborting GHCR push"* ]]
+    [[ "$output" == *"Primary registry (GHCR) push failed - aborting"* ]]
+    if grep -q "buildx build.*--push" "$TEST_TEMP_DIR/docker_calls.log" 2>/dev/null; then
+        echo "Forbidden buildx build ran after digest computation failure" >&2
+        return 1
+    fi
+}
+
+@test "push_container aborts before any push when digest computation emits partial output then fails" {
+    export BUILD_PLATFORM="linux/amd64"
+    source_push_script
+
+    export GITHUB_REPOSITORY_OWNER="testowner"
+    compute_build_digest() { echo "sha256:0123456789abcdef"; return 1; }
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+echo "DOCKER: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    cat > "$TEST_TEMP_DIR/bin/skopeo" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/skopeo"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    retry_with_backoff() { local _max=$1 _delay=$2; shift 2; "$@"; }
+
+    create_mock_container "testcontainer" "1.0.0"
+
+    cd "$TEST_TEMP_DIR/testcontainer"
+    run push_container "testcontainer" "1.0.0" "1.0.0" "latest"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"aborting GHCR push"* ]]
+    [[ "$output" == *"Primary registry (GHCR) push failed - aborting"* ]]
+    if grep -q "buildx build.*--push" "$TEST_TEMP_DIR/docker_calls.log" 2>/dev/null; then
+        echo "Forbidden buildx build ran after partial failed digest computation" >&2
+        return 1
+    fi
+}
+
+@test "push_container aborts before any push when digest computation is empty" {
+    export BUILD_PLATFORM="linux/amd64"
+    source_push_script
+
+    export GITHUB_REPOSITORY_OWNER="testowner"
+    compute_build_digest() { return 0; }
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+echo "DOCKER: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    cat > "$TEST_TEMP_DIR/bin/skopeo" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/skopeo"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    retry_with_backoff() { local _max=$1 _delay=$2; shift 2; "$@"; }
+
+    create_mock_container "testcontainer" "1.0.0"
+
+    cd "$TEST_TEMP_DIR/testcontainer"
+    run push_container "testcontainer" "1.0.0" "1.0.0" "latest"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"aborting GHCR push"* ]]
+    [[ "$output" == *"Primary registry (GHCR) push failed - aborting"* ]]
+    if grep -q "buildx build.*--push" "$TEST_TEMP_DIR/docker_calls.log" 2>/dev/null; then
+        echo "Forbidden buildx build ran after empty digest computation" >&2
+        return 1
+    fi
+}
+
+@test "push_dockerhub reports failed latest copy after versioned copy succeeds" {
+    export BUILD_PLATFORM="linux/amd64"
+    export GITHUB_ACTIONS=true
+    source_push_script
+
+    export GITHUB_REPOSITORY_OWNER="testowner"
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    cat > "$TEST_TEMP_DIR/bin/skopeo" << 'EOF'
+#!/bin/bash
+echo "SKOPEO: $*" >> "$TEST_TEMP_DIR/skopeo_calls.log"
+if [[ "$*" == *"docker.io/testowner/testcontainer:latest" ]]; then
+    exit 1
+fi
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/skopeo"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    create_mock_container "testcontainer" "1.0.0"
+
+    cd "$TEST_TEMP_DIR/testcontainer"
+    run push_dockerhub "testcontainer" "1.0.0" "1.0.0" "latest"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Failed to tag Docker Hub image: docker.io/testowner/testcontainer:latest"* ]]
+    grep -q "docker.io/testowner/testcontainer:1.0.0-amd64" "$TEST_TEMP_DIR/skopeo_calls.log"
+    grep -q "docker.io/testowner/testcontainer:latest" "$TEST_TEMP_DIR/skopeo_calls.log"
+}
+
+@test "push_container succeeds when a nonempty digest is computed" {
+    export BUILD_PLATFORM="linux/amd64"
+    source_push_script
+
+    export GITHUB_REPOSITORY_OWNER="testowner"
+    compute_build_digest() { echo "0123456789ab"; }
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+echo "DOCKER: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    cat > "$TEST_TEMP_DIR/bin/skopeo" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/skopeo"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    retry_with_backoff() { local _max=$1 _delay=$2; shift 2; "$@"; }
+
+    create_mock_container "testcontainer" "1.0.0"
+
+    cd "$TEST_TEMP_DIR/testcontainer"
+    run push_container "testcontainer" "1.0.0" "1.0.0" "latest"
+
+    [ "$status" -eq 0 ]
+    grep -q -- "--label org.opencontainers.image.build-digest=0123456789ab" "$TEST_TEMP_DIR/docker_calls.log"
+    grep -q "ghcr.io/testowner/testcontainer" "$TEST_TEMP_DIR/docker_calls.log"
+    grep -q "docker.io/testowner/testcontainer" "$TEST_TEMP_DIR/docker_calls.log"
+}
 
 @test "push_container calls both registries" {
     export MULTIPLATFORM_SUPPORTED=false
@@ -397,7 +781,7 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_container "testcontainer" "1.0.0" "1.0.0" "latest"
 
     [ "$status" -eq 0 ]
@@ -436,7 +820,7 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_container "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Should still succeed overall (GHCR is primary)
@@ -474,7 +858,7 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_container "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Should fail since GHCR is primary
@@ -546,13 +930,16 @@ INSPECT
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_ghcr "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must be refused (non-zero)
     [ "$status" -ne 0 ]
     # The actual buildx build --push must NOT have been invoked
-    ! grep -q "buildx build" "$TEST_TEMP_DIR/docker_calls.log" 2>/dev/null
+    if grep -q "buildx build" "$TEST_TEMP_DIR/docker_calls.log" 2>/dev/null; then
+        echo "Forbidden buildx build ran despite multi-platform GHCR target" >&2
+        return 1
+    fi
     # Error message must mention the clobber
     [[ "$output" == *"multi-platform"* ]] || [[ "$output" == *"REFUSED"* ]]
 }
@@ -601,12 +988,15 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_dockerhub "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must be refused (non-zero); the buildx build --push must NOT have run
     [ "$status" -ne 0 ]
-    ! grep -q "buildx build" "$TEST_TEMP_DIR/docker_calls.log" 2>/dev/null
+    if grep -q "buildx build" "$TEST_TEMP_DIR/docker_calls.log" 2>/dev/null; then
+        echo "Forbidden buildx build ran despite multi-platform Docker Hub target" >&2
+        return 1
+    fi
     [[ "$output" == *"multi-platform"* ]] || [[ "$output" == *"REFUSED"* ]]
 }
 
@@ -629,7 +1019,7 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_ghcr "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must succeed (fail-open on missing tag)
@@ -663,7 +1053,7 @@ INSPECT
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_ghcr "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must succeed — no clobber risk
@@ -702,7 +1092,7 @@ INSPECT
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_ghcr "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must succeed — operator override is active
@@ -743,7 +1133,7 @@ INSPECT
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_ghcr "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must succeed — CI is never blocked by the guard
@@ -802,12 +1192,15 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_ghcr "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must be refused because :latest is multi-arch
     [ "$status" -ne 0 ]
-    ! grep -q "buildx build" "$TEST_TEMP_DIR/docker_calls.log" 2>/dev/null
+    if grep -q "buildx build" "$TEST_TEMP_DIR/docker_calls.log" 2>/dev/null; then
+        echo "Forbidden buildx build ran despite multi-platform latest target" >&2
+        return 1
+    fi
 }
 
 # Helper: docker mock that returns different inspect output depending on the ref.
@@ -875,7 +1268,7 @@ INSPECT
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_ghcr "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must succeed — QEMU multi-platform push does not clobber a multi-arch index
@@ -948,13 +1341,16 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_dockerhub "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must be refused
     [ "$status" -ne 0 ]
     # skopeo copy --all must NOT have been executed
-    ! grep -q "copy" "$TEST_TEMP_DIR/skopeo_calls.log" 2>/dev/null
+    if grep -q "copy" "$TEST_TEMP_DIR/skopeo_calls.log" 2>/dev/null; then
+        echo "Forbidden skopeo copy ran despite multi-platform Docker Hub target" >&2
+        return 1
+    fi
     [[ "$output" == *"multi-platform"* ]] || [[ "$output" == *"REFUSED"* ]]
 }
 
@@ -1014,7 +1410,7 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_dockerhub "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must succeed — multi-arch source faithfully mirrors to Docker Hub
@@ -1065,7 +1461,7 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_dockerhub "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must succeed — absent target is fail-open
@@ -1124,7 +1520,7 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_dockerhub "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must succeed — CI is never blocked by the guard
@@ -1179,11 +1575,14 @@ EOF
 
     create_mock_container "testcontainer" "1.0.0"
 
-    cd "$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR/testcontainer"
     run push_dockerhub "testcontainer" "1.0.0" "1.0.0" "latest"
 
     # Must be refused — GHCR source probe failure defaults to guarding the target
     [ "$status" -ne 0 ]
-    ! grep -q "copy" "$TEST_TEMP_DIR/skopeo_calls.log" 2>/dev/null
+    if grep -q "copy" "$TEST_TEMP_DIR/skopeo_calls.log" 2>/dev/null; then
+        echo "Forbidden skopeo copy ran after GHCR source probe failure" >&2
+        return 1
+    fi
     [[ "$output" == *"multi-platform"* ]] || [[ "$output" == *"REFUSED"* ]]
 }
