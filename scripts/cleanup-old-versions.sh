@@ -3,8 +3,9 @@
 #
 # Required env vars: GH_TOKEN, OWNER
 # Optional env vars: DRY_RUN (default: false; exactly true or false),
-# KEEP_LATEST_COUNT (default: 10; 0 disables the latest-version floor), and
-# KEEP_MONTHS (default: 6; 0 disables the age-retention floor).
+# KEEP_LATEST_COUNT (default: 10; range: 0 through 2147483647; 0 disables the
+# latest-version floor), and KEEP_MONTHS (default: 6; same range; 0 disables
+# the age-retention floor).
 
 _cleanup_old_versions_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../helpers/version-record-validation.sh
@@ -127,10 +128,8 @@ purge_container() {
     return "$PROCESSING_FAILURE"
   fi
 
-  if ! cutoff_ts=$(date -d "$CUTOFF_DATE" +%s); then
-    echo "  ✗ Failed to parse cutoff date; skipping $container" >&2
-    return "$PROCESSING_FAILURE"
-  fi
+  # shellcheck disable=SC2153 # validate_cleanup_config assigns CUTOFF_TS.
+  cutoff_ts="$CUTOFF_TS"
   if ! versions_file=$(mktemp) || ! deletions_file=$(mktemp); then
     rm -f "$versions_file" "$deletions_file"
     echo "  ✗ Failed to create cleanup work files; skipping $container" >&2
@@ -285,7 +284,6 @@ main() {
   local root_dir containers container result status
   local kept decided deleted delete_failures
   root_dir=$(script_root) || return 1
-  CUTOFF_DATE=$(date -u -d "-${KEEP_MONTHS} months" +%Y-%m-%dT%H:%M:%SZ) || return 1
   print_banner
 
   if [[ $# -gt 0 ]]; then

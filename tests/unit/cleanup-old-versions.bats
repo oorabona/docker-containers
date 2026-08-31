@@ -79,6 +79,13 @@ assert_no_delete_attempts() {
     fi
 }
 
+assert_no_versions_selected_for_deletion() {
+    if [[ "$output" == *"[DRY RUN] Would delete version"* ]]; then
+        echo "ASSERTION FAILED: expected no version to be selected for deletion" >&2
+        return 1
+    fi
+}
+
 assert_output_reports_invalid_created_at() {
     if [[ "$output" != *"validation failed: versions[1].created_at is invalid"* ]]; then
         echo "ASSERTION FAILED: expected invalid later date to stop the package before DELETE" >&2
@@ -967,6 +974,39 @@ JSON
     [[ "$status" -eq 64 ]]
     [[ "$output" == "cleanup configuration rejected: DRY_RUN must be exactly true or false" ]]
     [[ ! -s "$gh_log" ]]
+}
+
+@test "an overflow-sized latest-retention count selects no versions for deletion" {
+    cat > "$STUB_DIR/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$*" == *"--method DELETE"* ]]; then
+    printf 'DELETE:%s\n' "$*" >> "$GH_LOG"
+    exit 0
+fi
+
+if [[ "$*" == *"/versions"* ]]; then
+    printf '%s\n' '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["obsolete-1"]}},"created_at":"2000-01-01T00:00:00Z"},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":["obsolete-2"]}},"created_at":"2000-01-01T00:00:00Z"},{"id":103,"name":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","metadata":{"container":{"tags":["obsolete-3"]}},"created_at":"2000-01-01T00:00:00Z"}]'
+else
+    printf '%s\n' '{"version_count":3}'
+fi
+EOF
+    chmod +x "$STUB_DIR/gh"
+
+    run env \
+        PATH="$STUB_DIR:$PATH" \
+        GH_LOG="$GH_LOG" \
+        GH_TOKEN=test-token \
+        OWNER=test-owner \
+        DRY_RUN=true \
+        KEEP_LATEST_COUNT=9223372036854775808 \
+        KEEP_MONTHS=0 \
+        bash "$PROJECT_ROOT/scripts/cleanup-old-versions.sh" stale
+
+    assert_no_versions_selected_for_deletion
+    [[ "$status" -eq 64 ]]
+    [[ ! -s "$GH_LOG" ]]
 }
 
 @test "age deletion wrapper refuses dry-run directly without invoking gh" {

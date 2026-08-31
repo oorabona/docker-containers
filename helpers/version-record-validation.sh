@@ -5,11 +5,8 @@
 
 # Validate the common destructive-cleanup configuration.
 validate_cleanup_config() {
-  local variable
-
-  # A previous revision used this caller-controlled value as deletion
-  # authority.  Clear an inherited copy so it cannot survive a revalidation.
-  unset CLEANUP_CONFIG_VALIDATED
+  local variable value
+  local -r maximum_retention_count=2147483647
 
   case "${DRY_RUN-}" in
     true|false) ;;
@@ -20,12 +17,32 @@ validate_cleanup_config() {
   esac
 
   for variable in KEEP_LATEST_COUNT KEEP_MONTHS; do
-    if [[ ! ${!variable-} =~ ^(0|[1-9][0-9]*)$ ]]; then
+    value="${!variable-}"
+    if [[ ! $value =~ ^(0|[1-9][0-9]*)$ ]]; then
       printf 'cleanup configuration rejected: %s must be 0 or [1-9][0-9]*\n' "$variable" >&2
+      return 64
+    fi
+    # This is an executable-domain bound, not a retention policy.  It is far
+    # below Bash's signed-integer limit, so every position <= count comparison
+    # is representable, while still allowing more than two billion versions or
+    # months.  Compare decimal strings so validation cannot overflow either.
+    # shellcheck disable=SC2071 # Decimal strings must not enter Bash arithmetic here.
+    if [[ ${#value} -gt ${#maximum_retention_count} ]] \
+      || { [[ ${#value} -eq ${#maximum_retention_count} ]] && [[ $value > $maximum_retention_count ]]; }; then
+      printf 'cleanup configuration rejected: %s must be between 0 and %s\n' "$variable" "$maximum_retention_count" >&2
       return 64
     fi
   done
 
+  # Keep the generated cutoff and its epoch usable by every later consumer;
+  # a failed date calculation is a configuration error, not a later runtime
+  # failure.  CUTOFF_TS avoids reparsing CUTOFF_DATE in purge_container.
+  # shellcheck disable=SC2034 # These values are consumed by cleanup-old-versions.sh.
+  if ! CUTOFF_DATE=$(date -u -d "-${KEEP_MONTHS} months" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
+    || ! CUTOFF_TS=$(date -u -d "-${KEEP_MONTHS} months" +%s 2>/dev/null); then
+    printf '%s\n' 'cleanup configuration rejected: KEEP_MONTHS must produce a representable cutoff' >&2
+    return 64
+  fi
 }
 
 # `created_at` is only checked for RFC3339 string shape here.  #1301 owns
