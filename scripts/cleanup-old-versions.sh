@@ -44,7 +44,7 @@ _cleanup_old_versions_delete() {
   gh api --method DELETE \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
-    "/users/${OWNER}/packages/container/${container}/versions/${version_id}"
+    "/users/${OWNER}/packages/container/${container}/versions/${version_id}" >/dev/null
 }
 
 # Write kept|decided|deleted|delete_failures to stdout once a package was
@@ -59,8 +59,9 @@ purge_container() {
   local container="$1"
   local versions package version_count reported_version_count versions_file="" deletions_file=""
   local position=0 kept=0 decided=0 deleted=0 delete_failures=0
-  local version_id tags created_at keep_reason tag tag_list major version_ts cutoff_ts processing_error=0 deletion_read_error=0 validation_error validation_status
+  local version_id tags created_at keep_reason tag tag_list major version_ts cutoff_ts validation_error validation_status
   local record_b64 record_json
+  local -a version_records=() deletion_records=() replay_records=()
   declare -A major_seen=()
 
   validate_cleanup_config || return 64
@@ -135,8 +136,12 @@ purge_container() {
     echo "  ✗ Failed to create cleanup work files; skipping $container" >&2
     return "$PROCESSING_FAILURE"
   fi
-  if ! jq -er '.[] | {id: (.id | tostring), tags: (.metadata.container.tags // []), created_at: .created_at} | @base64' \
-      <<< "$versions" > "$versions_file"; then
+  if ! {
+      printf 'work-list|expected|%s\n' "$version_count" \
+      && jq -er '.[] | {id: (.id | tostring), tags: (.metadata.container.tags // []), created_at: .created_at} | @base64' <<< "$versions" \
+      &&
+      printf 'work-list|complete|%s\n' "$version_count"
+    } > "$versions_file"; then
     rm -f "$versions_file" "$deletions_file"
     echo "  ✗ Failed to prepare version list; skipping $container" >&2
     return "$PROCESSING_FAILURE"
@@ -147,19 +152,21 @@ purge_container() {
     return "$PROCESSING_FAILURE"
   fi
 
-  # Decide every record before deleting any of them.  The shared age contract
-  # has checked every field read below; #1301 owns timestamp parsing and
-  # ordering semantics.  A malformed date in a later record must leave earlier
-  # obsolete records untouched.
-  while IFS= read -r record_b64; do
-    [[ -z "$record_b64" ]] && continue
+  if ! load_framed_work_list "version assessment" "$versions_file" version_records; then
+    rm -f "$versions_file" "$deletions_file"
+    return "$PROCESSING_FAILURE"
+  fi
+
+  # Decide every record before deleting any of them.  The framed source has
+  # been completely consumed before a payload is decoded or classified.
+  for record_b64 in "${version_records[@]}"; do
     if ! record_json=$(printf '%s' "$record_b64" | base64 -d) \
       || ! version_id=$(jq -er '.id' <<< "$record_json") \
       || ! tags=$(jq -er '.tags | join(",")' <<< "$record_json") \
       || ! created_at=$(jq -er '.created_at' <<< "$record_json"); then
       echo "  ✗ Failed to read version record; skipping $container" >&2
-      processing_error=1
-      break
+      rm -f "$versions_file" "$deletions_file"
+      return "$PROCESSING_FAILURE"
     fi
     position=$((position + 1))
     keep_reason=""
@@ -177,8 +184,8 @@ purge_container() {
     else
       if ! tag_list=$(jq -r '.tags[]' <<< "$record_json"); then
         echo "  ✗ Failed to read version tags; skipping $container" >&2
-        processing_error=1
-        break
+        rm -f "$versions_file" "$deletions_file"
+        return "$PROCESSING_FAILURE"
       fi
       while IFS= read -r tag; do
         if [[ "$tag" =~ ^v?([0-9]+)\.[0-9] ]]; then
@@ -195,8 +202,8 @@ purge_container() {
     if [[ -z "$keep_reason" ]]; then
       if ! version_ts=$(date -d "$created_at" +%s 2>/dev/null); then
         echo "  ✗ Failed to parse version date; skipping $container" >&2
-        processing_error=1
-        break
+        rm -f "$versions_file" "$deletions_file"
+        return "$PROCESSING_FAILURE"
       fi
       if [[ "$version_ts" -gt "$cutoff_ts" ]]; then
         keep_reason="newer than $KEEP_MONTHS months"
@@ -206,17 +213,20 @@ purge_container() {
     if [[ -n "$keep_reason" ]]; then
       echo "  ✓ Keep #$position (version $version_id; tags: ${tags:-untagged}) - $keep_reason" >&2
       kept=$((kept + 1))
-    elif ! printf '%s|%s\n' "$position" "$record_b64" >> "$deletions_file"; then
-      echo "  ✗ Failed to prepare deletion list; skipping $container" >&2
-      processing_error=1
-      break
     else
+      deletion_records+=("$position|$version_id|$tags")
       decided=$((decided + 1))
     fi
-  done < "$versions_file"
+  done
 
-  if [[ "$processing_error" -ne 0 ]]; then
+  if ! {
+      printf 'work-list|expected|%s\n' "$decided" \
+      && { if [[ ${#deletion_records[@]} -gt 0 ]]; then printf '%s\n' "${deletion_records[@]}"; fi; } \
+      &&
+      printf 'work-list|complete|%s\n' "$decided"
+    } > "$deletions_file"; then
     rm -f "$versions_file" "$deletions_file"
+    echo "  ✗ Failed to prepare deletion list; skipping $container" >&2
     return "$PROCESSING_FAILURE"
   fi
 
@@ -226,15 +236,19 @@ purge_container() {
     return "$PROCESSING_FAILURE"
   fi
 
-  while IFS='|' read -r position record_b64; do
-    [[ -z "$record_b64" ]] && continue
-    if ! record_json=$(printf '%s' "$record_b64" | base64 -d) \
-      || ! version_id=$(jq -er '.id' <<< "$record_json") \
-      || ! tags=$(jq -er '.tags | join(",")' <<< "$record_json"); then
+  if ! load_framed_work_list "deletion replay" "$deletions_file" replay_records; then
+    rm -f "$deletions_file"
+    return "$PROCESSING_FAILURE"
+  fi
+  for record_b64 in "${replay_records[@]}"; do
+    if [[ ! "$record_b64" =~ ^([0-9]+)\|([1-9][0-9]*)\|(.*)$ ]]; then
       echo "  ✗ Failed to read prepared deletion record; skipping $container" >&2
-      deletion_read_error=1
-      break
+      rm -f "$deletions_file"
+      return "$POST_DELETE_PROCESSING_FAILURE"
     fi
+    position="${BASH_REMATCH[1]}"
+    version_id="${BASH_REMATCH[2]}"
+    tags="${BASH_REMATCH[3]}"
     echo "  ✗ Delete #$position (tags: ${tags:-untagged})" >&2
     if [[ "$DRY_RUN" == "true" ]]; then
       echo "    [DRY RUN] Would delete version $version_id" >&2
@@ -245,16 +259,7 @@ purge_container() {
       echo "    ✗ Failed to delete version $version_id" >&2
       delete_failures=$((delete_failures + 1))
     fi
-  done < "$deletions_file"
-
-  if [[ "$deletion_read_error" -ne 0 ]]; then
-    if ! printf '%s\n' "$kept|$decided|$deleted|$delete_failures"; then
-      rm -f "$deletions_file"
-      return "$PROCESSING_FAILURE"
-    fi
-    rm -f "$deletions_file"
-    return "$POST_DELETE_PROCESSING_FAILURE"
-  fi
+  done
 
   if ! printf '%s\n' "$kept|$decided|$deleted|$delete_failures"; then
     return "$PROCESSING_FAILURE"
@@ -280,7 +285,7 @@ main() {
   : "${GH_TOKEN:?GH_TOKEN is required}"
   : "${OWNER:?OWNER is required}"
 
-  local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 INCOMPLETE_DELETION_FAILURE=16
+  local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
   local root_dir containers container result status
   local kept decided deleted delete_failures
   root_dir=$(script_root) || return 1
@@ -316,7 +321,9 @@ main() {
 
     case "$status" in
       0|"$DELETE_FAILURE"|"$POST_DELETE_PROCESSING_FAILURE")
-        if ! IFS='|' read -r kept decided deleted delete_failures <<< "$result"; then
+        if [[ "$result" =~ ^([0-9]+)\|([0-9]+)\|([0-9]+)\|([0-9]+)$ ]]; then
+          kept="${BASH_REMATCH[1]}"; decided="${BASH_REMATCH[2]}"; deleted="${BASH_REMATCH[3]}"; delete_failures="${BASH_REMATCH[4]}"
+        else
           echo "  ✗ Failed to read cleanup result; skipping $container"
           total_processing_failures=$((total_processing_failures + 1))
           continue
@@ -331,21 +338,6 @@ main() {
         ;;
       "$LISTING_FAILURE") total_listing_failures=$((total_listing_failures + 1)) ;;
       "$PROCESSING_FAILURE"|"$UNINTERPRETABLE_RECORD_FAILURE") total_processing_failures=$((total_processing_failures + 1)) ;;
-      # Reserved: planning is complete before deletion begins, so this script
-      # does not produce 16.  Keep it fail-closed for an explicit future
-      # partial-assessment producer rather than treating it as execution.
-      "$INCOMPLETE_DELETION_FAILURE")
-        if ! IFS='|' read -r kept decided deleted delete_failures <<< "$result"; then
-          echo "  ✗ Failed to read incomplete cleanup result; skipping $container"
-        else
-          total_kept=$((total_kept + kept))
-          total_decided=$((total_decided + decided))
-          total_deleted=$((total_deleted + deleted))
-          total_delete_failures=$((total_delete_failures + delete_failures))
-          echo "  Summary: kept=$kept, decided=$decided, deleted=$deleted, delete_failures=$delete_failures"
-        fi
-        total_processing_failures=$((total_processing_failures + 1))
-        ;;
       *)
         echo "  ✗ Unexpected cleanup status $status; skipping $container"
         total_processing_failures=$((total_processing_failures + 1))

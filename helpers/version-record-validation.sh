@@ -45,6 +45,82 @@ validate_cleanup_config() {
   fi
 }
 
+# A work list is a small, line-oriented frame.  The payload is deliberately
+# opaque here: callers must prove that the whole frame arrived before they
+# decode even its first record.  That makes a truncated list an incomplete
+# assessment, rather than an apparently normal EOF after a valid prefix.
+#
+# The caller supplies the destination array name.  Its records are assigned
+# only after the header, terminal marker, and record counts agree.
+load_framed_work_list() {
+  local phase="$1" work_file="$2" destination_name="$3"
+  local -a lines=() records=()
+  local terminal expected_count terminal_count consumed_count index
+  local last_byte
+
+  if [[ ! -r "$work_file" ]]; then
+    printf '  ✗ Refused incomplete %s work list: cannot read frame\n' "$phase" >&2
+    return 1
+  fi
+  if ! mapfile -t lines < "$work_file"; then
+    printf '  ✗ Refused incomplete %s work list: cannot read frame\n' "$phase" >&2
+    return 1
+  fi
+  if [[ ${#lines[@]} -eq 0 || ! ${lines[0]} =~ ^work-list\|expected\|([0-9]+)$ ]]; then
+    printf '  ✗ Refused incomplete %s work list: header missing or invalid\n' "$phase" >&2
+    return 1
+  fi
+  expected_count="${BASH_REMATCH[1]}"
+
+  # A final unterminated line can be a truncated record or marker.  Do not
+  # accept it as a terminal marker merely because read/mapfile returned it.
+  if ! last_byte=$(tail -c 1 "$work_file" | od -An -tx1); then
+    printf '  ✗ Refused incomplete %s work list: cannot read frame\n' "$phase" >&2
+    return 1
+  fi
+  if [[ "$last_byte" != *"0a"* ]]; then
+    # mapfile returns an unterminated final fragment.  It has not been
+    # consumed as a record, so exclude it from the diagnostic count.
+    consumed_count=$(( ${#lines[@]} - 2 ))
+    [[ "$consumed_count" -ge 0 ]] || consumed_count=0
+    printf '  ✗ Refused incomplete %s work list: terminal marker missing (consumed %s of expected %s)\n' "$phase" "$consumed_count" "$expected_count" >&2
+    return 1
+  fi
+  if [[ ${#lines[@]} -lt 2 ]]; then
+    consumed_count=$(( ${#lines[@]} - 1 ))
+    [[ "$consumed_count" -ge 0 ]] || consumed_count=0
+    printf '  ✗ Refused incomplete %s work list: terminal marker missing (consumed %s of expected %s)\n' "$phase" "$consumed_count" "$expected_count" >&2
+    return 1
+  fi
+  terminal="${lines[${#lines[@]} - 1]}"
+  if [[ "$terminal" =~ ^work-list\|complete\|([0-9]+)$ ]]; then
+    terminal_count="${BASH_REMATCH[1]}"
+  else
+    consumed_count=$(( ${#lines[@]} - 1 ))
+    printf '  ✗ Refused incomplete %s work list: terminal marker missing (consumed %s of expected %s)\n' "$phase" "$consumed_count" "$expected_count" >&2
+    return 1
+  fi
+  consumed_count=$(( ${#lines[@]} - 2 ))
+
+  if [[ "$terminal_count" != "$expected_count" || "$consumed_count" -ne "$expected_count" ]]; then
+    printf '  ✗ Refused incomplete %s work list: count mismatch (consumed %s of expected %s; terminal %s)\n' "$phase" "$consumed_count" "$expected_count" "$terminal_count" >&2
+    return 1
+  fi
+
+  for ((index = 1; index < ${#lines[@]} - 1; index++)); do
+    [[ -n "${lines[$index]}" ]] || {
+      printf '  ✗ Refused incomplete %s work list: empty record (consumed %s of expected %s)\n' "$phase" "$consumed_count" "$expected_count" >&2
+      return 1
+    }
+    records+=("${lines[$index]}")
+  done
+
+  # shellcheck disable=SC2178 # destination_name is intentionally an array reference.
+  local -n destination="$destination_name"
+  # shellcheck disable=SC2034 # destination is a write-only nameref for the caller.
+  destination=("${records[@]}")
+}
+
 # `created_at` is only checked for RFC3339 string shape here.  #1301 owns
 # timestamp parsing and ordering semantics.
 # shellcheck disable=SC2016,SC2034,SC2089,SC2090
