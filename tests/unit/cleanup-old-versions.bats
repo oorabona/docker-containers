@@ -79,6 +79,13 @@ assert_no_delete_attempts() {
     fi
 }
 
+assert_no_versions_selected_for_deletion() {
+    if [[ "$output" == *"[DRY RUN] Would delete version"* ]]; then
+        echo "ASSERTION FAILED: expected no version to be selected for deletion" >&2
+        return 1
+    fi
+}
+
 assert_output_reports_invalid_created_at() {
     if [[ "$output" != *"validation failed: versions[1].created_at is invalid"* ]]; then
         echo "ASSERTION FAILED: expected invalid later date to stop the package before DELETE" >&2
@@ -763,9 +770,13 @@ run_old_version_validation_case() {
         PROJECT_ROOT="$PROJECT_ROOT" \
         GH_TOKEN="test-token" \
         OWNER="test-owner" \
+        DRY_RUN="false" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
         CUTOFF_DATE="2000-01-01T00:00:00Z" \
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            validate_cleanup_config
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
             gh() { [[ "$*" != *"/versions"* ]] && { printf "%s\\n" "{\"version_count\":1}"; return; }; printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"; }
             purge_container malformed
@@ -790,9 +801,13 @@ EOF
         PROJECT_ROOT="$PROJECT_ROOT" \
         GH_TOKEN="test-token" \
         OWNER="test-owner" \
+        DRY_RUN="false" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
         CUTOFF_DATE="2000-01-01T00:00:00Z" \
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            validate_cleanup_config
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
             gh() { [[ "$*" != *"/versions"* ]] && { printf "%s\\n" "{\"version_count\":1}"; return; }; printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"; }
             purge_container validator-killed
@@ -909,4 +924,138 @@ JSON
 
     [[ "$status" -eq 0 ]]
     [[ "$output" == "true" ]]
+}
+
+@test "age cleanup rejects invalid configuration before gh or curl" {
+    local command_dir="$BATS_TEST_TMPDIR/invalid-cleanup-config-bin"
+    local gh_log="$BATS_TEST_TMPDIR/invalid-cleanup-config-gh.log"
+    local curl_log="$BATS_TEST_TMPDIR/invalid-cleanup-config-curl.log"
+    mkdir -p "$command_dir"
+    : > "$gh_log"
+    : > "$curl_log"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        'printf "%s\\n" "$*" >> "$GH_LOG"' \
+        'if [[ "$*" == *"--method DELETE"* ]]; then exit 0; fi' \
+        'if [[ "$*" == *"/versions"* ]]; then printf "%s\\n" '\''[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}},"created_at":"2000-01-01T00:00:00Z"}]'\''; else printf "%s\\n" '\''{"version_count":1}'\''; fi' \
+        > "$command_dir/gh"
+    printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >> "$CURL_LOG"' > "$command_dir/curl"
+    chmod +x "$command_dir/gh" "$command_dir/curl"
+
+    run env \
+        PATH="$command_dir:$PATH" \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$gh_log" \
+        CURL_LOG="$curl_log" \
+        GH_TOKEN=test-token \
+        OWNER=test-owner \
+        DRY_RUN=TRUE \
+        KEEP_LATEST_COUNT=0 \
+        KEEP_MONTHS=0 \
+        bash -c 'source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"; main stale'
+
+    [[ "$status" -eq 64 ]]
+    [[ "$output" == "cleanup configuration rejected: DRY_RUN must be exactly true or false" ]]
+    [[ ! -s "$gh_log" ]]
+    [[ ! -s "$curl_log" ]]
+    [[ "$(<"$gh_log")" != *"--method DELETE"* ]]
+    [[ "$(<"$curl_log")" != *"DELETE"* ]]
+}
+
+@test "age purge revalidates a marker-shaped bypass before its first network call" {
+    local gh_log="$BATS_TEST_TMPDIR/direct-age-purge-gh.log"
+    : > "$gh_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" DRY_RUN=TRUE KEEP_LATEST_COUNT=0 KEEP_MONTHS=0 CLEANUP_CONFIG_VALIDATED=true bash -c '
+        source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+        gh() { printf "%s\\n" "$*" >> "$GH_LOG"; }
+        purge_container stale
+    '
+
+    [[ "$status" -eq 64 ]]
+    [[ "$output" == "cleanup configuration rejected: DRY_RUN must be exactly true or false" ]]
+    [[ ! -s "$gh_log" ]]
+}
+
+@test "an overflow-sized latest-retention count selects no versions for deletion" {
+    cat > "$STUB_DIR/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$*" == *"--method DELETE"* ]]; then
+    printf 'DELETE:%s\n' "$*" >> "$GH_LOG"
+    exit 0
+fi
+
+if [[ "$*" == *"/versions"* ]]; then
+    printf '%s\n' '[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["obsolete-1"]}},"created_at":"2000-01-01T00:00:00Z"},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":["obsolete-2"]}},"created_at":"2000-01-01T00:00:00Z"},{"id":103,"name":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","metadata":{"container":{"tags":["obsolete-3"]}},"created_at":"2000-01-01T00:00:00Z"}]'
+else
+    printf '%s\n' '{"version_count":3}'
+fi
+EOF
+    chmod +x "$STUB_DIR/gh"
+
+    run env \
+        PATH="$STUB_DIR:$PATH" \
+        GH_LOG="$GH_LOG" \
+        GH_TOKEN=test-token \
+        OWNER=test-owner \
+        DRY_RUN=true \
+        KEEP_LATEST_COUNT=9223372036854775808 \
+        KEEP_MONTHS=0 \
+        bash "$PROJECT_ROOT/scripts/cleanup-old-versions.sh" stale
+
+    assert_no_versions_selected_for_deletion
+    [[ "$status" -eq 64 ]]
+    [[ ! -s "$GH_LOG" ]]
+}
+
+@test "age deletion wrapper refuses dry-run directly without invoking gh" {
+    local gh_log="$BATS_TEST_TMPDIR/direct-age-delete-gh.log"
+    : > "$gh_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" DRY_RUN=true KEEP_LATEST_COUNT=0 KEEP_MONTHS=0 bash -c '
+        source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+        gh() { printf "%s\\n" "$*" >> "$GH_LOG"; }
+        validate_cleanup_config
+        _cleanup_old_versions_delete stale 101
+    '
+
+    [[ "$status" -eq 64 ]]
+    [[ "$output" == "cleanup deletion refused: DRY_RUN must be false" ]]
+    [[ ! -s "$gh_log" ]]
+}
+
+@test "cleanup wrappers stay bound to their purge paths in either source order" {
+    local gh_log="$BATS_TEST_TMPDIR/source-order-gh.log"
+    : > "$gh_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" OWNER=test-owner GH_TOKEN=test-token DRY_RUN=false KEEP_LATEST_COUNT=0 KEEP_MONTHS=0 CUTOFF_DATE=2000-01-01T00:00:00Z bash -c '
+        for source_order in old-outdated outdated-old; do
+            : > "$GH_LOG"
+            if [[ "$source_order" == old-outdated ]]; then
+                source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+                source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            else
+                source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+                source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            fi
+            ! declare -F cleanup_delete >/dev/null
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" == *"/versions"* ]]; then
+                    printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+                else
+                    printf "%s\\n" "{\"version_count\":1}"
+                fi
+            }
+            purge_container 101 >/dev/null || exit $?
+            purge_ghcr 101 latest >/dev/null || exit $?
+            [[ "$(wc -l < "$GH_LOG")" -eq 2 ]]
+            grep -qx -- "api --method DELETE -H Accept: application/vnd.github+json -H X-GitHub-Api-Version: 2022-11-28 /users/test-owner/packages/container/101/versions/101" "$GH_LOG"
+            [[ "$(grep -Fxc -- "api --method DELETE -H Accept: application/vnd.github+json -H X-GitHub-Api-Version: 2022-11-28 /users/test-owner/packages/container/101/versions/101" "$GH_LOG")" -eq 2 ]]
+        done
+    '
+
+    [[ "$status" -eq 0 ]]
 }

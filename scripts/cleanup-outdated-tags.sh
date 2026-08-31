@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Purge container images whose tags are not in the current valid build set.
 # Required env vars: GH_TOKEN, OWNER
+# Optional env vars: DRY_RUN (default: false; exactly true or false),
+# KEEP_LATEST_COUNT (default: 10; 0 disables the latest-version floor), and
+# KEEP_MONTHS (default: 6; 0 disables the age-retention floor).
 
 _cleanup_outdated_tags_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../helpers/version-record-validation.sh
+# shellcheck disable=SC1091 # Dynamic repository root is validated by the source guard.
 if ! source "$_cleanup_outdated_tags_root/helpers/version-record-validation.sh"; then
   echo "Failed to source version record validation helper: $_cleanup_outdated_tags_root/helpers/version-record-validation.sh" >&2
   unset _cleanup_outdated_tags_root
+  # shellcheck disable=SC2317 # This branch also runs when the script is executed.
   return 1 2>/dev/null || exit 1
 fi
 unset _cleanup_outdated_tags_root
@@ -15,6 +20,30 @@ script_root() {
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
   cd "$script_dir/.." && pwd
+}
+
+_cleanup_outdated_tags_delete() {
+  local deletion_target="$1"
+
+  validate_cleanup_config || return 64
+  [[ "${DRY_RUN-}" == false ]] || { echo "cleanup deletion refused: DRY_RUN must be false" >&2; return 64; }
+
+  case "$deletion_target" in
+    ghcr-version)
+      local container="$2" version_id="$3"
+      gh api --method DELETE -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+        "/users/${OWNER}/packages/container/${container}/versions/${version_id}"
+      ;;
+    dockerhub-tag)
+      local dh_jwt="$2" container="$3" tag="$4"
+      curl -sf -X DELETE -H "Authorization: Bearer $dh_jwt" \
+        "https://hub.docker.com/v2/repositories/$DOCKERHUB_USERNAME/$container/tags/$tag/" >/dev/null
+      ;;
+    *)
+      echo "cleanup deletion refused: unknown deletion target" >&2
+      return 64
+      ;;
+  esac
 }
 
 build_valid_tags() {
@@ -102,6 +131,8 @@ purge_ghcr() {
   local record_b64 record_json
   local protected_digests="" ghcr_token manifest children protection_result
   local -a kept_digests=()
+
+  validate_cleanup_config || return 64
 
   cleanup_files() { rm -f "$versions_file" "$obsolete_file" "$protected_file"; }
 
@@ -272,8 +303,7 @@ purge_ghcr() {
       echo "  ✗ Obsolete (tags: $tags)" >&2
       if [[ "$DRY_RUN" == true ]]; then
         echo "    [DRY RUN] Would delete version $version_id" >&2
-      elif gh api --method DELETE -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
-          "/users/${OWNER}/packages/container/${container}/versions/${version_id}"; then
+      elif _cleanup_outdated_tags_delete ghcr-version "$container" "$version_id"; then
         echo "    ✓ Deleted" >&2
       else
         echo "    ✗ Failed to delete" >&2; delete_failures=$((delete_failures + 1))
@@ -319,8 +349,7 @@ purge_ghcr() {
       echo "  ✗ Orphan (digest: ${digest:0:19}...)" >&2
       if [[ "$DRY_RUN" == true ]]; then
         echo "    [DRY RUN] Would delete version $version_id" >&2
-      elif gh api --method DELETE -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
-          "/users/${OWNER}/packages/container/${container}/versions/${version_id}"; then
+      elif _cleanup_outdated_tags_delete ghcr-version "$container" "$version_id"; then
         echo "    ✓ Deleted" >&2
       else
         echo "    ✗ Failed to delete" >&2; delete_failures=$((delete_failures + 1))
@@ -353,6 +382,7 @@ purge_ghcr() {
 # was not attempted (0|0); a returned non-zero status is always a real failure.
 purge_dockerhub() {
   local container="$1" valid_tags="$2" dh_jwt response dh_tags tag dh_kept=0 dh_deleted=0 delete_failures=0
+  validate_cleanup_config || return 64
   if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
     printf '%s\n' "0|0" || return "$PROCESSING_FAILURE"
     return 0
@@ -377,8 +407,7 @@ purge_dockerhub() {
     if is_valid_tag "$tag" "$valid_tags"; then dh_kept=$((dh_kept + 1)); continue; fi
     if [[ "$DRY_RUN" == true ]]; then
       echo "    [DRY RUN] Would delete Docker Hub tag: $tag" >&2
-    elif curl -sf -X DELETE -H "Authorization: Bearer $dh_jwt" \
-        "https://hub.docker.com/v2/repositories/$DOCKERHUB_USERNAME/$container/tags/$tag/" >/dev/null; then
+    elif _cleanup_outdated_tags_delete dockerhub-tag "$dh_jwt" "$container" "$tag"; then
       echo "    ✓ Deleted Docker Hub tag: $tag" >&2
     else
       echo "    ✗ Failed to delete Docker Hub tag: $tag" >&2; delete_failures=$((delete_failures + 1))
@@ -394,9 +423,14 @@ purge_dockerhub() {
 
 main() {
   set -euo pipefail
+  if [[ ! -v DRY_RUN ]]; then DRY_RUN=false; fi
+  if [[ ! -v KEEP_LATEST_COUNT ]]; then KEEP_LATEST_COUNT=10; fi
+  if [[ ! -v KEEP_MONTHS ]]; then KEEP_MONTHS=6; fi
+  if ! validate_cleanup_config; then
+    return 64
+  fi
   : "${GH_TOKEN:?GH_TOKEN is required}"
   : "${OWNER:?OWNER is required}"
-  : "${DRY_RUN:=false}"
   : "${DOCKERHUB_USERNAME:=}"
   : "${DOCKERHUB_TOKEN:=}"
   ROOT_DIR=$(script_root) || return 1
