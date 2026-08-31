@@ -2,13 +2,17 @@
 # Age-based cleanup of GHCR container versions.
 #
 # Required env vars: GH_TOKEN, OWNER
-# Optional env vars: DRY_RUN (default: false), KEEP_LATEST_COUNT (default: 10), KEEP_MONTHS (default: 6)
+# Optional env vars: DRY_RUN (default: false; exactly true or false),
+# KEEP_LATEST_COUNT (default: 10; 0 disables the latest-version floor), and
+# KEEP_MONTHS (default: 6; 0 disables the age-retention floor).
 
 _cleanup_old_versions_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../helpers/version-record-validation.sh
+# shellcheck disable=SC1091 # Dynamic repository root is validated by the source guard.
 if ! source "$_cleanup_old_versions_root/helpers/version-record-validation.sh"; then
   echo "Failed to source version record validation helper: $_cleanup_old_versions_root/helpers/version-record-validation.sh" >&2
   unset _cleanup_old_versions_root
+  # shellcheck disable=SC2317 # This branch also runs when the script is executed.
   return 1 2>/dev/null || exit 1
 fi
 unset _cleanup_old_versions_root
@@ -30,6 +34,20 @@ print_banner() {
   echo "========================================"
 }
 
+cleanup_delete() {
+  local container="$1" version_id="$2"
+
+  if [[ "${CLEANUP_CONFIG_VALIDATED:-}" != true ]]; then
+    echo "cleanup deletion refused: configuration has not been validated" >&2
+    return 64
+  fi
+
+  gh api --method DELETE \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "/users/${OWNER}/packages/container/${container}/versions/${version_id}"
+}
+
 # Write kept|decided|deleted|delete_failures to stdout once a package was
 # completely assessed. `decided` counts the completed deletion plan, while
 # `deleted` counts successful removal outcomes. Its return status, rather than
@@ -45,6 +63,11 @@ purge_container() {
   local version_id tags created_at keep_reason tag tag_list major version_ts cutoff_ts processing_error=0 deletion_read_error=0 validation_error validation_status
   local record_b64 record_json
   declare -A major_seen=()
+
+  if [[ "${CLEANUP_CONFIG_VALIDATED:-}" != true ]]; then
+    echo "cleanup deletion refused: configuration has not been validated" >&2
+    return 64
+  fi
 
   if ! versions=$(gh api \
     -H "Accept: application/vnd.github+json" \
@@ -221,10 +244,7 @@ purge_container() {
     echo "  ✗ Delete #$position (tags: ${tags:-untagged})" >&2
     if [[ "$DRY_RUN" == "true" ]]; then
       echo "    [DRY RUN] Would delete version $version_id" >&2
-    elif gh api --method DELETE \
-      -H "Accept: application/vnd.github+json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "/users/${OWNER}/packages/container/${container}/versions/${version_id}"; then
+    elif cleanup_delete "$container" "$version_id"; then
       echo "    ✓ Deleted version $version_id" >&2
       deleted=$((deleted + 1))
     else
@@ -257,17 +277,21 @@ purge_container() {
 main() {
   set -euo pipefail
 
+  CLEANUP_CONFIG_VALIDATED=
+  if [[ ! -v DRY_RUN ]]; then DRY_RUN=false; fi
+  if [[ ! -v KEEP_LATEST_COUNT ]]; then KEEP_LATEST_COUNT=10; fi
+  if [[ ! -v KEEP_MONTHS ]]; then KEEP_MONTHS=6; fi
+  if ! validate_cleanup_config; then
+    return 64
+  fi
   : "${GH_TOKEN:?GH_TOKEN is required}"
   : "${OWNER:?OWNER is required}"
-  : "${DRY_RUN:=false}"
-  : "${KEEP_LATEST_COUNT:=10}"
-  : "${KEEP_MONTHS:=6}"
 
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 INCOMPLETE_DELETION_FAILURE=16
   local root_dir containers container result status
   local kept decided deleted delete_failures
   root_dir=$(script_root) || return 1
-  CUTOFF_DATE=$(date -d "-${KEEP_MONTHS} months" +%Y-%m-%dT%H:%M:%SZ) || return 1
+  CUTOFF_DATE=$(date -u -d "-${KEEP_MONTHS} months" +%Y-%m-%dT%H:%M:%SZ) || return 1
   print_banner
 
   if [[ $# -gt 0 ]]; then

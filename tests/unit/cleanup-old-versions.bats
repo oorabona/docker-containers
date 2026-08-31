@@ -766,6 +766,7 @@ run_old_version_validation_case() {
         CUTOFF_DATE="2000-01-01T00:00:00Z" \
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            CLEANUP_CONFIG_VALIDATED=true
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
             gh() { [[ "$*" != *"/versions"* ]] && { printf "%s\\n" "{\"version_count\":1}"; return; }; printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"; }
             purge_container malformed
@@ -793,6 +794,7 @@ EOF
         CUTOFF_DATE="2000-01-01T00:00:00Z" \
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            CLEANUP_CONFIG_VALIDATED=true
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
             gh() { [[ "$*" != *"/versions"* ]] && { printf "%s\\n" "{\"version_count\":1}"; return; }; printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"; }
             purge_container validator-killed
@@ -909,4 +911,71 @@ JSON
 
     [[ "$status" -eq 0 ]]
     [[ "$output" == "true" ]]
+}
+
+@test "age cleanup rejects invalid configuration before gh or curl" {
+    local command_dir="$BATS_TEST_TMPDIR/invalid-cleanup-config-bin"
+    local gh_log="$BATS_TEST_TMPDIR/invalid-cleanup-config-gh.log"
+    local curl_log="$BATS_TEST_TMPDIR/invalid-cleanup-config-curl.log"
+    mkdir -p "$command_dir"
+    : > "$gh_log"
+    : > "$curl_log"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        'printf "%s\\n" "$*" >> "$GH_LOG"' \
+        'if [[ "$*" == *"--method DELETE"* ]]; then exit 0; fi' \
+        'if [[ "$*" == *"/versions"* ]]; then printf "%s\\n" '\''[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}},"created_at":"2000-01-01T00:00:00Z"}]'\''; else printf "%s\\n" '\''{"version_count":1}'\''; fi' \
+        > "$command_dir/gh"
+    printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >> "$CURL_LOG"' > "$command_dir/curl"
+    chmod +x "$command_dir/gh" "$command_dir/curl"
+
+    run env \
+        PATH="$command_dir:$PATH" \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_LOG="$gh_log" \
+        CURL_LOG="$curl_log" \
+        GH_TOKEN=test-token \
+        OWNER=test-owner \
+        DRY_RUN=TRUE \
+        KEEP_LATEST_COUNT=0 \
+        KEEP_MONTHS=0 \
+        bash -c 'source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"; main stale'
+
+    [[ "$status" -eq 64 ]]
+    [[ "$output" == "cleanup configuration rejected: DRY_RUN must be exactly true or false" ]]
+    [[ ! -s "$gh_log" ]]
+    [[ ! -s "$curl_log" ]]
+    [[ "$(<"$gh_log")" != *"--method DELETE"* ]]
+    [[ "$(<"$curl_log")" != *"DELETE"* ]]
+}
+
+@test "age purge refuses direct invocation before its first network call" {
+    local gh_log="$BATS_TEST_TMPDIR/direct-age-purge-gh.log"
+    : > "$gh_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" bash -c '
+        source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+        gh() { printf "%s\\n" "$*" >> "$GH_LOG"; }
+        unset CLEANUP_CONFIG_VALIDATED
+        purge_container stale
+    '
+
+    [[ "$status" -eq 64 ]]
+    [[ "$output" == "cleanup deletion refused: configuration has not been validated" ]]
+    [[ ! -s "$gh_log" ]]
+}
+
+@test "age deletion wrapper refuses without a validation marker" {
+    local gh_log="$BATS_TEST_TMPDIR/direct-age-delete-gh.log"
+    : > "$gh_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" bash -c '
+        source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+        gh() { printf "%s\\n" "$*" >> "$GH_LOG"; }
+        unset CLEANUP_CONFIG_VALIDATED
+        cleanup_delete stale 101
+    '
+
+    [[ "$status" -eq 64 ]]
+    [[ "$output" == "cleanup deletion refused: configuration has not been validated" ]]
+    [[ ! -s "$gh_log" ]]
 }

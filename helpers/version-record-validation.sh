@@ -3,9 +3,34 @@
 # destructive registry pruners.  Callers deliberately choose one of the named
 # contracts below; they cannot supply their own field list.
 
+# Validate the common destructive-cleanup configuration.  On success this sets
+# CLEANUP_CONFIG_VALIDATED=true for the caller's deletion wrapper; callers must
+# clear that marker before starting a new main invocation.
+validate_cleanup_config() {
+  local variable
+
+  case "$DRY_RUN" in
+    true|false) ;;
+    *)
+      printf '%s\n' "cleanup configuration rejected: DRY_RUN must be exactly true or false" >&2
+      return 64
+      ;;
+  esac
+
+  for variable in KEEP_LATEST_COUNT KEEP_MONTHS; do
+    if [[ ! ${!variable} =~ ^(0|[1-9][0-9]*)$ ]]; then
+      printf 'cleanup configuration rejected: %s must be 0 or [1-9][0-9]*\n' "$variable" >&2
+      return 64
+    fi
+  done
+
+  # shellcheck disable=SC2034 # Read by the caller's deletion wrapper.
+  CLEANUP_CONFIG_VALIDATED=true
+}
+
 # `created_at` is only checked for RFC3339 string shape here.  #1301 owns
 # timestamp parsing and ordering semantics.
-# shellcheck disable=SC2034,SC2089,SC2090
+# shellcheck disable=SC2016,SC2034,SC2089,SC2090
 VERSION_RECORD_VALIDATION_JQ='
 def valid_tag:
   # jq ^ is a true start anchor; use \z rather than $ so a final newline is
