@@ -168,9 +168,15 @@ assert_consumer_uses_collector() {
 
 @test "process-substitution reader guard is bounded to scripts and helpers" {
     local file
+    local grep_status
     local raw_readers
 
-    raw_readers=$(rg -l -U '(mapfile|readarray)[^\n]*<[[:space:]]*<\(' "$PROJECT_ROOT/scripts" "$PROJECT_ROOT/helpers" || true)
+    if raw_readers=$(grep -rlzE '(mapfile|readarray)([^[:cntrl:]]|[[:blank:]]|\\[[:space:]])*<[[:space:]]*<\(' "$PROJECT_ROOT/scripts" "$PROJECT_ROOT/helpers"); then
+        :
+    else
+        grep_status=$?
+        [ "$grep_status" -eq 1 ] || return "$grep_status"
+    fi
     for file in $raw_readers; do
         [ "$file" = "$PROJECT_ROOT/helpers/collect-lines.sh" ] || {
             echo "raw process-substitution reader outside collector: $file" >&2

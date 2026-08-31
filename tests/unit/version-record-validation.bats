@@ -108,7 +108,7 @@ CASES
 }
 
 @test "destructive cleanup code has no configuration-validity marker" {
-    run rg -n 'CLEANUP_CONFIG_VALIDATED' \
+    run grep -rlZ 'CLEANUP_CONFIG_VALIDATED' \
         "$PROJECT_ROOT/helpers" \
         "$PROJECT_ROOT/scripts"
 
