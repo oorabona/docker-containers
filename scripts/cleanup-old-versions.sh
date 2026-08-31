@@ -34,13 +34,11 @@ print_banner() {
   echo "========================================"
 }
 
-cleanup_delete() {
+_cleanup_old_versions_delete() {
   local container="$1" version_id="$2"
 
-  if [[ "${CLEANUP_CONFIG_VALIDATED:-}" != true ]]; then
-    echo "cleanup deletion refused: configuration has not been validated" >&2
-    return 64
-  fi
+  validate_cleanup_config || return 64
+  [[ "${DRY_RUN-}" == false ]] || { echo "cleanup deletion refused: DRY_RUN must be false" >&2; return 64; }
 
   gh api --method DELETE \
     -H "Accept: application/vnd.github+json" \
@@ -64,10 +62,7 @@ purge_container() {
   local record_b64 record_json
   declare -A major_seen=()
 
-  if [[ "${CLEANUP_CONFIG_VALIDATED:-}" != true ]]; then
-    echo "cleanup deletion refused: configuration has not been validated" >&2
-    return 64
-  fi
+  validate_cleanup_config || return 64
 
   if ! versions=$(gh api \
     -H "Accept: application/vnd.github+json" \
@@ -244,7 +239,7 @@ purge_container() {
     echo "  ✗ Delete #$position (tags: ${tags:-untagged})" >&2
     if [[ "$DRY_RUN" == "true" ]]; then
       echo "    [DRY RUN] Would delete version $version_id" >&2
-    elif cleanup_delete "$container" "$version_id"; then
+    elif _cleanup_old_versions_delete "$container" "$version_id"; then
       echo "    ✓ Deleted version $version_id" >&2
       deleted=$((deleted + 1))
     else
@@ -277,7 +272,6 @@ purge_container() {
 main() {
   set -euo pipefail
 
-  CLEANUP_CONFIG_VALIDATED=
   if [[ ! -v DRY_RUN ]]; then DRY_RUN=false; fi
   if [[ ! -v KEEP_LATEST_COUNT ]]; then KEEP_LATEST_COUNT=10; fi
   if [[ ! -v KEEP_MONTHS ]]; then KEEP_MONTHS=6; fi

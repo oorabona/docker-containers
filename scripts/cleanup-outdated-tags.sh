@@ -22,13 +22,11 @@ script_root() {
   cd "$script_dir/.." && pwd
 }
 
-cleanup_delete() {
+_cleanup_outdated_tags_delete() {
   local deletion_target="$1"
 
-  if [[ "${CLEANUP_CONFIG_VALIDATED:-}" != true ]]; then
-    echo "cleanup deletion refused: configuration has not been validated" >&2
-    return 64
-  fi
+  validate_cleanup_config || return 64
+  [[ "${DRY_RUN-}" == false ]] || { echo "cleanup deletion refused: DRY_RUN must be false" >&2; return 64; }
 
   case "$deletion_target" in
     ghcr-version)
@@ -134,10 +132,7 @@ purge_ghcr() {
   local protected_digests="" ghcr_token manifest children protection_result
   local -a kept_digests=()
 
-  if [[ "${CLEANUP_CONFIG_VALIDATED:-}" != true ]]; then
-    echo "cleanup deletion refused: configuration has not been validated" >&2
-    return 64
-  fi
+  validate_cleanup_config || return 64
 
   cleanup_files() { rm -f "$versions_file" "$obsolete_file" "$protected_file"; }
 
@@ -308,7 +303,7 @@ purge_ghcr() {
       echo "  ✗ Obsolete (tags: $tags)" >&2
       if [[ "$DRY_RUN" == true ]]; then
         echo "    [DRY RUN] Would delete version $version_id" >&2
-      elif cleanup_delete ghcr-version "$container" "$version_id"; then
+      elif _cleanup_outdated_tags_delete ghcr-version "$container" "$version_id"; then
         echo "    ✓ Deleted" >&2
       else
         echo "    ✗ Failed to delete" >&2; delete_failures=$((delete_failures + 1))
@@ -354,7 +349,7 @@ purge_ghcr() {
       echo "  ✗ Orphan (digest: ${digest:0:19}...)" >&2
       if [[ "$DRY_RUN" == true ]]; then
         echo "    [DRY RUN] Would delete version $version_id" >&2
-      elif cleanup_delete ghcr-version "$container" "$version_id"; then
+      elif _cleanup_outdated_tags_delete ghcr-version "$container" "$version_id"; then
         echo "    ✓ Deleted" >&2
       else
         echo "    ✗ Failed to delete" >&2; delete_failures=$((delete_failures + 1))
@@ -387,10 +382,7 @@ purge_ghcr() {
 # was not attempted (0|0); a returned non-zero status is always a real failure.
 purge_dockerhub() {
   local container="$1" valid_tags="$2" dh_jwt response dh_tags tag dh_kept=0 dh_deleted=0 delete_failures=0
-  if [[ "${CLEANUP_CONFIG_VALIDATED:-}" != true ]]; then
-    echo "cleanup deletion refused: configuration has not been validated" >&2
-    return 64
-  fi
+  validate_cleanup_config || return 64
   if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
     printf '%s\n' "0|0" || return "$PROCESSING_FAILURE"
     return 0
@@ -415,7 +407,7 @@ purge_dockerhub() {
     if is_valid_tag "$tag" "$valid_tags"; then dh_kept=$((dh_kept + 1)); continue; fi
     if [[ "$DRY_RUN" == true ]]; then
       echo "    [DRY RUN] Would delete Docker Hub tag: $tag" >&2
-    elif cleanup_delete dockerhub-tag "$dh_jwt" "$container" "$tag"; then
+    elif _cleanup_outdated_tags_delete dockerhub-tag "$dh_jwt" "$container" "$tag"; then
       echo "    ✓ Deleted Docker Hub tag: $tag" >&2
     else
       echo "    ✗ Failed to delete Docker Hub tag: $tag" >&2; delete_failures=$((delete_failures + 1))
@@ -431,7 +423,6 @@ purge_dockerhub() {
 
 main() {
   set -euo pipefail
-  CLEANUP_CONFIG_VALIDATED=
   if [[ ! -v DRY_RUN ]]; then DRY_RUN=false; fi
   if [[ ! -v KEEP_LATEST_COUNT ]]; then KEEP_LATEST_COUNT=10; fi
   if [[ ! -v KEEP_MONTHS ]]; then KEEP_MONTHS=6; fi

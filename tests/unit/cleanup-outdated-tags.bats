@@ -1293,9 +1293,12 @@ run_outdated_validation_case() {
         PROJECT_ROOT="$PROJECT_ROOT" \
         GH_TOKEN="$GH_TOKEN" \
         OWNER="$OWNER" \
+        DRY_RUN="false" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            CLEANUP_CONFIG_VALIDATED=true
+            validate_cleanup_config
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15
             gh() { if [[ "$*" == *"/versions"* ]]; then printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{}}}]"; else printf "%s\\n" "{\"version_count\":1}"; fi; }
             purge_ghcr malformed latest
@@ -1320,9 +1323,12 @@ EOF
         PROJECT_ROOT="$PROJECT_ROOT" \
         GH_TOKEN="$GH_TOKEN" \
         OWNER="$OWNER" \
+        DRY_RUN="false" \
+        KEEP_LATEST_COUNT="0" \
+        KEEP_MONTHS="0" \
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            CLEANUP_CONFIG_VALIDATED=true
+            validate_cleanup_config
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15
             gh() { if [[ "$*" == *"/versions"* ]]; then printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}}}]"; else printf "%s\\n" "{\"version_count\":1}"; fi; }
             purge_ghcr validator-killed latest
@@ -1521,22 +1527,42 @@ run_invalid_build_case() {
     [[ "$(<"$curl_log")" != *"DELETE"* ]]
 }
 
-@test "outdated-tag purges refuse direct invocation before their first network call" {
+@test "outdated-tag purges revalidate a marker-shaped bypass before their first network call" {
     local gh_log="$BATS_TEST_TMPDIR/direct-outdated-purge-gh.log"
     local curl_log="$BATS_TEST_TMPDIR/direct-outdated-purge-curl.log"
     : > "$gh_log"
     : > "$curl_log"
 
-    run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" CURL_LOG="$curl_log" bash -c '
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" CURL_LOG="$curl_log" DRY_RUN=TRUE KEEP_LATEST_COUNT=0 KEEP_MONTHS=0 CLEANUP_CONFIG_VALIDATED=true bash -c '
         source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
         gh() { printf "%s\\n" "$*" >> "$GH_LOG"; }
         curl() { printf "%s\\n" "$*" >> "$CURL_LOG"; }
-        unset CLEANUP_CONFIG_VALIDATED
         purge_ghcr stale latest
     '
 
     [[ "$status" -eq 64 ]]
-    [[ "$output" == "cleanup deletion refused: configuration has not been validated" ]]
+    [[ "$output" == "cleanup configuration rejected: DRY_RUN must be exactly true or false" ]]
+    [[ ! -s "$gh_log" ]]
+    [[ ! -s "$curl_log" ]]
+}
+
+@test "outdated-tag deletion wrapper refuses dry-run directly without invoking clients" {
+    local gh_log="$BATS_TEST_TMPDIR/direct-outdated-delete-gh.log"
+    local curl_log="$BATS_TEST_TMPDIR/direct-outdated-delete-curl.log"
+    : > "$gh_log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" CURL_LOG="$curl_log" DRY_RUN=true KEEP_LATEST_COUNT=0 KEEP_MONTHS=0 bash -c '
+        source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+        gh() { printf "%s\\n" "$*" >> "$GH_LOG"; }
+        curl() { printf "%s\\n" "$*" >> "$CURL_LOG"; }
+        validate_cleanup_config
+        if _cleanup_outdated_tags_delete ghcr-version stale 101; then exit 1; else [[ $? -eq 64 ]]; fi
+        if _cleanup_outdated_tags_delete dockerhub-tag jwt stale stale; then exit 1; else [[ $? -eq 64 ]]; fi
+    '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"cleanup deletion refused: DRY_RUN must be false"* ]]
     [[ ! -s "$gh_log" ]]
     [[ ! -s "$curl_log" ]]
 }

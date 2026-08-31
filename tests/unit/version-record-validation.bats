@@ -38,7 +38,7 @@ KEEP_MONTHS|6 months|cleanup configuration rejected: KEEP_MONTHS must be 0 or [1
 CASES
 }
 
-@test "validate_cleanup_config accepts documented dry-run and retention values" {
+@test "validate_cleanup_config accepts documented dry-run and retention values without a marker" {
     local dry_run keep_latest_count keep_months
 
     while IFS='|' read -r dry_run keep_latest_count keep_months; do
@@ -46,7 +46,7 @@ CASES
             DRY_RUN="$dry_run" \
             KEEP_LATEST_COUNT="$keep_latest_count" \
             KEEP_MONTHS="$keep_months" \
-            bash -c 'source "$1/helpers/version-record-validation.sh"; validate_cleanup_config; [[ "$CLEANUP_CONFIG_VALIDATED" == true ]]' _ "$PROJECT_ROOT"
+            bash -c 'source "$1/helpers/version-record-validation.sh"; validate_cleanup_config; [[ ! -v CLEANUP_CONFIG_VALIDATED ]]' _ "$PROJECT_ROOT"
 
         [[ "$status" -eq 0 ]]
         [[ -z "$output" ]]
@@ -55,5 +55,26 @@ true|0|0
 false|0|0
 true|10|10
 false|10|10
+CASES
+}
+
+@test "validate_cleanup_config rejects each unset value under nounset with its documented status" {
+    local variable expected
+
+    while IFS='|' read -r variable expected; do
+        run env PROJECT_ROOT="$PROJECT_ROOT" bash -c '
+            set -u
+            source "$PROJECT_ROOT/helpers/version-record-validation.sh"
+            DRY_RUN=false KEEP_LATEST_COUNT=10 KEEP_MONTHS=6
+            unset "$1"
+            validate_cleanup_config
+        ' _ "$variable"
+
+        [[ "$status" -eq 64 ]]
+        [[ "$output" == "$expected" ]]
+    done <<'CASES'
+DRY_RUN|cleanup configuration rejected: DRY_RUN must be exactly true or false
+KEEP_LATEST_COUNT|cleanup configuration rejected: KEEP_LATEST_COUNT must be 0 or [1-9][0-9]*
+KEEP_MONTHS|cleanup configuration rejected: KEEP_MONTHS must be 0 or [1-9][0-9]*
 CASES
 }
