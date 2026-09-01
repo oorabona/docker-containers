@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Dry run (no deletions)'
+        description: 'Dry-run the age and obsolete-tag pruners (no deletions); extension cleanup remains global and is controlled by execute_ext_cleanup alone'
         required: false
         type: boolean
         default: false
