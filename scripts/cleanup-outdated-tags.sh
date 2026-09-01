@@ -123,9 +123,10 @@ purge_ghcr() {
   # 10 listing failure, 11 processing failure, 12 delete failure, 13 failure
   # after complete assessment, 14 uninterpretable record, and 15 protection
   # failure. 16 means an orphan candidate could not be assessed because its
-  # obsolete parent survived. Replaying a completed deletion list is execution
-  # only after every replay payload has passed preflight; preflight failure
-  # otherwise returns 13 with the completed assessment record.
+  # obsolete parent survived or replay preflight stopped parent deletion.
+  # Replaying a completed deletion list is execution only after every replay
+  # payload has passed preflight; preflight failure returns the completed
+  # tagged-plan record, but only returns 13 when no orphan remains unresolved.
   local container="$1" valid_tags="$2"
   local versions package_metadata version_count reported_version_count versions_file="" obsolete_file="" protected_file=""
   local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 validation_error validation_status index
@@ -346,7 +347,13 @@ purge_ghcr() {
   # below reads only these immutable id/digest/tag arrays.
   if ! load_framed_work_list "deletion replay" "$obsolete_file" obsolete_replay; then
     cleanup_files
-    return "$PROCESSING_FAILURE"
+    if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
+      return "$PROCESSING_FAILURE"
+    fi
+    if [[ ${#orphan_ids[@]} -gt 0 ]]; then
+      return "$INCOMPLETE_DELETION_FAILURE"
+    fi
+    return "$POST_DELETE_PROCESSING_FAILURE"
   fi
   for record_b64 in "${obsolete_replay[@]}"; do
     if [[ ! "$record_b64" =~ ^([1-9][0-9]*)\|(sha256:[0-9a-f]{64})\|(.*)$ ]]; then
@@ -355,6 +362,9 @@ purge_ghcr() {
         return "$PROCESSING_FAILURE"
       fi
       cleanup_files
+      if [[ ${#orphan_ids[@]} -gt 0 ]]; then
+        return "$INCOMPLETE_DELETION_FAILURE"
+      fi
       return "$POST_DELETE_PROCESSING_FAILURE"
     fi
     obsolete_ids+=("${BASH_REMATCH[1]}")
@@ -504,9 +514,9 @@ main() {
     if result=$(purge_ghcr "$container" "$valid_tags"); then ghcr_status=0; else ghcr_status=$?; fi
     case "$ghcr_status" in
       0|"$DELETE_FAILURE"|"$POST_DELETE_PROCESSING_FAILURE")
-        if [[ "$result" =~ ^([0-9]+)\|([0-9]+)\|([0-9]+)\|([0-9]+)$ ]]; then
-          kept="${BASH_REMATCH[1]}"; obsolete="${BASH_REMATCH[2]}"; orphans="${BASH_REMATCH[3]}"; delete_failures="${BASH_REMATCH[4]}"
-          package_assessed=true; total_kept=$((total_kept + kept)); total_obsolete=$((total_obsolete + obsolete)); total_orphans=$((total_orphans + orphans)); total_ghcr_delete_failures=$((total_ghcr_delete_failures + delete_failures))
+        if parse_result_counters "$result" "GHCR cleanup result" \
+          kept total_kept obsolete total_obsolete orphans total_orphans delete_failures total_ghcr_delete_failures; then
+          package_assessed=true
           echo "  GHCR summary: kept=$kept, obsolete=$obsolete, orphans=$orphans, delete_failures=$delete_failures"
           [[ "$ghcr_status" -ne "$POST_DELETE_PROCESSING_FAILURE" ]] || total_processing_failures=$((total_processing_failures + 1))
         else
@@ -517,9 +527,8 @@ main() {
       # A status 16 caller has not supplied a completed assessment, so Docker
       # Hub stays off.
       "$INCOMPLETE_DELETION_FAILURE")
-        if [[ "$result" =~ ^([0-9]+)\|([0-9]+)\|([0-9]+)\|([0-9]+)$ ]]; then
-          kept="${BASH_REMATCH[1]}"; obsolete="${BASH_REMATCH[2]}"; orphans="${BASH_REMATCH[3]}"; delete_failures="${BASH_REMATCH[4]}"
-          total_kept=$((total_kept + kept)); total_obsolete=$((total_obsolete + obsolete)); total_ghcr_delete_failures=$((total_ghcr_delete_failures + delete_failures))
+        if parse_result_counters "$result" "incomplete GHCR cleanup result" \
+          kept total_kept obsolete total_obsolete orphans - delete_failures total_ghcr_delete_failures; then
           echo "  GHCR summary: kept=$kept, obsolete=$obsolete, orphan phase not assessed, delete_failures=$delete_failures"
         else
           echo "  ✗ Failed to read incomplete GHCR cleanup result; skipping $container"
@@ -537,10 +546,9 @@ main() {
     if dh_result=$(purge_dockerhub "$container" "$valid_tags"); then dh_status=0; else dh_status=$?; fi
     case "$dh_status" in
       0|"$DELETE_FAILURE")
-        if [[ "$dh_result" =~ ^([0-9]+)\|([0-9]+)$ ]]; then
-          dh_assessed="${BASH_REMATCH[1]}"; dh_deleted="${BASH_REMATCH[2]}"
+        if parse_result_counters "$dh_result" "Docker Hub cleanup result" \
+          dh_assessed - dh_deleted total_dh_deleted; then
           [[ "$package_assessed" == true || "$dh_assessed" -eq 0 ]] || package_assessed=true
-          total_dh_deleted=$((total_dh_deleted + dh_deleted))
           [[ "$dh_status" -eq 0 ]] || total_dh_delete_failures=$((total_dh_delete_failures + 1))
         else
           echo "  ✗ Failed to read Docker Hub cleanup result; skipping $container"; total_processing_failures=$((total_processing_failures + 1))

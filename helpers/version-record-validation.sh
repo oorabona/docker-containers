@@ -21,6 +21,75 @@ decimal_strings_equal() {
   [[ "$1" == "$2" ]]
 }
 
+# Result counters arrive from a function boundary, not from the accumulators
+# that consume them.  Parse every field here before it is assigned or used in
+# arithmetic, and update the paired aggregate in the same checked operation.
+# Arguments after `label` are output-name/aggregate-name pairs; use `-` when a
+# validated field must not contribute to an aggregate (for an incomplete
+# assessment, for example).
+parse_result_counters() {
+  local _result_counter_record="$1" _result_counter_label="$2"
+  local _result_counter_argument_count _result_counter_pair_count _result_counter_index
+  local _result_counter_field _result_counter_remaining _result_counter_aggregate
+  local _result_counter_output_name _result_counter_total_name
+  local _result_counter_output_position _result_counter_total_position
+  local -a _result_counter_values=()
+
+  _result_counter_argument_count=$(( $# - 2 ))
+  if (( _result_counter_argument_count < 2 || _result_counter_argument_count % 2 != 0 )); then
+    printf 'result-counter parser misuse: expected output-name/aggregate-name pairs\n' >&2
+    return 64
+  fi
+  if [[ "$_result_counter_record" == *$'\n'* ]]; then
+    printf '%s rejected: result record must contain one line\n' "$_result_counter_label" >&2
+    return 1
+  fi
+  IFS='|' read -r -a _result_counter_values <<< "$_result_counter_record"
+  _result_counter_pair_count=$(( _result_counter_argument_count / 2 ))
+  if [[ ${#_result_counter_values[@]} -ne $_result_counter_pair_count ]]; then
+    printf '%s rejected: expected %s counters\n' "$_result_counter_label" "$_result_counter_pair_count" >&2
+    return 1
+  fi
+
+  for ((_result_counter_index = 0; _result_counter_index < _result_counter_pair_count; _result_counter_index++)); do
+    _result_counter_field="${_result_counter_values[$_result_counter_index]}"
+    if ! is_canonical_decimal "$_result_counter_field" \
+      || decimal_string_greater_than "$_result_counter_field" 2147483647; then
+      printf '%s rejected: counter %s must be a canonical decimal between 0 and 2147483647\n' \
+        "$_result_counter_label" "$((_result_counter_index + 1))" >&2
+      return 1
+    fi
+  done
+
+  for ((_result_counter_index = 0; _result_counter_index < _result_counter_pair_count; _result_counter_index++)); do
+    _result_counter_field="${_result_counter_values[$_result_counter_index]}"
+    _result_counter_output_position=$((3 + _result_counter_index * 2))
+    _result_counter_output_name="${!_result_counter_output_position}"
+    # shellcheck disable=SC2178 # The caller intentionally supplies scalar destinations.
+    local -n _result_counter_output="$_result_counter_output_name"
+    _result_counter_output="$_result_counter_field"
+
+    _result_counter_total_position=$((4 + _result_counter_index * 2))
+    _result_counter_total_name="${!_result_counter_total_position}"
+    [[ "$_result_counter_total_name" == '-' ]] && continue
+    # shellcheck disable=SC2178 # The caller intentionally supplies scalar aggregate destinations.
+    local -n _result_counter_total="$_result_counter_total_name"
+    _result_counter_aggregate="$_result_counter_total"
+    if ! is_canonical_decimal "$_result_counter_aggregate" \
+      || decimal_string_greater_than "$_result_counter_aggregate" 2147483647; then
+      printf '%s rejected: aggregate is outside the executable range\n' "$_result_counter_label" >&2
+      return 64
+    fi
+    printf -v _result_counter_remaining '%d' "$((2147483647 - _result_counter_aggregate))"
+    if decimal_string_greater_than "$_result_counter_field" "$_result_counter_remaining"; then
+      printf '%s rejected: counter %s would overflow its aggregate\n' \
+        "$_result_counter_label" "$((_result_counter_index + 1))" >&2
+      return 1
+    fi
+    _result_counter_total=$((_result_counter_aggregate + _result_counter_field))
+  done
+}
+
 # Validate the common destructive-cleanup configuration.
 validate_cleanup_config() {
   local variable value
@@ -69,79 +138,88 @@ validate_cleanup_config() {
 # The caller supplies the destination array name.  Its records are assigned
 # only after the header, terminal marker, and record counts agree.
 load_framed_work_list() {
-  local phase="$1" work_file="$2" destination_name="$3"
-  local -a lines=() records=()
-  local terminal expected_count terminal_count consumed_count index
-  local last_byte
+  local _frame_phase="$1" _frame_work_file="$2" _frame_destination_name="$3"
+  local -a _frame_lines=() _frame_records=()
+  local _frame_terminal _frame_expected_count _frame_terminal_count _frame_consumed_count _frame_index
+  local _frame_last_byte
 
-  if [[ ! -r "$work_file" ]]; then
-    printf '  ✗ Refused incomplete %s work list: cannot read frame\n' "$phase" >&2
+  # Keep the helper's namespace unavailable to callers.  In particular, a
+  # destination cannot resolve to `_frame_records` and silently receive the
+  # helper's local array rather than the caller's array.
+  if [[ ! "$_frame_destination_name" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ \
+    || "$_frame_destination_name" == _frame_* ]]; then
+    printf '  ✗ Refused incomplete %s work list: destination name is reserved or invalid\n' "$_frame_phase" >&2
     return 1
   fi
-  if ! mapfile -t lines < "$work_file"; then
-    printf '  ✗ Refused incomplete %s work list: cannot read frame\n' "$phase" >&2
+
+  if [[ ! -r "$_frame_work_file" ]]; then
+    printf '  ✗ Refused incomplete %s work list: cannot read frame\n' "$_frame_phase" >&2
     return 1
   fi
-  if [[ ${#lines[@]} -eq 0 || ! ${lines[0]} =~ ^work-list\|expected\|([0-9]+)$ ]]; then
-    printf '  ✗ Refused incomplete %s work list: header missing or invalid\n' "$phase" >&2
+  if ! mapfile -t _frame_lines < "$_frame_work_file"; then
+    printf '  ✗ Refused incomplete %s work list: cannot read frame\n' "$_frame_phase" >&2
     return 1
   fi
-  expected_count="${BASH_REMATCH[1]}"
+  if [[ ${#_frame_lines[@]} -eq 0 || ! ${_frame_lines[0]} =~ ^work-list\|expected\|([0-9]+)$ ]]; then
+    printf '  ✗ Refused incomplete %s work list: header missing or invalid\n' "$_frame_phase" >&2
+    return 1
+  fi
+  _frame_expected_count="${BASH_REMATCH[1]}"
 
   # A final unterminated line can be a truncated record or marker.  Do not
   # accept it as a terminal marker merely because read/mapfile returned it.
-  if ! last_byte=$(tail -c 1 "$work_file" | od -An -tx1); then
-    printf '  ✗ Refused incomplete %s work list: cannot read frame\n' "$phase" >&2
+  if ! _frame_last_byte=$(tail -c 1 "$_frame_work_file" | od -An -tx1); then
+    printf '  ✗ Refused incomplete %s work list: cannot read frame\n' "$_frame_phase" >&2
     return 1
   fi
-  if [[ "$last_byte" != *"0a"* ]]; then
+  if [[ "$_frame_last_byte" != *"0a"* ]]; then
     # mapfile returns an unterminated final fragment.  It has not been
     # consumed as a record, so exclude it from the diagnostic count.
-    consumed_count=$(( ${#lines[@]} - 2 ))
-    [[ "$consumed_count" -ge 0 ]] || consumed_count=0
-    printf '  ✗ Refused incomplete %s work list: terminal marker missing (consumed %s of expected %s)\n' "$phase" "$consumed_count" "$expected_count" >&2
+    _frame_consumed_count=$(( ${#_frame_lines[@]} - 2 ))
+    [[ "$_frame_consumed_count" -ge 0 ]] || _frame_consumed_count=0
+    printf '  ✗ Refused incomplete %s work list: terminal marker missing (consumed %s of expected %s)\n' "$_frame_phase" "$_frame_consumed_count" "$_frame_expected_count" >&2
     return 1
   fi
-  if [[ ${#lines[@]} -lt 2 ]]; then
-    consumed_count=$(( ${#lines[@]} - 1 ))
-    [[ "$consumed_count" -ge 0 ]] || consumed_count=0
-    printf '  ✗ Refused incomplete %s work list: terminal marker missing (consumed %s of expected %s)\n' "$phase" "$consumed_count" "$expected_count" >&2
+  if [[ ${#_frame_lines[@]} -lt 2 ]]; then
+    _frame_consumed_count=$(( ${#_frame_lines[@]} - 1 ))
+    [[ "$_frame_consumed_count" -ge 0 ]] || _frame_consumed_count=0
+    printf '  ✗ Refused incomplete %s work list: terminal marker missing (consumed %s of expected %s)\n' "$_frame_phase" "$_frame_consumed_count" "$_frame_expected_count" >&2
     return 1
   fi
-  terminal="${lines[${#lines[@]} - 1]}"
-  if [[ "$terminal" =~ ^work-list\|complete\|([0-9]+)$ ]]; then
-    terminal_count="${BASH_REMATCH[1]}"
+  _frame_terminal="${_frame_lines[${#_frame_lines[@]} - 1]}"
+  if [[ "$_frame_terminal" =~ ^work-list\|complete\|([0-9]+)$ ]]; then
+    _frame_terminal_count="${BASH_REMATCH[1]}"
   else
-    consumed_count=$(( ${#lines[@]} - 1 ))
-    printf '  ✗ Refused incomplete %s work list: terminal marker missing (consumed %s of expected %s)\n' "$phase" "$consumed_count" "$expected_count" >&2
+    _frame_consumed_count=$(( ${#_frame_lines[@]} - 1 ))
+    printf '  ✗ Refused incomplete %s work list: terminal marker missing (consumed %s of expected %s)\n' "$_frame_phase" "$_frame_consumed_count" "$_frame_expected_count" >&2
     return 1
   fi
-  consumed_count=$(( ${#lines[@]} - 2 ))
+  _frame_consumed_count=$(( ${#_frame_lines[@]} - 2 ))
 
   # `consumed_count` is derived only from the trusted in-memory line array;
   # render it canonically and compare all counts as decimal strings.  Header
   # and terminal values remain untrusted strings throughout.
-  printf -v consumed_count '%d' "$consumed_count"
-  if ! is_canonical_decimal "$expected_count" \
-    || ! is_canonical_decimal "$terminal_count" \
-    || ! decimal_strings_equal "$terminal_count" "$expected_count" \
-    || ! decimal_strings_equal "$consumed_count" "$expected_count"; then
-    printf '  ✗ Refused incomplete %s work list: count mismatch (consumed %s of expected %s; terminal %s)\n' "$phase" "$consumed_count" "$expected_count" "$terminal_count" >&2
+  printf -v _frame_consumed_count '%d' "$_frame_consumed_count"
+  if ! is_canonical_decimal "$_frame_expected_count" \
+    || ! is_canonical_decimal "$_frame_terminal_count" \
+    || ! decimal_strings_equal "$_frame_terminal_count" "$_frame_expected_count" \
+    || ! decimal_strings_equal "$_frame_consumed_count" "$_frame_expected_count"; then
+    printf '  ✗ Refused incomplete %s work list: count mismatch (consumed %s of expected %s; terminal %s)\n' "$_frame_phase" "$_frame_consumed_count" "$_frame_expected_count" "$_frame_terminal_count" >&2
     return 1
   fi
 
-  for ((index = 1; index < ${#lines[@]} - 1; index++)); do
-    [[ -n "${lines[$index]}" ]] || {
-      printf '  ✗ Refused incomplete %s work list: empty record (consumed %s of expected %s)\n' "$phase" "$consumed_count" "$expected_count" >&2
+  for ((_frame_index = 1; _frame_index < ${#_frame_lines[@]} - 1; _frame_index++)); do
+    [[ -n "${_frame_lines[$_frame_index]}" ]] || {
+      printf '  ✗ Refused incomplete %s work list: empty record (consumed %s of expected %s)\n' "$_frame_phase" "$_frame_consumed_count" "$_frame_expected_count" >&2
       return 1
     }
-    records+=("${lines[$index]}")
+    _frame_records+=("${_frame_lines[$_frame_index]}")
   done
 
-  # shellcheck disable=SC2178 # destination_name is intentionally an array reference.
-  local -n destination="$destination_name"
-  # shellcheck disable=SC2034 # destination is a write-only nameref for the caller.
-  destination=("${records[@]}")
+  # shellcheck disable=SC2178 # _frame_destination_name is intentionally an array reference.
+  local -n _frame_destination="$_frame_destination_name"
+  # shellcheck disable=SC2034 # _frame_destination is a write-only nameref for the caller.
+  _frame_destination=("${_frame_records[@]}")
 }
 
 # `created_at` is only checked for RFC3339 string shape here.  #1301 owns

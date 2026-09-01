@@ -239,7 +239,10 @@ purge_container() {
 
   if ! load_framed_work_list "deletion replay" "$deletions_file" replay_records; then
     rm -f "$deletions_file"
-    return "$PROCESSING_FAILURE"
+    if ! printf '%s\n' "$kept|$decided|$deleted|$delete_failures"; then
+      return "$PROCESSING_FAILURE"
+    fi
+    return "$POST_DELETE_PROCESSING_FAILURE"
   fi
 
   # Parse the entire replay before its first DELETE.  The execution loop below
@@ -334,18 +337,15 @@ main() {
 
     case "$status" in
       0|"$DELETE_FAILURE"|"$POST_DELETE_PROCESSING_FAILURE")
-        if [[ "$result" =~ ^([0-9]+)\|([0-9]+)\|([0-9]+)\|([0-9]+)$ ]]; then
-          kept="${BASH_REMATCH[1]}"; decided="${BASH_REMATCH[2]}"; deleted="${BASH_REMATCH[3]}"; delete_failures="${BASH_REMATCH[4]}"
+        if parse_result_counters "$result" "cleanup result" \
+          kept total_kept decided total_decided deleted total_deleted delete_failures total_delete_failures; then
+          :
         else
           echo "  ✗ Failed to read cleanup result; skipping $container"
           total_processing_failures=$((total_processing_failures + 1))
           continue
         fi
         total_assessed=$((total_assessed + 1))
-        total_kept=$((total_kept + kept))
-        total_decided=$((total_decided + decided))
-        total_deleted=$((total_deleted + deleted))
-        total_delete_failures=$((total_delete_failures + delete_failures))
         echo "  Summary: kept=$kept, decided=$decided, deleted=$deleted, delete_failures=$delete_failures"
         [[ "$status" -ne "$POST_DELETE_PROCESSING_FAILURE" ]] || total_processing_failures=$((total_processing_failures + 1))
         ;;

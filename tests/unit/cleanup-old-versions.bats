@@ -791,7 +791,8 @@ EOF
     [[ "$status" -eq 1 ]]
     [[ "$output" == *"Refused incomplete deletion replay work list: terminal marker missing (consumed 1 of expected 2)"* ]]
     [[ "$output" != *"Failed to read prepared deletion record"* ]]
-    [[ "$output" == *"Packages assessed: 0"* ]]
+    [[ "$output" == *"Summary: kept=0, decided=2, deleted=0, delete_failures=0"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
     [[ ! -s "$GH_LOG" ]]
 }
@@ -802,8 +803,8 @@ EOF
     printf '%s\n' 'work-list|expected|2' 'first' 'second' > "$frame_file"
     run env PROJECT_ROOT="$PROJECT_ROOT" FRAME_FILE="$frame_file" bash -c '
         source "$PROJECT_ROOT/helpers/version-record-validation.sh"
-        records=()
-        load_framed_work_list test "$FRAME_FILE" records
+        loaded_records=()
+        load_framed_work_list test "$FRAME_FILE" loaded_records
     '
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"terminal marker missing (consumed 2 of expected 2)"* ]]
@@ -811,11 +812,20 @@ EOF
     printf '%s\n' 'work-list|expected|2' 'first' 'work-list|complete|1' > "$frame_file"
     run env PROJECT_ROOT="$PROJECT_ROOT" FRAME_FILE="$frame_file" bash -c '
         source "$PROJECT_ROOT/helpers/version-record-validation.sh"
-        records=()
-        load_framed_work_list test "$FRAME_FILE" records
+        loaded_records=()
+        load_framed_work_list test "$FRAME_FILE" loaded_records
     '
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"count mismatch (consumed 1 of expected 2; terminal 1)"* ]]
+
+    printf '%s\n' 'work-list|expected|2' 'first' 'second' 'work-list|complete|2' > "$frame_file"
+    run env PROJECT_ROOT="$PROJECT_ROOT" FRAME_FILE="$frame_file" bash -c '
+        source "$PROJECT_ROOT/helpers/version-record-validation.sh"
+        records=()
+        load_framed_work_list test "$FRAME_FILE" records
+        [[ ${#records[@]} -eq 2 && ${records[0]} == first && ${records[1]} == second ]]
+    '
+    [[ "$status" -eq 0 ]]
 }
 
 @test "a framed work list rejects a leading-zero count mismatch without arithmetic" {
@@ -824,8 +834,8 @@ EOF
     printf '%s\n' 'work-list|expected|08' one two three four five six seven 'work-list|complete|08' > "$frame_file"
     run env PROJECT_ROOT="$PROJECT_ROOT" FRAME_FILE="$frame_file" bash -c '
         source "$PROJECT_ROOT/helpers/version-record-validation.sh"
-        records=()
-        load_framed_work_list test "$FRAME_FILE" records
+        loaded_records=()
+        load_framed_work_list test "$FRAME_FILE" loaded_records
     '
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"count mismatch (consumed 7 of expected 08; terminal 08)"* ]]
@@ -838,8 +848,8 @@ EOF
     printf '%s\n' 'work-list|expected|18446744073709551616' 'work-list|complete|18446744073709551616' > "$frame_file"
     run env PROJECT_ROOT="$PROJECT_ROOT" FRAME_FILE="$frame_file" bash -c '
         source "$PROJECT_ROOT/helpers/version-record-validation.sh"
-        records=()
-        load_framed_work_list test "$FRAME_FILE" records
+        loaded_records=()
+        load_framed_work_list test "$FRAME_FILE" loaded_records
     '
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"count mismatch (consumed 0 of expected 18446744073709551616; terminal 18446744073709551616)"* ]]
@@ -909,6 +919,43 @@ EOF
     [[ "$output" == *"Failed to read cleanup result; skipping stale"* ]]
     [[ "$output" == *"Packages assessed: 0"* ]]
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+}
+
+@test "age main refuses noncanonical and oversized result counters through the shared parser" {
+    local invalid_counter
+
+    for invalid_counter in 08 2147483648; do
+        run env \
+            PROJECT_ROOT="$PROJECT_ROOT" RESULT_COUNTER="$invalid_counter" GH_TOKEN="test-token" OWNER="test-owner" DRY_RUN="false" \
+            bash -c '
+                set -euo pipefail
+                source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+                purge_container() { printf "%s\\n" "$RESULT_COUNTER|0|0|0"; }
+                main stale
+            '
+
+        [[ "$status" -eq 1 ]]
+        [[ "$output" == *"cleanup result rejected: counter 1 must be a canonical decimal between 0 and 2147483647"* ]]
+        [[ "$output" != *"arithmetic expression"* ]]
+        [[ "$output" == *"Packages assessed: 0"* ]]
+    done
+}
+
+@test "age main refuses a result counter that would overflow an aggregate" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="test-token" OWNER="test-owner" DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            purge_container() { printf "%s\\n" "2147483647|0|0|0"; }
+            main first second
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"cleanup result rejected: counter 1 would overflow its aggregate"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+    [[ "$output" == *"Versions kept: 2147483647"* ]]
+    [[ "$output" != *"Versions kept: 4294967294"* ]]
 }
 
 run_old_version_validation_case() {

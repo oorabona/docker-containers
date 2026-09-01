@@ -487,6 +487,42 @@ run_orphan_phase_completion_case() {
     [[ -s "$dockerhub_calls" ]]
 }
 
+@test "a malformed GHCR replay with an untagged candidate is unassessed and skips Docker Hub" {
+    local gh_log="$_STUB_DIR/replay-orphan-gh.log"
+    local dockerhub_calls="$_STUB_DIR/replay-orphan-dockerhub.log"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" DOCKERHUB_CALLS="$dockerhub_calls" \
+        GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" latest; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            eval "$(declare -f load_framed_work_list | sed "1s/^load_framed_work_list /original_load_framed_work_list /")"
+            load_framed_work_list() {
+                if [[ "$1" == "deletion replay" ]]; then
+                    printf "work-list|expected|1\\nmalformed\\nwork-list|complete|1\\n" > "$2"
+                fi
+                original_load_framed_work_list "$@"
+            }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ ! -s "$gh_log" ]]
+    [[ ! -s "$dockerhub_calls" ]]
+    [[ "$output" == *"Failed to read prepared GHCR deletion record; skipping stale"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=0"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+    [[ "$output" == *"Docker Hub cleanup skipped: GHCR safety assessment was incomplete"* ]]
+}
+
 @test "purge_ghcr deletes an orphan after all obsolete parent DELETEs succeed" {
     local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}}}]'
     local gh_log="$_STUB_DIR/outdated-tags-safety-gh.log"
@@ -1341,6 +1377,46 @@ EOF
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *"Failed to read Docker Hub cleanup result; skipping stale"* ]]
+}
+
+@test "outdated-tag main sends every result counter consumer through the shared parser" {
+    local consumer invalid_counter
+
+    for consumer in ghcr-complete ghcr-incomplete dockerhub; do
+        for invalid_counter in 08 2147483648; do
+            run env \
+                PROJECT_ROOT="$PROJECT_ROOT" CONSUMER="$consumer" RESULT_COUNTER="$invalid_counter" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN="false" \
+                bash -c '
+                    set -euo pipefail
+                    source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+                    build_valid_tags() { printf "%s\\n" latest; }
+                    case "$CONSUMER" in
+                      ghcr-complete)
+                        purge_ghcr() { printf "%s\\n" "$RESULT_COUNTER|0|0|0"; return 13; }
+                        purge_dockerhub() { printf "%s\\n" "1|0"; }
+                        ;;
+                      ghcr-incomplete)
+                        purge_ghcr() { printf "%s\\n" "$RESULT_COUNTER|0|0|0"; return 16; }
+                        purge_dockerhub() { printf "%s\\n" "1|0"; }
+                        ;;
+                      dockerhub)
+                        purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
+                        purge_dockerhub() { printf "%s\\n" "1|$RESULT_COUNTER"; }
+                        ;;
+                    esac
+                    main stale
+                '
+
+            [[ "$status" -eq 1 ]]
+            [[ "$output" == *"rejected: counter"* ]]
+            [[ "$output" != *"arithmetic expression"* ]]
+            if [[ "$consumer" == dockerhub ]]; then
+                [[ "$output" == *"Packages assessed: 1"* ]]
+            else
+                [[ "$output" == *"Packages assessed: 0"* ]]
+            fi
+        done
+    done
 }
 
 @test "outdated-tag GHCR deletion wrapper keeps client stdout off the caller record" {
