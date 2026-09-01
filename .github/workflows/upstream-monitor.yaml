@@ -1829,10 +1829,17 @@ jobs:
           # requested-container notice below (including the legacy ##[ marker).
           source helpers/gha.sh
 
-          # One vocabulary defines every status that completed evaluation. Both
-          # the coverage tally and requested-container gate consume it below.
+          # One vocabulary defines every non-error status that completed
+          # evaluation. The requested-container gate consumes it below.
           evaluated_drift_statuses() {
-            printf '%s\n' '["drift", "unchanged", "legacy", "no_external_base"]'
+            printf '%s\n' '["drift", "unchanged", "legacy", "no_external_base", "sibling_target"]'
+          }
+
+          # Only these statuses performed an external digest comparison. Keep
+          # this separate from completed evaluation: legacy and marker records
+          # are complete outcomes, but there was nothing to compare.
+          compared_drift_statuses() {
+            printf '%s\n' '["drift", "unchanged"]'
           }
 
           # The detector protocol is deliberately narrow.  Do not accept JSON merely
@@ -1863,9 +1870,17 @@ jobs:
                   (.variant_tag | type == "string" and length > 0) and
                   (.status as $status |
                     ($status | type == "string") and
-                    (["drift", "unchanged", "legacy", "error", "no_external_base"] | index($status) != null)) and
+                    (["drift", "unchanged", "legacy", "error", "no_external_base", "sibling_target"] | index($status) != null)) and
                   (if .status == "error" then
                      (has("error_reason") and (.error_reason | type == "string" and length > 0))
+                   elif .status == "sibling_target" then
+                     (has("base_image_sibling") and
+                      (.base_image_sibling | type == "object") and
+                      ([.base_image_sibling.container, .base_image_sibling.version,
+                        .base_image_sibling.platform, .base_image_sibling.textual_ref,
+                        .base_image_sibling.bake_target_id] |
+                       all(type == "string" and length > 0)) and
+                      (.base_image_sibling.flavor | type == "string"))
                    else
                      true
                    end)))
@@ -1878,9 +1893,9 @@ jobs:
           emit_drift_notice() {
             local notice_json="$1"
             local mode="${2:-normal}"
-            local drift_count unavailable_count compared_count record_count evaluated_statuses
+            local drift_count unavailable_count compared_count record_count compared_statuses
 
-            evaluated_statuses=$(evaluated_drift_statuses)
+            compared_statuses=$(compared_drift_statuses)
 
             drift_count=$(printf '%s' "$notice_json" | jq \
               '[.[] | select(.variants | any(.status == "drift" or .status == "legacy"))] | length')
@@ -1890,9 +1905,9 @@ jobs:
             unavailable_count=$(printf '%s' "$notice_json" | jq \
               '([.[] | select(has("error_reason"))] +
                 [.[] | .variants[] | select(.status == "error")]) | length')
-            compared_count=$(printf '%s' "$notice_json" | jq --argjson evaluated_statuses "$evaluated_statuses" \
+            compared_count=$(printf '%s' "$notice_json" | jq --argjson compared_statuses "$compared_statuses" \
               '[.[] | .variants[] |
-                select(.status as $status | $evaluated_statuses | index($status) != null)] | length')
+                select(.status as $status | $compared_statuses | index($status) != null)] | length')
             record_count=$(printf '%s' "$notice_json" | jq '[.[] | .variants[]] | length')
 
             if [[ "$unavailable_count" -gt 0 ]]; then

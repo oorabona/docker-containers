@@ -299,8 +299,8 @@ _resolve_base_image() {
                 log_info "Base image $_BASE_IMAGE_REF pinned: ${_BASE_DIGEST:0:19}..."
             else
                 # Fix r23: explicitly clear _BASE_DIGEST on shape-validation failure so
-                # _emit_build_lineage writes "unresolved" (treated as legacy by the
-                # detector) rather than a malformed value that poisons comparisons.
+                # _emit_build_lineage writes "unresolved" (reported as a malformed
+                # recorded digest by the detector) rather than the malformed value.
                 # Fix r28: route through _escape_gha_command to prevent %0A/%0D in the
                 # malformed value from injecting additional GHA workflow commands.
                 printf '::warning::Malformed base digest '\''%s'\'' from manifest probe; discarding\n' "$(_escape_gha_command "$_BASE_DIGEST")" >&2

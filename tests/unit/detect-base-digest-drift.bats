@@ -53,6 +53,99 @@ teardown() {
     teardown_temp_dir
 }
 
+@test "upstream monitor accepts every status emitted by the detector" {
+    local detector_statuses validator_statuses evaluated_statuses status statuses_rc
+    local -a missing_validator_statuses=() missing_evaluated_statuses=()
+
+    # Every variant record is built by passing a literal status to jq. Extract
+    # those literals from the detector, so a newly emitted status joins this
+    # contract check without a second status list to maintain.
+    detector_statuses=$(awk '
+        match($0, /--arg[[:space:]]+status[[:space:]]+"[^"]+"/) {
+            status = substr($0, RSTART, RLENGTH)
+            sub(/^.*status[[:space:]]+"/, "", status)
+            sub(/".*/, "", status)
+            print status
+        }
+    ' "$DETECTOR_SCRIPT" | sort -u)
+    [ -n "$detector_statuses" ]
+
+    # Extract both workflow lists rather than copying either here. The
+    # validator accepts every emitted status, while the evaluated list must
+    # accept every non-error emitted status for scoped consumption.
+    validator_statuses=$(awk '
+        /validate_drift_result\(\)/ {
+            in_validator = 1
+        }
+        in_validator && match($0, /\[[^]]*\][[:space:]]*\| index\(\$status\)[[:space:]]*!=[[:space:]]*null/) {
+            enum = substr($0, RSTART, RLENGTH)
+            sub(/^.*\[/, "", enum)
+            sub(/\][[:space:]]*\|.*/, "", enum)
+            gsub(/"/, "", enum)
+            gsub(/[[:space:]]+/, "", enum)
+            gsub(/,/, "\n", enum)
+            print enum
+            matches += 1
+        }
+        in_validator && /^          }$/ {
+            exit
+        }
+        END {
+            if (matches != 1) {
+                exit 1
+            }
+        }
+    ' "${PROJECT_ROOT}/.github/workflows/upstream-monitor.yaml")
+    statuses_rc=$?
+    [ "$statuses_rc" -eq 0 ]
+    [ -n "$validator_statuses" ]
+
+    evaluated_statuses=$(awk '
+        /evaluated_drift_statuses\(\)/ {
+            in_evaluated = 1
+        }
+        in_evaluated && match($0, /\[[^]]*\]/) {
+            enum = substr($0, RSTART, RLENGTH)
+            sub(/^\[/, "", enum)
+            sub(/\]$/, "", enum)
+            gsub(/"/, "", enum)
+            gsub(/[[:space:]]+/, "", enum)
+            gsub(/,/, "\n", enum)
+            print enum
+            matches += 1
+        }
+        in_evaluated && /^          }$/ {
+            exit
+        }
+        END {
+            if (matches != 1) {
+                exit 1
+            }
+        }
+    ' "${PROJECT_ROOT}/.github/workflows/upstream-monitor.yaml")
+    statuses_rc=$?
+    [ "$statuses_rc" -eq 0 ]
+    [ -n "$evaluated_statuses" ]
+
+    while IFS= read -r status; do
+        if ! grep -Fxq "$status" <<< "$validator_statuses"; then
+            missing_validator_statuses+=("$status")
+        fi
+        if [[ "$status" != "error" ]] && ! grep -Fxq "$status" <<< "$evaluated_statuses"; then
+            missing_evaluated_statuses+=("$status")
+        fi
+    done <<< "$detector_statuses"
+
+    if [ "${#missing_validator_statuses[@]}" -ne 0 ]; then
+        printf 'upstream monitor validator rejects detector status: %s\n' "${missing_validator_statuses[*]}" >&2
+        return 1
+    fi
+    if [ "${#missing_evaluated_statuses[@]}" -ne 0 ]; then
+        printf 'upstream monitor evaluated-status list rejects detector status: %s\n' "${missing_evaluated_statuses[*]}" >&2
+        return 1
+    fi
+}
+
 @test "fixtures pin the internal owner instead of inheriting fork CI" {
     [ "$GITHUB_REPOSITORY_OWNER" = "oorabona" ]
 }
@@ -525,7 +618,7 @@ EOF
     [ "$legacy_flag" = "true" ]
 }
 
-@test "legacy: unresolved base_image_digest also treated as legacy" {
+@test "v2 unresolved base_image_digest is an explicit lineage error" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
     cat > "$lineage_dir/foo-1.0-alpine.json" <<'EOF'
@@ -543,7 +636,27 @@ EOF
 
     status_val=$(printf '%s' "$result" | \
         jq -r '.[0].variants[0].status')
-    [ "$status_val" = "legacy" ]
+    [ "$status_val" = "error" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "malformed_recorded_digest" ]
+}
+
+@test "modern record missing its digest is error, not legacy" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/foo-1.0-alpine.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0-alpine",
+  "base_image_ref": "alpine:3.21"
+}
+EOF
+
+    local result
+    result=$(PROBE_CMD="/bin/false" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "error" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "missing_external_index_digest" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -592,7 +705,7 @@ EOF
     [ "$status_val" = "legacy" ]
 }
 
-@test "baseline-only: marker-bearing entries emit only legacy records" {
+@test "baseline-only: marker entries are suppressed with every other non-legacy outcome" {
     local lineage_dir="$TEST_TEMP_DIR/baseline-markers/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -600,17 +713,16 @@ EOF
 {"container":"foo","tag":"scratch","base_image_kind":"no_external_base"}
 EOF
     cat > "$lineage_dir/bar-unresolved.json" <<'EOF'
-{"container":"bar","tag":"unresolved","base_image_kind":"unresolved_external_base","base_image_ref":"${REMOTE_CR}/library/debian:trixie-slim"}
+{"container":"bar","tag":"unresolved","base_image_kind":"unresolved_external_base"}
 EOF
-    cat > "$lineage_dir/foo-current.json" <<'EOF'
-{"container":"foo","tag":"current","base_image_kind":"no_external_base","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+    cat > "$lineage_dir/foo-sibling.json" <<'EOF'
+{"container":"foo","tag":"sibling","base_image_kind":"sibling_target","base_image_sibling":{"container":"php","version":"8.5","flavor":"","platform":"linux/amd64,linux/arm64","textual_ref":"ghcr.io/oorabona/php:8.5","bake_target_id":"php_8_5"}}
 EOF
 
     local result
     result=$(bash "${DETECTOR_SCRIPT}" --baseline-only "$lineage_dir" 2>/dev/null)
 
-    [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 2 ]
-    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status != "legacy")] | length')" -eq 0 ]
+    [ "$result" = "[]" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -830,15 +942,15 @@ EOF
 
     [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 1 ]
     [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "error" ]
-    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "unresolved_placeholder_base_image_ref" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "invalid_external_base_image_ref" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].base_image_ref')" = '${REMOTE_CR}/library/debian:trixie-slim' ]
 }
 
 # ---------------------------------------------------------------------------
-# Precedence guard: placeholder ref + missing digest must emit error (not
-# classified as legacy). Before Fix 3 the legacy check ran first and would
-# emit a bogus drift PR for pre-#530 lineage files; silent skipping later hid it.
+# A placeholder v1 record stays invalid during ordinary detection rather than
+# being treated as actionable legacy drift.
 # ---------------------------------------------------------------------------
-@test "unresolved-ref: placeholder ref with missing digest emits error, not legacy" {
+@test "unresolved-ref: placeholder ref with missing digest is invalid, not legacy" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
     # Simulates a pre-#530 lineage entry: placeholder ref AND no recorded digest
@@ -854,10 +966,83 @@ EOF
     result=$(PROBE_CMD="/bin/false" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
 
-    # Placeholder takes precedence over legacy classification and remains visible.
+    # The detector passes the helper's reason through unchanged.
     [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 1 ]
     [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "error" ]
-    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "unresolved_placeholder_base_image_ref" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "invalid_external_base_image_ref" ]
+}
+
+@test "baseline-only repairs a placeholder-bearing v1 record" {
+    local lineage_dir="$TEST_TEMP_DIR/baseline-v1-placeholder/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/foo-placeholder.json" <<'EOF'
+{
+  "lineage_schema_version": 1,
+  "container": "foo",
+  "tag": "placeholder",
+  "base_image_ref": "${REMOTE_CR}/library/debian:trixie-slim"
+}
+EOF
+
+    local result rc=0
+    result=$(PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" --baseline-only "$lineage_dir" 2>/dev/null) || rc=$?
+
+    [ "$rc" -eq 0 ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "legacy" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].base_image_ref')" = '${REMOTE_CR}/library/debian:trixie-slim' ]
+}
+
+@test "baseline-only reports incomplete coverage for an identity-invalid entry" {
+    local lineage_dir="$TEST_TEMP_DIR/baseline-invalid-identity/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/foo-legacy.json" <<'EOF'
+{"lineage_schema_version":1,"container":"foo","tag":"legacy","base_image_ref":"alpine:3.21"}
+EOF
+    cat > "$lineage_dir/invalid-container.json" <<'EOF'
+{"lineage_schema_version":1,"container":"notacontainer","tag":"invalid","base_image_ref":"alpine:3.21"}
+EOF
+
+    local result rc=0 stderr_log="$TEST_TEMP_DIR/baseline-invalid-identity.stderr"
+    result=$(PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" --baseline-only "$lineage_dir" 2>"$stderr_log") || rc=$?
+
+    [ "$rc" -eq 1 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 1 ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].variant_tag')" = "legacy" ]
+    grep -q 'Skipping unusable baseline entry' "$stderr_log"
+    ! grep -q 'Skipping non-legacy baseline entry' "$stderr_log"
+}
+
+@test "baseline-only repairs the historical v1 unresolved digest sentinel" {
+    local lineage_dir="$TEST_TEMP_DIR/baseline-v1-unresolved/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/foo-unresolved.json" <<'EOF'
+{"lineage_schema_version":1,"container":"foo","tag":"unresolved","base_image_ref":"alpine:3.21","base_image_digest":"unresolved"}
+EOF
+
+    local result rc=0
+    result=$(PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" --baseline-only "$lineage_dir" 2>/dev/null) || rc=$?
+
+    [ "$rc" -eq 0 ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "legacy" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].legacy')" = "true" ]
+}
+
+@test "baseline-only does not repair the unresolved sentinel from schema v2" {
+    local lineage_dir="$TEST_TEMP_DIR/baseline-v2-unresolved/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/foo-unresolved.json" <<'EOF'
+{"lineage_schema_version":2,"container":"foo","tag":"unresolved","base_image_ref":"alpine:3.21","base_image_digest":"unresolved"}
+EOF
+
+    local result rc=0
+    result=$(PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" --baseline-only "$lineage_dir" 2>/dev/null) || rc=$?
+
+    [ "$rc" -eq 0 ]
+    [ "$result" = "[]" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1093,69 +1278,60 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Fix r5-2: GHA command injection prevention (::error:: escaping)
-# Regression guard: a newline-bearing base_image_ref in a probe-error scenario
-# must NOT inject a second GHA workflow command.  The escaped form (%0A) must
-# appear in the ::error:: line instead of a raw newline.
+# A newline-bearing external reference is rejected before registry probing.
 # ---------------------------------------------------------------------------
-@test "newline in base_image_ref is escaped in ::error:: output" {
-    # Lineage file with a base_image_ref containing an embedded newline (simulates
-    # a crafted/corrupted lineage entry).  When the registry probe fails, the error
-    # line must escape the newline as %0A to prevent GHA command injection.
+@test "newline in base_image_ref is rejected before GHA output" {
+    # Lineage file with a base_image_ref containing an embedded newline.
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
 
-    # Use a JSON-escaped newline (\n) in the base_image_ref value.  jq decodes
-    # \n → literal newline when reading the field, giving _escape_gha_command
-    # a real newline to escape as %0A.
+    # jq decodes the JSON-escaped newline into the malformed field value.
     printf '{"lineage_schema_version":2,"container":"foo","tag":"1.0","base_image_ref":"alpine:3.21\\nmalicious::add-mask::secret","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
         > "$lineage_dir/foo-1.0.json"
 
     local stderr_log="$TEST_TEMP_DIR/r5-fix2-stderr.log"
     PROBE_CMD="/bin/false" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log" >/dev/null || true
 
-    # The raw newline must NOT appear in stderr (it would split the ::error:: line)
-    # Instead %0A must be present
-    if grep -qP '\n' "$stderr_log" 2>/dev/null; then
-        # grep -P may not be available everywhere; use a portable check
-        true
-    fi
-    # Primary assertion: %0A must appear in any ::error:: line containing the ref
-    grep -q '%0A' "$stderr_log"
+    # The shared decoder refuses the malformed ref before a GHA annotation can
+    # contain it, so no replay is necessary.
+    ! grep -q '%0A' "$stderr_log"
     # Secondary: the injected GHA command must NOT appear as a standalone command line
     ! grep -q '^::add-mask::' "$stderr_log"
 }
 
 # ---------------------------------------------------------------------------
-# Fix r5-4: --baseline-only precedence (legacy wins over placeholder-skip)
-# Regression guard: a pre-#530 lineage entry with a placeholder base_image_ref
-# AND no recorded digest must emit status=legacy in --baseline-only mode (so the
-# baseline migration picks it up).  In normal mode it must instead emit an error
-# record: it cannot be evaluated and must not be mis-classified as legacy.
+# --baseline-only returns every valid legacy record even if another input cannot
+# be read, then fails the run so the incomplete coverage is not reported clean.
 # ---------------------------------------------------------------------------
-@test "baseline-only mode emits legacy for placeholder-ref + missing-digest entry" {
+@test "baseline-only returns valid legacy records and fails on unreadable input" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
-    # Pre-#530 entry: placeholder ref, no digest field at all
-    cat > "$lineage_dir/foo-1.0.json" <<'EOF'
+
+    cat > "$lineage_dir/foo-placeholder.json" <<'EOF'
 {
   "lineage_schema_version": 1,
   "container": "foo",
-  "tag": "1.0",
+  "tag": "placeholder",
   "base_image_ref": "${REMOTE_CR}/library/debian:trixie-slim"
 }
 EOF
+    printf '%s\n' '{"container":"foo","tag":"unreadable","base_image_ref":"alpine:3.21"}' \
+        > "$lineage_dir/foo-unreadable.json"
+    chmod 000 "$lineage_dir/foo-unreadable.json"
+    cat > "$lineage_dir/foo-legacy.json" <<'EOF'
+{"container":"foo","tag":"legacy","base_image_ref":"alpine:3.21"}
+EOF
+    cat > "$lineage_dir/bar-legacy.json" <<'EOF'
+{"lineage_schema_version":1,"container":"bar","tag":"legacy","base_image_ref":"debian:trixie-slim"}
+EOF
 
-    # --baseline-only: must emit a legacy record (not skip)
+    local rc=0
     result=$(PROBE_CMD="/bin/false" \
-        bash "${DETECTOR_SCRIPT}" --baseline-only "$lineage_dir" 2>/dev/null)
-
-    printf '%s' "$result" | jq '.' >/dev/null  # valid JSON
-    length=$(printf '%s' "$result" | jq 'length')
-    [ "$length" -eq 1 ]
-
-    status_val=$(printf '%s' "$result" | jq -r '.[0].variants[0].status')
-    [ "$status_val" = "legacy" ]
+        bash "${DETECTOR_SCRIPT}" --baseline-only "$lineage_dir" 2>/dev/null) || rc=$?
+    [ "$rc" -eq 1 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 3 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status != "legacy")] | length')" -eq 0 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | .variant_tag] | sort' -c)" = '["legacy","legacy","placeholder"]' ]
 }
 
 @test "normal mode emits placeholder error while concrete ref is evaluated" {
@@ -1190,11 +1366,11 @@ EOF
 
     [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 2 ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "placeholder") | .status')" = "error" ]
-    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "placeholder") | .error_reason')" = "unresolved_placeholder_base_image_ref" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "placeholder") | .error_reason')" = "invalid_external_base_image_ref" ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "concrete") | .status')" = "unchanged" ]
 }
 
-@test "baseline-only keeps nonlegacy placeholder suppression unchanged" {
+@test "baseline-only suppresses a nonlegacy placeholder" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
     cat > "$lineage_dir/foo-placeholder.json" <<'EOF'
@@ -1207,11 +1383,10 @@ EOF
 }
 EOF
 
-    # The baseline-only placeholder branch deliberately remains a skip for a
-    # non-legacy entry; it is a one-off migration mode, not normal detection.
+    local rc=0
     result=$(PROBE_CMD="/bin/false" \
-        bash "${DETECTOR_SCRIPT}" --baseline-only "$lineage_dir" 2>/dev/null)
-
+        bash "${DETECTOR_SCRIPT}" --baseline-only "$lineage_dir" 2>/dev/null) || rc=$?
+    [ "$rc" -eq 0 ]
     [ "$result" = "[]" ]
 }
 
@@ -1387,18 +1562,13 @@ STUB_EOF
 # field unescaped via `echo "::warning::probe-error: ${line}"`, allowing the
 # GHA runner to decode %0A back to a newline and inject a second command.
 #
-# This test verifies that the script itself does NOT double-encode: it already
-# escapes the probe-error line via _escape_gha_command before writing to
-# stderr.  The workflow no longer re-emits from JSON, so the injection path
-# is gone — this test guards that the script-level emission (the surviving
-# path) is correctly escaped.
+# The malformed ref is rejected before a diagnostic includes it. This guard
+# only proves that no standalone workflow command reaches stderr.
 # ---------------------------------------------------------------------------
-@test "percent-encoded newline in base_image_ref is escaped in script stderr output" {
+@test "percent-encoded newline in base_image_ref produces no standalone GHA command" {
     # A crafted base_image_ref containing %0A (percent-encoded newline).
-    # _sanitize_for_json strips literal \n/\r but NOT %0A, so %0A survives
-    # into error_reason.  The script must escape the ::error:: line via
-    # _escape_gha_command so the %0A becomes %250A (double-encoded), preventing
-    # the GHA runner from decoding it back into a newline command injection.
+    # The invalid base reference does not reach registry probing or a
+    # lineage-derived diagnostic. This test does not assert an escaping format.
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -1413,8 +1583,9 @@ STUB_EOF
         return 1
     fi
 
-    # The ::error:: line must be present (probe failure was emitted)
-    grep -q '::error::' "$stderr_log"
+    # Invalid records do not reach the probe. The malformed ref stays out of
+    # stderr entirely, so it cannot be replayed as a workflow command.
+    ! grep -q '^::add-mask::' "$stderr_log"
 }
 
 # ---------------------------------------------------------------------------
@@ -1649,6 +1820,7 @@ EOF
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/base-image-utils.sh" "$fake_root/helpers/"
 
     cat > "$fake_root/.build-lineage/foo-1.0.json" <<'EOF'
 {
@@ -1691,6 +1863,7 @@ STUB
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/base-image-utils.sh" "$fake_root/helpers/"
 
     cat > "$fake_root/.build-lineage/foo-1.0.json" <<'EOF'
 {
@@ -2727,7 +2900,7 @@ STUB
     result_len=$(printf '%s' "$result" | jq 'length')
     [ "$result_len" -eq 1 ]
     err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
-    [ "$err_reason" = "untrusted_ref" ]
+    [ "$err_reason" = "invalid_external_base_image_ref" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -2870,7 +3043,7 @@ STUB
     [ "$err_reason" = "untrusted_ref" ]
 }
 
-@test "localhost:5000/foo:1.0 is rejected by _validate_image_ref (host:port localhost)" {
+@test "localhost:5000/foo:1.0 is rejected without a probe" {
     local lineage_dir="$TEST_TEMP_DIR/r21c2/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -2901,12 +3074,12 @@ STUB
     run grep -c "PROBE CALLED on localhost:PORT ref" "$TEST_TEMP_DIR/r21c2-stderr.txt"
     [ "$output" = "0" ]
 
-    # r29 Finding 3: rejected ref emits error record (not empty array)
+    # The helper's invalid-record reason remains the protocol result.
     local result_len err_reason
     result_len=$(printf '%s' "$result" | jq 'length')
     [ "$result_len" -eq 1 ]
     err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
-    [ "$err_reason" = "untrusted_ref" ]
+    [ "$err_reason" = "invalid_external_base_image_ref" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -2937,13 +3110,11 @@ STUB
     printf '%s\n' '#!/usr/bin/env bash' 'echo "PROBE WAS CALLED" >&2' 'exit 1' > "$probe_stub"
     chmod +x "$probe_stub"
 
-    local result stderr_out rc=0
+    local result rc=0
     result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
         _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
         PROBE_CMD="$probe_stub" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$TEST_TEMP_DIR/r23a-stderr.txt") || rc=$?
-
-    stderr_out=$(cat "$TEST_TEMP_DIR/r23a-stderr.txt")
 
     # Must exit 0 — corrupt lineage is non-fatal
     [ "$rc" -eq 0 ]
@@ -2951,9 +3122,6 @@ STUB
     # Probe must NOT have been called
     run grep -c "PROBE WAS CALLED" "$TEST_TEMP_DIR/r23a-stderr.txt"
     [ "$output" = "0" ]
-
-    # Must emit a ::warning:: about the malformed digest
-    echo "$stderr_out" | grep -q "Malformed recorded_digest"
 
     # Result must have one container record
     local result_len
@@ -2990,20 +3158,16 @@ STUB
     printf '%s\n' '#!/usr/bin/env bash' 'echo "PROBE WAS CALLED" >&2' 'exit 1' > "$probe_stub"
     chmod +x "$probe_stub"
 
-    local result stderr_out rc=0
+    local result rc=0
     result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
         _ACTIVE_TAGS_OVERRIDE_myimage="2.0" \
         PROBE_CMD="$probe_stub" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$TEST_TEMP_DIR/r23b-stderr.txt") || rc=$?
 
-    stderr_out=$(cat "$TEST_TEMP_DIR/r23b-stderr.txt")
-
     [ "$rc" -eq 0 ]
 
     run grep -c "PROBE WAS CALLED" "$TEST_TEMP_DIR/r23b-stderr.txt"
     [ "$output" = "0" ]
-
-    echo "$stderr_out" | grep -q "Malformed recorded_digest"
 
     local status
     status=$(printf '%s' "$result" | jq -r '.[0].variants[0].status')
@@ -3263,12 +3427,10 @@ EOF
     [ "$(cat "$replayed_stderr")" = "detector stopped mid-diagnostic" ]
 }
 
-@test "tag with newline cntrl char fails with an escaped ::error:: annotation" {
+@test "tag with newline cntrl char fails without a standalone GHA command" {
     # Build a lineage file with a tag containing an embedded newline (cntrl char).
-    # The fatal rejection path at the cntrl-char check must emit the value through
-    # _escape_gha_command so the newline becomes %0A (literal percent-zero-A),
-    # NOT a real newline that would terminate the ::error:: command and inject
-    # the next line as a workflow command.
+    # The fatal rejection must not produce the payload as a standalone workflow
+    # command. This guard does not claim a particular escaping representation.
     local lineage_dir="$TEST_TEMP_DIR/r25a2/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -3294,8 +3456,14 @@ pathlib.Path('${lineage_dir}/foo-1.0.json').write_text(json.dumps(d))
     # The emitted error must NOT contain the injection payload as a separate
     # workflow command.  If the newline was not escaped, ::add-mask:: would
     # appear on its own line as a parseable GHA command.
-    # We assert: no line in the output starts with ::add-mask::
-    ! printf '%s' "$stderr_output" | grep -qE '^::add-mask::'
+    # The injected command must not be a standalone annotation. Use an explicit
+    # conditional: a negated non-final command is exempt from errexit in Bats.
+    if printf '%s' "$stderr_output" | grep -qE '^::add-mask::'; then
+        return 1
+    fi
+    # The newline is escaped in the error annotation, keeping the payload on
+    # the ::error:: line rather than starting a second workflow command.
+    printf '%s' "$stderr_output" | grep -qF '1.0%0A::add-mask::SECRET'
     printf '%s' "$stderr_output" | grep -qF '::error::'
 }
 
@@ -3328,7 +3496,7 @@ _r27b_lineage_with_ref() {
         '}' > "$lineage_dir/foo-1.0.json"
 }
 
-@test "_validate_image_ref rejects '-h' (short option injection)" {
+@test "dash-prefix '-h' is rejected without a probe" {
     local lineage_dir="$TEST_TEMP_DIR/r27b1/.build-lineage"
     _r27b_lineage_with_ref "$lineage_dir" "-h"
 
@@ -3347,15 +3515,15 @@ _r27b_lineage_with_ref() {
     # Probe must NOT have been called (ref rejected before registry call)
     run grep -c "PROBE CALLED" "$TEST_TEMP_DIR/r27b1-stderr.txt"
     [ "$output" = "0" ]
-    # r29 Finding 3: rejected ref emits error record (not empty array)
+    # The helper's invalid-record reason remains the protocol result.
     local result_len err_reason
     result_len=$(printf '%s' "$result" | jq 'length')
     [ "$result_len" -eq 1 ]
     err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
-    [ "$err_reason" = "untrusted_ref" ]
+    [ "$err_reason" = "invalid_external_base_image_ref" ]
 }
 
-@test "_validate_image_ref rejects '--config' (long option injection)" {
+@test "dash-prefix '--config' is rejected without a probe" {
     local lineage_dir="$TEST_TEMP_DIR/r27b2/.build-lineage"
     _r27b_lineage_with_ref "$lineage_dir" "--config"
 
@@ -3373,15 +3541,15 @@ _r27b_lineage_with_ref() {
     [ "$rc" -eq 0 ]
     run grep -c "PROBE CALLED" "$TEST_TEMP_DIR/r27b2-stderr.txt"
     [ "$output" = "0" ]
-    # r29 Finding 3: rejected ref emits error record (not empty array)
+    # The helper's invalid-record reason remains the protocol result.
     local result_len err_reason
     result_len=$(printf '%s' "$result" | jq 'length')
     [ "$result_len" -eq 1 ]
     err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
-    [ "$err_reason" = "untrusted_ref" ]
+    [ "$err_reason" = "invalid_external_base_image_ref" ]
 }
 
-@test "_validate_image_ref rejects '-foo:1.0' (dash-prefix with tag)" {
+@test "dash-prefix '-foo:1.0' is rejected without a probe" {
     local lineage_dir="$TEST_TEMP_DIR/r27b3/.build-lineage"
     _r27b_lineage_with_ref "$lineage_dir" "-foo:1.0"
 
@@ -3399,12 +3567,12 @@ _r27b_lineage_with_ref() {
     [ "$rc" -eq 0 ]
     run grep -c "PROBE CALLED" "$TEST_TEMP_DIR/r27b3-stderr.txt"
     [ "$output" = "0" ]
-    # r29 Finding 3: rejected ref emits error record (not empty array)
+    # The helper's invalid-record reason remains the protocol result.
     local result_len err_reason
     result_len=$(printf '%s' "$result" | jq 'length')
     [ "$result_len" -eq 1 ]
     err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
-    [ "$err_reason" = "untrusted_ref" ]
+    [ "$err_reason" = "invalid_external_base_image_ref" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -3582,7 +3750,7 @@ EOF
     [ "$rc" -eq 0 ]
     [ "$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')" -eq 3 ]
     [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status == "error" and .error_reason == "missing_base_image_ref")] | length')" -eq 1 ]
-    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status == "error" and .error_reason == "unknown_base_image_ref")] | length')" -eq 1 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status == "error" and .error_reason == "invalid_external_base_image_ref")] | length')" -eq 1 ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "empty") | .base_image_ref')" = "" ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "unknown") | .base_image_ref')" = "unknown" ]
     [ "$(printf '%s' "$result" | jq -r '.[] | .variants[] | select(.variant_tag == "valid") | .status')" = "unchanged" ]
@@ -3592,19 +3760,22 @@ EOF
 # workflow. This covers the coverage gate, scoping, notices, and its success
 # exits without requiring a live workflow dispatch.
 _load_drift_consumer() {
-    local workflow_run statuses_helper validator_helper notice_helper consumer_helper
+    local workflow_run statuses_helper compared_statuses_helper validator_helper notice_helper consumer_helper
     workflow_run=$(yq -r '.jobs."detect-digest-drift".steps[] | select(.id == "detect") | .run' \
         "$PROJECT_ROOT/.github/workflows/upstream-monitor.yaml")
     statuses_helper=$(sed -n '/^evaluated_drift_statuses() {/,/^}/p' <<<"$workflow_run")
+    compared_statuses_helper=$(sed -n '/^compared_drift_statuses() {/,/^}/p' <<<"$workflow_run")
     validator_helper=$(sed -n '/^validate_drift_result() {/,/^}/p' <<<"$workflow_run")
     notice_helper=$(sed -n '/^emit_drift_notice() {/,/^}/p' <<<"$workflow_run")
     consumer_helper=$(sed -n '/^consume_drift_result() {/,/^}/p' <<<"$workflow_run")
     [ -n "$statuses_helper" ] || return 1
+    [ -n "$compared_statuses_helper" ] || return 1
     [ -n "$validator_helper" ] || return 1
     [ -n "$notice_helper" ] || return 1
     [ -n "$consumer_helper" ] || return 1
     source "$PROJECT_ROOT/helpers/gha.sh"
     eval "$statuses_helper"
+    eval "$compared_statuses_helper"
     eval "$validator_helper"
     eval "$notice_helper"
     eval "$consumer_helper"
@@ -3638,7 +3809,7 @@ EOF
 @test "well-formed lineage still exits 0" {
     local lineage_dir="$TEST_TEMP_DIR/well-formed-tag/.build-lineage"
     mkdir -p "$lineage_dir"
-    printf '%s\n' '{"container":"myimage","tag":"stable","base_image_ref":"alpine:3.21","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+    printf '%s\n' '{"lineage_schema_version":2,"container":"myimage","tag":"stable","base_image_ref":"alpine:3.21","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
         > "$lineage_dir/myimage-stable.json"
 
     local probe_stub rc=0 result
@@ -3664,7 +3835,7 @@ EOF
     local probe_stub rc=0 result
     mkdir -p "$lineage_dir"
     printf '[]\n' > "$lineage_dir/.bake-attest-entries.json"
-    printf '%s\n' '{"container":"myimage","tag":"stable","base_image_ref":"alpine:3.21","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+    printf '%s\n' '{"lineage_schema_version":2,"container":"myimage","tag":"stable","base_image_ref":"alpine:3.21","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
         > "$lineage_dir/myimage-stable.json"
     probe_stub=$(_make_digest_probe_stub "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 
@@ -3691,7 +3862,7 @@ EOF
     local same_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     mkdir -p "$lineage_dir"
     jq -cn --arg digest "$same_digest" \
-        '{container: "control", tag: "latest", base_image_ref: "alpine:3.21", base_image_digest: $digest}' \
+        '{lineage_schema_version: 2, container: "control", tag: "latest", base_image_ref: "alpine:3.21", base_image_digest: $digest}' \
         > "$lineage_dir/control.json"
     jq -cn '{container: "sslh", tag: "latest", base_image_kind: "no_external_base"}' \
         > "$lineage_dir/sslh.json"
@@ -3717,6 +3888,75 @@ EOF
     [ "$(get_output drift_matrix)" = "[]" ]
 }
 
+@test "sibling_target is a completed non-comparison and never probes a registry" {
+    local lineage_dir="$TEST_TEMP_DIR/base-image-kind-sibling-target"
+    local sentinel="$TEST_TEMP_DIR/sibling-probe-called"
+    mkdir -p "$lineage_dir"
+    jq -cn '
+      {container:"foo", tag:"sibling", base_image_kind:"sibling_target",
+       base_image_sibling:{container:"bar", version:"1.0", flavor:"",
+                           platform:"linux/amd64", textual_ref:"ghcr.io/oorabona/bar:1.0",
+                           bake_target_id:"bar_1_0"}}
+    ' > "$lineage_dir/foo.json"
+    local probe_stub="$TEST_TEMP_DIR/probe-sibling-target"
+    printf '#!/usr/bin/env bash\ntouch "%s"\nexit 99\n' "$sentinel" > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local result
+    result=$(PROBE_CMD="$probe_stub" bash "$DETECTOR_SCRIPT" "$lineage_dir")
+
+    [ ! -e "$sentinel" ]
+    [ "$(jq -r '.[0].variants[0].status' <<< "$result")" = "sibling_target" ]
+    [ "$(jq -r '.[0].variants[0].base_image_sibling.bake_target_id' <<< "$result")" = "bar_1_0" ]
+}
+
+@test "unversioned external lineage with a recorded digest is compared" {
+    local lineage_dir="$TEST_TEMP_DIR/unversioned-lineage"
+    local digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    mkdir -p "$lineage_dir"
+    jq -cn --arg digest "$digest" \
+        '{container:"foo", tag:"unversioned", base_image_ref:"alpine:3.21", base_image_digest:$digest}' \
+        > "$lineage_dir/foo.json"
+
+    local probe_stub result
+    probe_stub=$(_make_digest_probe_stub "$digest")
+    result=$(PROBE_CMD="$probe_stub" bash "$DETECTOR_SCRIPT" "$lineage_dir")
+
+    [ "$(jq -r '.[0].variants[0].status' <<< "$result")" = "unchanged" ]
+    [ "$(jq -r '.[0].variants[0].recorded_digest' <<< "$result")" = "$digest" ]
+    [ "$(jq -r '.[0].variants[0].current_digest' <<< "$result")" = "$digest" ]
+}
+
+@test "invalid lineage keeps the helper reason and fails the coverage gate" {
+    local lineage_dir="$TEST_TEMP_DIR/invalid-lineage"
+    mkdir -p "$lineage_dir"
+    jq -cn '{container:"foo", tag:"invalid", base_image_kind:"future_marker"}' > "$lineage_dir/foo.json"
+
+    local result rc=0 notice
+    result=$(bash "$DETECTOR_SCRIPT" "$lineage_dir")
+    [ "$(jq -r '.[0].variants[0].status' <<< "$result")" = "error" ]
+    [ "$(jq -r '.[0].variants[0].error_reason' <<< "$result")" = "unrecognised_base_image_kind" ]
+
+    _load_drift_consumer
+    notice=$(emit_drift_notice "$result") || rc=$?
+    [ "$rc" -eq 1 ]
+    [[ "$notice" == *"coverage incomplete"* ]]
+}
+
+@test "marker carrying an external field is invalid instead of suppressing comparison" {
+    local lineage_dir="$TEST_TEMP_DIR/marker-external-contradiction"
+    mkdir -p "$lineage_dir"
+    jq -cn --arg digest "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{container:"foo", tag:"contradiction", base_image_kind:"no_external_base", base_image_digest:$digest}' \
+        > "$lineage_dir/foo.json"
+
+    local result
+    result=$(PROBE_CMD="/bin/false" bash "$DETECTOR_SCRIPT" "$lineage_dir")
+
+    [ "$(jq -r '.[0].variants[0].status' <<< "$result")" = "error" ]
+    [ "$(jq -r '.[0].variants[0].error_reason' <<< "$result")" = "marker_carries_external_base_fields" ]
+}
+
 @test "a no_external_base-only result is evaluated unscoped and when scoped" {
     _load_drift_consumer
 
@@ -3739,6 +3979,32 @@ EOF
     [ "$(get_output drift_containers)" = "[]" ]
 }
 
+@test "a sibling_target-only result is evaluated through the scoped consumer path" {
+    _load_drift_consumer
+
+    local drift_json output rc=0
+    drift_json='[{"container":"php","internal_deps":[],"variants":[{"variant_tag":"latest","status":"sibling_target","base_image_sibling":{"container":"base","version":"1.0","flavor":"","platform":"linux/amd64","textual_ref":"ghcr.io/oorabona/base:1.0","bake_target_id":"base_1_0"}}]}]'
+    validate_drift_result "$drift_json"
+    GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
+    : > "$GITHUB_OUTPUT"
+
+    output=$(consume_drift_result "$drift_json" 'php') || rc=$?
+
+    [ "$rc" -eq 0 ]
+    [ "$output" = "::notice::No base image digest drift detected" ]
+    [ "$(get_output drift_containers)" = "[]" ]
+}
+
+@test "workflow rejects sibling_target without its supplier payload" {
+    _load_drift_consumer
+
+    local payloadless_sibling
+    payloadless_sibling='[{"container":"php","internal_deps":[],"variants":[{"variant_tag":"latest","status":"sibling_target"}]}]'
+
+    run validate_drift_result "$payloadless_sibling"
+    [ "$status" -ne 0 ]
+}
+
 @test "base_image_kind unresolved_external_base fails coverage with its own reason" {
     local lineage_dir="$TEST_TEMP_DIR/base-image-kind-unresolved"
     local same_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -3746,7 +4012,7 @@ EOF
     jq -cn '{container: "unresolved", tag: "latest", base_image_kind: "unresolved_external_base"}' \
         > "$lineage_dir/unresolved.json"
     jq -cn --arg digest "$same_digest" \
-        '{container: "control", tag: "latest", base_image_ref: "alpine:3.21", base_image_digest: $digest}' \
+        '{lineage_schema_version: 2, container: "control", tag: "latest", base_image_ref: "alpine:3.21", base_image_digest: $digest}' \
         > "$lineage_dir/control.json"
     local probe_stub="$TEST_TEMP_DIR/probe-base-image-kind-unresolved"
     printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'"'"'\n' > "$probe_stub"
@@ -3815,6 +4081,23 @@ EOF
     clean_notice=$(emit_drift_notice "$clean_json" 0) || clean_rc=$?
     [ "$clean_rc" -eq 0 ]
     [ "$clean_notice" = "::notice::No base image digest drift detected" ]
+}
+
+@test "coverage counts only records that performed an external digest comparison" {
+    _load_drift_consumer
+
+    local mixed_json notice rc=0
+    mixed_json='[
+      {"container":"compared","variants":[{"variant_tag":"latest","status":"unchanged"}]},
+      {"container":"legacy","variants":[{"variant_tag":"latest","status":"legacy"}]},
+      {"container":"scratch","variants":[{"variant_tag":"latest","status":"no_external_base"}]},
+      {"container":"sibling","variants":[{"variant_tag":"latest","status":"sibling_target"}]},
+      {"container":"unavailable","variants":[{"variant_tag":"latest","status":"error","error_reason":"registry_probe_failed"}]}
+    ]'
+    notice=$(emit_drift_notice "$mixed_json") || rc=$?
+
+    [ "$rc" -eq 1 ]
+    [ "$notice" = "::notice::Base image digest drift coverage incomplete: 1 comparison record(s) evaluated; 1 coverage record(s) could not be evaluated" ]
 }
 
 @test "scoped clean container fails when another container has incomplete coverage" {
@@ -4106,6 +4389,7 @@ STUBEOF
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/base-image-utils.sh" "$fake_root/helpers/"
 
     # A container with an internal-looking ref so _depgraph_get_deps must be called
     cat > "$fake_root/.build-lineage/myapp-1.0.json" <<'EOF'
@@ -4185,6 +4469,7 @@ EOF
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/base-image-utils.sh" "$fake_root/helpers/"
 
     # Patch dependency-graph.sh: _depgraph_get_deps fails for "failcontainer",
     # succeeds (returns empty deps = leaf) for any other container.
@@ -4525,6 +4810,7 @@ php" \
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$TEST_TEMP_DIR/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$TEST_TEMP_DIR/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$TEST_TEMP_DIR/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/base-image-utils.sh" "$TEST_TEMP_DIR/helpers/"
 
     jq -n '{
       lineage_schema_version: 2,
