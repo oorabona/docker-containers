@@ -17,7 +17,7 @@ on:
         type: boolean
         default: false
       container_filter:
-        description: 'Only process one exact package name (optional); spaces, globs, and multiple names are rejected'
+        description: 'Narrow the age and obsolete-tag pruners to one exact package name (optional); extension cleanup remains global and is controlled by execute_ext_cleanup alone; spaces, globs, and multiple names are rejected'
         required: false
         type: string
         default: ''
