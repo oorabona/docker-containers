@@ -142,7 +142,7 @@ assert_prepared_decode_preserves_delete_totals() {
         GH_TOKEN="test-token" \
         OWNER="test-owner" \
         DRY_RUN="true" \
-        bash "$PROJECT_ROOT/scripts/cleanup-old-versions.sh" broken healthy
+        bash -c 'source "$1"; main broken healthy' _ "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *"Version listing was not a JSON array; skipping broken"* ]]
@@ -431,7 +431,7 @@ EOF
         GH_TOKEN="test-token" \
         OWNER="test-owner" \
         DRY_RUN="true" \
-        bash "$PROJECT_ROOT/scripts/cleanup-old-versions.sh" broken healthy
+        bash -c 'source "$1"; main broken healthy' _ "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *"validation failed: versions[0].metadata.container.tags is invalid"* ]]
@@ -559,7 +559,7 @@ teardown() {
         GH_TOKEN="test-token" \
         OWNER="test-owner" \
         DRY_RUN="true" \
-        bash "$PROJECT_ROOT/scripts/cleanup-old-versions.sh" broken healthy
+        bash -c 'source "$1"; main broken healthy' _ "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *"gh: API rate limit exceeded"* ]]
