@@ -818,6 +818,63 @@ EOF
     [[ "$output" == *"count mismatch (consumed 1 of expected 2; terminal 1)"* ]]
 }
 
+@test "a framed work list rejects a leading-zero count mismatch without arithmetic" {
+    local frame_file="$STUB_DIR/frame"
+
+    printf '%s\n' 'work-list|expected|08' one two three four five six seven 'work-list|complete|08' > "$frame_file"
+    run env PROJECT_ROOT="$PROJECT_ROOT" FRAME_FILE="$frame_file" bash -c '
+        source "$PROJECT_ROOT/helpers/version-record-validation.sh"
+        records=()
+        load_framed_work_list test "$FRAME_FILE" records
+    '
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"count mismatch (consumed 7 of expected 08; terminal 08)"* ]]
+    [[ "$output" != *"arithmetic expression"* ]]
+}
+
+@test "a framed work list rejects an overflow-sized count mismatch without arithmetic" {
+    local frame_file="$STUB_DIR/frame"
+
+    printf '%s\n' 'work-list|expected|18446744073709551616' 'work-list|complete|18446744073709551616' > "$frame_file"
+    run env PROJECT_ROOT="$PROJECT_ROOT" FRAME_FILE="$frame_file" bash -c '
+        source "$PROJECT_ROOT/helpers/version-record-validation.sh"
+        records=()
+        load_framed_work_list test "$FRAME_FILE" records
+    '
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"count mismatch (consumed 0 of expected 18446744073709551616; terminal 18446744073709551616)"* ]]
+    [[ "$output" != *"arithmetic expression"* ]]
+}
+
+@test "a malformed later age replay record prevents every DELETE and preserves its assessment record" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$GH_LOG" GH_TOKEN="test-token" OWNER="test-owner" \
+        DRY_RUN="false" KEEP_LATEST_COUNT="0" KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            eval "$(declare -f load_framed_work_list | sed "1s/^load_framed_work_list /original_load_framed_work_list /")"
+            load_framed_work_list() {
+                if [[ "$1" == "deletion replay" ]]; then
+                    printf "work-list|expected|2\\n1|101|obsolete-a\\nmalformed\\nwork-list|complete|2\\n" > "$2"
+                fi
+                original_load_framed_work_list "$@"
+            }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"obsolete-a\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"obsolete-b\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ ! -s "$GH_LOG" ]]
+    [[ "$output" == *"Failed to read prepared deletion record; skipping stale"* ]]
+    [[ "$output" == *"Summary: kept=0, decided=2, deleted=0, delete_failures=0"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+}
+
 @test "age cleanup keeps a DELETE client response off its result record" {
     run env \
         PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="test-token" OWNER="test-owner" DRY_RUN="false" \

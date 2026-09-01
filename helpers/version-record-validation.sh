@@ -3,6 +3,24 @@
 # destructive registry pruners.  Callers deliberately choose one of the named
 # contracts below; they cannot supply their own field list.
 
+# Decimal values received from a work frame or configuration are never Bash
+# arithmetic operands.  Keep their syntax and comparisons here so callers use
+# the same overflow-safe rule everywhere.
+is_canonical_decimal() {
+  [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]
+}
+
+decimal_string_greater_than() {
+  local left="$1" right="$2"
+
+  [[ ${#left} -gt ${#right} ]] \
+    || { [[ ${#left} -eq ${#right} ]] && [[ "$left" > "$right" ]]; }
+}
+
+decimal_strings_equal() {
+  [[ "$1" == "$2" ]]
+}
+
 # Validate the common destructive-cleanup configuration.
 validate_cleanup_config() {
   local variable value
@@ -18,7 +36,7 @@ validate_cleanup_config() {
 
   for variable in KEEP_LATEST_COUNT KEEP_MONTHS; do
     value="${!variable-}"
-    if [[ ! $value =~ ^(0|[1-9][0-9]*)$ ]]; then
+    if ! is_canonical_decimal "$value"; then
       printf 'cleanup configuration rejected: %s must be 0 or [1-9][0-9]*\n' "$variable" >&2
       return 64
     fi
@@ -26,9 +44,7 @@ validate_cleanup_config() {
     # below Bash's signed-integer limit, so every position <= count comparison
     # is representable, while still allowing more than two billion versions or
     # months.  Compare decimal strings so validation cannot overflow either.
-    # shellcheck disable=SC2071 # Decimal strings must not enter Bash arithmetic here.
-    if [[ ${#value} -gt ${#maximum_retention_count} ]] \
-      || { [[ ${#value} -eq ${#maximum_retention_count} ]] && [[ $value > $maximum_retention_count ]]; }; then
+    if decimal_string_greater_than "$value" "$maximum_retention_count"; then
       printf 'cleanup configuration rejected: %s must be between 0 and %s\n' "$variable" "$maximum_retention_count" >&2
       return 64
     fi
@@ -102,7 +118,14 @@ load_framed_work_list() {
   fi
   consumed_count=$(( ${#lines[@]} - 2 ))
 
-  if [[ "$terminal_count" != "$expected_count" || "$consumed_count" -ne "$expected_count" ]]; then
+  # `consumed_count` is derived only from the trusted in-memory line array;
+  # render it canonically and compare all counts as decimal strings.  Header
+  # and terminal values remain untrusted strings throughout.
+  printf -v consumed_count '%d' "$consumed_count"
+  if ! is_canonical_decimal "$expected_count" \
+    || ! is_canonical_decimal "$terminal_count" \
+    || ! decimal_strings_equal "$terminal_count" "$expected_count" \
+    || ! decimal_strings_equal "$consumed_count" "$expected_count"; then
     printf '  ✗ Refused incomplete %s work list: count mismatch (consumed %s of expected %s; terminal %s)\n' "$phase" "$consumed_count" "$expected_count" "$terminal_count" >&2
     return 1
   fi

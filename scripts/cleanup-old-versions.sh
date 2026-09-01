@@ -52,9 +52,9 @@ _cleanup_old_versions_delete() {
 # `deleted` counts successful removal outcomes. Its return status, rather than
 # that record, communicates failure:
 # 10 listing failure, 11 processing failure, 12 one or more delete failures,
-# 13 a failure after every record was assessed, and 14 an uninterpretable
-# record. Deletion-plan replay is execution, not assessment, so a replay
-# failure also returns 13.
+# 13 a failure after every record was assessed, including replay preflight,
+# and 14 an uninterpretable record.  A replay preflight failure still returns
+# the completed assessment record, but it happens before the first DELETE.
 purge_container() {
   local container="$1"
   local versions package version_count reported_version_count versions_file="" deletions_file=""
@@ -62,6 +62,7 @@ purge_container() {
   local version_id tags created_at keep_reason tag tag_list major version_ts cutoff_ts validation_error validation_status
   local record_b64 record_json
   local -a version_records=() deletion_records=() replay_records=()
+  local -a replay_positions=() replay_ids=() replay_tags=()
   declare -A major_seen=()
 
   validate_cleanup_config || return 64
@@ -240,16 +241,28 @@ purge_container() {
     rm -f "$deletions_file"
     return "$PROCESSING_FAILURE"
   fi
+
+  # Parse the entire replay before its first DELETE.  The execution loop below
+  # consumes only these immutable values, so a malformed later record cannot
+  # follow a successful deletion.
   for record_b64 in "${replay_records[@]}"; do
-    if [[ ! "$record_b64" =~ ^([0-9]+)\|([1-9][0-9]*)\|(.*)$ ]]; then
+    if [[ ! "$record_b64" =~ ^(0|[1-9][0-9]*)\|([1-9][0-9]*)\|(.*)$ ]]; then
       echo "  ✗ Failed to read prepared deletion record; skipping $container" >&2
+      if ! printf '%s\n' "$kept|$decided|$deleted|$delete_failures"; then
+        return "$PROCESSING_FAILURE"
+      fi
       rm -f "$deletions_file"
       return "$POST_DELETE_PROCESSING_FAILURE"
     fi
-    position="${BASH_REMATCH[1]}"
-    version_id="${BASH_REMATCH[2]}"
-    tags="${BASH_REMATCH[3]}"
-    echo "  ✗ Delete #$position (tags: ${tags:-untagged})" >&2
+    replay_positions+=("${BASH_REMATCH[1]}")
+    replay_ids+=("${BASH_REMATCH[2]}")
+    replay_tags+=("${BASH_REMATCH[3]}")
+  done
+
+  for position in "${!replay_ids[@]}"; do
+    version_id="${replay_ids[$position]}"
+    tags="${replay_tags[$position]}"
+    echo "  ✗ Delete #${replay_positions[$position]} (tags: ${tags:-untagged})" >&2
     if [[ "$DRY_RUN" == "true" ]]; then
       echo "    [DRY RUN] Would delete version $version_id" >&2
     elif _cleanup_old_versions_delete "$container" "$version_id"; then

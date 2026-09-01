@@ -310,7 +310,7 @@ run_orphan_phase_completion_case() {
 # GHCR deletion safety: count-agreeing listing, completed parent deletion, one manifest
 # ---------------------------------------------------------------------------
 
-@test "an orphan is assessed before a parent DELETE failure withholds its execution" {
+@test "a surviving obsolete parent leaves its untagged child unassessed" {
     local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}}}]'
     local gh_log="$_STUB_DIR/orphan-phase-gh.log"
     local dockerhub_calls="$_STUB_DIR/orphan-phase-dockerhub.log"
@@ -320,10 +320,40 @@ run_orphan_phase_completion_case() {
     [[ "$status" -eq 1 ]]
     [[ "$(<"$gh_log")" == *"/versions/101"* ]]
     [[ "$(<"$gh_log")" != *"/versions/102"* ]]
-    [[ -s "$dockerhub_calls" ]]
-    [[ "$output" == *"Orphan execution withheld: a parent DELETE failed after complete assessment"* ]]
-    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphans=1, delete_failures=1"* ]]
-    [[ "$output" == *"Packages assessed: 1"* ]]
+    [[ ! -s "$dockerhub_calls" ]]
+    [[ "$output" == *"Orphan assessment incomplete: an obsolete parent DELETE failed"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=1"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+    [[ "$output" == *"GHCR — kept: 0, obsolete: 1, orphans: 0"* ]]
+}
+
+@test "a parent DELETE failure returns zero assessed orphans for its untagged child" {
+    local gh_log="$_STUB_DIR/orphan-count-gh.log"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DRY_RUN="false" KEEP_LATEST_COUNT="0" KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then
+                    printf "DELETE:%s\\n" "$*" >> "$GH_LOG"
+                    [[ "$*" != *"/versions/101"* ]]
+                    return
+                fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
+            }
+            if result=$(purge_ghcr stale latest); then status=0; else status=$?; fi
+            [[ "$status" -eq 16 ]]
+            [[ "$result" == "0|1|0|1" ]]
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(<"$gh_log")" == *"/versions/101"* ]]
+    [[ "$(<"$gh_log")" != *"/versions/102"* ]]
 }
 
 @test "an obsolete DELETE failure without an untagged record remains assessed and runs Docker Hub" {
@@ -344,12 +374,12 @@ run_orphan_phase_completion_case() {
     local gh_log="$_STUB_DIR/orphan-phase-gh.log"
     local dockerhub_calls="$_STUB_DIR/orphan-phase-dockerhub.log"
 
-    run_orphan_phase_completion_case "$listing" '' 5
+    run_orphan_phase_completion_case "$listing" '' 2
 
     [[ "$status" -eq 1 ]]
     [[ ! -e "$gh_log" ]]
     [[ ! -s "$dockerhub_calls" ]]
-    [[ "$output" == *"Failed to read GHCR orphan record; skipping stale"* ]]
+    [[ "$output" == *"Failed to read GHCR version record; skipping stale"* ]]
     [[ "$output" == *"Packages assessed: 0"* ]]
 }
 
@@ -381,20 +411,20 @@ run_orphan_phase_completion_case() {
         '
 
     [[ "$status" -eq 1 ]]
-    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphans=1, delete_failures=1"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=1"* ]]
     [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphans=1, delete_failures=0"* ]]
-    [[ "$output" == *"GHCR — kept: 0, obsolete: 2, orphans: 2"* ]]
+    [[ "$output" == *"GHCR — kept: 0, obsolete: 2, orphans: 1"* ]]
 }
 
 @test "a replay decode failure is unassessed before any parent DELETE" {
     local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale-first"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":["stale-second"]}}}]'
     local dockerhub_calls="$_STUB_DIR/orphan-phase-dockerhub.log"
 
-    run_orphan_phase_completion_case "$listing" '' 4
+    run_orphan_phase_completion_case "$listing" '' 2
 
     [[ "$status" -eq 1 ]]
     [[ ! -s "$dockerhub_calls" ]]
-    [[ "$output" == *"Failed to read GHCR orphan record; skipping stale"* ]]
+    [[ "$output" == *"Failed to read GHCR version record; skipping stale"* ]]
     [[ "$output" == *"Packages assessed: 0"* ]]
 }
 
@@ -418,8 +448,43 @@ run_orphan_phase_completion_case() {
     [[ "$status" -eq 1 ]]
     [[ "$(<"$gh_log")" == *"/versions/101"* ]]
     [[ "$(<"$gh_log")" != *"/versions/102"* ]]
-    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphans=1, delete_failures=1"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=1"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+}
+
+@test "a malformed later GHCR replay record prevents every DELETE and preserves its assessment record" {
+    local gh_log="$_STUB_DIR/replay-preflight-gh.log"
+    local dockerhub_calls="$_STUB_DIR/replay-preflight-dockerhub.log"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" DOCKERHUB_CALLS="$dockerhub_calls" \
+        GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" latest; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            eval "$(declare -f load_framed_work_list | sed "1s/^load_framed_work_list /original_load_framed_work_list /")"
+            load_framed_work_list() {
+                if [[ "$1" == "deletion replay" ]]; then
+                    printf "work-list|expected|2\\n101|sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|stale-a\\nmalformed\\nwork-list|complete|2\\n" > "$2"
+                fi
+                original_load_framed_work_list "$@"
+            }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale-a\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"stale-b\"]}}}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ ! -s "$gh_log" ]]
+    [[ "$output" == *"Failed to read prepared GHCR deletion record; skipping stale"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=2, orphans=0, delete_failures=0"* ]]
     [[ "$output" == *"Packages assessed: 1"* ]]
+    [[ -s "$dockerhub_calls" ]]
 }
 
 @test "purge_ghcr deletes an orphan after all obsolete parent DELETEs succeed" {
@@ -1233,7 +1298,7 @@ EOF
             base64() {
                 calls=0; [[ -f "$BASE64_CALLS" ]] && calls=$(<"$BASE64_CALLS")
                 calls=$((calls + 1)); printf "%s\\n" "$calls" > "$BASE64_CALLS"
-                [[ "$calls" -lt 4 ]] || { echo "base64: prepared record lost" >&2; return 1; }
+                [[ "$calls" -lt 2 ]] || { echo "base64: prepared record lost" >&2; return 1; }
                 command base64 "$@"
             }
             main stale
@@ -1242,7 +1307,7 @@ EOF
     [[ "$status" -eq 1 ]]
     [[ ! -s "$gh_log" ]]
     [[ ! -s "$dockerhub_calls" ]]
-    [[ "$output" == *"Failed to read GHCR orphan record; skipping stale"* ]]
+    [[ "$output" == *"Failed to read GHCR version record; skipping stale"* ]]
     [[ "$output" == *"Packages assessed: 0"* ]]
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
 }
