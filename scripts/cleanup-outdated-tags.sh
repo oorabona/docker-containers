@@ -32,7 +32,7 @@ _cleanup_outdated_tags_delete() {
     ghcr-version)
       local container="$2" version_id="$3"
       gh api --method DELETE -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
-        "/users/${OWNER}/packages/container/${container}/versions/${version_id}"
+        "/users/${OWNER}/packages/container/${container}/versions/${version_id}" >/dev/null
       ;;
     dockerhub-tag)
       local dh_jwt="$2" container="$3" tag="$4"
@@ -122,15 +122,19 @@ is_valid_tag() {
 purge_ghcr() {
   # 10 listing failure, 11 processing failure, 12 delete failure, 13 failure
   # after complete assessment, 14 uninterpretable record, and 15 protection
-  # failure. 16 means an untagged record required the orphan assessment but it
-  # did not run. Replaying a completed deletion list is execution, so a replay
-  # failure otherwise returns 13.
+  # failure. 16 means an orphan candidate could not be assessed because its
+  # obsolete parent survived or replay preflight stopped parent deletion.
+  # Replaying a completed deletion list is execution only after every replay
+  # payload has passed preflight; preflight failure returns the completed
+  # tagged-plan record, but only returns 13 when no orphan remains unresolved.
   local container="$1" valid_tags="$2"
   local versions package_metadata version_count reported_version_count versions_file="" obsolete_file="" protected_file=""
-  local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 deletion_read_error=0 orphan_assessment_required=false incomplete_orphan_assessment=false validation_error validation_status
+  local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 validation_error validation_status index
   local record_b64 record_json
   local protected_digests="" ghcr_token manifest children protection_result
-  local -a kept_digests=()
+  local -a kept_digests=() version_records=() obsolete_source_ids=() obsolete_source_digests=() obsolete_source_tags=()
+  local -a untagged_ids=() untagged_digests=() orphan_ids=() orphan_digests=() obsolete_replay=()
+  local -a parent_ids=() parent_digests=() parent_tags=() obsolete_ids=() obsolete_digests=() obsolete_tags=()
 
   validate_cleanup_config || return 64
 
@@ -194,7 +198,12 @@ purge_ghcr() {
     echo "  ✗ Failed to create GHCR work files; skipping $container" >&2
     return "$PROCESSING_FAILURE"
   fi
-  if ! jq -er '.[] | {id: (.id | tostring), digest: .name, tags: (.metadata.container.tags // [])} | @base64' <<< "$versions" > "$versions_file"; then
+  if ! {
+      printf 'work-list|expected|%s\n' "$version_count" \
+      && jq -er '.[] | {id: (.id | tostring), digest: .name, tags: (.metadata.container.tags // [])} | @base64' <<< "$versions" \
+      &&
+      printf 'work-list|complete|%s\n' "$version_count"
+    } > "$versions_file"; then
     cleanup_files
     echo "  ✗ Failed to prepare GHCR version list; skipping $container" >&2
     return "$PROCESSING_FAILURE"
@@ -205,8 +214,14 @@ purge_ghcr() {
     return "$PROCESSING_FAILURE"
   fi
 
-  while IFS= read -r record_b64; do
-    [[ -z "$record_b64" ]] && continue
+  if ! load_framed_work_list "tagged assessment" "$versions_file" version_records; then
+    cleanup_files
+    return "$PROCESSING_FAILURE"
+  fi
+
+  # This phase consumes the complete framed source before classifying a single
+  # payload.  Untagged entries are deliberately deferred to the orphan phase.
+  for record_b64 in "${version_records[@]}"; do
     if ! record_json=$(printf '%s' "$record_b64" | base64 -d) \
       || ! version_id=$(jq -er '.id' <<< "$record_json") \
       || ! digest=$(jq -er '.digest' <<< "$record_json") \
@@ -216,7 +231,8 @@ purge_ghcr() {
       return "$PROCESSING_FAILURE"
     fi
     if [[ -z "$tags" ]]; then
-      orphan_assessment_required=true
+      untagged_ids+=("$version_id")
+      untagged_digests+=("$digest")
       continue
     fi
     has_valid=false
@@ -231,14 +247,13 @@ purge_ghcr() {
     if [[ "$has_valid" == true ]]; then
       echo "  ✓ Keep (tags: $tags)" >&2
       kept=$((kept + 1)); kept_digests+=("$digest")
-    elif ! printf '%s\n' "$record_b64" >> "$obsolete_file"; then
-      cleanup_files
-      echo "  ✗ Failed to write GHCR obsolete list; skipping $container" >&2
-      return "$PROCESSING_FAILURE"
     else
+      obsolete_source_ids+=("$version_id")
+      obsolete_source_digests+=("$digest")
+      obsolete_source_tags+=("$tags")
       echo "  ? Obsolete candidate (tags: $tags)" >&2
     fi
-  done < "$versions_file"
+  done
 
   if [[ ${#kept_digests[@]} -gt 0 ]]; then
     echo "  Resolving manifest references for ${#kept_digests[@]} kept images..." >&2
@@ -287,94 +302,127 @@ purge_ghcr() {
     fi
   fi
 
-  while IFS= read -r record_b64; do
-    [[ -z "$record_b64" ]] && continue
-    if ! record_json=$(printf '%s' "$record_b64" | base64 -d) \
-      || ! version_id=$(jq -er '.id' <<< "$record_json") \
-      || ! digest=$(jq -er '.digest' <<< "$record_json") \
-      || ! tags=$(jq -er '.tags | join(",")' <<< "$record_json"); then
-      echo "  ✗ Failed to read prepared GHCR deletion record; skipping $container" >&2
-      deletion_read_error=1
-      break
-    fi
+  # The source frame and every payload were parsed above.  An untagged child
+  # of a kept manifest is known protected now; every other untagged version is
+  # only a candidate until obsolete parent deletion has succeeded.
+  for index in "${!untagged_ids[@]}"; do
+    digest="${untagged_digests[$index]}"
     if [[ -n "$protected_digests" ]] && grep -qxF "$digest" <<< "$protected_digests"; then
-      echo "  ✓ Keep (tags: $tags) — digest is manifest child" >&2; kept=$((kept + 1))
+      kept=$((kept + 1))
     else
-      echo "  ✗ Obsolete (tags: $tags)" >&2
-      if [[ "$DRY_RUN" == true ]]; then
-        echo "    [DRY RUN] Would delete version $version_id" >&2
-      elif _cleanup_outdated_tags_delete ghcr-version "$container" "$version_id"; then
-        echo "    ✓ Deleted" >&2
-      else
-        echo "    ✗ Failed to delete" >&2; delete_failures=$((delete_failures + 1))
-      fi
+      orphan_ids+=("${untagged_ids[$index]}")
+      orphan_digests+=("$digest")
+    fi
+  done
+
+  # Finalize the parent deletion plan while all source payloads are still
+  # available.  The counts in a later preflight result therefore describe the
+  # completed assessment, even if the replay frame itself is malformed.
+  for index in "${!obsolete_source_ids[@]}"; do
+    digest="${obsolete_source_digests[$index]}"
+    if [[ -n "$protected_digests" ]] && grep -qxF "$digest" <<< "$protected_digests"; then
+      kept=$((kept + 1))
+    else
+      parent_ids+=("${obsolete_source_ids[$index]}")
+      parent_digests+=("$digest")
+      parent_tags+=("${obsolete_source_tags[$index]}")
       obsolete=$((obsolete + 1))
     fi
-  done < "$obsolete_file"
+  done
 
-  if [[ "$deletion_read_error" -ne 0 ]]; then
+  if ! {
+      printf 'work-list|expected|%s\n' "${#parent_ids[@]}" \
+      && for index in "${!parent_ids[@]}"; do
+        printf '%s|%s|%s\n' "${parent_ids[$index]}" "${parent_digests[$index]}" "${parent_tags[$index]}"
+      done \
+      &&
+      printf 'work-list|complete|%s\n' "${#parent_ids[@]}"
+    } > "$obsolete_file"; then
+    cleanup_files
+    echo "  ✗ Failed to write GHCR obsolete list; skipping $container" >&2
+    return "$PROCESSING_FAILURE"
+  fi
+
+  # Preflight the complete parent replay before the first DELETE.  Execution
+  # below reads only these immutable id/digest/tag arrays.
+  if ! load_framed_work_list "deletion replay" "$obsolete_file" obsolete_replay; then
+    cleanup_files
     if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
-      cleanup_files
       return "$PROCESSING_FAILURE"
     fi
-    cleanup_files
-    if [[ "$orphan_assessment_required" == true ]]; then
-      echo "  ✗ Orphan assessment skipped: a required orphan phase did not run; skipping $container" >&2
+    if [[ ${#orphan_ids[@]} -gt 0 ]]; then
       return "$INCOMPLETE_DELETION_FAILURE"
     fi
     return "$POST_DELETE_PROCESSING_FAILURE"
   fi
+  for record_b64 in "${obsolete_replay[@]}"; do
+    if [[ ! "$record_b64" =~ ^([1-9][0-9]*)\|(sha256:[0-9a-f]{64})\|(.*)$ ]]; then
+      echo "  ✗ Failed to read prepared GHCR deletion record; skipping $container" >&2
+      if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
+        return "$PROCESSING_FAILURE"
+      fi
+      cleanup_files
+      if [[ ${#orphan_ids[@]} -gt 0 ]]; then
+        return "$INCOMPLETE_DELETION_FAILURE"
+      fi
+      return "$POST_DELETE_PROCESSING_FAILURE"
+    fi
+    obsolete_ids+=("${BASH_REMATCH[1]}")
+    obsolete_digests+=("${BASH_REMATCH[2]}")
+    obsolete_tags+=("${BASH_REMATCH[3]}")
+  done
 
-  if [[ "$delete_failures" -gt 0 ]]; then
-    : # A surviving obsolete parent may still reference its untagged children.
-    if [[ "$orphan_assessment_required" == true ]]; then
-      incomplete_orphan_assessment=true
-      echo "  ✗ Orphan assessment skipped: a required orphan phase did not run; skipping $container" >&2
-    fi
-  else
-  while IFS= read -r record_b64; do
-    [[ -z "$record_b64" ]] && continue
-    if ! record_json=$(printf '%s' "$record_b64" | base64 -d) \
-      || ! version_id=$(jq -er '.id' <<< "$record_json") \
-      || ! digest=$(jq -er '.digest' <<< "$record_json") \
-      || ! tags=$(jq -er '.tags | join(",")' <<< "$record_json"); then
-      echo "  ✗ Failed to read GHCR version record; skipping $container" >&2
-      deletion_read_error=1
-      break
-    fi
-    [[ -n "$tags" ]] && continue
-    if [[ -n "$protected_digests" ]] && grep -qxF "$digest" <<< "$protected_digests"; then
-      kept=$((kept + 1))
+  for index in "${!obsolete_ids[@]}"; do
+    version_id="${obsolete_ids[$index]}"
+    digest="${obsolete_digests[$index]}"
+    tags="${obsolete_tags[$index]}"
+    echo "  ✗ Obsolete (tags: $tags)" >&2
+    if [[ "$DRY_RUN" == true ]]; then
+      echo "    [DRY RUN] Would delete version $version_id" >&2
+    elif _cleanup_outdated_tags_delete ghcr-version "$container" "$version_id"; then
+      echo "    ✓ Deleted" >&2
     else
+      echo "    ✗ Failed to delete" >&2
+      delete_failures=$((delete_failures + 1))
+    fi
+  done
+
+  if [[ "$delete_failures" -gt 0 && ${#orphan_ids[@]} -gt 0 ]]; then
+    # A surviving obsolete parent may still reference every candidate.  They
+    # are not orphans, and this package has no completed orphan assessment.
+    echo "  ✗ Orphan assessment incomplete: an obsolete parent DELETE failed" >&2
+    if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
+      return "$PROCESSING_FAILURE"
+    fi
+    cleanup_files || echo "  ✗ Failed to remove GHCR work files after incomplete orphan assessment" >&2
+    return "$INCOMPLETE_DELETION_FAILURE"
+  fi
+
+  if [[ "$delete_failures" -eq 0 ]]; then
+    for index in "${!orphan_ids[@]}"; do
+      version_id="${orphan_ids[$index]}"
+      digest="${orphan_digests[$index]}"
+      # The candidate becomes an orphan only after every parent DELETE has
+      # succeeded.  Count and execute from the pre-parsed values.
+      orphans=$((orphans + 1))
       echo "  ✗ Orphan (digest: ${digest:0:19}...)" >&2
       if [[ "$DRY_RUN" == true ]]; then
         echo "    [DRY RUN] Would delete version $version_id" >&2
       elif _cleanup_outdated_tags_delete ghcr-version "$container" "$version_id"; then
         echo "    ✓ Deleted" >&2
       else
-        echo "    ✗ Failed to delete" >&2; delete_failures=$((delete_failures + 1))
+        echo "    ✗ Failed to delete" >&2
+        delete_failures=$((delete_failures + 1))
       fi
-      orphans=$((orphans + 1))
-    fi
-  done < "$versions_file"
-  fi
-  if [[ "$deletion_read_error" -ne 0 ]]; then
-    if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
-      cleanup_files
-      return "$PROCESSING_FAILURE"
-    fi
-    cleanup_files
-    return "$POST_DELETE_PROCESSING_FAILURE"
+    done
   fi
   if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
     return "$PROCESSING_FAILURE"
   fi
   if ! cleanup_files; then
     echo "  ✗ Failed to remove GHCR work files after cleanup" >&2
-    [[ "$incomplete_orphan_assessment" == true ]] && return "$INCOMPLETE_DELETION_FAILURE"
     return "$POST_DELETE_PROCESSING_FAILURE"
   fi
-  [[ "$incomplete_orphan_assessment" == true ]] && return "$INCOMPLETE_DELETION_FAILURE"
   [[ "$delete_failures" -eq 0 ]] || return "$DELETE_FAILURE"
 }
 
@@ -466,23 +514,24 @@ main() {
     if result=$(purge_ghcr "$container" "$valid_tags"); then ghcr_status=0; else ghcr_status=$?; fi
     case "$ghcr_status" in
       0|"$DELETE_FAILURE"|"$POST_DELETE_PROCESSING_FAILURE")
-        if ! IFS='|' read -r kept obsolete orphans delete_failures <<< "$result"; then
-          echo "  ✗ Failed to read GHCR cleanup result; skipping $container"; total_processing_failures=$((total_processing_failures + 1)); skip_dockerhub=true
-        else
-          package_assessed=true; total_kept=$((total_kept + kept)); total_obsolete=$((total_obsolete + obsolete)); total_orphans=$((total_orphans + orphans)); total_ghcr_delete_failures=$((total_ghcr_delete_failures + delete_failures))
+        if parse_result_counters "$result" "GHCR cleanup result" \
+          kept total_kept obsolete total_obsolete orphans total_orphans delete_failures total_ghcr_delete_failures; then
+          package_assessed=true
           echo "  GHCR summary: kept=$kept, obsolete=$obsolete, orphans=$orphans, delete_failures=$delete_failures"
           [[ "$ghcr_status" -ne "$POST_DELETE_PROCESSING_FAILURE" ]] || total_processing_failures=$((total_processing_failures + 1))
+        else
+          echo "  ✗ Failed to read GHCR cleanup result; skipping $container"; total_processing_failures=$((total_processing_failures + 1)); skip_dockerhub=true
         fi ;;
       "$LISTING_FAILURE") total_listing_failures=$((total_listing_failures + 1)); skip_dockerhub=true ;;
       "$PROCESSING_FAILURE"|"$UNINTERPRETABLE_RECORD_FAILURE"|"$PROTECTION_FAILURE") total_processing_failures=$((total_processing_failures + 1)); skip_dockerhub=true ;;
       # A status 16 caller has not supplied a completed assessment, so Docker
       # Hub stays off.
       "$INCOMPLETE_DELETION_FAILURE")
-        if ! IFS='|' read -r kept obsolete orphans delete_failures <<< "$result"; then
-          echo "  ✗ Failed to read incomplete GHCR cleanup result; skipping $container"
-        else
-          total_kept=$((total_kept + kept)); total_obsolete=$((total_obsolete + obsolete)); total_ghcr_delete_failures=$((total_ghcr_delete_failures + delete_failures))
+        if parse_result_counters "$result" "incomplete GHCR cleanup result" \
+          kept total_kept obsolete total_obsolete orphans - delete_failures total_ghcr_delete_failures; then
           echo "  GHCR summary: kept=$kept, obsolete=$obsolete, orphan phase not assessed, delete_failures=$delete_failures"
+        else
+          echo "  ✗ Failed to read incomplete GHCR cleanup result; skipping $container"
         fi
         total_processing_failures=$((total_processing_failures + 1)); skip_dockerhub=true
         ;;
@@ -497,12 +546,12 @@ main() {
     if dh_result=$(purge_dockerhub "$container" "$valid_tags"); then dh_status=0; else dh_status=$?; fi
     case "$dh_status" in
       0|"$DELETE_FAILURE")
-        if ! IFS='|' read -r dh_assessed dh_deleted <<< "$dh_result"; then
-          echo "  ✗ Failed to read Docker Hub cleanup result; skipping $container"; total_processing_failures=$((total_processing_failures + 1))
-        else
+        if parse_result_counters "$dh_result" "Docker Hub cleanup result" \
+          dh_assessed - dh_deleted total_dh_deleted; then
           [[ "$package_assessed" == true || "$dh_assessed" -eq 0 ]] || package_assessed=true
-          total_dh_deleted=$((total_dh_deleted + dh_deleted))
           [[ "$dh_status" -eq 0 ]] || total_dh_delete_failures=$((total_dh_delete_failures + 1))
+        else
+          echo "  ✗ Failed to read Docker Hub cleanup result; skipping $container"; total_processing_failures=$((total_processing_failures + 1))
         fi ;;
       "$LISTING_FAILURE") total_listing_failures=$((total_listing_failures + 1)) ;;
       "$PROCESSING_FAILURE") total_processing_failures=$((total_processing_failures + 1)) ;;

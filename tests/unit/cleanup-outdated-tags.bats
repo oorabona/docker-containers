@@ -310,7 +310,7 @@ run_orphan_phase_completion_case() {
 # GHCR deletion safety: count-agreeing listing, completed parent deletion, one manifest
 # ---------------------------------------------------------------------------
 
-@test "an untagged record skipped after an obsolete DELETE failure is unassessed and skips Docker Hub" {
+@test "a surviving obsolete parent leaves its untagged child unassessed" {
     local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":[]}}}]'
     local gh_log="$_STUB_DIR/orphan-phase-gh.log"
     local dockerhub_calls="$_STUB_DIR/orphan-phase-dockerhub.log"
@@ -321,11 +321,39 @@ run_orphan_phase_completion_case() {
     [[ "$(<"$gh_log")" == *"/versions/101"* ]]
     [[ "$(<"$gh_log")" != *"/versions/102"* ]]
     [[ ! -s "$dockerhub_calls" ]]
-    [[ "$output" == *"Orphan assessment skipped: a required orphan phase did not run"* ]]
+    [[ "$output" == *"Orphan assessment incomplete: an obsolete parent DELETE failed"* ]]
     [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=1"* ]]
-    [[ "$output" != *"GHCR summary: kept=0, obsolete=1, orphans="* ]]
     [[ "$output" == *"Packages assessed: 0"* ]]
-    [[ "$output" == *"Docker Hub cleanup skipped: GHCR safety assessment was incomplete"* ]]
+    [[ "$output" == *"GHCR — kept: 0, obsolete: 1, orphans: 0"* ]]
+}
+
+@test "a parent DELETE failure returns zero assessed orphans for its untagged child" {
+    local gh_log="$_STUB_DIR/orphan-count-gh.log"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DRY_RUN="false" KEEP_LATEST_COUNT="0" KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then
+                    printf "DELETE:%s\\n" "$*" >> "$GH_LOG"
+                    [[ "$*" != *"/versions/101"* ]]
+                    return
+                fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
+            }
+            if result=$(purge_ghcr stale latest); then status=0; else status=$?; fi
+            [[ "$status" -eq 16 ]]
+            [[ "$result" == "0|1|0|1" ]]
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(<"$gh_log")" == *"/versions/101"* ]]
+    [[ "$(<"$gh_log")" != *"/versions/102"* ]]
 }
 
 @test "an obsolete DELETE failure without an untagged record remains assessed and runs Docker Hub" {
@@ -341,25 +369,21 @@ run_orphan_phase_completion_case() {
     [[ "$output" == *"Packages assessed: 1"* ]]
 }
 
-@test "an untagged record skipped after an obsolete replay abort is unassessed and skips Docker Hub" {
+@test "an orphan-phase decode failure is unassessed before any parent DELETE" {
     local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale-first"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":["stale-second"]}}},{"id":103,"name":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","metadata":{"container":{"tags":[]}}}]'
     local gh_log="$_STUB_DIR/orphan-phase-gh.log"
     local dockerhub_calls="$_STUB_DIR/orphan-phase-dockerhub.log"
 
-    run_orphan_phase_completion_case "$listing" '' 5
+    run_orphan_phase_completion_case "$listing" '' 2
 
     [[ "$status" -eq 1 ]]
-    [[ "$(<"$gh_log")" == *"/versions/101"* ]]
-    [[ "$(<"$gh_log")" != *"/versions/102"* ]]
-    [[ "$(<"$gh_log")" != *"/versions/103"* ]]
+    [[ ! -e "$gh_log" ]]
     [[ ! -s "$dockerhub_calls" ]]
-    [[ "$output" == *"Orphan assessment skipped: a required orphan phase did not run"* ]]
-    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=0"* ]]
-    [[ "$output" != *"GHCR summary: kept=0, obsolete=1, orphans="* ]]
+    [[ "$output" == *"Failed to read GHCR version record; skipping stale"* ]]
     [[ "$output" == *"Packages assessed: 0"* ]]
 }
 
-@test "an incomplete package does not add an unassessed orphan count to the run total" {
+@test "a withheld orphan execution remains assessed and is included in the plan total" {
     run env \
         PROJECT_ROOT="$PROJECT_ROOT" \
         GH_TOKEN="$GH_TOKEN" \
@@ -392,17 +416,16 @@ run_orphan_phase_completion_case() {
     [[ "$output" == *"GHCR — kept: 0, obsolete: 2, orphans: 1"* ]]
 }
 
-@test "an obsolete replay abort without an untagged record remains assessed and runs Docker Hub" {
+@test "a replay decode failure is unassessed before any parent DELETE" {
     local listing='[{"id":101,"name":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"container":{"tags":["stale-first"]}}},{"id":102,"name":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","metadata":{"container":{"tags":["stale-second"]}}}]'
     local dockerhub_calls="$_STUB_DIR/orphan-phase-dockerhub.log"
 
-    run_orphan_phase_completion_case "$listing" '' 4
+    run_orphan_phase_completion_case "$listing" '' 2
 
     [[ "$status" -eq 1 ]]
-    [[ -s "$dockerhub_calls" ]]
-    [[ "$output" != *"Orphan assessment skipped"* ]]
-    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphans=0, delete_failures=0"* ]]
-    [[ "$output" == *"Packages assessed: 1"* ]]
+    [[ ! -s "$dockerhub_calls" ]]
+    [[ "$output" == *"Failed to read GHCR version record; skipping stale"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
 }
 
 @test "a completed GHCR assessment is assessed and runs Docker Hub" {
@@ -426,7 +449,78 @@ run_orphan_phase_completion_case() {
     [[ "$(<"$gh_log")" == *"/versions/101"* ]]
     [[ "$(<"$gh_log")" != *"/versions/102"* ]]
     [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=1"* ]]
-    [[ "$output" != *"GHCR summary: kept=0, obsolete=1, orphans="* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+}
+
+@test "a malformed later GHCR replay record prevents every DELETE and preserves its assessment record" {
+    local gh_log="$_STUB_DIR/replay-preflight-gh.log"
+    local dockerhub_calls="$_STUB_DIR/replay-preflight-dockerhub.log"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" DOCKERHUB_CALLS="$dockerhub_calls" \
+        GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" latest; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            eval "$(declare -f load_framed_work_list | sed "1s/^load_framed_work_list /original_load_framed_work_list /")"
+            load_framed_work_list() {
+                if [[ "$1" == "deletion replay" ]]; then
+                    printf "work-list|expected|2\\n101|sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|stale-a\\nmalformed\\nwork-list|complete|2\\n" > "$2"
+                fi
+                original_load_framed_work_list "$@"
+            }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale-a\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"stale-b\"]}}}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ ! -s "$gh_log" ]]
+    [[ "$output" == *"Failed to read prepared GHCR deletion record; skipping stale"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=2, orphans=0, delete_failures=0"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+    [[ -s "$dockerhub_calls" ]]
+}
+
+@test "a malformed GHCR replay with an untagged candidate is unassessed and skips Docker Hub" {
+    local gh_log="$_STUB_DIR/replay-orphan-gh.log"
+    local dockerhub_calls="$_STUB_DIR/replay-orphan-dockerhub.log"
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" DOCKERHUB_CALLS="$dockerhub_calls" \
+        GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" latest; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            eval "$(declare -f load_framed_work_list | sed "1s/^load_framed_work_list /original_load_framed_work_list /")"
+            load_framed_work_list() {
+                if [[ "$1" == "deletion replay" ]]; then
+                    printf "work-list|expected|1\\nmalformed\\nwork-list|complete|1\\n" > "$2"
+                fi
+                original_load_framed_work_list "$@"
+            }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ ! -s "$gh_log" ]]
+    [[ ! -s "$dockerhub_calls" ]]
+    [[ "$output" == *"Failed to read prepared GHCR deletion record; skipping stale"* ]]
+    [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=0"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+    [[ "$output" == *"Docker Hub cleanup skipped: GHCR safety assessment was incomplete"* ]]
 }
 
 @test "purge_ghcr deletes an orphan after all obsolete parent DELETEs succeed" {
@@ -1214,7 +1308,7 @@ EOF
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
 }
 
-@test "a prepared GHCR deletion decode failure assesses the completed plan, reports the DELETE, and runs Docker Hub" {
+@test "an orphan-phase decode failure is not reported as a completed GHCR assessment" {
     local gh_log="$_STUB_DIR/gh.log"
     local base64_calls="$_STUB_DIR/base64-calls"
     local dockerhub_calls="$_STUB_DIR/dockerhub-calls"
@@ -1240,18 +1334,104 @@ EOF
             base64() {
                 calls=0; [[ -f "$BASE64_CALLS" ]] && calls=$(<"$BASE64_CALLS")
                 calls=$((calls + 1)); printf "%s\\n" "$calls" > "$BASE64_CALLS"
-                [[ "$calls" -lt 4 ]] || { echo "base64: prepared record lost" >&2; return 1; }
+                [[ "$calls" -lt 2 ]] || { echo "base64: prepared record lost" >&2; return 1; }
                 command base64 "$@"
             }
             main stale
         '
 
-    assert_dockerhub_called_after_complete_ghcr_plan "$dockerhub_calls"
     [[ "$status" -eq 1 ]]
-    [[ "$(<"$gh_log")" == *"/versions/101"* ]]
-    [[ "$(<"$gh_log")" != *"/versions/102"* ]]
-    assert_prepared_decode_preserves_delete_totals
+    [[ ! -s "$gh_log" ]]
+    [[ ! -s "$dockerhub_calls" ]]
+    [[ "$output" == *"Failed to read GHCR version record; skipping stale"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+}
+
+@test "outdated-tag main rejects GHCR and Docker Hub result records with extra lines" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN="false" KEEP_LATEST_COUNT="0" KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" latest; }
+            purge_ghcr() { printf "%s\\n" stray "0|0|0|0"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"Failed to read GHCR cleanup result; skipping stale"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" latest; }
+            purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
+            purge_dockerhub() { printf "%s\\n" "1|0" stray; }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"Failed to read Docker Hub cleanup result; skipping stale"* ]]
+}
+
+@test "outdated-tag main sends every result counter consumer through the shared parser" {
+    local consumer invalid_counter
+
+    for consumer in ghcr-complete ghcr-incomplete dockerhub; do
+        for invalid_counter in 08 2147483648; do
+            run env \
+                PROJECT_ROOT="$PROJECT_ROOT" CONSUMER="$consumer" RESULT_COUNTER="$invalid_counter" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN="false" \
+                bash -c '
+                    set -euo pipefail
+                    source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+                    build_valid_tags() { printf "%s\\n" latest; }
+                    case "$CONSUMER" in
+                      ghcr-complete)
+                        purge_ghcr() { printf "%s\\n" "$RESULT_COUNTER|0|0|0"; return 13; }
+                        purge_dockerhub() { printf "%s\\n" "1|0"; }
+                        ;;
+                      ghcr-incomplete)
+                        purge_ghcr() { printf "%s\\n" "$RESULT_COUNTER|0|0|0"; return 16; }
+                        purge_dockerhub() { printf "%s\\n" "1|0"; }
+                        ;;
+                      dockerhub)
+                        purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
+                        purge_dockerhub() { printf "%s\\n" "1|$RESULT_COUNTER"; }
+                        ;;
+                    esac
+                    main stale
+                '
+
+            [[ "$status" -eq 1 ]]
+            [[ "$output" == *"rejected: counter"* ]]
+            [[ "$output" != *"arithmetic expression"* ]]
+            if [[ "$consumer" == dockerhub ]]; then
+                [[ "$output" == *"Packages assessed: 1"* ]]
+            else
+                [[ "$output" == *"Packages assessed: 0"* ]]
+            fi
+        done
+    done
+}
+
+@test "outdated-tag GHCR deletion wrapper keeps client stdout off the caller record" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN="false" KEEP_LATEST_COUNT="0" KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            gh() { printf "%s\\n" "client response"; }
+            result=$(_cleanup_outdated_tags_delete ghcr-version stale 101)
+            [[ -z "$result" ]]
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *"client response"* ]]
 }
 
 run_outdated_validation_case() {

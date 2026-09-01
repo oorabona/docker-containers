@@ -701,7 +701,7 @@ EOF
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
 }
 
-@test "a prepared deletion decode failure assesses the completed plan and still reports an earlier DELETE" {
+@test "a planning decode failure is not reported as a complete assessment" {
     run env \
         PROJECT_ROOT="$PROJECT_ROOT" \
         GH_LOG="$GH_LOG" \
@@ -722,17 +722,240 @@ EOF
             base64() {
                 calls=0; [[ -f "$BASE64_CALLS" ]] && calls=$(<"$BASE64_CALLS")
                 calls=$((calls + 1)); printf "%s\\n" "$calls" > "$BASE64_CALLS"
-                [[ "$calls" -lt 4 ]] || { echo "base64: prepared record lost" >&2; return 1; }
+                [[ "$calls" -lt 2 ]] || { echo "base64: planning record lost" >&2; return 1; }
                 command base64 "$@"
             }
             main stale
         '
 
     [[ "$status" -eq 1 ]]
-    [[ "$(<"$GH_LOG")" == *"/versions/101"* ]]
-    [[ "$(<"$GH_LOG")" != *"/versions/102"* ]]
-    assert_prepared_decode_preserves_delete_totals
+    [[ ! -s "$GH_LOG" ]]
+    [[ "$output" == *"Failed to read version record; skipping stale"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
     [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+}
+
+@test "a truncated version-assessment frame refuses before decoding or DELETE" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$GH_LOG" GH_TOKEN="test-token" OWNER="test-owner" \
+        DRY_RUN="false" KEEP_LATEST_COUNT="0" KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            eval "$(declare -f load_framed_work_list | sed "1s/^load_framed_work_list /original_load_framed_work_list /")"
+            load_framed_work_list() {
+                if [[ "$1" == "version assessment" ]]; then
+                    record=$(printf "%s" "{\"id\":\"101\",\"tags\":[\"obsolete-a\"],\"created_at\":\"2000-01-01T00:00:00Z\"}" | base64 | tr -d "\\n")
+                    printf "work-list|expected|2\\n%s\\npartial" "$record" > "$2"
+                fi
+                original_load_framed_work_list "$@"
+            }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"obsolete-a\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"obsolete-b\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"Refused incomplete version assessment work list: terminal marker missing (consumed 1 of expected 2)"* ]]
+    [[ "$output" != *"Failed to read version record"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+    [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+    [[ ! -s "$GH_LOG" ]]
+}
+
+@test "a truncated deletion-replay frame refuses before deleting its valid prefix" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$GH_LOG" GH_TOKEN="test-token" OWNER="test-owner" \
+        DRY_RUN="false" KEEP_LATEST_COUNT="0" KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            eval "$(declare -f load_framed_work_list | sed "1s/^load_framed_work_list /original_load_framed_work_list /")"
+            load_framed_work_list() {
+                if [[ "$1" == "deletion replay" ]]; then
+                    printf "work-list|expected|2\\n1|101|obsolete-a\\n2|102|partial" > "$2"
+                fi
+                original_load_framed_work_list "$@"
+            }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"obsolete-a\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"obsolete-b\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"Refused incomplete deletion replay work list: terminal marker missing (consumed 1 of expected 2)"* ]]
+    [[ "$output" != *"Failed to read prepared deletion record"* ]]
+    [[ "$output" == *"Summary: kept=0, decided=2, deleted=0, delete_failures=0"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+    [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+    [[ ! -s "$GH_LOG" ]]
+}
+
+@test "a framed work list requires its terminal marker and reconciled counts" {
+    local frame_file="$STUB_DIR/frame"
+
+    printf '%s\n' 'work-list|expected|2' 'first' 'second' > "$frame_file"
+    run env PROJECT_ROOT="$PROJECT_ROOT" FRAME_FILE="$frame_file" bash -c '
+        source "$PROJECT_ROOT/helpers/version-record-validation.sh"
+        loaded_records=()
+        load_framed_work_list test "$FRAME_FILE" loaded_records
+    '
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"terminal marker missing (consumed 2 of expected 2)"* ]]
+
+    printf '%s\n' 'work-list|expected|2' 'first' 'work-list|complete|1' > "$frame_file"
+    run env PROJECT_ROOT="$PROJECT_ROOT" FRAME_FILE="$frame_file" bash -c '
+        source "$PROJECT_ROOT/helpers/version-record-validation.sh"
+        loaded_records=()
+        load_framed_work_list test "$FRAME_FILE" loaded_records
+    '
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"count mismatch (consumed 1 of expected 2; terminal 1)"* ]]
+
+    printf '%s\n' 'work-list|expected|2' 'first' 'second' 'work-list|complete|2' > "$frame_file"
+    run env PROJECT_ROOT="$PROJECT_ROOT" FRAME_FILE="$frame_file" bash -c '
+        source "$PROJECT_ROOT/helpers/version-record-validation.sh"
+        records=()
+        load_framed_work_list test "$FRAME_FILE" records
+        [[ ${#records[@]} -eq 2 && ${records[0]} == first && ${records[1]} == second ]]
+    '
+    [[ "$status" -eq 0 ]]
+}
+
+@test "a framed work list rejects a leading-zero count mismatch without arithmetic" {
+    local frame_file="$STUB_DIR/frame"
+
+    printf '%s\n' 'work-list|expected|08' one two three four five six seven 'work-list|complete|08' > "$frame_file"
+    run env PROJECT_ROOT="$PROJECT_ROOT" FRAME_FILE="$frame_file" bash -c '
+        source "$PROJECT_ROOT/helpers/version-record-validation.sh"
+        loaded_records=()
+        load_framed_work_list test "$FRAME_FILE" loaded_records
+    '
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"count mismatch (consumed 7 of expected 08; terminal 08)"* ]]
+    [[ "$output" != *"arithmetic expression"* ]]
+}
+
+@test "a framed work list rejects an overflow-sized count mismatch without arithmetic" {
+    local frame_file="$STUB_DIR/frame"
+
+    printf '%s\n' 'work-list|expected|18446744073709551616' 'work-list|complete|18446744073709551616' > "$frame_file"
+    run env PROJECT_ROOT="$PROJECT_ROOT" FRAME_FILE="$frame_file" bash -c '
+        source "$PROJECT_ROOT/helpers/version-record-validation.sh"
+        loaded_records=()
+        load_framed_work_list test "$FRAME_FILE" loaded_records
+    '
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"count mismatch (consumed 0 of expected 18446744073709551616; terminal 18446744073709551616)"* ]]
+    [[ "$output" != *"arithmetic expression"* ]]
+}
+
+@test "a malformed later age replay record prevents every DELETE and preserves its assessment record" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$GH_LOG" GH_TOKEN="test-token" OWNER="test-owner" \
+        DRY_RUN="false" KEEP_LATEST_COUNT="0" KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            eval "$(declare -f load_framed_work_list | sed "1s/^load_framed_work_list /original_load_framed_work_list /")"
+            load_framed_work_list() {
+                if [[ "$1" == "deletion replay" ]]; then
+                    printf "work-list|expected|2\\n1|101|obsolete-a\\nmalformed\\nwork-list|complete|2\\n" > "$2"
+                fi
+                original_load_framed_work_list "$@"
+            }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"obsolete-a\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"obsolete-b\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ ! -s "$GH_LOG" ]]
+    [[ "$output" == *"Failed to read prepared deletion record; skipping stale"* ]]
+    [[ "$output" == *"Summary: kept=0, decided=2, deleted=0, delete_failures=0"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+}
+
+@test "age cleanup keeps a DELETE client response off its result record" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="test-token" OWNER="test-owner" DRY_RUN="false" \
+        KEEP_LATEST_COUNT="0" KEEP_MONTHS="0" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then printf "%s\\n" "client response"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":1}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *"client response"* ]]
+    [[ "$output" == *"Summary: kept=0, decided=1, deleted=1, delete_failures=0"* ]]
+}
+
+@test "age main rejects result records with extra lines before arithmetic" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="test-token" OWNER="test-owner" DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            purge_container() { printf "%s\\n" stray "0|0|0|0"; }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"Failed to read cleanup result; skipping stale"* ]]
+    [[ "$output" == *"Packages assessed: 0"* ]]
+    [[ "$output" == *"Packages skipped (processing failed): 1"* ]]
+}
+
+@test "age main refuses noncanonical and oversized result counters through the shared parser" {
+    local invalid_counter
+
+    for invalid_counter in 08 2147483648; do
+        run env \
+            PROJECT_ROOT="$PROJECT_ROOT" RESULT_COUNTER="$invalid_counter" GH_TOKEN="test-token" OWNER="test-owner" DRY_RUN="false" \
+            bash -c '
+                set -euo pipefail
+                source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+                purge_container() { printf "%s\\n" "$RESULT_COUNTER|0|0|0"; }
+                main stale
+            '
+
+        [[ "$status" -eq 1 ]]
+        [[ "$output" == *"cleanup result rejected: counter 1 must be a canonical decimal between 0 and 2147483647"* ]]
+        [[ "$output" != *"arithmetic expression"* ]]
+        [[ "$output" == *"Packages assessed: 0"* ]]
+    done
+}
+
+@test "age main refuses a result counter that would overflow an aggregate" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="test-token" OWNER="test-owner" DRY_RUN="false" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+            purge_container() { printf "%s\\n" "2147483647|0|0|0"; }
+            main first second
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"cleanup result rejected: counter 1 would overflow its aggregate"* ]]
+    [[ "$output" == *"Packages assessed: 1"* ]]
+    [[ "$output" == *"Versions kept: 2147483647"* ]]
+    [[ "$output" != *"Versions kept: 4294967294"* ]]
 }
 
 run_old_version_validation_case() {
