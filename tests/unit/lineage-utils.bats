@@ -44,8 +44,18 @@ teardown() {
     [ "$status" -eq 0 ]
 }
 
+@test "is_lineage_sidecar: .bake-attest-entries.json is pipeline control state" {
+    run bash -c "source '${HELPERS_DIR}/lineage-utils.sh'; is_lineage_sidecar '.bake-attest-entries.json'"
+    [ "$status" -eq 0 ]
+}
+
+@test "is_lineage_sidecar: other dot-prefixed JSON is a candidate lineage file" {
+    run bash -c "source '${HELPERS_DIR}/lineage-utils.sh'; is_lineage_sidecar '.valid-lineage.json'"
+    [ "$status" -eq 1 ]
+}
+
 # ---------------------------------------------------------------------------
-# is_lineage_sidecar: false (return 1) cases — real lineage files
+# is_lineage_sidecar: false (return 1) cases — candidate lineage files
 # ---------------------------------------------------------------------------
 
 @test "is_lineage_sidecar: plain *.json returns 1 (lineage file)" {

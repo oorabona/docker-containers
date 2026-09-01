@@ -3659,6 +3659,22 @@ EOF
     [ -z "$result" ]
 }
 
+@test "hidden bake control state is skipped while an ordinary lineage record is evaluated" {
+    local lineage_dir="$TEST_TEMP_DIR/bake-control-state/.build-lineage"
+    local probe_stub rc=0 result
+    mkdir -p "$lineage_dir"
+    printf '[]\n' > "$lineage_dir/.bake-attest-entries.json"
+    printf '%s\n' '{"container":"myimage","tag":"stable","base_image_ref":"alpine:3.21","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+        > "$lineage_dir/myimage-stable.json"
+    probe_stub=$(_make_digest_probe_stub "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" PROBE_CMD="$probe_stub" bash "${DETECTOR_SCRIPT}" "$lineage_dir") || rc=$?
+
+    [ "$rc" -eq 0 ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].container')" = "myimage" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "unchanged" ]
+}
+
 @test "active lineage with no container fails instead of producing an empty scan" {
     local lineage_dir="$TEST_TEMP_DIR/missing-container/.build-lineage"
     mkdir -p "$lineage_dir"
