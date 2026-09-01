@@ -6,6 +6,10 @@
 # KEEP_LATEST_COUNT (default: 10; range: 0 through 2147483647; 0 disables the
 # latest-version floor), and KEEP_MONTHS (default: 6; same range; 0 disables
 # the age-retention floor).
+#
+# Usage: cleanup-old-versions.sh [container]
+# With an argument, process exactly one package. Multiple package names need a
+# different caller input shape and are refused.
 
 _cleanup_old_versions_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../helpers/version-record-validation.sh
@@ -22,6 +26,23 @@ script_root() {
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
   cd "$script_dir/.." && pwd
+}
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: cleanup-old-versions.sh [container]
+
+Without container, process every discovered package. With container, process
+exactly one package whose name matches ^[a-z0-9][a-z0-9._-]*$. Whitespace,
+globs, newlines, empty values, and multiple package names are rejected.
+EOF
+}
+
+# This is the existing valid_container_target contract used before a container
+# forms a project path in scripts/check-gpg-keys.sh. GHCR package components
+# use the same safe shape.
+valid_container_target() {
+  [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]]
 }
 
 print_banner() {
@@ -292,6 +313,22 @@ purge_container() {
 main() {
   set -euo pipefail
 
+  if [[ "${1-}" == --help || "${1-}" == -h ]]; then
+    usage
+    return 0
+  fi
+  # The executable accepts one optional package. Unit tests source main to
+  # exercise aggregate accounting across fixture packages; that is not a CLI
+  # input shape and does not alter the executable contract.
+  if [[ "${BASH_SOURCE[0]}" == "$0" && $# -gt 1 ]]; then
+    printf '%s\n' 'cleanup target rejected: supply exactly one package name or no package name' >&2
+    return 64
+  fi
+  if [[ $# -eq 1 ]] && ! valid_container_target "$1"; then
+    printf '%s\n' 'cleanup target rejected: package name must match ^[a-z0-9][a-z0-9._-]*$' >&2
+    return 64
+  fi
+
   if [[ ! -v DRY_RUN ]]; then DRY_RUN=false; fi
   if [[ ! -v KEEP_LATEST_COUNT ]]; then KEEP_LATEST_COUNT=10; fi
   if [[ ! -v KEEP_MONTHS ]]; then KEEP_MONTHS=6; fi
@@ -302,13 +339,13 @@ main() {
   : "${OWNER:?OWNER is required}"
 
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
-  local root_dir containers container result status
+  local root_dir containers_output container result status
+  local -a containers=()
   local kept decided deleted delete_failures
   root_dir=$(script_root) || return 1
-  print_banner
 
   if [[ $# -gt 0 ]]; then
-    containers="$*"
+    containers=("$@")
   else
     # The workflow's reference-aware sweep coverage is stated once in the run
     # summary below. Untagged versions are retained here, not deleted.
@@ -318,12 +355,19 @@ main() {
     # Keep the discovery paths aligned; otherwise untagged versions can only
     # accumulate. If its obsolete-tag deletion fails, it skips orphan cleanup
     # fail-closed, which deliberately retains untagged versions for that run.
-    containers=$(find "$root_dir" -maxdepth 2 -name Dockerfile -exec dirname {} \; | sed "s|^$root_dir/||" | sort) || return 1
+    containers_output=$(find "$root_dir" -maxdepth 2 -name Dockerfile -exec dirname {} \; | sed "s|^$root_dir/||" | sort) || return 1
+    if [[ -z "${containers_output//[[:space:]]/}" ]]; then
+      printf '%s\n' 'Could not enumerate containers; refusing to make pruning decisions' >&2
+      return 1
+    fi
+    mapfile -t containers <<< "$containers_output"
   fi
+
+  print_banner
 
   local total_decided=0 total_deleted=0 total_kept=0 total_assessed=0
   local total_listing_failures=0 total_processing_failures=0 total_delete_failures=0
-  for container in $containers; do
+  for container in "${containers[@]}"; do
     echo ""
     echo "========================================"
     echo "Processing: $container"

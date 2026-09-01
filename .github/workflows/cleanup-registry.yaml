@@ -17,7 +17,7 @@ on:
         type: boolean
         default: false
       container_filter:
-        description: 'Only process this container (optional, for targeted cleanup)'
+        description: 'Only process one exact package name (optional); spaces, globs, and multiple names are rejected'
         required: false
         type: string
         default: ''

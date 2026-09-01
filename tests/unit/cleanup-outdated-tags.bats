@@ -977,7 +977,7 @@ run_orphan_phase_completion_case() {
         '
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Could not enumerate containers; refusing to make pruning decisions"* ]]
+    [[ "$output" == *"cleanup target rejected: package name must match"* ]]
     [[ "$output" != *"Purge Summary"* ]]
     [ ! -e "$gh_calls" ]
 }
@@ -1219,6 +1219,54 @@ EOF
     [[ "$status" -eq 0 ]]
     [[ "$(<"$age_log")" == "postgres" ]]
     [[ "$(<"$obsolete_log")" == "postgres" ]]
+}
+
+@test "real registry pruners refuse malformed targeted filters before processing a package" {
+    local script filter
+
+    for script in scripts/cleanup-old-versions.sh scripts/cleanup-outdated-tags.sh; do
+        for filter in 'postgres vector' '*' '   ' $'postgres\nvector' ''; do
+            run env \
+                GH_TOKEN="test-token" \
+                OWNER="test-owner" \
+                DRY_RUN="true" \
+                KEEP_LATEST_COUNT="0" \
+                KEEP_MONTHS="0" \
+                bash "$PROJECT_ROOT/$script" "$filter"
+
+            [[ "$status" -eq 64 ]]
+            [[ "$output" == *"cleanup target rejected:"* ]]
+            [[ "$output" != *"Processing:"* ]]
+            [[ "$output" != *"Purging obsolete images:"* ]]
+            [[ "$output" != *"Packages assessed:"* ]]
+        done
+
+        run env \
+            GH_TOKEN="test-token" \
+            OWNER="test-owner" \
+            DRY_RUN="true" \
+            KEEP_LATEST_COUNT="0" \
+            KEEP_MONTHS="0" \
+            bash "$PROJECT_ROOT/$script" postgres vector
+
+        [[ "$status" -eq 64 ]]
+        [[ "$output" == *"cleanup target rejected:"* ]]
+        [[ "$output" != *"Processing:"* ]]
+        [[ "$output" != *"Purging obsolete images:"* ]]
+        [[ "$output" != *"Packages assessed:"* ]]
+    done
+}
+
+@test "registry pruner help promises a single exact package target" {
+    local script
+
+    for script in scripts/cleanup-old-versions.sh scripts/cleanup-outdated-tags.sh; do
+        run bash "$PROJECT_ROOT/$script" --help
+
+        [[ "$status" -eq 0 ]]
+        [[ "$output" == *"exactly one package"* ]]
+        [[ "$output" == *"multiple package names are rejected"* ]]
+    done
 }
 
 @test "workflow attempts both registry pruners and fails after either failure" {

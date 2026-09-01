@@ -4,6 +4,10 @@
 # Optional env vars: DRY_RUN (default: false; exactly true or false),
 # KEEP_LATEST_COUNT (default: 10; 0 disables the latest-version floor), and
 # KEEP_MONTHS (default: 6; 0 disables the age-retention floor).
+#
+# Usage: cleanup-outdated-tags.sh [container]
+# With an argument, process exactly one package. Multiple package names need a
+# different caller input shape and are refused.
 
 _cleanup_outdated_tags_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../helpers/version-record-validation.sh
@@ -20,6 +24,23 @@ script_root() {
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
   cd "$script_dir/.." && pwd
+}
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: cleanup-outdated-tags.sh [container]
+
+Without container, process every discovered package. With container, process
+exactly one package whose name matches ^[a-z0-9][a-z0-9._-]*$. Whitespace,
+globs, newlines, empty values, and multiple package names are rejected.
+EOF
+}
+
+# This is the existing valid_container_target contract used before a container
+# forms a project path in scripts/check-gpg-keys.sh. GHCR package components
+# use the same safe shape.
+valid_container_target() {
+  [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]]
 }
 
 _cleanup_outdated_tags_delete() {
@@ -471,6 +492,22 @@ purge_dockerhub() {
 
 main() {
   set -euo pipefail
+  if [[ "${1-}" == --help || "${1-}" == -h ]]; then
+    usage
+    return 0
+  fi
+  # The executable accepts one optional package. Unit tests source main to
+  # exercise aggregate accounting across fixture packages; that is not a CLI
+  # input shape and does not alter the executable contract.
+  if [[ "${BASH_SOURCE[0]}" == "$0" && $# -gt 1 ]]; then
+    printf '%s\n' 'cleanup target rejected: supply exactly one package name or no package name' >&2
+    return 64
+  fi
+  if [[ $# -eq 1 ]] && ! valid_container_target "$1"; then
+    printf '%s\n' 'cleanup target rejected: package name must match ^[a-z0-9][a-z0-9._-]*$' >&2
+    return 64
+  fi
+
   if [[ ! -v DRY_RUN ]]; then DRY_RUN=false; fi
   if [[ ! -v KEEP_LATEST_COUNT ]]; then KEEP_LATEST_COUNT=10; fi
   if [[ ! -v KEEP_MONTHS ]]; then KEEP_MONTHS=6; fi
@@ -487,21 +524,25 @@ main() {
   # 16 is fail-closed when the listing required an orphan assessment but a
   # prior deletion failure or replay abort prevented that phase from running.
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
-  local containers container valid_tags valid_count result ghcr_status dh_result dh_status containers_discovered=true
+  local containers_output container valid_tags valid_count result ghcr_status dh_result dh_status containers_discovered=true
+  local -a containers=()
   local kept obsolete orphans delete_failures dh_assessed dh_deleted package_assessed skip_dockerhub
   local total_assessed=0 total_build_failures=0 total_listing_failures=0 total_processing_failures=0 total_ghcr_delete_failures=0 total_dh_delete_failures=0
   local total_kept=0 total_obsolete=0 total_orphans=0 total_dh_deleted=0
   if [[ $# -gt 0 ]]; then
-    containers="$*"
-  elif ! containers=$("$ROOT_DIR/make" list); then
+    containers=("$@")
+  elif ! containers_output=$("$ROOT_DIR/make" list); then
     containers_discovered=false
   fi
-  if [[ "$containers_discovered" != true || -z "${containers//[[:space:]]/}" ]]; then
+  if [[ $# -eq 0 ]] && [[ "$containers_discovered" != true || -z "${containers_output//[[:space:]]/}" ]]; then
     printf '%s\n' "Could not enumerate containers; refusing to make pruning decisions" >&2
     return 1
   fi
+  if [[ $# -eq 0 ]]; then
+    mapfile -t containers <<< "$containers_output"
+  fi
 
-  for container in $containers; do
+  for container in "${containers[@]}"; do
     echo ""; echo "========================================"; echo "Purging obsolete images: $container"; echo "========================================"
     if ! valid_tags=$(build_valid_tags "$container"); then
       echo "  Failed to get builds for $container, skipping"; total_build_failures=$((total_build_failures + 1)); continue
