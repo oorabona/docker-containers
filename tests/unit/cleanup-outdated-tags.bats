@@ -1170,6 +1170,57 @@ run_orphan_phase_completion_case() {
 
 }
 
+@test "a targeted cleanup workflow dispatch passes only its container to both registry pruners" {
+    local workflow_path age_step obsolete_step stub_dir
+    local age_log obsolete_log
+    workflow_path="$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml"
+    stub_dir="$BATS_TEST_TMPDIR/targeted-cleanup-stubs"
+    age_log="$BATS_TEST_TMPDIR/age-pruner-arguments.log"
+    obsolete_log="$BATS_TEST_TMPDIR/obsolete-pruner-arguments.log"
+    mkdir -p "$stub_dir"
+
+    age_step=$(yq -r '.jobs.cleanup.steps[] | select(.id == "cleanup_old_versions") | .run' "$workflow_path")
+    obsolete_step=$(yq -r '.jobs.cleanup.steps[] | select(.id == "purge_obsolete_images") | .run' "$workflow_path")
+
+    [[ "$age_step" == *'./scripts/cleanup-old-versions.sh "$CONTAINER_FILTER"'* ]]
+    [[ "$obsolete_step" == *'./scripts/cleanup-outdated-tags.sh "$CONTAINER_FILTER"'* ]]
+
+    cat > "$stub_dir/cleanup-old-versions.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$AGE_PRUNER_ARGUMENTS_LOG"
+EOF
+    cat > "$stub_dir/cleanup-outdated-tags.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$OBSOLETE_PRUNER_ARGUMENTS_LOG"
+EOF
+    chmod +x "$stub_dir/cleanup-old-versions.sh" "$stub_dir/cleanup-outdated-tags.sh"
+
+    # The workflow invokes repository-relative scripts. Normalize only those
+    # paths so this test can execute the extracted step logic against PATH stubs.
+    age_step=${age_step//.\/scripts\/cleanup-old-versions.sh/cleanup-old-versions.sh}
+    obsolete_step=${obsolete_step//.\/scripts\/cleanup-outdated-tags.sh/cleanup-outdated-tags.sh}
+
+    run env \
+        PATH="$stub_dir:$PATH" \
+        CONTAINER_FILTER="postgres" \
+        AGE_PRUNER_ARGUMENTS_LOG="$age_log" \
+        OBSOLETE_PRUNER_ARGUMENTS_LOG="$obsolete_log" \
+        bash -c "$age_step"
+
+    [[ "$status" -eq 0 ]]
+
+    run env \
+        PATH="$stub_dir:$PATH" \
+        CONTAINER_FILTER="postgres" \
+        AGE_PRUNER_ARGUMENTS_LOG="$age_log" \
+        OBSOLETE_PRUNER_ARGUMENTS_LOG="$obsolete_log" \
+        bash -c "$obsolete_step"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(<"$age_log")" == "postgres" ]]
+    [[ "$(<"$obsolete_log")" == "postgres" ]]
+}
+
 @test "workflow attempts both registry pruners and fails after either failure" {
     local workflow purge_step
     workflow=$(<"$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml")

@@ -35,8 +35,7 @@ env:
   KEEP_MONTHS: 6
 
 # Never cancel a started cleanup: a half-replayed deletion plan leaves no summary. The key is
-# fixed rather than partitioned by container_filter, because cleanup-old-versions sweeps every
-# discovered container and cleanup-ext-images is workflow-global.
+# fixed rather than partitioned by container_filter, because cleanup-ext-images is workflow-global.
 # A newer dispatch supersedes a PENDING run, which shows up as cancelled. The obsolete-tag prune
 # it carried is not recovered by the schedule, which runs that pruner with DRY_RUN=true.
 concurrency:
@@ -58,7 +57,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           OWNER: ${{ github.repository_owner }}
-        run: ./scripts/cleanup-old-versions.sh
+          CONTAINER_FILTER: ${{ inputs.container_filter }}
+        run: |
+          if [[ -n "$CONTAINER_FILTER" ]]; then
+            ./scripts/cleanup-old-versions.sh "$CONTAINER_FILTER"
+          else
+            ./scripts/cleanup-old-versions.sh
+          fi
 
       - name: Install yq
         if: ${{ always() && (github.event_name == 'schedule' || inputs.purge_obsolete == true) }}
