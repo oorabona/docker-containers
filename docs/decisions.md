@@ -66,11 +66,11 @@ Daily cron (via `upstream-monitor.yaml`) compares each container/variant's `base
 
 ### Key design choices
 
-**Tri-state output** (`drift` / `unchanged` / `error` / `legacy`): probe failures are not collapsed to drift to avoid false-positive rebuilds. `legacy` status handles pre-#530 lineage without `base_image_digest`.
+**Status enum** (`drift` / `unchanged` / `error` / `legacy` / `no_external_base`): probe failures are not collapsed to drift to avoid false-positive rebuilds. `legacy` handles pre-#530 lineage without `base_image_digest`; `no_external_base` means the stage has no external base to compare against, so there is nothing to act on. `upstream-monitor.yaml` validates records against this same set.
 
 **Per-container grouping**: output is `[{container, variants[]}]` rather than one record per variant. This enables one PR per container (not one per variant), reducing PR noise.
 
-**`is_lineage_sidecar()` helper** (`helpers/lineage-utils.sh`): single source of truth for identifying `.sbom.json`, `.changelog.json`, `.history.json`, `ext-*.json` files that should not be treated as container lineage. Eliminates regex scatter across consumers.
+**`is_lineage_sidecar()` helper** (`helpers/lineage-utils.sh`): what the whole-directory readers — `detect-base-digest-drift.sh` and `enrich-lineage.sh` — use to skip `.sbom.json`, `.changelog.json`, `.history.json`, `ext-*.json` and `.bake-attest-entries.json`. Read the predicate for the current list rather than copying it here. It does not cover every non-lineage file in the directory: `build-result-*.json` is kept away from those readers by the artifact upload's exclusion list, not by this helper, and the lineage-count diagnostic in `auto-build.yaml` still hand-writes its own filter.
 
 **`LAST_REBUILD.md` reuse**: the existing `<container>/LAST_REBUILD.md` pattern (written by upstream-monitor for version updates, watched by auto-build path filter) is reused with a distinct `## base-digest-drift (YYYY-MM-DD)` section header. No new marker file needed.
 

@@ -18,6 +18,7 @@
 # skipped by consumers walking .build-lineage/*.json.
 #
 # Sidecar patterns:
+#   .bake-attest-entries.json — bake attestation control state
 #   *.sbom.json       — SPDX SBOM data (anchore/syft output)
 #   *.changelog.json  — package delta between consecutive builds
 #   *.history.json    — monotonic build history log
@@ -29,6 +30,7 @@
 is_lineage_sidecar() {
     local f="${1:-}"
     case "$f" in
+        .bake-attest-entries.json) return 0 ;;
         *.sbom.json|*.changelog.json|*.history.json) return 0 ;;
         ext-*.json) return 0 ;;
         *) return 1 ;;

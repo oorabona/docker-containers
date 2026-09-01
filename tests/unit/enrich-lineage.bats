@@ -138,6 +138,18 @@ _run_enrich() {
   [[ "$output" == *"Enriched 0"* ]]
 }
 
+@test "hidden bake control state is skipped while an ordinary lineage record is enriched" {
+  printf '[]\n' > "$LINEAGE_DIR/.bake-attest-entries.json"
+  _write_lineage "good-1.0.0.json" "good" "1.0.0"
+
+  _run_enrich
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$LINEAGE_DIR/.bake-attest-entries.json")" = "[]" ]
+  [ "$(jq -r 'has("multi_arch_index_digest")' "$LINEAGE_DIR/good-1.0.0.json")" = "true" ]
+  [[ "$output" == *"Enriched 1 lineage files (1 skipped, 0 errors)"* ]]
+}
+
 # -----------------------------------------------------------------------
 # 4. Malformed JSON / missing container field: logged as ::warning::, batch continues
 # -----------------------------------------------------------------------
