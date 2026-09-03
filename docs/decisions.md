@@ -41,8 +41,12 @@ Five atomic fixes address base_image_ref leaking `${...}` placeholders into line
 | `scripts/enrich-lineage.sh` | `.container`, `.tag`, `.multi_arch_index_digest` | Yes — uses `// empty` guards; ignores unknown fields |
 | `helpers/extension-duration-utils.sh` | `.duration_seconds` | Yes — uses `// 0` guard; ignores unknown fields |
 | `.github/actions/build-container/action.yaml` | file existence check only (no jq field reads) | Yes — additive fields are transparent |
+| `scripts/detect-base-digest-drift.sh` | `base_image_ref`, `base_image_digest` | Yes — semantic reader; its workflow validation consumes its status result |
 
-Schema v2 currently has only the dashboard as a semantic consumer of the new fields. Future tools that read `base_image_ref` or `lineage_schema_version` must handle the field with a `// default` guard for backward compatibility with v1 files still present in the GHA cache.
+The dashboard and drift detector are semantic consumers of the new fields. Future
+tools that read `base_image_ref` or `lineage_schema_version` must handle the
+field with a `// default` guard for backward compatibility with v1 files still
+present in the GHA cache.
 
 ### Post-merge expectation
 
@@ -66,7 +70,7 @@ Daily cron (via `upstream-monitor.yaml`) compares each container/variant's `base
 
 ### Key design choices
 
-**Status enum** (`drift` / `unchanged` / `error` / `legacy` / `no_external_base`): probe failures are not collapsed to drift to avoid false-positive rebuilds. `legacy` handles pre-#530 lineage without `base_image_digest`; `no_external_base` means the stage has no external base to compare against, so there is nothing to act on. `upstream-monitor.yaml` validates records against this same set.
+**Status enum** (`drift` / `unchanged` / `error` / `legacy` / `no_external_base` / `sibling_target`): probe failures are not collapsed to drift to avoid false-positive rebuilds. `legacy` handles pre-#530 lineage without `base_image_digest`; `no_external_base` means the stage has no external base to compare against, so there is nothing to act on. `sibling_target` means the base is another target built in the same invocation, so there is no registry comparison to make and the record is complete. `upstream-monitor.yaml` validates records against this same set.
 
 **Per-container grouping**: output is `[{container, variants[]}]` rather than one record per variant. This enables one PR per container (not one per variant), reducing PR noise.
 
@@ -91,3 +95,28 @@ If container A's base is container B (also project-produced), and both drift, tw
 **(b) Auto-merge for digest-only drifts.** Deferred: requires explicit policy decision about risk tolerance for unreviewed base image changes.
 
 **(c) Event-driven detection (registry webhooks).** Deferred: webhook infrastructure cost exceeds benefit at current project scale; daily cron is sufficient.
+
+---
+
+## #1523 — Lineage schema v3 base identity
+
+This branch defines the schema-v3 writer contract; it does not change the
+current emitters, which still write `lineage_schema_version: 2`. A future
+adopter will describe its selected runnable stage with one of four explicit
+base identities: `no_external_base` for `scratch`,
+`unresolved_external_base` when its reference cannot be resolved,
+`sibling_target` with the exact supplying cell for a target built in the same
+invocation, or an external base.
+
+An external base records its textual `base_image_ref` and the immutable
+image-index `base_image_digest`; writers obtain that digest from an inspected
+OCI image-index or manifest-list descriptor, not from a digest-shaped string.
+Marker identities intentionally carry neither external field. The identity
+decision preserves supported older records and rejects malformed or unsupported
+schema versions. It is structural validation only: a network reader must apply
+registry-trust policy separately.
+
+The complete-record validator applies the stricter v3 writer envelope before
+the atomic writer creates a parent directory, and the writer installs the file
+at exactly its requested pathname. Future emitters must adopt those helpers to
+receive that behavior; no production writer does so in this slice.
