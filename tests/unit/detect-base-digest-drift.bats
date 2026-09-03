@@ -3717,6 +3717,81 @@ EOF
     [ "$(get_output drift_matrix)" = "[]" ]
 }
 
+@test "sibling target marker is not applicable, preserves its exact supplier, and is not a comparison" {
+    local lineage_dir="$TEST_TEMP_DIR/base-image-kind-sibling-target"
+    local sentinel="$TEST_TEMP_DIR/sibling-probe-called"
+    mkdir -p "$lineage_dir"
+    jq -cn '
+      {container:"wordpress", tag:"7.1.0-alpine", base_image_kind:"sibling_target",
+       base_image_sibling:{container:"php", version:"8.5.9-fpm-alpine", flavor:"",
+                           platform:"linux/amd64", textual_ref:"ghcr.io/oorabona/php:latest",
+                           bake_target_id:"php_8_5_9_fpm_alpine"}}
+    ' > "$lineage_dir/wordpress.json"
+    local probe_stub="$TEST_TEMP_DIR/probe-sibling-target"
+    printf '#!/usr/bin/env bash\ntouch "%s"\nexit 99\n' "$sentinel" > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="wordpress" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="wordpress" \
+        PROBE_CMD="$probe_stub" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+    [ ! -e "$sentinel" ] || {
+        echo "Sibling target must not trigger an external digest probe"
+        return 1
+    }
+    [ "$(jq -r '.[0].variants[0].status' <<< "$result")" = "sibling_target" ] || {
+        echo "Sibling target must have its own not-applicable outcome"
+        return 1
+    }
+    [ "$(jq -r '.[0].variants[0].base_image_sibling.bake_target_id' <<< "$result")" = "php_8_5_9_fpm_alpine" ] || {
+        echo "Sibling target outcome must retain the exact supplying cell"
+        return 1
+    }
+
+    _load_drift_consumer
+    validate_drift_result "$result"
+    local notice rc=0
+    notice=$(emit_drift_notice "$result") || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$notice" = "::notice::No direct base image digest comparison was applicable" ] || {
+        echo "Sibling target must not be counted as a comparison record"
+        return 1
+    }
+}
+
+@test "sibling target marker without a supplier is an error outcome and fails coverage" {
+    local lineage_dir="$TEST_TEMP_DIR/malformed-sibling-target"
+    mkdir -p "$lineage_dir"
+    jq -cn '{container:"wordpress", tag:"7.1.0-alpine", base_image_kind:"sibling_target"}' \
+        > "$lineage_dir/wordpress.json"
+
+    local result rc=0 notice
+    result=$(_VALID_CONTAINERS_OVERRIDE="wordpress" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="wordpress" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+    [ "$(jq -r '.[0].variants[0].status' <<< "$result")" = "error" ] || {
+        echo "Sibling target without a supplier must be an error outcome"
+        return 1
+    }
+    [ "$(jq -r '.[0].variants[0].error_reason' <<< "$result")" = "malformed_sibling_target" ]
+
+    _load_drift_consumer
+    validate_drift_result "$result"
+    notice=$(emit_drift_notice "$result") || rc=$?
+    [ "$rc" -eq 1 ]
+    [[ "$notice" == *"coverage incomplete"* ]]
+}
+
+@test "workflow validator rejects a sibling target outcome without a supplier" {
+    _load_drift_consumer
+
+    local malformed='[{"container":"wordpress","internal_deps":[],"variants":[{"variant_tag":"7.1.0-alpine","status":"sibling_target"}]}]'
+    if validate_drift_result "$malformed"; then
+        echo "Workflow validator must reject a sibling target without a supplier"
+        return 1
+    fi
+}
+
 @test "a no_external_base-only result is evaluated unscoped and when scoped" {
     _load_drift_consumer
 

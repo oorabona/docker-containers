@@ -1863,9 +1863,17 @@ jobs:
                   (.variant_tag | type == "string" and length > 0) and
                   (.status as $status |
                     ($status | type == "string") and
-                    (["drift", "unchanged", "legacy", "error", "no_external_base"] | index($status) != null)) and
+                    (["drift", "unchanged", "legacy", "error", "no_external_base", "sibling_target"] | index($status) != null)) and
                   (if .status == "error" then
                      (has("error_reason") and (.error_reason | type == "string" and length > 0))
+                   elif .status == "sibling_target" then
+                     (has("base_image_sibling") and
+                      (.base_image_sibling | type == "object") and
+                      (.base_image_sibling as $supplier |
+                        ([$supplier.container, $supplier.version, $supplier.platform,
+                          $supplier.textual_ref, $supplier.bake_target_id]
+                         | all(type == "string" and length > 0)) and
+                        ($supplier.flavor | type == "string")))
                    else
                      true
                    end)))
@@ -1903,6 +1911,8 @@ jobs:
               return 1
             elif [[ "$record_count" -eq 0 ]]; then
               echo "::notice::No base image digest drift evaluation was performed — nothing to evaluate"
+            elif [[ "$compared_count" -eq 0 ]]; then
+              echo "::notice::No direct base image digest comparison was applicable"
             elif [[ "$mode" == "coverage" ]]; then
               # The coverage gate runs before any scoped success path.  A
               # populated, complete result has no closing notice until its

@@ -2018,6 +2018,9 @@ jobs:
           DRY_RUN: ${{ env.DRY_RUN }}
           DOCKER_NO_CACHE: ${{ env.DOCKER_NO_CACHE }}
           BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
+          # mode=min keeps the resolved external materials consumed by lineage,
+          # without retaining build-argument values and source maps.
+          BUILDX_METADATA_PROVENANCE: min
           PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
           REBUILD: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
         run: |
@@ -2173,7 +2176,7 @@ jobs:
           overwrite: true
 
       # Trivy scanning is handled by the dedicated bake-trivy job (FIX 5).
-      # amd64-only: SBOM generation + attestation + lineage emission.
+      # amd64-only: SBOM generation and attestation collection are advisory.
       # v1 behaviour: on pull_request the bake job is BUILD-ONLY (compile validation);
       # nothing is pushed to the registry so SBOM generation and attestation are
       # skipped — scanning stale or absent refs would produce misleading results.
@@ -2187,7 +2190,7 @@ jobs:
         with:
           syft-version: v1.51.0
 
-      - name: Generate SBOM and emit lineage (bake amd64)
+      - name: Generate SBOM and collect attestation subjects (bake amd64)
         id: bake-sbom
         if: steps.install-syft-bake.outcome == 'success' && github.event_name != 'pull_request' && env.DRY_RUN != 'true'
         env:
@@ -2239,9 +2242,6 @@ jobs:
             cell=$(jq -c ".[$i]" <<< "$cells_json")
             container=$(jq -r '.container'       <<< "$cell")
             tag=$(jq -r '.tag'                   <<< "$cell")
-            flavor=$(jq -r '.flavor // ""'       <<< "$cell")
-            is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
-            is_latest=$(jq -r 'if has("is_latest_version") then (if .is_latest_version then "true" else "false" end) else "true" end' <<< "$cell")
             iref=$(jq -r '.intermediate_ref'     <<< "$cell")
             image_ref="${iref//\$\{REMOTE_CR\}/${REMOTE_CR}}-amd64"
 
@@ -2270,36 +2270,98 @@ jobs:
                 "$attest_manifest" > "${attest_manifest}.tmp" && mv "${attest_manifest}.tmp" "$attest_manifest" || true
             fi
 
-            # Emit schema-v2 lineage JSON
-            lineage_file=".build-lineage/${container}-${tag}.json"
-            built_at="$(date -Iseconds)"
-            ghcr_image="${REMOTE_CR}/${container}:${tag}"
-            jq -cn \
-              --arg container "$container" \
-              --arg version   "$tag" \
-              --arg tag       "$tag" \
-              --arg flavor    "$flavor" \
-              --arg platform  "linux/amd64" \
-              --arg build_digest "$digest" \
-              --arg base_image_ref "" \
-              --arg ghcr      "$ghcr_image" \
-              --arg dockerhub "docker.io/oorabona/${container}:${tag}" \
-              --arg built_at  "$built_at" \
-              --arg is_default "$is_default" \
-              --arg is_latest  "$is_latest" \
-              '{container:$container, version:$version, tag:$tag, flavor:$flavor,
-                platform:$platform, build_digest:$build_digest,
-                base_image_ref:$base_image_ref,
-                images:{ghcr:$ghcr, dockerhub:$dockerhub},
-                built_at:$built_at,
-                is_default:($is_default == "true"),
-                is_latest_version:($is_latest == "true")}' \
-              > "$lineage_file" || true
-
             echo "::endgroup::"
           done
           echo "attest_manifest=${attest_manifest}" >> "$GITHUB_OUTPUT"
         continue-on-error: true
+
+      # Provenance is produced by the successful bake itself, not by Syft.
+      # This is intentionally mandatory: production bakes must either publish
+      # every lineage record or fail visibly before the job can report success.
+      - name: Emit lineage (bake amd64)
+        id: bake-lineage
+        if: steps.bake-build.outcome == 'success' && github.event_name != 'pull_request' && env.DRY_RUN != 'true'
+        env:
+          BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
+          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
+          REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          source ./helpers/base-image-utils.sh
+          source ./helpers/retry.sh
+          chmod +x scripts/generate-bake-hcl.sh
+
+          scope_args=()
+          [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
+          [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
+          [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          [[ -n "${CONTAINER_SCOPES:-}" ]] && scope_args+=(--container-scopes "${CONTAINER_SCOPES}")
+          final_args=()
+          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
+            final_args=(--include-final-build)
+          fi
+
+          # shellcheck disable=SC2086
+          cells_json=$(./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" ${BAKE_CONTAINERS})
+          if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            # shellcheck disable=SC2086
+            retained_cells=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
+            cells_json=$(jq -s '(.[0] + .[1]) | unique_by([.container, (.tag // ""), (.flavor // "")])' <<< "$cells_json"$'\n'"$retained_cells")
+          fi
+          ncells=$(jq 'length' <<< "$cells_json")
+          mkdir -p .build-lineage
+
+          for (( i=0; i<ncells; i++ )); do
+            cell=$(jq -c ".[$i]" <<< "$cells_json")
+            container=$(jq -r '.container' <<< "$cell")
+            tag=$(jq -r '.tag' <<< "$cell")
+            flavor=$(jq -r '.flavor // ""' <<< "$cell")
+            target_id=$(jq -r '.target_id' <<< "$cell")
+            runtime_base=$(jq -c '.runtime_base' <<< "$cell")
+            is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
+            is_latest=$(jq -r 'if has("is_latest_version") then (if .is_latest_version then "true" else "false" end) else "true" end' <<< "$cell")
+            iref=$(jq -r '.intermediate_ref' <<< "$cell")
+            image_ref="${iref//\$\{REMOTE_CR\}/${REMOTE_CR}}-amd64"
+
+            digest=""
+            raw_manifest=$(retry_with_backoff 3 10 docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
+            if [[ -n "$raw_manifest" ]]; then
+              digest="sha256:$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}')"
+            fi
+
+            target_metadata=$(jq -c --arg tid "$target_id" '.[$tid] // {}' \
+              "${RUNNER_TEMP}/bake-metadata-amd64.json")
+            if ! base_fields=$(lineage_base_fields_from_provenance "$runtime_base" "$target_metadata"); then
+              echo "::error::Bake provenance did not provide the final runnable base digest for ${container}:${tag} (target ${target_id})"
+              exit 1
+            fi
+            lineage_file=".build-lineage/${container}-${tag}.json"
+            built_at="$(date -Iseconds)"
+            ghcr_image="${REMOTE_CR}/${container}:${tag}"
+            lineage_record=$(jq -cn \
+              --arg container "$container" \
+              --arg version "$tag" \
+              --arg tag "$tag" \
+              --arg flavor "$flavor" \
+              --arg platform "linux/amd64" \
+              --arg build_digest "$digest" \
+              --argjson base_fields "$base_fields" \
+              --arg ghcr "$ghcr_image" \
+              --arg dockerhub "docker.io/oorabona/${container}:${tag}" \
+              --arg built_at "$built_at" \
+              --arg is_default "$is_default" \
+              --arg is_latest "$is_latest" \
+              '{lineage_schema_version:2,
+                container:$container, version:$version, tag:$tag, flavor:$flavor,
+                platform:$platform, build_digest:$build_digest,
+                images:{ghcr:$ghcr, dockerhub:$dockerhub},
+                built_at:$built_at,
+                is_default:($is_default == "true"),
+                is_latest_version:($is_latest == "true")} + $base_fields' \
+              )
+            write_lineage_record_atomically "$lineage_file" "$lineage_record"
+          done
 
       # Upload all bake SBOMs as a single combined artifact so the bake-attest
       # matrix job can download them in one step.  The glob .build-lineage/*.sbom.json
@@ -2330,7 +2392,7 @@ jobs:
 
       - name: Upload build lineage (bake amd64)
         id: upload_build_lineage_bake_amd64
-        if: steps.bake-sbom.outcome == 'success' && github.event_name != 'pull_request'
+        if: steps.bake-lineage.outcome == 'success' && github.event_name != 'pull_request'
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
@@ -2511,6 +2573,8 @@ jobs:
           DRY_RUN: ${{ env.DRY_RUN }}
           DOCKER_NO_CACHE: ${{ env.DOCKER_NO_CACHE }}
           BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
+          # mode=min retains the resolved materials and omits source maps.
+          BUILDX_METADATA_PROVENANCE: min
           PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
           REBUILD: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
         run: |
