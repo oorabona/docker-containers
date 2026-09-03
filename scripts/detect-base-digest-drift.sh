@@ -9,8 +9,9 @@
 #   drift     — recorded_digest != current_digest (real drift)
 #   unchanged — recorded_digest == current_digest (no action needed)
 #   error     — the variant could not be evaluated; error_reason identifies why
-#   legacy    — lineage lacks base_image_digest field (pre-v2); rebuild baselines it
+#   legacy    — a v1 external lineage record lacks comparison evidence; rebuild baselines it
 #   no_external_base — the stage has no external base to compare (no action needed)
+#   sibling_target — the final base is another Bake target (no registry comparison)
 #
 # Usage:
 #   detect-base-digest-drift.sh [--baseline-only] [LINEAGE_DIR]
@@ -42,7 +43,8 @@
 #
 # Exit codes:
 #   0   — Success (drift/unchanged/legacy/error records emitted; drift itself is NOT an error)
-#   1   — Fatal script error (e.g., invalid digest shape passed to emit)
+#   1   — Script error, or incomplete baseline input. In baseline mode, valid
+#         partial JSON may be emitted before this status reports skipped input.
 #   2   — Tooling failure (./make list unavailable or returned empty)
 #
 # Digest shape validation (injection prevention):
@@ -71,6 +73,8 @@ source "${PROJECT_ROOT}/helpers/gha.sh"
 source "${PROJECT_ROOT}/helpers/retry.sh"
 # shellcheck source=../helpers/base-cache-utils.sh
 source "${PROJECT_ROOT}/helpers/base-cache-utils.sh"
+# shellcheck source=../helpers/base-image-utils.sh
+source "${PROJECT_ROOT}/helpers/base-image-utils.sh"
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -482,6 +486,26 @@ fi
 declare -A _container_variants  # container_name -> newline-separated JSON fragments
 declare -a _container_order     # ordered list of unique container names seen
 declare -A _DIGEST_CACHE        # verbatim base_image_ref -> probed digest (successes only)
+baseline_input_failed=false
+
+# _decode_lineage_base <lineage-file>
+#
+# Decode the complete base-field family once, before normal and baseline
+# behavior diverge.  The shared vocabulary owns the marker/external-field
+# mutual-exclusion rule, including presence-only poisoned fields.
+_decode_lineage_base() {
+    local decision
+    if ! decision=$(lineage_schema_decision_file "$1"); then
+        if jq -e 'type == "object" and .class == "Invalid" and (.reason | type == "string")' \
+            <<< "$decision" >/dev/null 2>&1; then
+            printf '%s\n' "$decision"
+        else
+            jq -cn '{class:"Invalid", reason:"invalid_lineage_schema"}'
+        fi
+        return 0
+    fi
+    printf '%s\n' "$decision"
+}
 
 for lineage_file in "${lineage_files[@]}"; do
     basename_file="$(basename "$lineage_file")"
@@ -491,9 +515,24 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
-    # A malformed active lineage payload has no trustworthy identity to attach
-    # to an error record.  Failing the detector is the only honest result.
+    if [[ ! -r "$lineage_file" ]]; then
+        gha_error 'Could not read lineage entry %s' "$basename_file" >&2
+        if [[ "$BASELINE_ONLY" == "true" ]]; then
+            baseline_input_failed=true
+            continue
+        fi
+        exit 1
+    fi
+
+    # A malformed payload has no trustworthy identity to attach to an error
+    # record. Baseline mode continues so valid legacy records remain visible,
+    # but its final exit status still reports that coverage was incomplete.
     if ! jq -e 'type == "object"' "$lineage_file" >/dev/null 2>&1; then
+        if [[ "$BASELINE_ONLY" == "true" ]]; then
+            gha_error 'Could not read baseline lineage entry %s: payload is not a JSON object' "$basename_file" >&2
+            baseline_input_failed=true
+            continue
+        fi
         gha_error "Could not evaluate %s: lineage payload is not a JSON object" "$basename_file" >&2
         exit 1
     fi
@@ -501,6 +540,11 @@ for lineage_file in "${lineage_files[@]}"; do
     # Parse required fields
     container=$(jq -re '.container // empty' "$lineage_file" 2>/dev/null || true)
     if [[ -z "$container" ]]; then
+        if [[ "$BASELINE_ONLY" == "true" ]]; then
+            gha_warning "Skipping unusable baseline entry %s: missing 'container' field" "$basename_file" >&2
+            baseline_input_failed=true
+            continue
+        fi
         gha_error "Could not evaluate %s: missing 'container' field" "$basename_file" >&2
         exit 1
     fi
@@ -510,6 +554,11 @@ for lineage_file in "${lineage_files[@]}"; do
     # as TWO patterns, so "ansible" matches and "malicious" passes validation silently.
     # Explicit cntrl-char rejection at entry point closes that bypass entirely.
     if [[ "$container" =~ [[:cntrl:]] ]]; then
+        if [[ "$BASELINE_ONLY" == "true" ]]; then
+            gha_warning 'Skipping unusable baseline entry %s: container name contains control chars' "$basename_file" >&2
+            baseline_input_failed=true
+            continue
+        fi
         gha_error 'Could not evaluate lineage entry %s: container name contains control chars: %s' \
             "$basename_file" "$container" >&2
         exit 1
@@ -521,6 +570,11 @@ for lineage_file in "${lineage_files[@]}"; do
     # pass grep -xF while containing shell metacharacters.  Rejecting here ensures
     # NO container reaching the emitted drift matrices can contain metacharacters.
     if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
+        if [[ "$BASELINE_ONLY" == "true" ]]; then
+            gha_warning 'Skipping unusable baseline entry %s: container name contains invalid characters' "$basename_file" >&2
+            baseline_input_failed=true
+            continue
+        fi
         gha_error 'Could not evaluate lineage entry %s: container name contains invalid characters: %s' \
             "$basename_file" "$container" >&2
         exit 1
@@ -552,6 +606,12 @@ for lineage_file in "${lineage_files[@]}"; do
         fi
     fi
     if ! grep -qxF -- "$container" <<<"$_valid_containers"; then
+        if [[ "$BASELINE_ONLY" == "true" ]]; then
+            gha_warning "Skipping unusable baseline entry %s: invalid container name '%s'" \
+                "$basename_file" "$container" >&2
+            baseline_input_failed=true
+            continue
+        fi
         gha_error "Could not evaluate %s: invalid container name '%s' (not in ./make list)" \
             "$basename_file" "$container" >&2
         exit 1
@@ -559,6 +619,11 @@ for lineage_file in "${lineage_files[@]}"; do
 
     variant_tag=$(jq -re '.tag // empty' "$lineage_file" 2>/dev/null || true)
     if [[ -z "$variant_tag" ]]; then
+        if [[ "$BASELINE_ONLY" == "true" ]]; then
+            gha_warning "Skipping unusable baseline entry %s: missing 'tag' field" "$basename_file" >&2
+            baseline_input_failed=true
+            continue
+        fi
         gha_error "Could not evaluate %s: missing 'tag' field" "$basename_file" >&2
         exit 1
     fi
@@ -567,6 +632,11 @@ for lineage_file in "${lineage_files[@]}"; do
     # A tag like "active\npayload" would pass grep -xF (multiple patterns) and
     # reach markdown with incomplete escaping. Validate early to close bypass.
     if [[ "$variant_tag" =~ [[:cntrl:]] ]]; then
+        if [[ "$BASELINE_ONLY" == "true" ]]; then
+            gha_warning 'Skipping unusable baseline entry %s: tag contains control chars' "$basename_file" >&2
+            baseline_input_failed=true
+            continue
+        fi
         gha_error 'Could not evaluate lineage entry %s: tag contains control chars: %s' \
             "$basename_file" "$variant_tag" >&2
         exit 1
@@ -641,6 +711,8 @@ for lineage_file in "${lineage_files[@]}"; do
                 _container_order+=("$container")
                 _container_variants["$container"]=""
             fi
+            # This error pre-dates base-identity decoding. Preserve its public
+            # fields even when the decoder classifies the raw fields as invalid.
             _err_base_ref=$(jq -re '.base_image_ref // empty' "$lineage_file" 2>/dev/null || true)
             _err_recorded=$(jq -re '.base_image_digest // empty' "$lineage_file" 2>/dev/null || true)
             _err_base_safe=$(_sanitize_for_json "$_err_base_ref")
@@ -664,10 +736,15 @@ for lineage_file in "${lineage_files[@]}"; do
         fi
     fi
 
-    base_image_ref=$(jq -re '.base_image_ref // empty' "$lineage_file" 2>/dev/null || true)
-    recorded_digest=$(jq -re '.base_image_digest // empty' "$lineage_file" 2>/dev/null || true)
-    base_image_kind=$(jq -re '.base_image_kind // empty' "$lineage_file" 2>/dev/null || true)
-    error_reason=""
+    # Stale normal-mode records never reach output, so do not spend a base-field
+    # decode on them. Baseline mode bypasses the filter above and therefore
+    # continues to decode every migration candidate.
+    classification=$(_decode_lineage_base "$lineage_file") || {
+        gha_error 'Could not decode lineage base fields in %s' "$basename_file" >&2
+        exit 1
+    }
+    classification_kind=$(jq -r '.class' <<< "$classification")
+    error_reason=$(jq -r '.reason // ""' <<< "$classification")
 
     # Track container ordering
     if [[ -z "${_container_variants[$container]+x}" ]]; then
@@ -679,12 +756,41 @@ for lineage_file in "${lineage_files[@]}"; do
     # Determine status
     # ---------------------------------------------------------------------------
 
-    # Baseline mode emits only legacy records. It has to take precedence over
-    # producer markers too: otherwise a marker-bearing legacy entry leaks a
-    # non-legacy record despite --baseline-only's documented contract.
+    # Baseline mode is a filter, not an evaluation: emit only records that
+    # lack a usable external digest and suppress every other outcome.
     if [[ "$BASELINE_ONLY" == "true" ]]; then
-        if [[ -z "$recorded_digest" || "$recorded_digest" == "unresolved" ]]; then
-            safe_ref=$(_sanitize_for_json "${base_image_ref:-unknown}")
+        if [[ "$classification_kind" == "LegacyExternal" ]]; then
+            safe_ref=$(_sanitize_for_json "$(jq -r '.ref // "unknown"' <<< "$classification")")
+            variant_json=$(jq -cn \
+                --arg variant_tag  "$variant_tag" \
+                --arg base_ref     "$safe_ref" \
+                --arg status       "legacy" \
+                '{variant_tag: $variant_tag, base_image_ref: $base_ref, status: $status, legacy: true}')
+            _container_variants["$container"]+="${variant_json}"$'\n'
+        elif [[ "$classification_kind" == "Invalid" && "$error_reason" == "invalid_external_base_image_ref" ]] && \
+            jq -e '(.lineage_schema_version? // 1) == 1 and
+                   (.base_image_ref | type == "string" and length > 0) and
+                   ((.base_image_digest? | type) != "string" or (.base_image_digest | length) == 0)' \
+                "$lineage_file" >/dev/null; then
+            # A v1 placeholder is still a legacy record: it has no recorded
+            # digest, and rebuilding it is how baseline mode replaces that
+            # placeholder with the resolved v2/v3 base identity.
+            safe_ref=$(_sanitize_for_json "$(jq -r '.base_image_ref // "unknown"' "$lineage_file")")
+            variant_json=$(jq -cn \
+                --arg variant_tag  "$variant_tag" \
+                --arg base_ref     "$safe_ref" \
+                --arg status       "legacy" \
+                '{variant_tag: $variant_tag, base_image_ref: $base_ref, status: $status, legacy: true}')
+            _container_variants["$container"]+="${variant_json}"$'\n'
+        elif [[ "$classification_kind" == "Invalid" && "$error_reason" == "malformed_recorded_digest" ]] && \
+            jq -e '.lineage_schema_version == 1 and
+                   (.base_image_ref | type == "string" and length > 0) and
+                   .base_image_digest == "unresolved"' "$lineage_file" >/dev/null && \
+            _is_fleet_external_ref "$(jq -r '.base_image_ref' "$lineage_file")"; then
+            # The historical v1 unresolved sentinel means the build lacked a
+            # usable digest. It is a narrow migration case, not permission to
+            # treat arbitrary malformed recorded digests as legacy.
+            safe_ref=$(_sanitize_for_json "$(jq -r '.base_image_ref' "$lineage_file")")
             variant_json=$(jq -cn \
                 --arg variant_tag  "$variant_tag" \
                 --arg base_ref     "$safe_ref" \
@@ -695,13 +801,29 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
+    # Normal mode dispatches only the shared decoder's closed set. No later
+    # branch reads marker or external base fields from the raw payload.
+    if [[ "$classification_kind" == "Invalid" ]]; then
+        # The shared base-identity helper owns invalid-record reasons. Preserve
+        # its reason verbatim rather than maintaining a second taxonomy here.
+        base_image_ref=$(jq -r '.base_image_ref // empty' "$lineage_file")
+        recorded_digest=$(jq -r '.base_image_digest // empty' "$lineage_file")
+        safe_ref=$(_sanitize_for_json "$base_image_ref")
+        safe_recorded=$(_sanitize_for_json "$recorded_digest")
+        variant_json=$(jq -cn \
+            --arg variant_tag "$variant_tag" \
+            --arg base_ref "$safe_ref" \
+            --arg recorded_digest "$safe_recorded" \
+            --arg status "error" \
+            --arg error_reason "$error_reason" \
+            '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status, error_reason: $error_reason}')
+        _container_variants["$container"]+="${variant_json}"$'\n'
+        continue
+    fi
+
     # A scratch final stage is a successful build with no external image to
-    # compare.  Keep it distinct from unchanged: no digest comparison happened.
-    # An unresolved external reference, on the other hand, leaves coverage
-    # unknown and must fail closed.  Both markers take precedence over legacy
-    # handling so producer-intended meaning is never reclassified from fields
-    # that are necessarily absent for these stages.
-    if [[ "$base_image_kind" == "no_external_base" ]]; then
+    # compare. Keep it distinct from unchanged: no digest comparison happened.
+    if [[ "$classification_kind" == "NoExternal" ]]; then
         variant_json=$(jq -cn \
             --arg variant_tag "$variant_tag" \
             --arg status "no_external_base" \
@@ -709,7 +831,19 @@ for lineage_file in "${lineage_files[@]}"; do
         _container_variants["$container"]+="${variant_json}"$'\n'
         continue
     fi
-    if [[ "$base_image_kind" == "unresolved_external_base" ]]; then
+    if [[ "$classification_kind" == "Sibling" ]]; then
+        base_image_sibling=$(jq -c '.supplier' <<< "$classification")
+        variant_json=$(jq -cn \
+            --arg variant_tag "$variant_tag" \
+            --argjson base_image_sibling "$base_image_sibling" \
+            --arg status "sibling_target" \
+            '{variant_tag: $variant_tag, base_image_sibling: $base_image_sibling, status: $status}')
+        _container_variants["$container"]+="${variant_json}"$'\n'
+        continue
+    fi
+    if [[ "$classification_kind" == "Unresolved" ]]; then
+        base_image_ref=$(jq -r '.base_image_ref // empty' "$lineage_file")
+        recorded_digest=$(jq -r '.base_image_digest // empty' "$lineage_file")
         safe_ref=$(_sanitize_for_json "$base_image_ref")
         safe_recorded=$(_sanitize_for_json "$recorded_digest")
         variant_json=$(jq -cn \
@@ -723,71 +857,21 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
-    # Normal mode: placeholder-skip runs before legacy check to prevent mis-classification
-    if [[ "$base_image_ref" =~ \$ ]]; then
-        gha_warning 'Could not evaluate %s: base_image_ref contains unresolved placeholder: %s' \
-            "$basename_file" "$base_image_ref" >&2
-        # Keep an explicit machine-readable record: without one, an active
-        # variant with an unresolved ref vanishes from the result and the
-        # workflow can falsely report a clean drift run.  The placeholder check
-        # stays before the legacy check so it cannot produce a bogus rebuild PR.
-        safe_ref=$(_sanitize_for_json "$base_image_ref")
-        safe_recorded=$(_sanitize_for_json "$recorded_digest")
+    # Legacy is reserved for an external record without a usable digest. A
+    # valid digest is sufficient comparison evidence regardless of envelope.
+    if [[ "$classification_kind" == "LegacyExternal" ]]; then
+        safe_ref=$(_sanitize_for_json "$(jq -r '.ref' <<< "$classification")")
         variant_json=$(jq -cn \
-            --arg variant_tag     "$variant_tag" \
-            --arg base_ref        "$safe_ref" \
-            --arg recorded_digest "$safe_recorded" \
-            --arg status          "error" \
-            --arg error_reason    "unresolved_placeholder_base_image_ref" \
-            '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status, error_reason: $error_reason}')
-        _container_variants["$container"]+="${variant_json}"$'\n'
-        continue
-    fi
-
-    # An unknown sentinel and an absent field are separate producer failures.
-    # Both must run before legacy check so neither is rebuilt as a legacy entry.
-    # which would otherwise emit a legacy record for a corrupt/unknown entry).
-    if [[ -z "$base_image_ref" || "$base_image_ref" == "unknown" ]]; then
-        if [[ -z "$base_image_ref" ]]; then
-            error_reason="missing_base_image_ref"
-        else
-            error_reason="unknown_base_image_ref"
-        fi
-        gha_warning 'Could not evaluate %s: base_image_ref is %s' "$basename_file" "$error_reason" >&2
-        # Keep an explicit machine-readable record: without one, an active
-        # variant with no usable ref vanishes from the result and the workflow
-        # can falsely report a clean drift run.  This can be the first record
-        # seen for the container, so retain the registration guard used by the
-        # active-tags-unavailable error path.
-        if [[ -z "${_container_variants[$container]+x}" ]]; then
-            _container_order+=("$container")
-            _container_variants["$container"]=""
-        fi
-        safe_ref=$(_sanitize_for_json "$base_image_ref")
-        safe_recorded=$(_sanitize_for_json "$recorded_digest")
-        variant_json=$(jq -cn \
-            --arg variant_tag     "$variant_tag" \
-            --arg base_ref        "$safe_ref" \
-            --arg recorded_digest "$safe_recorded" \
-            --arg status          "error" \
-            --arg error_reason    "$error_reason" \
-            '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status, error_reason: $error_reason}')
-        _container_variants["$container"]+="${variant_json}"$'\n'
-        continue
-    fi
-
-    # Legacy: lineage lacks base_image_digest field (known base_image_ref only)
-    if [[ -z "$recorded_digest" || "$recorded_digest" == "unresolved" ]]; then
-        safe_ref=$(_sanitize_for_json "$base_image_ref")
-        variant_json=$(jq -cn \
-            --arg variant_tag  "$variant_tag" \
-            --arg base_ref     "$safe_ref" \
-            --arg status       "legacy" \
+            --arg variant_tag "$variant_tag" \
+            --arg base_ref "$safe_ref" \
+            --arg status "legacy" \
             '{variant_tag: $variant_tag, base_image_ref: $base_ref, status: $status, legacy: true}')
-        # Normal mode: legacy is treated as drift-equivalent (will trigger PR)
         _container_variants["$container"]+="${variant_json}"$'\n'
         continue
     fi
+
+    base_image_ref=$(jq -r '.ref' <<< "$classification")
+    recorded_digest=$(jq -r '.index_digest' <<< "$classification")
 
     # Fix r23: validate recorded_digest shape before comparing.
     # A malformed value (written by an older probe before the write-side guard)
@@ -1072,3 +1156,7 @@ if ! printf '%s' "$output" | jq '.' >/dev/null 2>&1; then
 fi
 
 printf '%s' "$output"
+
+if [[ "$baseline_input_failed" == "true" ]]; then
+    exit 1
+fi
