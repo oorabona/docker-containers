@@ -15,28 +15,9 @@ setup() {
     ORIG_DIR="$PWD"
     cd "$TEST_DIR" || exit 1
 
-    # Source in same pattern as dashboard-helpers.bats.
-    # IMPORTANT: generate-dashboard.sh runs `trap '...' EXIT` at the top level,
-    # which replaces bats' own EXIT trap (bats_teardown_trap as-exit-trap).
-    # Without the trap, failing tests exit without writing the "not ok N" TAP line
-    # (0 tests executed).  We save and restore bats' trap around the source call.
-    local _saved_exit_trap
-    _saved_exit_trap=$(trap -p EXIT 2>/dev/null) || true
     source "$ORIG_DIR/helpers/logging.sh" 2>/dev/null || true
     source "$ORIG_DIR/helpers/variant-utils.sh" 2>/dev/null || true
     source "$ORIG_DIR/generate-dashboard.sh" 2>/dev/null || true
-    # Capture the trivy cache file created by generate-dashboard.sh at source-time
-    # (line: TRIVY_CACHE_FILE=$(mktemp ...)).  setup() will overwrite TRIVY_CACHE_FILE
-    # below with its own tmpfile; the file created at source-time would orphan in /tmp
-    # unless we save and clean it.  The source-time EXIT trap that would have cleaned
-    # it is about to be replaced, so we own this cleanup.
-    _SOURCED_TRIVY_CACHE="${TRIVY_CACHE_FILE:-}"
-    # Restore bats' EXIT trap, which generate-dashboard.sh just replaced.
-    if [[ -n "$_saved_exit_trap" ]]; then
-        eval "$_saved_exit_trap" 2>/dev/null || true
-    else
-        trap - EXIT 2>/dev/null || true
-    fi
 
     # Override SCRIPT_DIR after sourcing
     export SCRIPT_DIR="$TEST_DIR"
@@ -66,8 +47,7 @@ EOF
     DATA_FILE="$TEST_DIR/docs/site/_data/containers.yml"
     CONTAINERS_DIR="$TEST_DIR/docs/site/_containers"
     STATS_FILE="$TEST_DIR/docs/site/_data/stats.yml"
-    TRIVY_CACHE_FILE=$(mktemp)
-    export DATA_FILE CONTAINERS_DIR STATS_FILE TRIVY_CACHE_FILE
+    export DATA_FILE CONTAINERS_DIR STATS_FILE
 
     # ---- Mock external helpers (same pattern as dashboard-helpers.bats) ----
     get_current_published_version() { echo "2.0.0"; }
@@ -99,11 +79,6 @@ EOF
 
 teardown() {
     cd "$ORIG_DIR" || true
-    # Clean both the setup()-assigned trivy cache file AND the one created by
-    # generate-dashboard.sh at source-time (saved in _SOURCED_TRIVY_CACHE).
-    # The source-time EXIT trap is replaced in setup() so we must clean it here.
-    rm -f "${TRIVY_CACHE_FILE:-}" 2>/dev/null || true
-    rm -f "${_SOURCED_TRIVY_CACHE:-}" 2>/dev/null || true
     rm -rf "$TEST_DIR"
 }
 

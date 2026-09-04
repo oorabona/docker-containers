@@ -5,19 +5,10 @@ setup() {
     ORIG_DIR="$PWD"
     cd "$TEST_DIR" || exit 1
 
-    local _saved_exit_trap
-    _saved_exit_trap=$(trap -p EXIT 2>/dev/null) || true
     source "$ORIG_DIR/helpers/logging.sh" 2>/dev/null || true
     source "$ORIG_DIR/helpers/variant-utils.sh" 2>/dev/null || true
     source "$ORIG_DIR/generate-dashboard.sh" 2>/dev/null || true
     eval "$(declare -f get_container_versions | sed '1s/get_container_versions/_real_get_container_versions/')"
-    _SOURCED_TRIVY_CACHE="${TRIVY_CACHE_FILE:-}"
-    if [[ -n "$_saved_exit_trap" ]]; then
-        eval "$_saved_exit_trap" 2>/dev/null || true
-    else
-        trap - EXIT 2>/dev/null || true
-    fi
-
     export SCRIPT_DIR="$TEST_DIR"
     DOCKERHUB_PULL_TRENDS_CACHE=""
 
@@ -25,8 +16,7 @@ setup() {
     DATA_FILE="$TEST_DIR/docs/site/_data/containers.yml"
     CONTAINERS_DIR="$TEST_DIR/docs/site/_containers"
     STATS_FILE="$TEST_DIR/docs/site/_data/stats.yml"
-    TRIVY_CACHE_FILE=$(mktemp)
-    export DATA_FILE CONTAINERS_DIR STATS_FILE TRIVY_CACHE_FILE
+    export DATA_FILE CONTAINERS_DIR STATS_FILE
 
     get_container_versions()             { echo "1.0.0|1.0.0|green|Up to date|true"; }
     get_container_description()          { echo "Alpha test container"; }
@@ -54,8 +44,6 @@ setup() {
 
 teardown() {
     cd "$ORIG_DIR" || true
-    rm -f "${TRIVY_CACHE_FILE:-}" 2>/dev/null || true
-    rm -f "${_SOURCED_TRIVY_CACHE:-}" 2>/dev/null || true
     rm -rf "$TEST_DIR"
 }
 
