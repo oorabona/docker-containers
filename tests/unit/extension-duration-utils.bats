@@ -27,7 +27,13 @@ _source_ext_dur_utils() {
 # ---------------------------------------------------------------------------
 
 setup() {
+    export TMPDIR="$BATS_TEST_TMPDIR"
     setup_temp_dir
+    [[ -n "${TEST_TEMP_DIR:-}" && -d "$TEST_TEMP_DIR" ]] || {
+        echo "FAIL: setup_temp_dir did not create TEST_TEMP_DIR" >&2
+        return 1
+    }
+    export TMPDIR="$TEST_TEMP_DIR"
 
     # Create a minimal postgres container directory tree
     CONTAINER_DIR="$TEST_TEMP_DIR/postgres"
