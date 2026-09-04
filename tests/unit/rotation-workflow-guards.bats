@@ -265,17 +265,32 @@ EOF
     [ "$output" = $'17 1 * * *\n17 9 * * *\n17 17 * * *' ]
 }
 
-@test "rotation cleanup retains staging after failed or cancelled promotion" {
+@test "rotation cleanup runs only after successful promotion" {
+    local cleanup_if cleanup_run final_run_line packages_declaration
+
     run yq -r '.jobs."cleanup-staging".if' "$PROJECT_ROOT/.github/workflows/rotation.yaml"
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"needs.promote.result != 'failure'"* ]]
-    [[ "$output" == *"needs.promote.result != 'cancelled'"* ]]
-    [ "$output" != 'always()' ]
+    cleanup_if=$(tr -s '[:space:]' ' ' <<<"$output" | sed 's/^ //; s/ $//')
+    [ "$cleanup_if" = "always() && needs.select.outputs.selected == 'true' && needs.promote.result == 'success'" ]
 
-    run yq -r '.jobs."retain-staging-after-promotion-failure".if' "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+    run yq -r '.jobs | has("retain-staging-after-promotion-failure")' "$PROJECT_ROOT/.github/workflows/rotation.yaml"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"needs.promote.result == 'failure'"* ]]
+    [ "$output" = false ]
+
+    run yq -r '.jobs."cleanup-staging".steps[] | select(.name == "Delete staging packages") | .run' \
+        "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+    [ "$status" -eq 0 ]
+    cleanup_run="$output"
+    final_run_line=$(sed -E '/^[[:space:]]*($|#)/d' <<<"$cleanup_run" | tail -n 1)
+    [ "$final_run_line" = 'exit "$failed"' ]
+
+    packages_declaration=$(awk '
+        /^[[:space:]]*packages=\(/ { in_packages = 1 }
+        in_packages { print }
+        in_packages && /\)[[:space:]]*$/ { exit }
+    ' <<<"$cleanup_run")
+    [ "$packages_declaration" = 'packages=("ext-${EXTENSION}-staging")' ]
 
     run yq -r '.jobs."cleanup-staging".steps[] | select(.name == "Delete staging packages") | ."continue-on-error" // false' \
         "$PROJECT_ROOT/.github/workflows/rotation.yaml"

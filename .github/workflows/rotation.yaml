@@ -746,7 +746,7 @@ jobs:
 
   cleanup-staging:
     needs: [select, promote, promote-dry-run]
-    if: always() && needs.select.outputs.selected == 'true' && needs.promote.result != 'failure' && needs.promote.result != 'cancelled'
+    if: always() && needs.select.outputs.selected == 'true' && needs.promote.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -764,7 +764,8 @@ jobs:
         run: |
           set -euo pipefail
           failed=0
-          for package in "ext-${EXTENSION}-staging" "ext-${EXTENSION}-staging-buildcache"; do
+          packages=("ext-${EXTENSION}-staging")
+          for package in "${packages[@]}"; do
             response=''
             rc=0
             response=$(gh api --include --method DELETE "/users/${OWNER}/packages/container/${package}" 2>&1) || rc=$?
@@ -778,27 +779,3 @@ jobs:
             fi
           done
           exit "$failed"
-
-  retain-staging-after-promotion-failure:
-    needs: [select, promote, freeze-digests]
-    if: always() && needs.select.outputs.selected == 'true' && needs.promote.result == 'failure'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Record retained staging packages
-        shell: bash
-        env:
-          EXTENSION: ${{ needs.select.outputs.extension }}
-          AMD64_DIGEST: ${{ needs.freeze-digests.outputs.amd64_digest }}
-          ARM64_DIGEST: ${{ needs.freeze-digests.outputs.arm64_digest }}
-        run: |
-          set -euo pipefail
-          {
-            printf '## Staging packages retained after promotion failure\n\n'
-            printf -- "- \`ext-%s-staging\`\n" "$EXTENSION"
-            printf -- "- \`ext-%s-staging-buildcache\`\n\n" "$EXTENSION"
-            printf 'Retry inputs:\n\n'
-            printf -- "- amd64 digest: \`%s\`\n" "$AMD64_DIGEST"
-            printf -- "- arm64 digest: \`%s\`\n" "$ARM64_DIGEST"
-          } >> "$GITHUB_STEP_SUMMARY"
