@@ -13,7 +13,13 @@ _source_build_extensions() {
 }
 
 setup() {
+    export TMPDIR="$BATS_TEST_TMPDIR"
     setup_temp_dir
+    [[ -n "${TEST_TEMP_DIR:-}" && -d "$TEST_TEMP_DIR" ]] || {
+        echo "FAIL: setup_temp_dir did not create TEST_TEMP_DIR" >&2
+        return 1
+    }
+    export TMPDIR="$TEST_TEMP_DIR"
     export EXTENSION_REGISTRY="ghcr.io"
     export GITHUB_REPOSITORY_OWNER="testowner"
     export FORCE=false LOCAL_ONLY=false NO_CACHE=false

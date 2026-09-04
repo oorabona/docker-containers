@@ -27,7 +27,13 @@ _source_build_extensions() {
 # ---------------------------------------------------------------------------
 
 setup() {
+    export TMPDIR="$BATS_TEST_TMPDIR"
     setup_temp_dir
+    [[ -n "${TEST_TEMP_DIR:-}" && -d "$TEST_TEMP_DIR" ]] || {
+        echo "FAIL: setup_temp_dir did not create TEST_TEMP_DIR" >&2
+        return 1
+    }
+    export TMPDIR="$TEST_TEMP_DIR"
     STATUS_TARGET_FIXTURES=()
 
     # Minimal extension filesystem under TEST_TEMP_DIR
@@ -84,10 +90,6 @@ teardown() {
             cleanup_failed=1
         fi
     done
-    # Sourcing the script creates both per-run directories; it installs no EXIT
-    # trap when sourced, so each test would otherwise leave two behind.
-    [[ -z "${_RESOLVER_CACHE_DIR:-}" ]] || rm -rf -- "$_RESOLVER_CACHE_DIR"
-    [[ -z "${_BUILT_THIS_RUN_DIR:-}" ]] || rm -rf -- "$_BUILT_THIS_RUN_DIR"
     teardown_temp_dir
     unset FORCE LOCAL_ONLY CONTAINER ROOT_DIR
     return "$cleanup_failed"
@@ -625,6 +627,29 @@ EOF
     cache_file="${_RESOLVER_CACHE_DIR}/pgvector-${MAJOR_VER}-${config_identity}.json"
     printf '["1.2.3"]\n' > "$cache_file"
 
+    _resolve_cached pgvector "$MAJOR_VER" "$CONFIG_FILE"
+
+    assert_equals '["1.2.3"]' "$_RESOLVED_VERSION_SET_JSON"
+}
+
+@test "sourced build scratch directories stay under the Bats test directory and serve the resolver cache" {
+    local config_identity cache_file
+
+    [[ -d "$_RESOLVER_CACHE_DIR" ]]
+    [[ -d "$_BUILT_THIS_RUN_DIR" ]]
+    [[ "$_RESOLVER_CACHE_DIR" == "$BATS_TEST_TMPDIR/"* ]]
+    [[ "$_BUILT_THIS_RUN_DIR" == "$BATS_TEST_TMPDIR/"* ]]
+
+    resolve_version_set() { printf '["1.2.3"]\n'; }
+    _resolve_cached pgvector "$MAJOR_VER" "$CONFIG_FILE"
+
+    assert_equals '["1.2.3"]' "$_RESOLVED_VERSION_SET_JSON"
+    config_identity=$(sha256_file "$CONFIG_FILE")
+    cache_file="${_RESOLVER_CACHE_DIR}/pgvector-${MAJOR_VER}-${config_identity}.json"
+    [[ -f "$cache_file" ]]
+    assert_equals '["1.2.3"]' "$(< "$cache_file")"
+
+    resolve_version_set() { return 1; }
     _resolve_cached pgvector "$MAJOR_VER" "$CONFIG_FILE"
 
     assert_equals '["1.2.3"]' "$_RESOLVED_VERSION_SET_JSON"
