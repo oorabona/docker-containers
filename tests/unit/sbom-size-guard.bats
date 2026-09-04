@@ -105,26 +105,9 @@ setup() {
     ORIG_DIR="$PWD"
     cd "$TEST_DIR" || exit 1
 
-    # Save bats' EXIT trap before sourcing generate-dashboard.sh.
-    # generate-dashboard.sh sets its own EXIT trap (TRIVY_CACHE_FILE cleanup);
-    # if we let it replace bats' trap, failing tests exit silently.
-    local _saved_exit_trap
-    _saved_exit_trap=$(trap -p EXIT 2>/dev/null) || true
-
     source "$ORIG_DIR/helpers/logging.sh" 2>/dev/null || true
     source "$ORIG_DIR/helpers/variant-utils.sh" 2>/dev/null || true
     source "$ORIG_DIR/generate-dashboard.sh" 2>/dev/null || true
-
-    # Capture the trivy cache file created at source-time for teardown cleanup.
-    _SOURCED_TRIVY_CACHE="${TRIVY_CACHE_FILE:-}"
-    export _SOURCED_TRIVY_CACHE
-
-    # Restore bats' EXIT trap.
-    if [[ -n "$_saved_exit_trap" ]]; then
-        eval "$_saved_exit_trap" 2>/dev/null || true
-    else
-        trap - EXIT 2>/dev/null || true
-    fi
 
     # Override SCRIPT_DIR to point at our test temp dir (where we place .build-lineage/).
     export SCRIPT_DIR="$TEST_DIR"
@@ -170,7 +153,6 @@ EOF
 
 teardown() {
     cd "$ORIG_DIR" || true
-    rm -f "${_SOURCED_TRIVY_CACHE:-}" 2>/dev/null || true
     rm -rf "$TEST_DIR"
 }
 
