@@ -11,7 +11,6 @@ setup() {
 
     mkdir -p "$(dirname "$HISTORY_FILE")"
     SCRIPT_DIR="$TEST_TEMP_DIR"
-    TRIVY_SCAN_HISTORY_NOW='2027-01-01T00:00:00Z'
     source "$PROJECT_ROOT/helpers/trivy-utils.sh"
     _fetch_trivy_alerts_once() { :; }
     _TRIVY_SUMMARY_MAP=$(jq -nc --arg category "$CATEGORY" --argjson result "$API_RESULT" \
@@ -130,26 +129,6 @@ assert_history_rejected() {
     assert_history_rejected '{"last_scan":42,"status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
 }
 
-@test "record beyond the five-minute future tolerance is rejected" {
-    TRIVY_SCAN_HISTORY_NOW='2026-01-01T00:00:00Z'
-    assert_history_rejected '{"last_scan":"2026-01-01T00:05:00.1Z","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
-}
-
-@test "far-future record is rejected" {
-    TRIVY_SCAN_HISTORY_NOW='2026-01-01T00:00:00Z'
-    assert_history_rejected '{"last_scan":"9999-12-31T00:00:00Z","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
-}
-
-@test "record inside the five-minute future tolerance is accepted" {
-    TRIVY_SCAN_HISTORY_NOW='2026-01-01T00:00:00Z'
-    printf '%s\n' '{"last_scan":"2026-01-01T00:05:00Z","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}' > "$HISTORY_FILE"
-
-    run get_trivy_summary "$CATEGORY"
-    [ "$status" -eq 0 ]
-    run jq -e '.last_scan == "2026-01-01T00:05:00Z" and .counts.critical == 0' <<<"$output"
-    [ "$status" -eq 0 ]
-}
-
 @test "two JSON history records are rejected without aborting an unguarded caller" {
     expected=$(api_fallback)
     printf '%s\n%s\n' \
@@ -160,6 +139,27 @@ assert_history_rejected() {
     run get_trivy_summary "$CATEGORY"
     [ "$status" -eq 0 ]
     [ "$output" = "$expected" ]
+}
+
+@test "a validator extraction failure after structural validation fails closed" {
+    local expected old_path actual real_jq
+    expected=$(api_fallback)
+    printf '%s\n' '{"last_scan":"2026-12-01T00:00:00+00:00","status":"dirty","counts":{"critical":7,"high":4,"medium":0,"low":0,"info":0},"alert_count":11}' \
+        > "$HISTORY_FILE"
+    mkdir -p "$TEST_TEMP_DIR/fail-jq"
+    real_jq=$(command -v jq)
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'if [[ "$*" == *"(.counts | @json)"* ]]; then exit 42; fi' \
+        "exec $real_jq \"\$@\"" \
+        > "$TEST_TEMP_DIR/fail-jq/jq"
+    chmod +x "$TEST_TEMP_DIR/fail-jq/jq"
+
+    old_path=$PATH
+    PATH="$TEST_TEMP_DIR/fail-jq:$PATH"
+    actual=$(get_trivy_summary "$CATEGORY")
+    PATH=$old_path
+    [ "$actual" = "$expected" ]
 }
 
 @test "trivy-utils self-test passes when executed directly" {

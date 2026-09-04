@@ -27,11 +27,11 @@ teardown() {
 run_writer() {
     VULNERABILITY_SEVERITY='UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL' \
         CONTAINER=test CURRENT_TAG=latest PLATFORM=linux/amd64 \
-        bash ./write-trivy-history.sh
+        bash -e -o pipefail ./write-trivy-history.sh
 }
 
 run_bake_writer() {
-    CONTAINER=test TAG=latest ARCH=amd64 bash ./write-bake-trivy-history.sh
+    CONTAINER=test TAG=latest ARCH=amd64 bash -e -o pipefail ./write-bake-trivy-history.sh
 }
 
 scan_file() {

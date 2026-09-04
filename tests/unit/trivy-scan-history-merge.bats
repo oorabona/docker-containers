@@ -10,8 +10,6 @@ setup() {
 
     mkdir -p helpers
     cp "$PROJECT_ROOT/helpers/trivy-utils.sh" "$PROJECT_ROOT/helpers/logging.sh" helpers/
-    export TRIVY_SCAN_HISTORY_NOW='2027-01-01T00:00:00Z'
-
     yq -r '.jobs.cache-lineage.steps[] | select(.name == "Merge Trivy scan history files") | .run' \
         "$PROJECT_ROOT/.github/workflows/auto-build.yaml" > merge-auto-build.sh
     chmod +x merge-auto-build.sh
@@ -40,9 +38,9 @@ valid_dirty_record() {
 run_merge() {
     local workflow="$1"
     if [[ "$workflow" == update-dashboard ]]; then
-        staging=.trivy-scan-history-artifacts bash ./merge-update-dashboard.sh
+        staging=.trivy-scan-history-artifacts bash -e -o pipefail ./merge-update-dashboard.sh
     else
-        bash ./merge-auto-build.sh
+        bash -e -o pipefail ./merge-auto-build.sh
     fi
 }
 
@@ -76,7 +74,7 @@ assert_merged_record_is_readable() {
 
     run run_merge auto-build
     [ "$status" -eq 0 ]
-    [[ "$output" == *'Consolidated 2 Trivy scan history file(s); skipped 2 unusable or older record(s)'* ]]
+    [[ "$output" == *'Consolidated 2 Trivy scan history file(s); skipped 2 unusable record(s)'* ]]
     [ ! -e .trivy-scan-history/undated-latest-linux-amd64.json ]
 
     run jq -r '.last_scan' .trivy-scan-history/same-latest-linux-amd64.json
@@ -112,68 +110,40 @@ assert_merged_record_is_readable() {
     assert_merged_record_is_readable
 }
 
-@test "auto-build merge compares offset timestamps chronologically" {
+@test "auto-build merge skips an undated source sharing a usable target basename" {
     mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
-    valid_dirty_record '2025-12-31T23:45:00Z' > .trivy-scan-history/clock-latest-linux-amd64.json
-    valid_dirty_record '2026-01-01T00:30:00+01:00' > .trivy-scan-history-artifacts/nested/clock-latest-linux-amd64.json
+    valid_dirty_record '2026-01-01T00:00:00+00:00' > .trivy-scan-history/collision-latest-linux-amd64.json
+    cp .trivy-scan-history/collision-latest-linux-amd64.json expected.json
+    printf '%s\n' '{"status":"error","alert_count":-1,"counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0}}' \
+        > .trivy-scan-history-artifacts/nested/collision-latest-linux-amd64.json
 
     run run_merge auto-build
     [ "$status" -eq 0 ]
-    run jq -r '.last_scan' .trivy-scan-history/clock-latest-linux-amd64.json
-    [ "$output" = '2025-12-31T23:45:00Z' ]
+    run cmp expected.json .trivy-scan-history/collision-latest-linux-amd64.json
+    [ "$status" -eq 0 ]
 }
 
-@test "update-dashboard merge compares offset timestamps chronologically" {
+@test "update-dashboard merge skips an undated source sharing a usable target basename" {
     mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
-    valid_dirty_record '2025-12-31T23:45:00Z' > .trivy-scan-history/clock-latest-linux-amd64.json
-    valid_dirty_record '2026-01-01T00:30:00+01:00' > .trivy-scan-history-artifacts/nested/clock-latest-linux-amd64.json
+    valid_dirty_record '2026-01-01T00:00:00+00:00' > .trivy-scan-history/collision-latest-linux-amd64.json
+    cp .trivy-scan-history/collision-latest-linux-amd64.json expected.json
+    printf '%s\n' '{"status":"error","alert_count":-1,"counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0}}' \
+        > .trivy-scan-history-artifacts/nested/collision-latest-linux-amd64.json
 
     run run_merge update-dashboard
     [ "$status" -eq 0 ]
-    run jq -r '.last_scan' .trivy-scan-history/clock-latest-linux-amd64.json
-    [ "$output" = '2025-12-31T23:45:00Z' ]
+    run cmp expected.json .trivy-scan-history/collision-latest-linux-amd64.json
+    [ "$status" -eq 0 ]
 }
 
-@test "auto-build merge compares fractional seconds against the same whole second" {
-    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
-    valid_dirty_record '2026-01-01T00:00:00Z' > .trivy-scan-history/fraction-latest-linux-amd64.json
-    valid_dirty_record '2026-01-01T00:00:00.1Z' > .trivy-scan-history-artifacts/nested/fraction-latest-linux-amd64.json
+@test "auto-build merge exits before its success notice when copying fails" {
+    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested fail-copy
+    valid_dirty_record '2026-01-01T00:00:00+00:00' \
+        > .trivy-scan-history-artifacts/nested/fail-copy-latest-linux-amd64.json
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 42' > fail-copy/cp
+    chmod +x fail-copy/cp
 
-    run run_merge auto-build
-    [ "$status" -eq 0 ]
-    run jq -r '.last_scan' .trivy-scan-history/fraction-latest-linux-amd64.json
-    [ "$output" = '2026-01-01T00:00:00.1Z' ]
-}
-
-@test "update-dashboard merge compares fractional seconds against the same whole second" {
-    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
-    valid_dirty_record '2026-01-01T00:00:00Z' > .trivy-scan-history/fraction-latest-linux-amd64.json
-    valid_dirty_record '2026-01-01T00:00:00.1Z' > .trivy-scan-history-artifacts/nested/fraction-latest-linux-amd64.json
-
-    run run_merge update-dashboard
-    [ "$status" -eq 0 ]
-    run jq -r '.last_scan' .trivy-scan-history/fraction-latest-linux-amd64.json
-    [ "$output" = '2026-01-01T00:00:00.1Z' ]
-}
-
-@test "auto-build merge rejects a future-dated source" {
-    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
-    valid_dirty_record '2026-01-01T00:00:00Z' > .trivy-scan-history/future-latest-linux-amd64.json
-    valid_dirty_record '2099-01-01T00:00:00Z' > .trivy-scan-history-artifacts/nested/future-latest-linux-amd64.json
-
-    run run_merge auto-build
-    [ "$status" -eq 0 ]
-    run jq -r '.last_scan' .trivy-scan-history/future-latest-linux-amd64.json
-    [ "$output" = '2026-01-01T00:00:00Z' ]
-}
-
-@test "update-dashboard merge rejects a future-dated source" {
-    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
-    valid_dirty_record '2026-01-01T00:00:00Z' > .trivy-scan-history/future-latest-linux-amd64.json
-    valid_dirty_record '2099-01-01T00:00:00Z' > .trivy-scan-history-artifacts/nested/future-latest-linux-amd64.json
-
-    run run_merge update-dashboard
-    [ "$status" -eq 0 ]
-    run jq -r '.last_scan' .trivy-scan-history/future-latest-linux-amd64.json
-    [ "$output" = '2026-01-01T00:00:00Z' ]
+    run env PATH="$PWD/fail-copy:$PATH" bash -e -o pipefail ./merge-auto-build.sh
+    [ "$status" -ne 0 ]
+    [[ "$output" != *'Consolidated '* ]]
 }

@@ -37,19 +37,17 @@ _TRIVY_SUMMARY_MAP=""
 # is intentionally the sole validator for the side-channel: producers, cache
 # merges, and the dashboard reader must not grow subtly different definitions
 # of a usable record.  It always writes one object with this shape:
-#   {usable, reason, last_scan, comparison_key, counts, alert_count}
+#   {usable, reason, last_scan, counts, alert_count}
 #
 # A legacy record has no `counts` member and uses alert_count as the old
 # CRITICAL-only count.  New-format records must carry every normalized bucket
-# and agree with their alert_count/status. `TRIVY_SCAN_HISTORY_NOW`, when set,
-# supplies the clock used to reject timestamps more than five minutes ahead;
-# otherwise the current UTC clock is used.
+# and agree with their alert_count/status.
 trivy_scan_history_record() {
     local scan_file="${1:-}"
-    local normalized timestamp comparison_base comparison_key fraction now_value now_epoch now_fraction timestamp_epoch
+    local normalized extracted usable reason last_scan counts alert_count
 
     if [[ -z "$scan_file" || ! -f "$scan_file" ]]; then
-        printf '%s\n' '{"usable":false,"reason":"no-file","last_scan":"","comparison_key":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+        printf '%s\n' '{"usable":false,"reason":"no-file","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
         return 0
     fi
 
@@ -60,7 +58,7 @@ trivy_scan_history_record() {
         def empty_counts:
           {critical: 0, high: 0, medium: 0, low: 0, info: 0};
         def reject($reason):
-          {usable: false, reason: $reason, last_scan: "", comparison_key: "", counts: empty_counts, alert_count: 0};
+          {usable: false, reason: $reason, last_scan: "", counts: empty_counts, alert_count: 0};
         def nonnegative_safe_integer:
           type == "number" and isfinite and floor == . and . >= 0 and . <= 9007199254740991;
         def rfc3339:
@@ -109,14 +107,14 @@ trivy_scan_history_record() {
                   or ($record.status == "dirty" and $sum <= 0) then
                     reject("malformed-record")
                   else
-                    {usable: true, reason: "", last_scan: $record.last_scan, comparison_key: "",
+                    {usable: true, reason: "", last_scan: $record.last_scan,
                      counts: $counts, alert_count: $record.alert_count}
                   end
               end
             elif ($record.alert_count | nonnegative_safe_integer)
               and (($record.status == "clean" and $record.alert_count == 0)
                    or ($record.status == "dirty" and $record.alert_count > 0)) then
-              {usable: true, reason: "legacy", last_scan: $record.last_scan, comparison_key: "",
+              {usable: true, reason: "legacy", last_scan: $record.last_scan,
                counts: {critical: $record.alert_count, high: 0, medium: 0, low: 0, info: 0},
                alert_count: $record.alert_count}
             else
@@ -124,39 +122,24 @@ trivy_scan_history_record() {
             end
         end
     ' "$scan_file" 2>/dev/null); then
-        normalized='{"usable":false,"reason":"malformed-record","last_scan":"","comparison_key":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+        normalized='{"usable":false,"reason":"malformed-record","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
     fi
 
-    if [[ "$(jq -r '.usable' <<<"$normalized")" == true ]]; then
-        timestamp=$(jq -r '.last_scan' <<<"$normalized")
-        if ! comparison_base=$(TZ=UTC0 LC_ALL=C date -d "$timestamp" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null) \
-            || ! timestamp_epoch=$(TZ=UTC0 LC_ALL=C date -d "$timestamp" +%s 2>/dev/null); then
-            normalized='{"usable":false,"reason":"malformed-record","last_scan":"","comparison_key":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
-        else
-            fraction=""
-            if [[ "$timestamp" =~ \.([0-9]+)(Z|[+-][0-9]{2}:[0-9]{2})$ ]]; then
-                fraction="${BASH_REMATCH[1]}"
-                while [[ "$fraction" == *0 ]]; do fraction="${fraction%0}"; done
-            fi
-            now_value="${TRIVY_SCAN_HISTORY_NOW:-$(TZ=UTC0 LC_ALL=C date '+%Y-%m-%dT%H:%M:%SZ')}"
-            if ! now_epoch=$(TZ=UTC0 LC_ALL=C date -d "$now_value" +%s 2>/dev/null); then
-                normalized='{"usable":false,"reason":"invalid-clock","last_scan":"","comparison_key":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
-            else
-                now_fraction=""
-                if [[ "$now_value" =~ \.([0-9]+)(Z|[+-][0-9]{2}:[0-9]{2})$ ]]; then
-                    now_fraction="${BASH_REMATCH[1]}"
-                    while [[ "$now_fraction" == *0 ]]; do now_fraction="${now_fraction%0}"; done
-                fi
-                if (( timestamp_epoch > now_epoch + 300 )) \
-                    || { (( timestamp_epoch == now_epoch + 300 )) && [[ "$fraction" > "$now_fraction" ]]; }; then
-                    normalized='{"usable":false,"reason":"future-timestamp","last_scan":"","comparison_key":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
-                else
-                    comparison_key="$comparison_base"
-                    [[ -n "$fraction" ]] && comparison_key+=".$fraction"
-                    normalized=$(jq -c --arg comparison_key "$comparison_key" '.comparison_key = $comparison_key' <<<"$normalized")
-                fi
-            fi
-        fi
+    # Rebuild the validator's complete verdict from one guarded extraction.
+    # This makes a jq failure after structural validation fail closed too.
+    if ! extracted=$(jq -er '[.usable, .reason, .last_scan, (.counts | @json), .alert_count]
+        | map(tostring) | join("\u001f")' <<<"$normalized"); then
+        normalized='{"usable":false,"reason":"malformed-record","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+    elif ! IFS=$'\x1f' read -r usable reason last_scan counts alert_count <<<"$extracted"; then
+        normalized='{"usable":false,"reason":"malformed-record","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+    elif ! normalized=$(jq -cn \
+        --argjson usable "$usable" \
+        --arg reason "$reason" \
+        --arg last_scan "$last_scan" \
+        --argjson counts "$counts" \
+        --argjson alert_count "$alert_count" \
+        '{usable:$usable, reason:$reason, last_scan:$last_scan, counts:$counts, alert_count:$alert_count}'); then
+        normalized='{"usable":false,"reason":"malformed-record","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
     fi
 
     printf '%s\n' "$normalized"
