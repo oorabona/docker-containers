@@ -651,6 +651,7 @@ runs:
       continue-on-error: true  # SARIF generation failure should not block build
 
     - name: Write Trivy scan history
+      id: write-trivy-history
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' && steps.trivy-sarif.outcome == 'success' }}
       shell: bash
       env:
@@ -668,33 +669,42 @@ runs:
 
         mkdir -p .trivy-scan-history
 
-        last_scan="$(date -Iseconds)"
-        alert_count=0
-        status="clean"
+        last_scan=""
+        alert_count=-1
+        status="error"
         counts_json='{"critical":0,"high":0,"medium":0,"low":0,"info":0}'
 
-        # Parse SARIF to count findings per severity (Option C: full breakdown)
+        # Validate the SARIF and calculate the complete normalized summary in one
+        # operation. Keep pessimistic defaults on any validation or parsing failure.
         if [[ -f trivy-results.sarif ]]; then
-          # Build a rule_id → severity (lowercase) map from tool.driver.rules
-          severities_json=$(jq -c '
-            [.runs[].tool.driver.rules // [] | .[] |
-              {(.id): ([.properties.tags // [] | .[] | ascii_downcase] |
-                map(select(. == "critical" or . == "high" or . == "medium" or . == "low")) |
-                first // "info")}]
-            | add // {}
-          ' trivy-results.sarif 2>/dev/null || echo "{}")
-
-          # Count results by severity via the rule→severity map
-          counts_json=$(jq -c --argjson sev_map "$severities_json" '
-            reduce ([.runs[].results // [] | .[]][] | (.ruleId? // "")) as $rid
-              ({"critical":0,"high":0,"medium":0,"low":0,"info":0};
-                ($sev_map[$rid] // "info") as $s
-                | if .[$s] != null then .[$s] += 1 else . end)
-          ' trivy-results.sarif 2>/dev/null || echo '{"critical":0,"high":0,"medium":0,"low":0,"info":0}')
-
-          alert_count=$(jq '[.runs[].results // [] | .[]] | length' trivy-results.sarif 2>/dev/null || echo 0)
-          if [[ "$alert_count" -gt 0 ]]; then
-            status="dirty"
+          if summary_json=$(jq -ce '
+            select(
+              (.runs | type == "array")
+              and (.runs | length >= 1)
+              and (all(.runs[]; .tool.driver.name == "Trivy"))
+              and (all(.runs[]; .tool.driver.rules | type == "array"))
+              and (all(.runs[]; .results | type == "array"))
+            )
+            | ([.runs[] | (.tool.driver.rules // [])[] |
+                {(.id): ([.properties.tags // [] | .[] | ascii_downcase] |
+                  map(select(. == "critical" or . == "high" or . == "medium" or . == "low")) |
+                  first // "info")}]
+              | add // {}) as $sev_map
+            | [.runs[] | (.results // [])[] | (.ruleId? // "")] as $rule_ids
+            | (reduce $rule_ids[] as $rid
+                ({"critical":0,"high":0,"medium":0,"low":0,"info":0};
+                  ($sev_map[$rid] // "info") as $severity
+                  | if .[$severity] != null then .[$severity] += 1 else . end)) as $counts
+            | {alert_count: ($rule_ids | length), counts: $counts}
+          ' trivy-results.sarif 2>/dev/null); then
+            alert_count=$(jq -r '.alert_count' <<<"$summary_json")
+            counts_json=$(jq -c '.counts' <<<"$summary_json")
+            if [[ "$alert_count" -gt 0 ]]; then
+              status="dirty"
+            else
+              status="clean"
+            fi
+            last_scan="$(date -Iseconds)"
           fi
         fi
 
@@ -712,7 +722,8 @@ runs:
           --arg st "$status" \
           --argjson c "$counts_json" \
           --argjson ss "$scanned_severities_json" \
-          '{last_scan:$ls,alert_count:$ac,status:$st,counts:$c,scanned_severities:$ss}' > "$scan_file"
+          '{alert_count:$ac,status:$st,counts:$c,scanned_severities:$ss}
+            + if $ls == "" then {} else {last_scan:$ls} end' > "$scan_file"
         echo "::notice::Wrote Trivy scan history to $scan_file (alert_count=$alert_count, status=$status)"
 
     - name: Upload SARIF to GitHub Security

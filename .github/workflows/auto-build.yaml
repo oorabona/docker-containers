@@ -2796,7 +2796,7 @@ jobs:
         run: |
           mkdir -p .trivy-scan-history
 
-          last_scan="$(date -Iseconds)"
+          last_scan=""
           alert_count=-1
           status="error"
           counts_json='{"critical":0,"high":0,"medium":0,"low":0,"info":0}'
@@ -2805,30 +2805,34 @@ jobs:
           # A missing or unparsable SARIF means the scan did not complete — record as
           # status="error" with alert_count=-1 (sentinel) so the dashboard/history
           # reports a failed scan rather than a false clean.
-          if [[ -f trivy-results.sarif ]] && jq -e . trivy-results.sarif >/dev/null 2>&1; then
-            severities_json=$(jq -c '
-              [.runs[].tool.driver.rules // [] | .[] |
+          if [[ -f trivy-results.sarif ]] && summary_json=$(jq -ce '
+            select(
+              (.runs | type == "array")
+              and (.runs | length >= 1)
+              and (all(.runs[]; .tool.driver.name == "Trivy"))
+              and (all(.runs[]; .tool.driver.rules | type == "array"))
+              and (all(.runs[]; .results | type == "array"))
+            )
+            | ([.runs[] | (.tool.driver.rules // [])[] |
                 {(.id): ([.properties.tags // [] | .[] | ascii_downcase] |
                   map(select(. == "critical" or . == "high" or . == "medium" or . == "low")) |
                   first // "info")}]
-              | add // {}
-            ' trivy-results.sarif 2>/dev/null || echo "{}")
-
-            counts_json=$(jq -c --argjson sev_map "$severities_json" '
-              reduce ([.runs[].results // [] | .[]][] | (.ruleId? // "")) as $rid
+              | add // {}) as $sev_map
+            | [.runs[] | (.results // [])[] | (.ruleId? // "")] as $rule_ids
+            | (reduce $rule_ids[] as $rid
                 ({"critical":0,"high":0,"medium":0,"low":0,"info":0};
-                  ($sev_map[$rid] // "info") as $s
-                  | if .[$s] != null then .[$s] += 1 else . end)
-            ' trivy-results.sarif 2>/dev/null || echo '{"critical":0,"high":0,"medium":0,"low":0,"info":0}')
-
-            alert_count=$(jq '[.runs[].results // [] | .[]] | length' trivy-results.sarif 2>/dev/null || echo -1)
-            if [[ "$alert_count" -lt 0 ]]; then
-              status="error"
-            elif [[ "$alert_count" -gt 0 ]]; then
+                  ($sev_map[$rid] // "info") as $severity
+                  | if .[$severity] != null then .[$severity] += 1 else . end)) as $counts
+            | {alert_count: ($rule_ids | length), counts: $counts}
+          ' trivy-results.sarif 2>/dev/null); then
+            alert_count=$(jq -r '.alert_count' <<<"$summary_json")
+            counts_json=$(jq -c '.counts' <<<"$summary_json")
+            if [[ "$alert_count" -gt 0 ]]; then
               status="dirty"
             else
               status="clean"
             fi
+            last_scan="$(date -Iseconds)"
           fi
 
           scan_file=".trivy-scan-history/${CONTAINER}-${TAG}-linux-${ARCH}.json"
@@ -2838,7 +2842,8 @@ jobs:
             --arg st "$status" \
             --argjson c "$counts_json" \
             --argjson ss '["UNKNOWN","LOW","MEDIUM","HIGH","CRITICAL"]' \
-            '{last_scan:$ls,alert_count:$ac,status:$st,counts:$c,scanned_severities:$ss}' \
+            '{alert_count:$ac,status:$st,counts:$c,scanned_severities:$ss}
+              + if $ls == "" then {} else {last_scan:$ls} end' \
             > "$scan_file"
           echo "::notice::Trivy scan history: ${scan_file} (alert_count=${alert_count}, status=${status})"
 
@@ -4052,9 +4057,18 @@ jobs:
         run: |
           mkdir -p .trivy-scan-history
           if [ -d ".trivy-scan-history-artifacts" ]; then
-            find .trivy-scan-history-artifacts -name '*.json' -exec cp {} .trivy-scan-history/ \;
-            count=$(find .trivy-scan-history -name '*.json' | wc -l)
-            echo "Consolidated $count Trivy scan history file(s)"
+            merged=0
+            skipped=0
+            while IFS= read -r -d '' src; do
+              src_scan=$(jq -r '.last_scan // empty' "$src" 2>/dev/null || true)
+              if [[ -z "$src_scan" ]]; then
+                skipped=$((skipped + 1))
+                continue
+              fi
+              cp -- "$src" .trivy-scan-history/
+              merged=$((merged + 1))
+            done < <(find .trivy-scan-history-artifacts -name '*.json' -print0)
+            echo "Consolidated $merged Trivy scan history file(s); skipped $skipped without last_scan"
           else
             echo "No Trivy scan history artifacts found"
           fi

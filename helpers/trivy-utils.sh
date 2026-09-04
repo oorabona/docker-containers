@@ -144,13 +144,35 @@ get_trivy_summary() {
     # Resolve under the parent script's SCRIPT_DIR (the repo root) when set —
     # generate-dashboard.sh works from any cwd, so this lookup must too. Fall
     # back to cwd when sourced standalone (e.g. self-test).
-    local sc_root sc_relative sc_file sc_last_scan
+    local sc_root sc_relative sc_file sc_last_scan sc_usable sc_reason
     sc_root="${SCRIPT_DIR:-.}"
     sc_relative="${category#container-}"         # postgres-18-alpine-linux/amd64
     sc_file="$sc_root/.trivy-scan-history/${sc_relative//\//-}.json"   # postgres-18-alpine-linux-amd64.json
     sc_last_scan=""
+    sc_usable=false
+    sc_reason="no-file"
     if [[ -f "$sc_file" ]]; then
-        sc_last_scan=$(jq -r '.last_scan // empty' "$sc_file" 2>/dev/null || true)
+        if ! jq -e 'type == "object"' "$sc_file" >/dev/null 2>&1; then
+            sc_reason="malformed-record"
+        else
+            sc_last_scan=$(jq -r '.last_scan // empty' "$sc_file" 2>/dev/null || true)
+            if [[ -z "$sc_last_scan" ]]; then
+                sc_reason="missing-timestamp"
+            elif ! jq -e '(.status == "clean" or .status == "dirty")' "$sc_file" >/dev/null 2>&1; then
+                sc_reason="rejected-status"
+            elif jq -e 'has("counts")' "$sc_file" >/dev/null 2>&1; then
+                if jq -e '(.counts | type == "object") and all(.counts[]; type == "number")' \
+                    "$sc_file" >/dev/null 2>&1; then
+                    sc_usable=true
+                else
+                    sc_reason="malformed-record"
+                fi
+            elif jq -e '(.alert_count | type == "number")' "$sc_file" >/dev/null 2>&1; then
+                sc_usable=true
+            else
+                sc_reason="malformed-record"
+            fi
+        fi
     fi
 
     # Fast lookup: the full jq processing was done once in _fetch_trivy_alerts_once.
@@ -179,7 +201,7 @@ get_trivy_summary() {
     # covering all severities; legacy files carry only `alert_count` (= critical
     # count by old CRITICAL-only policy). Back-compat: absence of `counts` in
     # the side-channel triggers the legacy path which sets only counts.critical.
-    if [[ -n "$sc_last_scan" ]]; then
+    if [[ "$sc_usable" == true ]]; then
         local base
         if [[ -n "$result" ]] && echo "$result" | jq -e 'type == "object"' >/dev/null 2>&1; then
             base="$result"
@@ -212,6 +234,9 @@ get_trivy_summary() {
         fi
         return 0
     fi
+
+    [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+        echo "[debug] trivy side-channel rejected for category=$category ($sc_reason)" >&2
 
     # No side-channel data — fall back to API result (or empty form on failure).
     if [[ -z "$result" ]] || ! echo "$result" | jq -e 'type == "object"' >/dev/null 2>&1; then
