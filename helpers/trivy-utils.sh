@@ -31,6 +31,101 @@ _TRIVY_ALERTS_CACHE=""
 # the full alerts list on every call.
 _TRIVY_SUMMARY_MAP=""
 
+# trivy_scan_history_record <file>
+#
+# Normalizes the trust decision for a persisted Trivy scan-history record.  This
+# is intentionally the sole validator for the side-channel: producers, cache
+# merges, and the dashboard reader must not grow subtly different definitions
+# of a usable record.  It always writes one object with this shape:
+#   {usable, reason, last_scan, counts, alert_count}
+#
+# A legacy record has no `counts` member and uses alert_count as the old
+# CRITICAL-only count.  New-format records must carry every normalized bucket
+# and agree with their alert_count/status.
+trivy_scan_history_record() {
+    local scan_file="${1:-}"
+    local normalized
+
+    if [[ -z "$scan_file" || ! -f "$scan_file" ]]; then
+        printf '%s\n' '{"usable":false,"reason":"no-file","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+        return 0
+    fi
+
+    # jq normally consumes a stream of JSON values.  Slurp first so a file
+    # containing two otherwise-valid records is rejected as one malformed
+    # history file rather than leaking two summaries into a later --argjson.
+    if ! normalized=$(jq -c -s '
+        def empty_counts:
+          {critical: 0, high: 0, medium: 0, low: 0, info: 0};
+        def reject($reason):
+          {usable: false, reason: $reason, last_scan: "", counts: empty_counts, alert_count: 0};
+        def nonnegative_integer:
+          type == "number" and isfinite and floor == . and . >= 0;
+        def rfc3339:
+          try (
+            capture("^(?<year>[0-9]{4})-(?<month>[0-9]{2})-(?<day>[0-9]{2})T(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?<fraction>\\.[0-9]+)?(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$")
+            | (.year | tonumber) as $year
+            | (.month | tonumber) as $month
+            | (.day | tonumber) as $day
+            | (.hour | tonumber) as $hour
+            | (.minute | tonumber) as $minute
+            | (.second | tonumber) as $second
+            | (if .zone == "Z" then 0 else (.zone[1:3] | tonumber) end) as $zone_hour
+            | (if .zone == "Z" then 0 else (.zone[4:6] | tonumber) end) as $zone_minute
+            | [31,
+               (if (($year % 4 == 0 and $year % 100 != 0) or $year % 400 == 0) then 29 else 28 end),
+               31,30,31,30,31,31,30,31,30,31][$month - 1] as $days_in_month
+            | $month >= 1 and $month <= 12
+              and $day >= 1 and $day <= $days_in_month
+              and $hour <= 23 and $minute <= 59 and $second <= 60
+              and $zone_hour <= 23 and $zone_minute <= 59
+          ) catch false;
+
+        if length != 1 or (.[0] | type != "object") then
+          reject("malformed-record")
+        else
+          .[0] as $record
+          | if ($record | has("last_scan") | not) or $record.last_scan == "" then
+              reject("missing-timestamp")
+            elif ($record.last_scan | type != "string") or ($record.last_scan | rfc3339 | not) then
+              reject("malformed-record")
+            elif ($record.status != "clean" and $record.status != "dirty") then
+              reject("rejected-status")
+            elif ($record | has("counts")) then
+              if ($record.counts | type != "object")
+                or (all(["critical", "high", "medium", "low", "info"][];
+                    . as $count_key | ($record.counts[$count_key] | nonnegative_integer)) | not) then
+                reject("malformed-record")
+              else
+                {critical: $record.counts.critical, high: $record.counts.high,
+                 medium: $record.counts.medium, low: $record.counts.low,
+                 info: $record.counts.info} as $counts
+                | ($counts.critical + $counts.high + $counts.medium + $counts.low + $counts.info) as $sum
+                | if ($record.alert_count | nonnegative_integer | not)
+                  or $record.alert_count != $sum
+                  or ($record.status == "clean" and $sum != 0)
+                  or ($record.status == "dirty" and $sum <= 0) then
+                    reject("malformed-record")
+                  else
+                    {usable: true, reason: "", last_scan: $record.last_scan,
+                     counts: $counts, alert_count: $record.alert_count}
+                  end
+              end
+            elif ($record.alert_count | nonnegative_integer) then
+              {usable: true, reason: "legacy", last_scan: $record.last_scan,
+               counts: {critical: $record.alert_count, high: 0, medium: 0, low: 0, info: 0},
+               alert_count: $record.alert_count}
+            else
+              reject("malformed-record")
+            end
+        end
+    ' "$scan_file" 2>/dev/null); then
+        normalized='{"usable":false,"reason":"malformed-record","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+    fi
+
+    printf '%s\n' "$normalized"
+}
+
 # _fetch_trivy_alerts_once
 # Populates _TRIVY_ALERTS_CACHE and _TRIVY_SUMMARY_MAP on first call; subsequent
 # calls are no-ops. On auth/network failure, sets caches to empty sentinels and
@@ -144,36 +239,20 @@ get_trivy_summary() {
     # Resolve under the parent script's SCRIPT_DIR (the repo root) when set —
     # generate-dashboard.sh works from any cwd, so this lookup must too. Fall
     # back to cwd when sourced standalone (e.g. self-test).
-    local sc_root sc_relative sc_file sc_last_scan sc_usable sc_reason
+    local sc_root sc_relative sc_file sc_last_scan sc_usable sc_reason sc_record
     sc_root="${SCRIPT_DIR:-.}"
     sc_relative="${category#container-}"         # postgres-18-alpine-linux/amd64
     sc_file="$sc_root/.trivy-scan-history/${sc_relative//\//-}.json"   # postgres-18-alpine-linux-amd64.json
     sc_last_scan=""
     sc_usable=false
     sc_reason="no-file"
-    if [[ -f "$sc_file" ]]; then
-        if ! jq -e 'type == "object"' "$sc_file" >/dev/null 2>&1; then
-            sc_reason="malformed-record"
-        else
-            sc_last_scan=$(jq -r '.last_scan // empty' "$sc_file" 2>/dev/null || true)
-            if [[ -z "$sc_last_scan" ]]; then
-                sc_reason="missing-timestamp"
-            elif ! jq -e '(.status == "clean" or .status == "dirty")' "$sc_file" >/dev/null 2>&1; then
-                sc_reason="rejected-status"
-            elif jq -e 'has("counts")' "$sc_file" >/dev/null 2>&1; then
-                if jq -e '(.counts | type == "object") and all(.counts[]; type == "number")' \
-                    "$sc_file" >/dev/null 2>&1; then
-                    sc_usable=true
-                else
-                    sc_reason="malformed-record"
-                fi
-            elif jq -e '(.alert_count | type == "number")' "$sc_file" >/dev/null 2>&1; then
-                sc_usable=true
-            else
-                sc_reason="malformed-record"
-            fi
-        fi
-    fi
+    # One normalized decision for every history record.  Do not add ad-hoc
+    # field probes here: cache merges use this same predicate, and agreeing on
+    # usability matters more than accepting a merely timestamped JSON object.
+    sc_record=$(trivy_scan_history_record "$sc_file")
+    IFS=$'\x1f' read -r sc_usable sc_reason sc_last_scan < <(
+        jq -r '[.usable, .reason, .last_scan] | map(tostring) | join("\u001f")' <<<"$sc_record"
+    )
 
     # Fast lookup: the full jq processing was done once in _fetch_trivy_alerts_once.
     # _TRIVY_SUMMARY_MAP is a JSON object keyed by SARIF category.
@@ -210,10 +289,10 @@ get_trivy_summary() {
         fi
 
         local sc_counts sc_alert_count
-        sc_counts=$(jq -c '.counts // empty' "$sc_file" 2>/dev/null || true)
-        sc_alert_count=$(jq -r '.alert_count // 0' "$sc_file" 2>/dev/null || echo 0)
+        sc_counts=$(jq -c '.counts' <<<"$sc_record")
+        sc_alert_count=$(jq -r '.alert_count' <<<"$sc_record")
 
-        if [[ -n "$sc_counts" ]]; then
+        if [[ "$sc_reason" != legacy ]]; then
             # New format (Option C): partial-overlay merge onto base.
             # (.counts + $sc) merges objects: keys present in $sc override the
             # corresponding keys in base; keys absent from $sc are preserved from

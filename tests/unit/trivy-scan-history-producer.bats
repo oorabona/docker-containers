@@ -14,6 +14,9 @@ setup() {
     yq -r '.runs.steps[] | select(.id == "write-trivy-history") | .run' \
         .github/actions/build-container/action.yaml > write-trivy-history.sh
     chmod +x write-trivy-history.sh
+    yq -r '.jobs."bake-trivy".steps[] | select(.name == "Write Trivy scan history (bake)") | .run' \
+        "$PROJECT_ROOT/.github/workflows/auto-build.yaml" > write-bake-trivy-history.sh
+    chmod +x write-bake-trivy-history.sh
 }
 
 teardown() {
@@ -27,8 +30,18 @@ run_writer() {
         bash ./write-trivy-history.sh
 }
 
+run_bake_writer() {
+    CONTAINER=test TAG=latest ARCH=amd64 bash ./write-bake-trivy-history.sh
+}
+
 scan_file() {
     echo '.trivy-scan-history/test-latest-linux-amd64.json'
+}
+
+assert_undated_error_record() {
+    run jq -e '.status == "error" and .alert_count == -1 and has("last_scan") == false' \
+        "$(scan_file)"
+    [ "$status" -eq 0 ]
 }
 
 @test "real clean Trivy SARIF writes a dated clean record" {
@@ -65,16 +78,68 @@ scan_file() {
     run run_writer
     [ "$status" -eq 0 ]
 
-    run jq -e '.status == "error" and .alert_count == -1 and has("last_scan") == false' \
-        "$(scan_file)"
-    [ "$status" -eq 0 ]
+    assert_undated_error_record
 }
 
 @test "absent SARIF writes an undated error record" {
     run run_writer
     [ "$status" -eq 0 ]
 
-    run jq -e '.status == "error" and .alert_count == -1 and has("last_scan") == false' \
-        "$(scan_file)"
+    assert_undated_error_record
+}
+
+@test "result without ruleId writes an undated error record" {
+    printf '%s\n' '{"runs":[{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[{}]}]}' \
+        > trivy-results.sarif
+
+    run run_writer
     [ "$status" -eq 0 ]
+    assert_undated_error_record
+}
+
+@test "two concatenated SARIF documents write an undated error record" {
+    valid='{"runs":[{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[]}]}'
+    printf '%s\n%s\n' "$valid" "$valid" > trivy-results.sarif
+
+    run run_writer
+    [ "$status" -eq 0 ]
+    assert_undated_error_record
+}
+
+@test "two valid SARIF runs write an undated error record" {
+    printf '%s\n' '{"runs":[{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[]},{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[]}]}' \
+        > trivy-results.sarif
+
+    run run_writer
+    [ "$status" -eq 0 ]
+    assert_undated_error_record
+}
+
+@test "result whose ruleId is absent from its run writes an undated error record" {
+    printf '%s\n' '{"runs":[{"tool":{"driver":{"name":"Trivy","rules":[{"id":"known","properties":{"tags":["HIGH"]}}]}},"results":[{"ruleId":"missing"}]}]}' \
+        > trivy-results.sarif
+
+    run run_writer
+    [ "$status" -eq 0 ]
+    assert_undated_error_record
+}
+
+@test "bake producer rejects malformed results, documents, and runs" {
+    local malformed_result='{"runs":[{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[{}]}]}'
+    local valid_document='{"runs":[{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[]}]}'
+    local multiple_runs='{"runs":[{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[]},{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[]}]}'
+    local unresolved='{"runs":[{"tool":{"driver":{"name":"Trivy","rules":[{"id":"known","properties":{"tags":["HIGH"]}}]}},"results":[{"ruleId":"missing"}]}]}'
+    local sarif
+
+    for sarif in "$malformed_result" "$multiple_runs" "$unresolved"; do
+        printf '%s\n' "$sarif" > trivy-results.sarif
+        run run_bake_writer
+        [ "$status" -eq 0 ]
+        assert_undated_error_record
+    done
+
+    printf '%s\n%s\n' "$valid_document" "$valid_document" > trivy-results.sarif
+    run run_bake_writer
+    [ "$status" -eq 0 ]
+    assert_undated_error_record
 }

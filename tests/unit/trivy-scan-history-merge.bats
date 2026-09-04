@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 
-# Exercise the workflow's extracted merge step over real scan-history files.
+# Exercise both workflows' extracted Trivy history merge loops over real files.
 
 setup() {
     TEST_TEMP_DIR=$(mktemp -d)
@@ -8,9 +8,17 @@ setup() {
     PROJECT_ROOT=$(cd "$ORIG_DIR" && pwd)
     cd "$TEST_TEMP_DIR" || exit 1
 
+    mkdir -p helpers
+    cp "$PROJECT_ROOT/helpers/trivy-utils.sh" "$PROJECT_ROOT/helpers/logging.sh" helpers/
+
     yq -r '.jobs.cache-lineage.steps[] | select(.name == "Merge Trivy scan history files") | .run' \
-        "$PROJECT_ROOT/.github/workflows/auto-build.yaml" > merge-trivy-history.sh
-    chmod +x merge-trivy-history.sh
+        "$PROJECT_ROOT/.github/workflows/auto-build.yaml" > merge-auto-build.sh
+    chmod +x merge-auto-build.sh
+
+    yq -r '.jobs.build.steps[] | select(.name == "Hydrate Trivy scan history from recent auto-build runs (#352)") | .run' \
+        "$PROJECT_ROOT/.github/workflows/update-dashboard.yaml" \
+        | sed -n '/^merged=0$/,/^echo "::notice::Hydrated from /p' > merge-update-dashboard.sh
+    chmod +x merge-update-dashboard.sh
 }
 
 teardown() {
@@ -18,24 +26,87 @@ teardown() {
     rm -rf "$TEST_TEMP_DIR"
 }
 
-@test "merge skips an undated record and preserves the cached usable record" {
+valid_clean_record() {
+    printf '%s' '{"last_scan":"2026-01-01T00:00:00+00:00","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+}
+
+valid_dirty_record() {
+    local timestamp="$1"
+    jq -nc --arg timestamp "$timestamp" \
+        '{last_scan:$timestamp,status:"dirty",counts:{critical:1,high:0,medium:0,low:0,info:0},alert_count:1}'
+}
+
+run_merge() {
+    local workflow="$1"
+    if [[ "$workflow" == update-dashboard ]]; then
+        staging=.trivy-scan-history-artifacts bash ./merge-update-dashboard.sh
+    else
+        bash ./merge-auto-build.sh
+    fi
+}
+
+assert_merged_record_is_readable() {
+    local category='container-new-latest-linux/amd64'
+    SCRIPT_DIR=$PWD
+    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
+    _fetch_trivy_alerts_once() { :; }
+    _TRIVY_SUMMARY_MAP=$(jq -nc --arg category "$category" \
+        '{$category:{last_scan:"2026-01-01T00:00:00Z",counts:{critical:0,high:0,medium:0,low:0,info:0},top_advisories:[]}}')
+
+    run get_trivy_summary "$category"
+    [ "$status" -eq 0 ]
+    run jq -e '.last_scan == "2026-03-01T00:00:00+00:00" and .counts.critical == 1' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "auto-build merge protects a usable target and replaces an unusable target" {
     mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
-    printf '%s\n' '{"last_scan":"2026-01-01T00:00:00+00:00","status":"clean"}' \
-        > .trivy-scan-history/existing.json
-    printf '%s\n' '{"last_scan":"2026-02-01T00:00:00+00:00","status":"dirty"}' \
-        > .trivy-scan-history-artifacts/nested/usable.json
-    printf '%s\n' '{"status":"error","alert_count":-1}' \
-        > .trivy-scan-history-artifacts/nested/existing.json
+    valid_clean_record > .trivy-scan-history/same-latest-linux-amd64.json
+    printf '%s\n' '{"last_scan":"2026-12-01T00:00:00+00:00","status":"dirty","counts":{},"alert_count":0}' \
+        > .trivy-scan-history-artifacts/nested/same-latest-linux-amd64.json
+    printf '%s\n' '{"last_scan":"not-a-date","status":"error","alert_count":-1}' \
+        > .trivy-scan-history/replace-latest-linux-amd64.json
+    valid_dirty_record '2026-02-01T00:00:00+00:00' \
+        > .trivy-scan-history-artifacts/nested/replace-latest-linux-amd64.json
+    valid_dirty_record '2026-03-01T00:00:00+00:00' \
+        > .trivy-scan-history-artifacts/nested/new-latest-linux-amd64.json
+    printf '%s\n' '{"status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}' \
+        > .trivy-scan-history-artifacts/nested/undated-latest-linux-amd64.json
 
-    run bash ./merge-trivy-history.sh
+    run run_merge auto-build
     [ "$status" -eq 0 ]
-    [[ "$output" == *'Consolidated 1 Trivy scan history file(s); skipped 1 without last_scan'* ]]
+    [[ "$output" == *'Consolidated 2 Trivy scan history file(s); skipped 2 unusable or older record(s)'* ]]
+    [ ! -e .trivy-scan-history/undated-latest-linux-amd64.json ]
 
-    run jq -r '.last_scan' .trivy-scan-history/usable.json
-    [ "$status" -eq 0 ]
-    [ "$output" = '2026-02-01T00:00:00+00:00' ]
-
-    run jq -r '.last_scan' .trivy-scan-history/existing.json
-    [ "$status" -eq 0 ]
+    run jq -r '.last_scan' .trivy-scan-history/same-latest-linux-amd64.json
     [ "$output" = '2026-01-01T00:00:00+00:00' ]
+    run jq -r '.last_scan' .trivy-scan-history/replace-latest-linux-amd64.json
+    [ "$output" = '2026-02-01T00:00:00+00:00' ]
+    assert_merged_record_is_readable
+}
+
+@test "update-dashboard merge protects a usable target and replaces an unusable target" {
+    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
+    valid_clean_record > .trivy-scan-history/same-latest-linux-amd64.json
+    printf '%s\n' '{"last_scan":"2026-12-01T00:00:00+00:00","status":"dirty","counts":{},"alert_count":0}' \
+        > .trivy-scan-history-artifacts/nested/same-latest-linux-amd64.json
+    printf '%s\n' '{"last_scan":"not-a-date","status":"error","alert_count":-1}' \
+        > .trivy-scan-history/replace-latest-linux-amd64.json
+    valid_dirty_record '2026-02-01T00:00:00+00:00' \
+        > .trivy-scan-history-artifacts/nested/replace-latest-linux-amd64.json
+    valid_dirty_record '2026-03-01T00:00:00+00:00' \
+        > .trivy-scan-history-artifacts/nested/new-latest-linux-amd64.json
+    printf '%s\n' '{"status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}' \
+        > .trivy-scan-history-artifacts/nested/undated-latest-linux-amd64.json
+
+    run run_merge update-dashboard
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'merged 2 file(s); skipped 2 unusable or older record(s)'* ]]
+    [ ! -e .trivy-scan-history/undated-latest-linux-amd64.json ]
+
+    run jq -r '.last_scan' .trivy-scan-history/same-latest-linux-amd64.json
+    [ "$output" = '2026-01-01T00:00:00+00:00' ]
+    run jq -r '.last_scan' .trivy-scan-history/replace-latest-linux-amd64.json
+    [ "$output" = '2026-02-01T00:00:00+00:00' ]
+    assert_merged_record_is_readable
 }
