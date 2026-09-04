@@ -2802,9 +2802,9 @@ jobs:
           counts_json='{"critical":0,"high":0,"medium":0,"low":0,"info":0}'
 
           # Parse SARIF to count findings per severity (parity with build-container action).
-          # A missing or unparsable SARIF means the scan did not complete — record as
-          # status="error" with alert_count=-1 (sentinel) so the dashboard/history
-          # reports a failed scan rather than a false clean.
+          # A missing or unparsable SARIF means the scan did not complete. The
+          # resulting undated error record is ephemeral diagnostic output; no
+          # consumer reads it. Persisting attempt state is #1687 work.
           if [[ -f trivy-results.sarif ]] && summary_json=$(jq -ce -s '
             select(length == 1)
             | .[0]
@@ -4069,28 +4069,48 @@ jobs:
           if [ -d ".trivy-scan-history-artifacts" ]; then
             merged=0
             skipped=0
+            declare -A target_record_by_base target_usable_by_base target_key_by_base
             while IFS= read -r -d '' src; do
               src_record=$(trivy_scan_history_record "$src")
-              src_usable=$(jq -r '.usable' <<<"$src_record")
+              # The original last_scan remains in the copied record; only the
+              # normalized key participates in the ordering decision.
+              IFS=$'\x1f' read -r src_usable src_key _ < <(
+                jq -r '[.usable, .comparison_key, .last_scan] | map(tostring) | join("\u001f")' <<<"$src_record"
+              )
               if [[ "$src_usable" != true ]]; then
                 skipped=$((skipped + 1))
                 continue
               fi
 
-              src_scan=$(jq -r '.last_scan' <<<"$src_record")
-              tgt=".trivy-scan-history/$(basename "$src")"
-              if [[ -f "$tgt" ]]; then
+              base=$(basename "$src")
+              tgt=".trivy-scan-history/$base"
+              if [[ -v target_record_by_base["$base"] ]]; then
+                tgt_usable="${target_usable_by_base[$base]}"
+                tgt_key="${target_key_by_base[$base]}"
+              elif [[ -f "$tgt" ]]; then
                 tgt_record=$(trivy_scan_history_record "$tgt")
-                tgt_usable=$(jq -r '.usable' <<<"$tgt_record")
-                if [[ "$tgt_usable" == true ]]; then
-                  tgt_scan=$(jq -r '.last_scan' <<<"$tgt_record")
-                  if [[ ! "$src_scan" > "$tgt_scan" ]]; then
-                    skipped=$((skipped + 1))
-                    continue
-                  fi
+                IFS=$'\x1f' read -r tgt_usable tgt_key _ < <(
+                  jq -r '[.usable, .comparison_key, .last_scan] | map(tostring) | join("\u001f")' <<<"$tgt_record"
+                )
+                target_record_by_base[$base]="$tgt_record"
+                target_usable_by_base[$base]="$tgt_usable"
+                target_key_by_base[$base]="$tgt_key"
+              else
+                tgt_usable=false
+                tgt_key=""
+              fi
+              if [[ "$tgt_usable" == true ]]; then
+                # comparison_key is canonical UTC, including exact fractional seconds.
+                # Ties keep the cache and avoid needless I/O.
+                if [[ ! "$src_key" > "$tgt_key" ]]; then
+                  skipped=$((skipped + 1))
+                  continue
                 fi
               fi
               cp -- "$src" .trivy-scan-history/
+              target_record_by_base[$base]="$src_record"
+              target_usable_by_base[$base]="$src_usable"
+              target_key_by_base[$base]="$src_key"
               merged=$((merged + 1))
             done < <(find .trivy-scan-history-artifacts -name '*.json' -print0)
             echo "Consolidated $merged Trivy scan history file(s); skipped $skipped unusable or older record(s)"

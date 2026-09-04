@@ -10,6 +10,7 @@ setup() {
 
     mkdir -p helpers
     cp "$PROJECT_ROOT/helpers/trivy-utils.sh" "$PROJECT_ROOT/helpers/logging.sh" helpers/
+    export TRIVY_SCAN_HISTORY_NOW='2027-01-01T00:00:00Z'
 
     yq -r '.jobs.cache-lineage.steps[] | select(.name == "Merge Trivy scan history files") | .run' \
         "$PROJECT_ROOT/.github/workflows/auto-build.yaml" > merge-auto-build.sh
@@ -109,4 +110,70 @@ assert_merged_record_is_readable() {
     run jq -r '.last_scan' .trivy-scan-history/replace-latest-linux-amd64.json
     [ "$output" = '2026-02-01T00:00:00+00:00' ]
     assert_merged_record_is_readable
+}
+
+@test "auto-build merge compares offset timestamps chronologically" {
+    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
+    valid_dirty_record '2025-12-31T23:45:00Z' > .trivy-scan-history/clock-latest-linux-amd64.json
+    valid_dirty_record '2026-01-01T00:30:00+01:00' > .trivy-scan-history-artifacts/nested/clock-latest-linux-amd64.json
+
+    run run_merge auto-build
+    [ "$status" -eq 0 ]
+    run jq -r '.last_scan' .trivy-scan-history/clock-latest-linux-amd64.json
+    [ "$output" = '2025-12-31T23:45:00Z' ]
+}
+
+@test "update-dashboard merge compares offset timestamps chronologically" {
+    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
+    valid_dirty_record '2025-12-31T23:45:00Z' > .trivy-scan-history/clock-latest-linux-amd64.json
+    valid_dirty_record '2026-01-01T00:30:00+01:00' > .trivy-scan-history-artifacts/nested/clock-latest-linux-amd64.json
+
+    run run_merge update-dashboard
+    [ "$status" -eq 0 ]
+    run jq -r '.last_scan' .trivy-scan-history/clock-latest-linux-amd64.json
+    [ "$output" = '2025-12-31T23:45:00Z' ]
+}
+
+@test "auto-build merge compares fractional seconds against the same whole second" {
+    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
+    valid_dirty_record '2026-01-01T00:00:00Z' > .trivy-scan-history/fraction-latest-linux-amd64.json
+    valid_dirty_record '2026-01-01T00:00:00.1Z' > .trivy-scan-history-artifacts/nested/fraction-latest-linux-amd64.json
+
+    run run_merge auto-build
+    [ "$status" -eq 0 ]
+    run jq -r '.last_scan' .trivy-scan-history/fraction-latest-linux-amd64.json
+    [ "$output" = '2026-01-01T00:00:00.1Z' ]
+}
+
+@test "update-dashboard merge compares fractional seconds against the same whole second" {
+    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
+    valid_dirty_record '2026-01-01T00:00:00Z' > .trivy-scan-history/fraction-latest-linux-amd64.json
+    valid_dirty_record '2026-01-01T00:00:00.1Z' > .trivy-scan-history-artifacts/nested/fraction-latest-linux-amd64.json
+
+    run run_merge update-dashboard
+    [ "$status" -eq 0 ]
+    run jq -r '.last_scan' .trivy-scan-history/fraction-latest-linux-amd64.json
+    [ "$output" = '2026-01-01T00:00:00.1Z' ]
+}
+
+@test "auto-build merge rejects a future-dated source" {
+    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
+    valid_dirty_record '2026-01-01T00:00:00Z' > .trivy-scan-history/future-latest-linux-amd64.json
+    valid_dirty_record '2099-01-01T00:00:00Z' > .trivy-scan-history-artifacts/nested/future-latest-linux-amd64.json
+
+    run run_merge auto-build
+    [ "$status" -eq 0 ]
+    run jq -r '.last_scan' .trivy-scan-history/future-latest-linux-amd64.json
+    [ "$output" = '2026-01-01T00:00:00Z' ]
+}
+
+@test "update-dashboard merge rejects a future-dated source" {
+    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested
+    valid_dirty_record '2026-01-01T00:00:00Z' > .trivy-scan-history/future-latest-linux-amd64.json
+    valid_dirty_record '2099-01-01T00:00:00Z' > .trivy-scan-history-artifacts/nested/future-latest-linux-amd64.json
+
+    run run_merge update-dashboard
+    [ "$status" -eq 0 ]
+    run jq -r '.last_scan' .trivy-scan-history/future-latest-linux-amd64.json
+    [ "$output" = '2026-01-01T00:00:00Z' ]
 }

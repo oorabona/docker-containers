@@ -37,17 +37,19 @@ _TRIVY_SUMMARY_MAP=""
 # is intentionally the sole validator for the side-channel: producers, cache
 # merges, and the dashboard reader must not grow subtly different definitions
 # of a usable record.  It always writes one object with this shape:
-#   {usable, reason, last_scan, counts, alert_count}
+#   {usable, reason, last_scan, comparison_key, counts, alert_count}
 #
 # A legacy record has no `counts` member and uses alert_count as the old
 # CRITICAL-only count.  New-format records must carry every normalized bucket
-# and agree with their alert_count/status.
+# and agree with their alert_count/status. `TRIVY_SCAN_HISTORY_NOW`, when set,
+# supplies the clock used to reject timestamps more than five minutes ahead;
+# otherwise the current UTC clock is used.
 trivy_scan_history_record() {
     local scan_file="${1:-}"
-    local normalized
+    local normalized timestamp comparison_base comparison_key fraction now_value now_epoch now_fraction timestamp_epoch
 
     if [[ -z "$scan_file" || ! -f "$scan_file" ]]; then
-        printf '%s\n' '{"usable":false,"reason":"no-file","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+        printf '%s\n' '{"usable":false,"reason":"no-file","last_scan":"","comparison_key":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
         return 0
     fi
 
@@ -58,9 +60,9 @@ trivy_scan_history_record() {
         def empty_counts:
           {critical: 0, high: 0, medium: 0, low: 0, info: 0};
         def reject($reason):
-          {usable: false, reason: $reason, last_scan: "", counts: empty_counts, alert_count: 0};
-        def nonnegative_integer:
-          type == "number" and isfinite and floor == . and . >= 0;
+          {usable: false, reason: $reason, last_scan: "", comparison_key: "", counts: empty_counts, alert_count: 0};
+        def nonnegative_safe_integer:
+          type == "number" and isfinite and floor == . and . >= 0 and . <= 9007199254740991;
         def rfc3339:
           try (
             capture("^(?<year>[0-9]{4})-(?<month>[0-9]{2})-(?<day>[0-9]{2})T(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?<fraction>\\.[0-9]+)?(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$")
@@ -94,25 +96,27 @@ trivy_scan_history_record() {
             elif ($record | has("counts")) then
               if ($record.counts | type != "object")
                 or (all(["critical", "high", "medium", "low", "info"][];
-                    . as $count_key | ($record.counts[$count_key] | nonnegative_integer)) | not) then
+                    . as $count_key | ($record.counts[$count_key] | nonnegative_safe_integer)) | not) then
                 reject("malformed-record")
               else
                 {critical: $record.counts.critical, high: $record.counts.high,
                  medium: $record.counts.medium, low: $record.counts.low,
                  info: $record.counts.info} as $counts
                 | ($counts.critical + $counts.high + $counts.medium + $counts.low + $counts.info) as $sum
-                | if ($record.alert_count | nonnegative_integer | not)
+                | if ($record.alert_count | nonnegative_safe_integer | not)
                   or $record.alert_count != $sum
                   or ($record.status == "clean" and $sum != 0)
                   or ($record.status == "dirty" and $sum <= 0) then
                     reject("malformed-record")
                   else
-                    {usable: true, reason: "", last_scan: $record.last_scan,
+                    {usable: true, reason: "", last_scan: $record.last_scan, comparison_key: "",
                      counts: $counts, alert_count: $record.alert_count}
                   end
               end
-            elif ($record.alert_count | nonnegative_integer) then
-              {usable: true, reason: "legacy", last_scan: $record.last_scan,
+            elif ($record.alert_count | nonnegative_safe_integer)
+              and (($record.status == "clean" and $record.alert_count == 0)
+                   or ($record.status == "dirty" and $record.alert_count > 0)) then
+              {usable: true, reason: "legacy", last_scan: $record.last_scan, comparison_key: "",
                counts: {critical: $record.alert_count, high: 0, medium: 0, low: 0, info: 0},
                alert_count: $record.alert_count}
             else
@@ -120,7 +124,39 @@ trivy_scan_history_record() {
             end
         end
     ' "$scan_file" 2>/dev/null); then
-        normalized='{"usable":false,"reason":"malformed-record","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+        normalized='{"usable":false,"reason":"malformed-record","last_scan":"","comparison_key":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+    fi
+
+    if [[ "$(jq -r '.usable' <<<"$normalized")" == true ]]; then
+        timestamp=$(jq -r '.last_scan' <<<"$normalized")
+        if ! comparison_base=$(TZ=UTC0 LC_ALL=C date -d "$timestamp" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null) \
+            || ! timestamp_epoch=$(TZ=UTC0 LC_ALL=C date -d "$timestamp" +%s 2>/dev/null); then
+            normalized='{"usable":false,"reason":"malformed-record","last_scan":"","comparison_key":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+        else
+            fraction=""
+            if [[ "$timestamp" =~ \.([0-9]+)(Z|[+-][0-9]{2}:[0-9]{2})$ ]]; then
+                fraction="${BASH_REMATCH[1]}"
+                while [[ "$fraction" == *0 ]]; do fraction="${fraction%0}"; done
+            fi
+            now_value="${TRIVY_SCAN_HISTORY_NOW:-$(TZ=UTC0 LC_ALL=C date '+%Y-%m-%dT%H:%M:%SZ')}"
+            if ! now_epoch=$(TZ=UTC0 LC_ALL=C date -d "$now_value" +%s 2>/dev/null); then
+                normalized='{"usable":false,"reason":"invalid-clock","last_scan":"","comparison_key":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+            else
+                now_fraction=""
+                if [[ "$now_value" =~ \.([0-9]+)(Z|[+-][0-9]{2}:[0-9]{2})$ ]]; then
+                    now_fraction="${BASH_REMATCH[1]}"
+                    while [[ "$now_fraction" == *0 ]]; do now_fraction="${now_fraction%0}"; done
+                fi
+                if (( timestamp_epoch > now_epoch + 300 )) \
+                    || { (( timestamp_epoch == now_epoch + 300 )) && [[ "$fraction" > "$now_fraction" ]]; }; then
+                    normalized='{"usable":false,"reason":"future-timestamp","last_scan":"","comparison_key":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+                else
+                    comparison_key="$comparison_base"
+                    [[ -n "$fraction" ]] && comparison_key+=".$fraction"
+                    normalized=$(jq -c --arg comparison_key "$comparison_key" '.comparison_key = $comparison_key' <<<"$normalized")
+                fi
+            fi
+        fi
     fi
 
     printf '%s\n' "$normalized"
@@ -293,13 +329,8 @@ get_trivy_summary() {
         sc_alert_count=$(jq -r '.alert_count' <<<"$sc_record")
 
         if [[ "$sc_reason" != legacy ]]; then
-            # New format (Option C): partial-overlay merge onto base.
-            # (.counts + $sc) merges objects: keys present in $sc override the
-            # corresponding keys in base; keys absent from $sc are preserved from
-            # base (API). Today's writer always emits all 5 keys, so partial
-            # overlay is forward-compat for future writers that may emit subsets
-            # (e.g. only counts.critical). Side-channel is authoritative only for
-            # the keys it supplies; remaining keys fall back to the API result.
+            # New-format records are validated to carry all five buckets, so their
+            # complete count object is authoritative over the API result.
             echo "$base" | jq \
                 --arg ls "$sc_last_scan" \
                 --argjson sc "$sc_counts" \
@@ -511,8 +542,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         exit 1
     fi
 
-    # Test 6: partial side-channel counts (only critical) — API high/medium MUST be preserved.
-    # Locks the partial-overlay merge contract: keys absent from side-channel are kept from API.
+    # Test 6: partial new-format counts are rejected; the API result remains unchanged.
     mkdir -p "$_test_dir/.trivy-scan-history"
     printf '{"last_scan":"2026-05-07T12:00:00Z","alert_count":1,"status":"dirty","counts":{"critical":1}}\n' \
         > "$_test_dir/.trivy-scan-history/container-partial-6.0-linux-amd64.json"
@@ -537,10 +567,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     medium6=$(echo "$result6" | jq -r '.counts.medium')
     last_scan6=$(echo "$result6" | jq -r '.last_scan')
 
-    if [[ "$critical6" == "1" && "$high6" == "4" && "$medium6" == "2" && "$last_scan6" == "2026-05-07T12:00:00Z" ]]; then
-        echo "PASS test-6: partial side-channel overlay (critical=$critical6 overridden; high=$high6 medium=$medium6 preserved from API; last_scan=$last_scan6)"
+    if [[ "$critical6" == "0" && "$high6" == "4" && "$medium6" == "2" && "$last_scan6" == "2026-05-06T08:00:00Z" ]]; then
+        echo "PASS test-6: partial side-channel record rejected; API result unchanged"
     else
-        echo "FAIL test-6: expected critical=1 high=4 medium=2 last_scan=2026-05-07T12:00:00Z"
+        echo "FAIL test-6: expected unchanged API critical=0 high=4 medium=2 last_scan=2026-05-06T08:00:00Z"
         echo "  got: critical=$critical6 high=$high6 medium=$medium6 last_scan=$last_scan6"
         echo "Full result: $result6"
         exit 1
