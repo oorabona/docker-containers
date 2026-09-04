@@ -4070,7 +4070,16 @@ jobs:
           if [ -d ".trivy-scan-history-artifacts" ]; then
             merged=0
             skipped=0
+            manifest=$(mktemp)
+            tmp=""
+            cleanup() {
+              rm -f -- "$manifest"
+              [[ -z "$tmp" ]] || rm -f -- "$tmp"
+            }
+            trap cleanup EXIT
+            find .trivy-scan-history-artifacts -name '*.json' -print0 > "$manifest"
             while IFS= read -r -d '' src; do
+              tgt=".trivy-scan-history/$(basename "$src")"
               src_record=$(trivy_scan_history_record "$src")
               src_usable=$(jq -r '.usable' <<<"$src_record")
               if [[ "$src_usable" != true ]]; then
@@ -4078,9 +4087,14 @@ jobs:
                 continue
               fi
 
-              cp -- "$src" .trivy-scan-history/
+              # Unlike lineage artifacts, scan history has no metadata consumers;
+              # copy then atomically rename so a failed copy cannot persist a partial record.
+              tmp=$(mktemp "${tgt}.tmp.XXXXXX")
+              cp -- "$src" "$tmp"
+              mv -f -- "$tmp" "$tgt"
+              tmp=""
               merged=$((merged + 1))
-            done < <(find .trivy-scan-history-artifacts -name '*.json' -print0)
+            done < "$manifest"
             echo "Consolidated $merged Trivy scan history file(s); skipped $skipped unusable record(s)"
           else
             echo "No Trivy scan history artifacts found"

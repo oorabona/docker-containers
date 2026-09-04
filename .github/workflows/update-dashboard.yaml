@@ -215,6 +215,14 @@ jobs:
           merged=0
           skipped=0
           source helpers/trivy-utils.sh
+          manifest=$(mktemp)
+          tmp=""
+          cleanup() {
+            rm -f -- "$manifest"
+            [[ -z "$tmp" ]] || rm -f -- "$tmp"
+          }
+          trap cleanup EXIT
+          find "$staging" -name '*.json' -print0 > "$manifest"
           while IFS= read -r -d '' src; do
             base=$(basename "$src")
             tgt=".trivy-scan-history/$base"
@@ -242,9 +250,14 @@ jobs:
               fi
             fi
 
-            cp -- "$src" "$tgt"
+            # Unlike lineage artifacts, scan history has no metadata consumers;
+            # copy then atomically rename so a failed copy cannot persist a partial record.
+            tmp=$(mktemp "${tgt}.tmp.XXXXXX")
+            cp -- "$src" "$tmp"
+            mv -f -- "$tmp" "$tgt"
+            tmp=""
             merged=$((merged + 1))
-          done < <(find "$staging" -name '*.json' -print0)
+          done < "$manifest"
 
           total=$(find .trivy-scan-history -name '*.json' 2>/dev/null | wc -l)
           echo "::notice::Hydrated from $downloaded/$run_count recent run(s); merged $merged file(s); skipped $skipped unusable or older record(s); total scan-history entries: $total"

@@ -44,7 +44,7 @@ _TRIVY_SUMMARY_MAP=""
 # and agree with their alert_count/status.
 trivy_scan_history_record() {
     local scan_file="${1:-}"
-    local normalized extracted usable reason last_scan counts alert_count
+    local normalized
 
     if [[ -z "$scan_file" || ! -f "$scan_file" ]]; then
         printf '%s\n' '{"usable":false,"reason":"no-file","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
@@ -61,84 +61,83 @@ trivy_scan_history_record() {
           {usable: false, reason: $reason, last_scan: "", counts: empty_counts, alert_count: 0};
         def nonnegative_safe_integer:
           type == "number" and isfinite and floor == . and . >= 0 and . <= 9007199254740991;
+        def normalized_record:
+          . as $normalized
+          | ($normalized | type == "object")
+          and ($normalized | (keys | sort) == ["alert_count", "counts", "last_scan", "reason", "usable"])
+          and ($normalized.usable | type == "boolean")
+          and ($normalized.reason | type == "string")
+          and ($normalized.last_scan | type == "string")
+          and ($normalized.alert_count | nonnegative_safe_integer)
+          and ($normalized.counts | type == "object")
+          and ($normalized.counts | (keys | sort) == ["critical", "high", "info", "low", "medium"])
+          and ([$normalized.counts.critical, $normalized.counts.high, $normalized.counts.medium,
+                $normalized.counts.low, $normalized.counts.info] | all(.[]; nonnegative_safe_integer));
         def rfc3339:
-          try (
-            capture("^(?<year>[0-9]{4})-(?<month>[0-9]{2})-(?<day>[0-9]{2})T(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?<fraction>\\.[0-9]+)?(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$")
-            | (.year | tonumber) as $year
-            | (.month | tonumber) as $month
-            | (.day | tonumber) as $day
-            | (.hour | tonumber) as $hour
-            | (.minute | tonumber) as $minute
-            | (.second | tonumber) as $second
-            | (if .zone == "Z" then 0 else (.zone[1:3] | tonumber) end) as $zone_hour
-            | (if .zone == "Z" then 0 else (.zone[4:6] | tonumber) end) as $zone_minute
-            | [31,
-               (if (($year % 4 == 0 and $year % 100 != 0) or $year % 400 == 0) then 29 else 28 end),
-               31,30,31,30,31,31,30,31,30,31][$month - 1] as $days_in_month
-            | $month >= 1 and $month <= 12
-              and $day >= 1 and $day <= $days_in_month
-              and $hour <= 23 and $minute <= 59 and $second <= 60
-              and $zone_hour <= 23 and $zone_minute <= 59
-          ) catch false;
+          [try (
+             capture("^(?<year>[0-9]{4})-(?<month>[0-9]{2})-(?<day>[0-9]{2})T(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?<fraction>\\.[0-9]+)?(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$")
+             | (.year | tonumber) as $year
+             | (.month | tonumber) as $month
+             | (.day | tonumber) as $day
+             | (.hour | tonumber) as $hour
+             | (.minute | tonumber) as $minute
+             | (.second | tonumber) as $second
+             | (if .zone == "Z" then 0 else (.zone[1:3] | tonumber) end) as $zone_hour
+             | (if .zone == "Z" then 0 else (.zone[4:6] | tonumber) end) as $zone_minute
+             | [31,
+                (if (($year % 4 == 0 and $year % 100 != 0) or $year % 400 == 0) then 29 else 28 end),
+                31,30,31,30,31,30,31,31,30,31,30,31][$month - 1] as $days_in_month
+             | $month >= 1 and $month <= 12
+               and $day >= 1 and $day <= $days_in_month
+               and $hour <= 23 and $minute <= 59 and $second <= 60
+               and $zone_hour <= 23 and $zone_minute <= 59
+           ) catch false]
+          | if length == 1 then .[0] else false end;
 
-        if length != 1 or (.[0] | type != "object") then
-          reject("malformed-record")
-        else
-          .[0] as $record
-          | if ($record | has("last_scan") | not) or $record.last_scan == "" then
-              reject("missing-timestamp")
-            elif ($record.last_scan | type != "string") or ($record.last_scan | rfc3339 | not) then
-              reject("malformed-record")
-            elif ($record.status != "clean" and $record.status != "dirty") then
-              reject("rejected-status")
-            elif ($record | has("counts")) then
-              if ($record.counts | type != "object")
-                or (all(["critical", "high", "medium", "low", "info"][];
-                    . as $count_key | ($record.counts[$count_key] | nonnegative_safe_integer)) | not) then
+        (
+          if length != 1 or (.[0] | type != "object") then
+            reject("malformed-record")
+          else
+            .[0] as $record
+            | if ($record | has("last_scan") | not) or $record.last_scan == "" then
+                reject("missing-timestamp")
+              elif ($record.last_scan | type != "string") or ($record.last_scan | rfc3339 | not) then
                 reject("malformed-record")
+              elif ($record.status != "clean" and $record.status != "dirty") then
+                reject("rejected-status")
+              elif ($record | has("counts")) then
+                if ($record.counts | type != "object")
+                  or (all(["critical", "high", "medium", "low", "info"][];
+                      . as $count_key | ($record.counts[$count_key] | nonnegative_safe_integer)) | not) then
+                  reject("malformed-record")
+                else
+                  {critical: $record.counts.critical, high: $record.counts.high,
+                   medium: $record.counts.medium, low: $record.counts.low,
+                   info: $record.counts.info} as $counts
+                  | ($counts.critical + $counts.high + $counts.medium + $counts.low + $counts.info) as $sum
+                  | if ($record.alert_count | nonnegative_safe_integer | not)
+                    or $record.alert_count != $sum
+                    or ($record.status == "clean" and $sum != 0)
+                    or ($record.status == "dirty" and $sum <= 0) then
+                      reject("malformed-record")
+                    else
+                      {usable: true, reason: "", last_scan: $record.last_scan,
+                       counts: $counts, alert_count: $record.alert_count}
+                    end
+                end
+              elif ($record.alert_count | nonnegative_safe_integer)
+                and (($record.status == "clean" and $record.alert_count == 0)
+                     or ($record.status == "dirty" and $record.alert_count > 0)) then
+                {usable: true, reason: "legacy", last_scan: $record.last_scan,
+                 counts: {critical: $record.alert_count, high: 0, medium: 0, low: 0, info: 0},
+                 alert_count: $record.alert_count}
               else
-                {critical: $record.counts.critical, high: $record.counts.high,
-                 medium: $record.counts.medium, low: $record.counts.low,
-                 info: $record.counts.info} as $counts
-                | ($counts.critical + $counts.high + $counts.medium + $counts.low + $counts.info) as $sum
-                | if ($record.alert_count | nonnegative_safe_integer | not)
-                  or $record.alert_count != $sum
-                  or ($record.status == "clean" and $sum != 0)
-                  or ($record.status == "dirty" and $sum <= 0) then
-                    reject("malformed-record")
-                  else
-                    {usable: true, reason: "", last_scan: $record.last_scan,
-                     counts: $counts, alert_count: $record.alert_count}
-                  end
+                reject("malformed-record")
               end
-            elif ($record.alert_count | nonnegative_safe_integer)
-              and (($record.status == "clean" and $record.alert_count == 0)
-                   or ($record.status == "dirty" and $record.alert_count > 0)) then
-              {usable: true, reason: "legacy", last_scan: $record.last_scan,
-               counts: {critical: $record.alert_count, high: 0, medium: 0, low: 0, info: 0},
-               alert_count: $record.alert_count}
-            else
-              reject("malformed-record")
-            end
-        end
+          end
+        )
+        | if normalized_record then . else reject("malformed-record") end
     ' "$scan_file" 2>/dev/null); then
-        normalized='{"usable":false,"reason":"malformed-record","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
-    fi
-
-    # Rebuild the validator's complete verdict from one guarded extraction.
-    # This makes a jq failure after structural validation fail closed too.
-    if ! extracted=$(jq -er '[.usable, .reason, .last_scan, (.counts | @json), .alert_count]
-        | map(tostring) | join("\u001f")' <<<"$normalized"); then
-        normalized='{"usable":false,"reason":"malformed-record","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
-    elif ! IFS=$'\x1f' read -r usable reason last_scan counts alert_count <<<"$extracted"; then
-        normalized='{"usable":false,"reason":"malformed-record","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
-    elif ! normalized=$(jq -cn \
-        --argjson usable "$usable" \
-        --arg reason "$reason" \
-        --arg last_scan "$last_scan" \
-        --argjson counts "$counts" \
-        --argjson alert_count "$alert_count" \
-        '{usable:$usable, reason:$reason, last_scan:$last_scan, counts:$counts, alert_count:$alert_count}'); then
         normalized='{"usable":false,"reason":"malformed-record","last_scan":"","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
     fi
 

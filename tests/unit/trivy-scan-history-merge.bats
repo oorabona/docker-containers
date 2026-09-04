@@ -136,14 +136,80 @@ assert_merged_record_is_readable() {
     [ "$status" -eq 0 ]
 }
 
-@test "auto-build merge exits before its success notice when copying fails" {
+@test "auto-build merge fails before its success notice when find fails partway" {
+    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested fail-find
+    valid_dirty_record '2026-01-01T00:00:00+00:00' \
+        > .trivy-scan-history-artifacts/nested/find-failure-latest-linux-amd64.json
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'if [[ "$1" == ".trivy-scan-history-artifacts" ]]; then' \
+        "  printf '%s\\0' '.trivy-scan-history-artifacts/nested/find-failure-latest-linux-amd64.json'" \
+        '  exit 42' \
+        'fi' \
+        'exec /usr/bin/find "$@"' > fail-find/find
+    chmod +x fail-find/find
+
+    run env PATH="$PWD/fail-find:$PATH" bash -e -o pipefail ./merge-auto-build.sh
+    [ "$status" -ne 0 ]
+    [[ "$output" != *'Consolidated '* ]]
+}
+
+@test "update-dashboard merge fails before its success notice when find fails partway" {
+    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested fail-find
+    valid_dirty_record '2026-01-01T00:00:00+00:00' \
+        > .trivy-scan-history-artifacts/nested/find-failure-latest-linux-amd64.json
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'if [[ "$1" == ".trivy-scan-history-artifacts" ]]; then' \
+        "  printf '%s\\0' '.trivy-scan-history-artifacts/nested/find-failure-latest-linux-amd64.json'" \
+        '  exit 42' \
+        'fi' \
+        'exec /usr/bin/find "$@"' > fail-find/find
+    chmod +x fail-find/find
+
+    run env PATH="$PWD/fail-find:$PATH" staging=.trivy-scan-history-artifacts bash -e -o pipefail ./merge-update-dashboard.sh
+    [ "$status" -ne 0 ]
+    [[ "$output" != *'::notice::Hydrated from '* ]]
+}
+
+@test "auto-build merge keeps the prior target intact when copy truncates then fails" {
     mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested fail-copy
     valid_dirty_record '2026-01-01T00:00:00+00:00' \
-        > .trivy-scan-history-artifacts/nested/fail-copy-latest-linux-amd64.json
-    printf '%s\n' '#!/usr/bin/env bash' 'exit 42' > fail-copy/cp
+        > .trivy-scan-history/same-latest-linux-amd64.json
+    valid_dirty_record '2026-01-01T00:00:00+00:00' \
+        > .trivy-scan-history-artifacts/nested/same-latest-linux-amd64.json
+    cp .trivy-scan-history/same-latest-linux-amd64.json expected.json
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'target="${!#}"' \
+        "printf '%s' partial > \"\$target\"" \
+        'exit 42' > fail-copy/cp
     chmod +x fail-copy/cp
 
     run env PATH="$PWD/fail-copy:$PATH" bash -e -o pipefail ./merge-auto-build.sh
     [ "$status" -ne 0 ]
     [[ "$output" != *'Consolidated '* ]]
+    run cmp expected.json .trivy-scan-history/same-latest-linux-amd64.json
+    [ "$status" -eq 0 ]
+}
+
+@test "update-dashboard merge keeps the prior target intact when copy truncates then fails" {
+    mkdir -p .trivy-scan-history .trivy-scan-history-artifacts/nested fail-copy
+    valid_dirty_record '2026-01-01T00:00:00+00:00' \
+        > .trivy-scan-history/same-latest-linux-amd64.json
+    valid_dirty_record '2026-02-01T00:00:00+00:00' \
+        > .trivy-scan-history-artifacts/nested/same-latest-linux-amd64.json
+    cp .trivy-scan-history/same-latest-linux-amd64.json expected.json
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'target="${!#}"' \
+        "printf '%s' partial > \"\$target\"" \
+        'exit 42' > fail-copy/cp
+    chmod +x fail-copy/cp
+
+    run env PATH="$PWD/fail-copy:$PATH" staging=.trivy-scan-history-artifacts bash -e -o pipefail ./merge-update-dashboard.sh
+    [ "$status" -ne 0 ]
+    [[ "$output" != *'::notice::Hydrated from '* ]]
+    run cmp expected.json .trivy-scan-history/same-latest-linux-amd64.json
+    [ "$status" -eq 0 ]
 }

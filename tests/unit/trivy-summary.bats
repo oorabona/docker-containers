@@ -141,27 +141,6 @@ assert_history_rejected() {
     [ "$output" = "$expected" ]
 }
 
-@test "a validator extraction failure after structural validation fails closed" {
-    local expected old_path actual real_jq
-    expected=$(api_fallback)
-    printf '%s\n' '{"last_scan":"2026-12-01T00:00:00+00:00","status":"dirty","counts":{"critical":7,"high":4,"medium":0,"low":0,"info":0},"alert_count":11}' \
-        > "$HISTORY_FILE"
-    mkdir -p "$TEST_TEMP_DIR/fail-jq"
-    real_jq=$(command -v jq)
-    printf '%s\n' \
-        '#!/usr/bin/env bash' \
-        'if [[ "$*" == *"(.counts | @json)"* ]]; then exit 42; fi' \
-        "exec $real_jq \"\$@\"" \
-        > "$TEST_TEMP_DIR/fail-jq/jq"
-    chmod +x "$TEST_TEMP_DIR/fail-jq/jq"
-
-    old_path=$PATH
-    PATH="$TEST_TEMP_DIR/fail-jq:$PATH"
-    actual=$(get_trivy_summary "$CATEGORY")
-    PATH=$old_path
-    [ "$actual" = "$expected" ]
-}
-
 @test "trivy-utils self-test passes when executed directly" {
     run bash "$PROJECT_ROOT/helpers/trivy-utils.sh"
     [ "$status" -eq 0 ]
