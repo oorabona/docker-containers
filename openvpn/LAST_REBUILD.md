@@ -4,12 +4,12 @@
 |-------|-------|
 | **Container** | `openvpn` |
 
-| **Version Change** | `v2.7.5-alpine` → `v2.7.6-alpine` |
+| **Version Change** | `v2.7.6-alpine` → `v2.7.7-alpine` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-08-06T08:21:45Z |
+| **Rebuild Date** | 2026-09-04T10:19:11Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/31084521808) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/33862549386) |
 
 ## Build Status
 
