@@ -18,6 +18,26 @@ run_find_image() {
     ' _ "$RUNNER"
 }
 
+# The resolver cases exercise _find_image directly. Spawn Bats for the runner
+# suite as well, so these cases cover setup's status-to-skip mapping.
+run_runner_suite() {
+    local nested_bin="$TEST_TEMP_DIR/nested-runner-bin"
+
+    run env -u OPENRESTY_IMAGE PATH="$nested_bin:$PATH" bats "$RUNNER"
+}
+
+stub_runner_docker() {
+    local docker_body="$1"
+    local nested_bin="$TEST_TEMP_DIR/nested-runner-bin"
+
+    mkdir -p "$nested_bin"
+    cat > "$nested_bin/docker" <<EOF
+#!/usr/bin/env bash
+$docker_body
+EOF
+    chmod +x "$nested_bin/docker"
+}
+
 @test "openresty image resolver: explicitly unreachable runtime is a precondition, not a missing build" {
     mock_command docker "printf '%s\\n' 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1"
 
@@ -94,4 +114,22 @@ run_find_image() {
 
     [ "$status" -eq 0 ]
     [ "$output" = "ghcr.io/oorabona/openresty:latest" ]
+}
+
+@test "openresty runner: unreachable runtime skips all runner tests" {
+    stub_runner_docker "printf '%s\\n' 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1"
+
+    run_runner_suite
+
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s\\n' "$output" | grep -cE '^ok [0-9]+ .*# skip ' )" -eq 3 ]
+}
+
+@test "openresty runner: empty reachable store fails the runner suite" {
+    stub_runner_docker 'exit 0'
+
+    run_runner_suite
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"ERROR: no built openresty image found"* ]]
 }
