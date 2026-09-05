@@ -9,6 +9,8 @@ stderr=""
 
 setup() {
     setup_temp_dir
+    # Direct resolver cases must exercise image resolution, not an inherited override.
+    unset OPENRESTY_IMAGE
     RUNNER="$PROJECT_ROOT/openresty/tests/test-runner-linux.bats"
 }
 
@@ -24,8 +26,20 @@ run_find_image() {
     ' _ "$RUNNER"
 }
 
+run_find_image_with_override() {
+    local image="$1"
+    shift
+
+    # Keep the override case explicit: the rest of this suite resolves images.
+    run "$@" env OPENRESTY_IMAGE="$image" bash -c '
+        source <(awk "/^_find_image\\(\\) \\{/ { inside = 1 } inside { print } inside && /^}\$/ { exit }" "$1")
+        _find_image
+    ' _ "$RUNNER"
+}
+
 # The resolver cases exercise _find_image directly. Spawn Bats for the runner
-# suite as well, so these cases cover setup's failure propagation.
+# suite as well, explicitly without the override, so these cases cover setup's
+# resolution failure propagation.
 run_runner_suite() {
     local nested_bin="$TEST_TEMP_DIR/nested-runner-bin"
 
@@ -83,6 +97,16 @@ EOF
     [[ "$output" == *"OPENRESTY_IMAGE"* ]]
     [[ "$output" != *"SKIP:"* ]]
     [[ "$output" != *"no built openresty image found"* ]]
+}
+
+@test "openresty image resolver: explicit OPENRESTY_IMAGE override returns it before listing images" {
+    local image="registry.example.test/openresty:explicit-override"
+    stub_docker "printf '%s\\n' 'docker must not be called for OPENRESTY_IMAGE' >&2; exit 64"
+
+    run_find_image_with_override "$image"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "$image" ]
 }
 
 @test "openresty image resolver: an empty reachable store reports the missing build" {
