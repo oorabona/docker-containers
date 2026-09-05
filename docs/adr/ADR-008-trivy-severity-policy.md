@@ -66,9 +66,10 @@ Specific changes (PR implementing this ADR):
 - SARIF uploads are approximately 30% larger (more rules + results). Accepted: the upload step
   already runs `continue-on-error: true`; size increase has no operational impact on builds.
 - Code Scanning indexing lag for non-CRITICAL alerts is longer. Mitigated: the side-channel
-  file is written in-pipeline and is authoritative for dashboard counts only while it is not
-  older than the Code Scanning result; persisted cache records can otherwise be stale after a
-  later SARIF upload succeeds but its scan-history artifact upload fails.
+  file is written in-pipeline and is authoritative for dashboard counts only when it is
+  demonstrably not older than the Code Scanning result. When that comparison is unknown, the
+  dashboard keeps the Code Scanning result; persisted cache records can otherwise be stale after
+  a later SARIF upload succeeds but its scan-history artifact upload fails.
 
 ## Alternatives Rejected
 

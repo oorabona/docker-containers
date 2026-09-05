@@ -2,6 +2,8 @@
 
 # Public-surface tests for get_trivy_summary's scan-history overlay gate.
 
+bats_require_minimum_version 1.5.0
+
 setup() {
     TEST_TEMP_DIR=$(mktemp -d)
     PROJECT_ROOT=$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)
@@ -102,17 +104,46 @@ write_history_record() {
     [ "$status" -eq 0 ]
 }
 
-@test "unparseable API timestamps retain the record overlay" {
-    write_history_record '{"last_scan":"2026-05-07T12:00:00+00:00","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
-
+@test "unparseable API timestamps retain the API result" {
     for api_timestamp in '2026-08-22T08:01:12' '1 year ago'; do
-        set_api_result "{\"last_scan\":\"$api_timestamp\",\"counts\":{\"critical\":3,\"high\":2,\"medium\":1,\"low\":0,\"info\":0},\"top_advisories\":[{\"rule_id\":\"CVE-api\"}]}"
+        rm -f "$HISTORY_FILE"
+        set_api_result "{\"last_scan\":\"$api_timestamp\",\"counts\":{\"critical\":0,\"high\":3,\"medium\":1,\"low\":0,\"info\":0},\"top_advisories\":[{\"rule_id\":\"CVE-api\"}]}"
+        expected=$(api_fallback)
+        write_history_record '{"last_scan":"2026-05-07T12:00:00+00:00","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
 
-        run get_trivy_summary "$CATEGORY"
-        [ "$status" -eq 0 ]
-        run jq -e '.last_scan == "2026-05-07T12:00:00+00:00" and .counts.high == 0' <<<"$output"
-        [ "$status" -eq 0 ]
+        actual=$(get_trivy_summary "$CATEGORY")
+        [ "$actual" = "$expected" ]
     done
+}
+
+@test "fractional API timestamp newer within one second retains the API result" {
+    set_api_result '{"last_scan":"2026-05-07T12:00:00.9Z","counts":{"critical":0,"high":3,"medium":0,"low":0,"info":0},"top_advisories":[{"rule_id":"CVE-api"}]}'
+    expected=$(api_fallback)
+    write_history_record '{"last_scan":"2026-05-07T12:00:00.1Z","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+
+    actual=$(get_trivy_summary "$CATEGORY")
+    [ "$actual" = "$expected" ]
+}
+
+@test "fractional record timestamp newer within one second overlays the API result" {
+    set_api_result '{"last_scan":"2026-05-07T12:00:00.1Z","counts":{"critical":0,"high":3,"medium":0,"low":0,"info":0},"top_advisories":[{"rule_id":"CVE-api"}]}'
+    write_history_record '{"last_scan":"2026-05-07T12:00:00.9Z","status":"dirty","counts":{"critical":0,"high":7,"medium":0,"low":0,"info":0},"alert_count":7}'
+
+    run get_trivy_summary "$CATEGORY"
+    [ "$status" -eq 0 ]
+    run jq -e '.last_scan == "2026-05-07T12:00:00.9Z" and .counts.high == 7' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "date conversion failure retains the API result and reports why in debug mode" {
+    set_api_result '{"last_scan":"2016-12-31T23:59:60Z","counts":{"critical":0,"high":3,"medium":0,"low":0,"info":0},"top_advisories":[{"rule_id":"CVE-api"}]}'
+    expected=$(api_fallback)
+    write_history_record '{"last_scan":"2016-12-31T23:59:59Z","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+
+    DASHBOARD_DEBUG=1 run --separate-stderr get_trivy_summary "$CATEGORY"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$expected" ]
+    [[ "$stderr" == *"API timestamp conversion failed"* ]]
 }
 
 @test "a stale clean cache record cannot hide a newer API HIGH finding" {
@@ -233,17 +264,16 @@ assert_api_timestamp_parsed() {
     [ "$actual" = "$expected" ]
 }
 
-assert_api_timestamp_rejected() {
+assert_api_timestamp_unparseable() {
     local timestamp="$1"
     local record_timestamp="$2"
-    local actual
+    local expected actual
     set_api_result "{\"last_scan\":\"$timestamp\",\"counts\":{\"critical\":3,\"high\":2,\"medium\":1,\"low\":0,\"info\":0},\"top_advisories\":[{\"rule_id\":\"CVE-api\"}]}"
+    expected=$(api_fallback)
     write_history_record "{\"last_scan\":\"$record_timestamp\",\"status\":\"clean\",\"counts\":{\"critical\":0,\"high\":0,\"medium\":0,\"low\":0,\"info\":0},\"alert_count\":0}"
 
-    run get_trivy_summary "$CATEGORY"
-    [ "$status" -eq 0 ]
-    run jq -e --arg timestamp "$record_timestamp" '.last_scan == $timestamp and .counts.high == 0' <<<"$output"
-    [ "$status" -eq 0 ]
+    actual=$(get_trivy_summary "$CATEGORY")
+    [ "$actual" = "$expected" ]
 }
 
 @test "scan history accepts the last real day of every month" {
@@ -283,13 +313,13 @@ assert_api_timestamp_rejected() {
     done
 }
 
-@test "API timestamps reject September 31" {
-    assert_api_timestamp_rejected "2026-09-31T00:00:01Z" "2026-09-30T00:00:00+00:00"
+@test "API timestamps with invalid calendar dates retain the API result" {
+    assert_api_timestamp_unparseable "2026-09-31T00:00:01Z" "2026-09-30T00:00:00+00:00"
 }
 
 @test "API timestamps apply Gregorian leap-year rules" {
     assert_api_timestamp_parsed "2024-02-29T00:00:01Z" "2024-02-29T00:00:00+00:00"
-    assert_api_timestamp_rejected "2026-02-29T00:00:01Z" "2026-02-28T00:00:00+00:00"
+    assert_api_timestamp_unparseable "2026-02-29T00:00:01Z" "2026-02-28T00:00:00+00:00"
 }
 
 @test "dirty record with empty or incomplete counts is rejected" {
