@@ -18,8 +18,8 @@ run_find_image() {
     ' _ "$RUNNER"
 }
 
-@test "openresty image resolver: unreachable runtime is a precondition, not a missing build" {
-    mock_command docker 'exit 42'
+@test "openresty image resolver: explicitly unreachable runtime is a precondition, not a missing build" {
+    mock_command docker "printf '%s\\n' 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1"
 
     run_find_image
 
@@ -27,6 +27,26 @@ run_find_image() {
     [[ "$output" == *"image store is unreachable"* ]]
     [[ "$output" == *"OPENRESTY_IMAGE"* ]]
     [[ "$output" != *"no built openresty image found"* ]]
+}
+
+@test "openresty image resolver: an answered listing error fails with its diagnostic" {
+    mock_command docker "printf '%s\\n' 'image store metadata is corrupt' >&2; exit 42"
+
+    run_find_image
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ERROR: container runtime failed to list images (exit 42): image store metadata is corrupt"* ]]
+    [[ "$output" != *"SKIP:"* ]]
+}
+
+@test "openresty image resolver: an unexplained listing error fails, not skips" {
+    mock_command docker 'exit 42'
+
+    run_find_image
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ERROR: container runtime failed to list images (exit 42): (no diagnostic)"* ]]
+    [[ "$output" != *"SKIP:"* ]]
 }
 
 @test "openresty image resolver: an empty reachable store reports the missing build" {
@@ -38,15 +58,33 @@ run_find_image() {
     [[ "$output" == *"ERROR: no built openresty image found (run ./make build openresty, or set OPENRESTY_IMAGE)"* ]]
 }
 
-@test "openresty image resolver: distinct image IDs remain ambiguous" {
-    mock_command docker "printf '%s\\n' \\
-        'sha256:one ghcr.io/oorabona/openresty:latest' \\
-        'sha256:two openresty:dev'"
+@test "openresty image resolver: distinct full IDs sharing a short prefix remain ambiguous" {
+    mock_command docker "if [[ \" \$* \" == *' --no-trunc '* ]]; then
+        printf '%s\\n' \\
+            'sha256:123456789abc000000000000000000000000000000000000000000000000 ghcr.io/oorabona/openresty:latest' \\
+            'sha256:123456789abc111111111111111111111111111111111111111111111111 openresty:dev'
+    else
+        printf '%s\\n' \\
+            'sha256:123456789abc ghcr.io/oorabona/openresty:latest' \\
+            'sha256:123456789abc openresty:dev'
+    fi"
 
     run_find_image
 
     [ "$status" -eq 1 ]
     [[ "$output" == *"ERROR: ambiguous — 2 distinct openresty images present; set OPENRESTY_IMAGE to the one under test"* ]]
+}
+
+@test "openresty image resolver: aliases for one image resolve to one image" {
+    mock_command docker "printf '%s\\n' \\
+        'sha256:one ghcr.io/oorabona/openresty:latest' \\
+        'sha256:one docker.io/oorabona/openresty:latest' \\
+        'sha256:one openresty:dev'"
+
+    run_find_image
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "ghcr.io/oorabona/openresty:latest" ]
 }
 
 @test "openresty image resolver: one matching image returns its tag" {

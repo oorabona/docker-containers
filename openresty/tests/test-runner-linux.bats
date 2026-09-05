@@ -30,10 +30,31 @@ _find_image() {
     # all sharing the SAME image ID — counting tags would wrongly report "multiple".
     # The repo-component filter is anchored to avoid matching base-image cache repos
     # or unrelated images that happen to contain "openresty" in a path component.
-    local images
-    if ! images=$(docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}'); then
-        echo "SKIP: container runtime image store is unreachable; set OPENRESTY_IMAGE to run the openresty smoke suite" >&2
-        return 2
+    local images image_store_error list_status diagnostic
+    image_store_error=$(mktemp "${TMPDIR:-/tmp}/openresty-image-store-error.XXXXXX") || {
+        echo "ERROR: could not capture container runtime diagnostics; set OPENRESTY_IMAGE to run the openresty smoke suite" >&2
+        return 1
+    }
+    if images=$(docker images --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}' 2>"$image_store_error"); then
+        rm -f "$image_store_error"
+    else
+        list_status=$?
+        diagnostic=$(<"$image_store_error")
+        rm -f "$image_store_error"
+
+        # Only Docker's explicit connection diagnostic establishes that the
+        # runtime is unavailable. A non-zero status can also mean a broken
+        # image store or an invalid resolver invocation, so it must fail closed.
+        if [[ "$diagnostic" == *"Cannot connect to the Docker daemon"* ]]; then
+            echo "SKIP: container runtime image store is unreachable; set OPENRESTY_IMAGE to run the openresty smoke suite" >&2
+            return 2
+        fi
+
+        if [[ -z "$diagnostic" ]]; then
+            diagnostic="(no diagnostic)"
+        fi
+        printf 'ERROR: container runtime failed to list images (exit %s): %s\n' "$list_status" "$diagnostic" >&2
+        return 1
     fi
 
     local ids
