@@ -335,10 +335,10 @@ get_trivy_summary() {
             # converts its offset to an epoch. Timestamp parsing or conversion failure
             # makes freshness unknown, which must retain the API result.
             local api_last_scan api_parts sc_parts api_zone sc_zone api_fraction sc_fraction api_epoch sc_epoch date_error comparison_width
-            api_last_scan=$(jq -r 'if .last_scan | type == "string" then .last_scan else empty end' <<<"$base")
+            api_last_scan=$(jq -r 'if .last_scan | type == "string" then .last_scan else empty end' <<<"$base") || api_last_scan=""
             api_parts=$(jq -cn --arg timestamp "$api_last_scan" "$(trivy_rfc3339_jq)"'
                 $timestamp | rfc3339_parts
-            ' 2>/dev/null)
+            ' 2>/dev/null) || api_parts=""
             if [[ -z "$api_parts" ]] || ! jq -e 'type == "object"' <<<"$api_parts" >/dev/null 2>&1; then
                 [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
                     echo "[debug] trivy side-channel freshness unknown for category=$category (API timestamp is not RFC3339: $api_last_scan)" >&2
@@ -348,7 +348,7 @@ get_trivy_summary() {
 
             sc_parts=$(jq -cn --arg timestamp "$sc_last_scan" "$(trivy_rfc3339_jq)"'
                 $timestamp | rfc3339_parts
-            ' 2>/dev/null)
+            ' 2>/dev/null) || sc_parts=""
             if [[ -z "$sc_parts" ]] || ! jq -e 'type == "object"' <<<"$sc_parts" >/dev/null 2>&1; then
                 [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
                     echo "[debug] trivy side-channel freshness unknown for category=$category (record timestamp is not RFC3339: $sc_last_scan)" >&2

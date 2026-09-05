@@ -33,8 +33,61 @@ set_api_result() {
         '{$category: $result}')
 }
 
+run_api_parts_failure_with_errexit() {
+    local inherit_errexit="$1"
+
+    run bash -c '
+        set -e
+        if [[ "$1" == "enabled" ]]; then
+            shopt -s inherit_errexit
+        else
+            shopt -u inherit_errexit
+        fi
+
+        project_root="$2"
+        history_file="$3"
+        category="$4"
+        api_result="$5"
+        source "$project_root/helpers/trivy-utils.sh"
+        SCRIPT_DIR=$(dirname "$(dirname "$history_file")")
+        _fetch_trivy_alerts_once() { :; }
+        _TRIVY_SUMMARY_MAP=$(command jq -nc --arg category "$category" --argjson result "$api_result" \
+            '\''{$category: $result}'\'')
+
+        jq() {
+            if [[ "$*" == *'\''$timestamp | rfc3339_parts'\''* ]]; then
+                return 1
+            fi
+            command jq "$@"
+        }
+
+        result=$(get_trivy_summary "$category")
+        printf "%s\\n" "$result"
+    ' _ "$inherit_errexit" "$PROJECT_ROOT" "$HISTORY_FILE" "$CATEGORY" "$API_RESULT"
+}
+
 write_history_record() {
     printf '%s\n' "$1" > "$HISTORY_FILE"
+}
+
+@test "parser failure under inherited errexit retains the API result" {
+    write_history_record '{"last_scan":"2026-05-07T12:00:00+00:00","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+    expected=$(jq '.' <<<"$API_RESULT")
+
+    run_api_parts_failure_with_errexit enabled
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "$expected" ]
+}
+
+@test "parser failure without inherited errexit retains the API result" {
+    write_history_record '{"last_scan":"2026-05-07T12:00:00+00:00","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+    expected=$(jq '.' <<<"$API_RESULT")
+
+    run_api_parts_failure_with_errexit disabled
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "$expected" ]
 }
 
 @test "API result strictly newer than the record survives byte-for-byte" {
