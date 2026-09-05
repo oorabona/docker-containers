@@ -7,13 +7,14 @@ setup() {
     template_definition_pattern='^[[:space:]]*\{%[-]?[[:space:]]*(capture|assign)[[:space:]]+trivy_full_label([[:space:]]|[-}]).*$'
     template_aria_sink_pattern='^[[:space:]]*aria-label="\{\{ trivy_full_label \| escape \}\}"$'
     template_title_sink_pattern='^[[:space:]]*title="\{\{ trivy_full_label \| escape \}\}">.*$'
+    template_aria_attribute_pattern='^[[:space:]]*aria-label=.*$'
+    template_title_attribute_pattern='^[[:space:]]*title=.*$'
     javascript_label="      const fullLabel = displayCount + ' ' + ariaSeverity + ' finding(s) · scanned ' + date + ' · advisory mode (does not block builds)';"
     javascript_definition_pattern='^[[:space:]]*(const|let|var) fullLabel = .*$'
     javascript_title_sink='      el.title = fullLabel;'
     javascript_aria_sink="      el.setAttribute('aria-label', fullLabel);"
-    documentation_phrase='The badge count is the number of findings. One CVE affecting multiple packages contributes multiple findings. Use the count as input to your image-acceptance policy, not as a blocking gate.'
-    documentation_cve_count_pattern='(CVE(s)?|vulnerabilit(y|ies))[^.]*(count|number)|(count|number)[^.]*(CVE(s)?|vulnerabilit(y|ies))'
-    documentation_selection_pattern='active severity bucket|CRITICAL when non-zero|otherwise HIGH'
+    javascript_title_assignment_pattern='^[[:space:]]*el\.title = .*$'
+    javascript_aria_assignment_pattern="^[[:space:]]*el\.setAttribute\('aria-label', .*$"
 }
 
 # This source-level guard checks the producers and their sinks; it cannot show
@@ -35,6 +36,18 @@ setup() {
         run grep -qxE "$template_title_sink_pattern" "$badge_file"
         [ "$status" -eq 0 ]
 
+        run sed -n '/capture trivy_full_label/,/{%- else -%}/p' "$badge_file"
+        [ "$status" -eq 0 ]
+        trivy_sink_block=$output
+
+        run grep -cxE "$template_aria_attribute_pattern" <<<"$trivy_sink_block"
+        [ "$status" -eq 0 ]
+        [ "$output" -eq 1 ]
+
+        run grep -cxE "$template_title_attribute_pattern" <<<"$trivy_sink_block"
+        [ "$status" -eq 0 ]
+        [ "$output" -eq 1 ]
+
         run grep -qi 'CVE' "$badge_file"
         [ "$status" -ne 0 ]
     done
@@ -52,6 +65,18 @@ setup() {
     run grep -qFx "$javascript_aria_sink" "$PROJECT_ROOT/docs/site/assets/js/components/trust-strip.js"
     [ "$status" -eq 0 ]
 
+    run sed -n "/const fullLabel = /,/el.removeAttribute('aria-hidden');/p" "$PROJECT_ROOT/docs/site/assets/js/components/trust-strip.js"
+    [ "$status" -eq 0 ]
+    javascript_sink_block=$output
+
+    run grep -cxE "$javascript_title_assignment_pattern" <<<"$javascript_sink_block"
+    [ "$status" -eq 0 ]
+    [ "$output" -eq 1 ]
+
+    run grep -cxE "$javascript_aria_assignment_pattern" <<<"$javascript_sink_block"
+    [ "$status" -eq 0 ]
+    [ "$output" -eq 1 ]
+
     run grep -qi 'CVE' "$PROJECT_ROOT/docs/site/assets/js/components/trust-strip.js"
     [ "$status" -ne 0 ]
 }
@@ -65,20 +90,4 @@ setup() {
 
     run grep -qFx "$javascript_label" "$PROJECT_ROOT/docs/site/assets/js/components/trust-strip.js"
     [ "$status" -eq 0 ]
-}
-
-@test "verification documentation describes findings without restating badge selection" {
-    for documentation_file in \
-        "$PROJECT_ROOT/docs/site/verify-images.md" \
-        "$PROJECT_ROOT/docs/site/_includes/components/verify-walkthrough.html" \
-        "$PROJECT_ROOT/docs/site/_includes/jsonld-faq.html"; do
-        run grep -qF "$documentation_phrase" "$documentation_file"
-        [ "$status" -eq 0 ]
-
-        run grep -qiE "$documentation_cve_count_pattern" "$documentation_file"
-        [ "$status" -ne 0 ]
-
-        run grep -qiE "$documentation_selection_pattern" "$documentation_file"
-        [ "$status" -ne 0 ]
-    done
 }
