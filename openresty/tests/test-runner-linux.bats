@@ -47,18 +47,10 @@ _find_image() {
         diagnostic=$(<"$image_store_error")
         rm -f "$image_store_error"
 
-        # Only Docker's explicit connection diagnostic establishes that the
-        # runtime is unavailable. A non-zero status can also mean a broken
-        # image store or an invalid resolver invocation, so it must fail closed.
-        if [[ "$diagnostic" == *"Cannot connect to the Docker daemon"* ]]; then
-            echo "SKIP: container runtime image store is unreachable; set OPENRESTY_IMAGE to run the openresty smoke suite" >&2
-            return 2
-        fi
-
         if [[ -z "$diagnostic" ]]; then
             diagnostic="(no diagnostic)"
         fi
-        printf 'ERROR: container runtime failed to list images (exit %s): %s\n' "$list_status" "$diagnostic" >&2
+        printf 'ERROR: container runtime did not answer while listing images (exit %s): %s; set OPENRESTY_IMAGE to run the openresty smoke suite\n' "$list_status" "$diagnostic" >&2
         return 1
     fi
 
@@ -101,9 +93,6 @@ setup() {
         :
     else
         local resolver_status=$?
-        if [[ "$resolver_status" -eq 2 ]]; then
-            skip "container runtime image store is unreachable; set OPENRESTY_IMAGE to run the openresty smoke suite"
-        fi
         return "$resolver_status"
     fi
     CONTAINER_ID=""

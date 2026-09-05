@@ -25,7 +25,7 @@ run_find_image() {
 }
 
 # The resolver cases exercise _find_image directly. Spawn Bats for the runner
-# suite as well, so these cases cover setup's status-to-skip mapping.
+# suite as well, so these cases cover setup's failure propagation.
 run_runner_suite() {
     local nested_bin="$TEST_TEMP_DIR/nested-runner-bin"
 
@@ -44,25 +44,26 @@ EOF
     chmod +x "$nested_bin/docker"
 }
 
-@test "openresty image resolver: explicitly unreachable runtime is a precondition, not a missing build" {
+@test "openresty image resolver: Docker's unreachable runtime diagnostic fails, not missing build" {
     mock_command docker "printf '%s\\n' 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1"
 
     run_find_image
 
-    [ "$status" -eq 2 ]
-    [[ "$output" == *"image store is unreachable"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"* ]]
     [[ "$output" == *"OPENRESTY_IMAGE"* ]]
     [[ "$output" != *"no built openresty image found"* ]]
 }
 
-@test "openresty image resolver: an answered listing error fails with its diagnostic" {
-    mock_command docker "printf '%s\\n' 'image store metadata is corrupt' >&2; exit 42"
+@test "openresty image resolver: Podman's unreachable runtime diagnostic fails, not missing build" {
+    mock_command docker "printf '%s\\n' 'Error: unable to connect to Podman socket: Get \\\"http://d/v4.0.0/libpod/images/json\\\": dial unix /run/user/1000/podman/podman.sock: connect: no such file or directory' >&2; exit 42"
 
     run_find_image
 
     [ "$status" -eq 1 ]
-    [[ "$output" == *"ERROR: container runtime failed to list images (exit 42): image store metadata is corrupt"* ]]
-    [[ "$output" != *"SKIP:"* ]]
+    [[ "$output" == *"Error: unable to connect to Podman socket"* ]]
+    [[ "$output" == *"OPENRESTY_IMAGE"* ]]
+    [[ "$output" != *"no built openresty image found"* ]]
 }
 
 @test "openresty image resolver: an unexplained listing error fails, not skips" {
@@ -71,8 +72,10 @@ EOF
     run_find_image
 
     [ "$status" -eq 1 ]
-    [[ "$output" == *"ERROR: container runtime failed to list images (exit 42): (no diagnostic)"* ]]
+    [[ "$output" == *"ERROR: container runtime did not answer while listing images (exit 42): (no diagnostic)"* ]]
+    [[ "$output" == *"OPENRESTY_IMAGE"* ]]
     [[ "$output" != *"SKIP:"* ]]
+    [[ "$output" != *"no built openresty image found"* ]]
 }
 
 @test "openresty image resolver: an empty reachable store reports the missing build" {
@@ -142,13 +145,14 @@ EOF
     [ "$stderr" = "" ]
 }
 
-@test "openresty runner: unreachable runtime skips all runner tests" {
+@test "openresty runner: unreachable runtime fails the runner suite" {
     stub_runner_docker "printf '%s\\n' 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1"
 
     run_runner_suite
 
-    [ "$status" -eq 0 ]
-    [ "$(printf '%s\\n' "$output" | grep -cE '^ok [0-9]+ .*# skip ' )" -eq 3 ]
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"* ]]
+    [[ "$output" != *"no built openresty image found"* ]]
 }
 
 @test "openresty runner: empty reachable store fails the runner suite" {
