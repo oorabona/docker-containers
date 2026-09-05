@@ -69,7 +69,11 @@ Specific changes (PR implementing this ADR):
   file is written in-pipeline and is authoritative for dashboard counts only when it is
   demonstrably not older than the Code Scanning result. When that comparison is unknown, the
   dashboard keeps the Code Scanning result; persisted cache records can otherwise be stale after
-  a later SARIF upload succeeds but its scan-history artifact upload fails.
+  a later SARIF upload succeeds but its scan-history artifact upload fails. One case is exempt
+  from that proof: when Code Scanning holds no entry for the category there is nothing to compare
+  against, and the record is overlaid whatever its age. The API is queried for open alerts only, so
+  an absent entry and a container with no open alerts are the same observation, and a stale record
+  can publish counts Code Scanning no longer holds — tracked in oorabona/docker-containers#1716.
 
 ## Alternatives Rejected
 
