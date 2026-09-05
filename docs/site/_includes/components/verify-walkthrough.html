@@ -92,7 +92,7 @@
 
     <details class="verify-faq__item">
       <summary>Why does the dashboard show "Trivy scan results are advisory"?</summary>
-      <p>Trivy runs as <code>continue-on-error</code> in CI. The badge shows the count of findings in its active severity bucket: CRITICAL when non-zero, otherwise HIGH. One CVE affecting multiple packages contributes multiple findings. Use the count as input to your image-acceptance policy, not as a blocking gate.</p>
+      <p>Trivy runs as <code>continue-on-error</code> in CI. The badge count is the number of findings. One CVE affecting multiple packages contributes multiple findings. Use the count as input to your image-acceptance policy, not as a blocking gate.</p>
     </details>
 
     <details class="verify-faq__item">
