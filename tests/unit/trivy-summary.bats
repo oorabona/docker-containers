@@ -221,6 +221,31 @@ assert_history_timestamp_rejected() {
     [ "$(jq -r '.reason' <<<"$output")" = "malformed-record" ]
 }
 
+assert_api_timestamp_parsed() {
+    local timestamp="$1"
+    local record_timestamp="$2"
+    local expected actual
+    set_api_result "{\"last_scan\":\"$timestamp\",\"counts\":{\"critical\":3,\"high\":2,\"medium\":1,\"low\":0,\"info\":0},\"top_advisories\":[{\"rule_id\":\"CVE-api\"}]}"
+    expected=$(api_fallback)
+    write_history_record "{\"last_scan\":\"$record_timestamp\",\"status\":\"clean\",\"counts\":{\"critical\":0,\"high\":0,\"medium\":0,\"low\":0,\"info\":0},\"alert_count\":0}"
+
+    actual=$(get_trivy_summary "$CATEGORY")
+    [ "$actual" = "$expected" ]
+}
+
+assert_api_timestamp_rejected() {
+    local timestamp="$1"
+    local record_timestamp="$2"
+    local actual
+    set_api_result "{\"last_scan\":\"$timestamp\",\"counts\":{\"critical\":3,\"high\":2,\"medium\":1,\"low\":0,\"info\":0},\"top_advisories\":[{\"rule_id\":\"CVE-api\"}]}"
+    write_history_record "{\"last_scan\":\"$record_timestamp\",\"status\":\"clean\",\"counts\":{\"critical\":0,\"high\":0,\"medium\":0,\"low\":0,\"info\":0},\"alert_count\":0}"
+
+    run get_trivy_summary "$CATEGORY"
+    [ "$status" -eq 0 ]
+    run jq -e --arg timestamp "$record_timestamp" '.last_scan == $timestamp and .counts.high == 0' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
 @test "scan history accepts the last real day of every month" {
     local month day month_day
     for month_day in January:2026-01-31 February:2026-02-28 March:2026-03-31 April:2026-04-30 \
@@ -246,6 +271,25 @@ assert_history_timestamp_rejected() {
     assert_history_timestamp_rejected "2026-02-29T00:00:00Z"
     assert_history_timestamp_accepted "2000-02-29T00:00:00Z" "February"
     assert_history_timestamp_rejected "1900-02-29T00:00:00Z"
+}
+
+@test "API timestamps accept the last real day of every month" {
+    local day record_timestamp
+    for day in 2026-01-31 2026-02-28 2026-03-31 2026-04-30 \
+               2026-05-31 2026-06-30 2026-07-31 2026-08-31 \
+               2026-09-30 2026-10-31 2026-11-30 2026-12-31; do
+        record_timestamp="${day}T00:00:00+00:00"
+        assert_api_timestamp_parsed "${day}T00:00:01Z" "$record_timestamp"
+    done
+}
+
+@test "API timestamps reject September 31" {
+    assert_api_timestamp_rejected "2026-09-31T00:00:01Z" "2026-09-30T00:00:00+00:00"
+}
+
+@test "API timestamps apply Gregorian leap-year rules" {
+    assert_api_timestamp_parsed "2024-02-29T00:00:01Z" "2024-02-29T00:00:00+00:00"
+    assert_api_timestamp_rejected "2026-02-29T00:00:01Z" "2026-02-28T00:00:00+00:00"
 }
 
 @test "dirty record with empty or incomplete counts is rejected" {

@@ -31,6 +31,35 @@ _TRIVY_ALERTS_CACHE=""
 # the full alerts list on every call.
 _TRIVY_SUMMARY_MAP=""
 
+# trivy_rfc3339_jq
+#
+# Emits the shared jq definition for a real RFC3339 instant.  Keep consumers
+# on this definition so record validation and API freshness cannot drift.
+trivy_rfc3339_jq() {
+    cat <<'JQ'
+def rfc3339:
+  [try (
+     capture("^(?<year>[0-9]{4})-(?<month>[0-9]{2})-(?<day>[0-9]{2})T(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?<fraction>\\.[0-9]+)?(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$")
+     | (.year | tonumber) as $year
+     | (.month | tonumber) as $month
+     | (.day | tonumber) as $day
+     | (.hour | tonumber) as $hour
+     | (.minute | tonumber) as $minute
+     | (.second | tonumber) as $second
+     | (if .zone == "Z" then 0 else (.zone[1:3] | tonumber) end) as $zone_hour
+     | (if .zone == "Z" then 0 else (.zone[4:6] | tonumber) end) as $zone_minute
+     | [31,
+        (if (($year % 4 == 0 and $year % 100 != 0) or $year % 400 == 0) then 29 else 28 end),
+        31,30,31,30,31,31,30,31,30,31][$month - 1] as $days_in_month
+     | $month >= 1 and $month <= 12
+       and $day >= 1 and $day <= $days_in_month
+       and $hour <= 23 and $minute <= 59 and $second <= 60
+       and $zone_hour <= 23 and $zone_minute <= 59
+   ) catch false]
+  | if length == 1 then .[0] else false end;
+JQ
+}
+
 # trivy_scan_history_record <file>
 #
 # Normalizes the trust decision for a persisted Trivy scan-history record.  This
@@ -54,7 +83,7 @@ trivy_scan_history_record() {
     # jq normally consumes a stream of JSON values.  Slurp first so a file
     # containing two otherwise-valid records is rejected as one malformed
     # history file rather than leaking two summaries into a later --argjson.
-    if ! normalized=$(jq -c -s '
+    if ! normalized=$(jq -c -s "$(trivy_rfc3339_jq)"'
         def empty_counts:
           {critical: 0, high: 0, medium: 0, low: 0, info: 0};
         def reject($reason):
@@ -73,27 +102,6 @@ trivy_scan_history_record() {
           and ($normalized.counts | (keys | sort) == ["critical", "high", "info", "low", "medium"])
           and ([$normalized.counts.critical, $normalized.counts.high, $normalized.counts.medium,
                 $normalized.counts.low, $normalized.counts.info] | all(.[]; nonnegative_safe_integer));
-        def rfc3339:
-          [try (
-             capture("^(?<year>[0-9]{4})-(?<month>[0-9]{2})-(?<day>[0-9]{2})T(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?<fraction>\\.[0-9]+)?(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$")
-             | (.year | tonumber) as $year
-             | (.month | tonumber) as $month
-             | (.day | tonumber) as $day
-             | (.hour | tonumber) as $hour
-             | (.minute | tonumber) as $minute
-             | (.second | tonumber) as $second
-             | (if .zone == "Z" then 0 else (.zone[1:3] | tonumber) end) as $zone_hour
-             | (if .zone == "Z" then 0 else (.zone[4:6] | tonumber) end) as $zone_minute
-             | [31,
-                (if (($year % 4 == 0 and $year % 100 != 0) or $year % 400 == 0) then 29 else 28 end),
-                31,30,31,30,31,31,30,31,30,31][$month - 1] as $days_in_month
-             | $month >= 1 and $month <= 12
-               and $day >= 1 and $day <= $days_in_month
-               and $hour <= 23 and $minute <= 59 and $second <= 60
-               and $zone_hour <= 23 and $zone_minute <= 59
-           ) catch false]
-          | if length == 1 then .[0] else false end;
-
         (
           if length != 1 or (.[0] | type != "object") then
             reject("malformed-record")
@@ -315,29 +323,8 @@ get_trivy_summary() {
         # the usable side-channel record.
         local api_last_scan api_epoch sc_epoch
         api_last_scan=$(jq -r 'if .last_scan | type == "string" then .last_scan else empty end' <<<"$base")
-        api_epoch=$(jq -rn --arg timestamp "$api_last_scan" '
-            def rfc3339:
-              [try (
-                 $timestamp
-                 | capture("^(?<year>[0-9]{4})-(?<month>[0-9]{2})-(?<day>[0-9]{2})T(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?<fraction>\\.[0-9]+)?(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$")
-                 | (.year | tonumber) as $year
-                 | (.month | tonumber) as $month
-                 | (.day | tonumber) as $day
-                 | (.hour | tonumber) as $hour
-                 | (.minute | tonumber) as $minute
-                 | (.second | tonumber) as $second
-                 | (if .zone == "Z" then 0 else (.zone[1:3] | tonumber) end) as $zone_hour
-                 | (if .zone == "Z" then 0 else (.zone[4:6] | tonumber) end) as $zone_minute
-                 | [31,
-                    (if (($year % 4 == 0 and $year % 100 != 0) or $year % 400 == 0) then 29 else 28 end),
-                    31,30,31,30,31,30,31,31,30,31,30,31][$month - 1] as $days_in_month
-                 | $month >= 1 and $month <= 12
-                   and $day >= 1 and $day <= $days_in_month
-                   and $hour <= 23 and $minute <= 59 and $second <= 60
-                   and $zone_hour <= 23 and $zone_minute <= 59
-               ) catch false]
-              | if length == 1 then .[0] else false end;
-            if rfc3339 then $timestamp else empty end
+        api_epoch=$(jq -rn --arg timestamp "$api_last_scan" "$(trivy_rfc3339_jq)"'
+            if ($timestamp | rfc3339) then $timestamp else empty end
         ' 2>/dev/null)
         if [[ -n "$api_epoch" ]] && api_epoch=$(date -d "$api_epoch" +%s 2>/dev/null) \
             && sc_epoch=$(date -d "$sc_last_scan" +%s 2>/dev/null) \
