@@ -42,13 +42,13 @@ Trivy scans run on every build in advisory mode: findings do not block the build
 
 To filter findings to a single container variant, match on the `category` field, which encodes the container name and platform:
 
-<div class="code-block" data-copy="gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate -q '.[] | select(.most_recent_instance.category == &quot;container-postgres-18-alpine-linux/amd64&quot;)'">
+<div class="code-block" data-copy="gh api 'repos/oorabona/docker-containers/code-scanning/alerts?tool_name=Trivy&amp;state=open&amp;per_page=100' --paginate -q '.[] | select(.most_recent_instance.category == &quot;container-postgres-18-alpine-linux/amd64&quot;)'">
   <div class="code-block__header">
     <span class="code-block__lang">bash</span>
     <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
   </div>
   <pre><code><span class="comment"># Replace the category value with the variant you want to inspect</span>
-<span class="prompt">$</span> gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate \
+<span class="prompt">$</span> gh api 'repos/oorabona/docker-containers/code-scanning/alerts?tool_name=Trivy&amp;state=open&amp;per_page=100' --paginate \
   -q '.[] | select(.most_recent_instance.category == "container-postgres-18-alpine-linux/amd64")'</code></pre>
 </div>
 

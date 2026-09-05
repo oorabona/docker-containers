@@ -192,69 +192,71 @@ else
 fi
 
 # Published Trivy verification commands must query the same open Trivy alert
-# population and use the severity source bucketed by the dashboard. Extract the
-# jq filter from every displayed/copyable command so this verifies compilation,
-# not merely the presence of an IN() string.
+# population. Enumerate every gh api code-scanning/alerts occurrence, rather
+# than recognising one particular jq output shape, so copyable, displayed, and
+# JSON-LD commands all receive the same endpoint and compilation assertions.
 VERIFY_COMMAND_FILES=(
   "docs/site/verify-images.md"
   "docs/site/_includes/components/verify-walkthrough.html"
   "docs/site/_includes/jsonld-howto-verify.html"
 )
-VERIFY_COMMAND_EXPECTED_COUNTS=(2 2 1)
 TRIVY_ALERT_ENDPOINT='repos/oorabona/docker-containers/code-scanning/alerts?tool_name=Trivy&state=open&per_page=100'
-TRIVY_JQ_FILTER='.[] | {rule_id: .rule.id, severity: (if (.rule.security_severity_level | IN("critical", "high", "medium", "low")) then .rule.security_severity_level else "info" end), category: .most_recent_instance.category, package: .most_recent_instance.location.path}'
 TRIVY_ALERT_SAMPLE='[{"rule":{"id":"CVE-TEST","security_severity_level":"high"},"most_recent_instance":{"category":"container-example-linux/amd64","location":{"path":"usr/lib/example"}}}]'
+VERIFY_COMMAND_COUNT=0
 
-for i in "${!VERIFY_COMMAND_FILES[@]}"; do
-  verify_file="${VERIFY_COMMAND_FILES[${i}]}"
+if ! command -v jq >/dev/null 2>&1; then
+  fail "jq not available — published Trivy verification command validity was not established"
+fi
+
+for verify_file in "${VERIFY_COMMAND_FILES[@]}"; do
   verify_path="${REPO_ROOT}/${verify_file}"
-  expected_count="${VERIFY_COMMAND_EXPECTED_COUNTS[${i}]}"
-  mapfile -t trivy_command_lines < <(grep -n -- "-q '.*{rule_id:" "${verify_path}" || true)
+  # A command can span lines, but its gh api endpoint is published on one line.
+  # Decode the nearby command text below to cover HTML attributes and JSON-LD.
+  mapfile -t trivy_command_lines < <(grep -nF 'gh api' "${verify_path}" | grep -F 'code-scanning/alerts' || true)
+  VERIFY_COMMAND_COUNT=$((VERIFY_COMMAND_COUNT + ${#trivy_command_lines[@]}))
 
-  if [[ "${#trivy_command_lines[@]}" -eq "${expected_count}" ]]; then
-    pass "${verify_file} publishes ${expected_count} Trivy verification command(s)"
+  if [[ "${#trivy_command_lines[@]}" -gt 0 ]]; then
+    pass "${verify_file} publishes ${#trivy_command_lines[@]} code-scanning alert command(s)"
   else
-    fail "${verify_file} publishes ${#trivy_command_lines[@]} Trivy verification command(s), expected ${expected_count}"
+    fail "${verify_file} publishes no code-scanning alert command(s)"
   fi
 
-  normalized_source=$(sed 's/&amp;/\&/g' "${verify_path}")
-  endpoint_count=$(grep -oF "${TRIVY_ALERT_ENDPOINT}" <<<"${normalized_source}" | wc -l || true)
-  if [[ "${endpoint_count}" -eq "${expected_count}" ]]; then
-    pass "${verify_file} applies the open Trivy alert endpoint filters to every command"
-  else
-    fail "${verify_file} has ${endpoint_count} open Trivy alert endpoint filter(s), expected ${expected_count}"
-  fi
+  for command_line in "${trivy_command_lines[@]}"; do
+    line_number="${command_line%%:*}"
+    # Displayed HTML commands put -q on a following line. Three lines cover
+    # that form while still treating each endpoint occurrence independently.
+    command_text=$(sed -n "${line_number},$((line_number + 2))p" "${verify_path}" \
+      | sed 's/&amp;/\&/g; s/&quot;/"/g; s/\\"/"/g')
 
-  if command -v jq >/dev/null 2>&1; then
-    for command_line in "${trivy_command_lines[@]}"; do
-      line_number="${command_line%%:*}"
-      command_text="${command_line#*:}"
-      command_text=$(printf '%s' "${command_text}" | sed 's/&quot;/"/g; s/\\"/"/g')
-      trivy_filter=$(printf '%s\n' "${command_text}" | sed -n "s/.*-q '\(.*\)'.*/\1/p")
+    if [[ "${command_text}" == *"${TRIVY_ALERT_ENDPOINT}"* ]]; then
+      pass "${verify_file}:${line_number} queries the open Trivy alert population"
+    else
+      fail "${verify_file}:${line_number} does not query the open Trivy alert population"
+    fi
 
-      if [[ -z "${trivy_filter}" ]]; then
-        fail "Could not extract jq filter from ${verify_file}:${line_number}"
-        continue
-      fi
+    trivy_filter=$(printf '%s\n' "${command_text}" | sed -n "s/.*-q '\(.*\)'.*/\1/p")
+    if [[ -z "${trivy_filter}" ]]; then
+      fail "Could not extract jq filter from ${verify_file}:${line_number}"
+      continue
+    fi
 
-      if jq_result=$(jq -e -n --argjson alerts "${TRIVY_ALERT_SAMPLE}" '$alerts | '"${trivy_filter}" 2>&1); then
-        if [[ "$(jq -r '.severity // empty' <<<"${jq_result}")" == "high" ]]; then
-          pass "${verify_file}:${line_number} jq filter compiles and returns the dashboard severity"
-        else
-          fail "${verify_file}:${line_number} jq filter compiled but returned an implausible result: ${jq_result}"
-        fi
+    if command -v jq >/dev/null 2>&1; then
+      # Wrapping results in an array makes an intentionally empty select()
+      # successful while retaining jq's parse and runtime errors.
+      if jq_result=$(jq -e -n --argjson alerts "${TRIVY_ALERT_SAMPLE}" '$alerts | [ ('"${trivy_filter}"') ]' 2>&1); then
+        pass "${verify_file}:${line_number} jq filter compiles"
       else
         fail "${verify_file}:${line_number} jq filter does not compile: ${jq_result}"
       fi
-
-      if [[ "${trivy_filter}" != "${TRIVY_JQ_FILTER}" ]]; then
-        fail "${verify_file}:${line_number} jq filter does not match the published Trivy verification query"
-      fi
-    done
-  else
-    warn "jq not available — cannot compile published Trivy verification commands"
-  fi
+    fi
+  done
 done
+
+if [[ "${VERIFY_COMMAND_COUNT}" -gt 0 ]]; then
+  pass "Enumerated ${VERIFY_COMMAND_COUNT} published code-scanning alert command(s) across all verification surfaces"
+else
+  fail "No published code-scanning alert commands were found across verification surfaces"
+fi
 
 obsolete_severity_matches=$(grep -nH -F '.rule.severity' "${VERIFY_COMMAND_FILES[@]/#/${REPO_ROOT}/}" 2>/dev/null || true)
 if [[ -z "${obsolete_severity_matches}" ]]; then
