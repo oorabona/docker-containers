@@ -273,3 +273,62 @@ _install_gh_poison() {
 
     rm -f "$cache_file" "${GH_COUNTER_FILE}"
 }
+
+@test "security severity drives counts when SARIF level differs" {
+    export CANNED_ALERTS='[
+      {"rule":{"id":"HIGH-ERROR","severity":"error","security_severity_level":"high","description":"High finding"},"most_recent_instance":{"category":"container-test-1-linux/amd64","created_at":"2026-04-30T10:00:00Z","location":{"path":"usr/lib/high"}}},
+      {"rule":{"id":"CRITICAL-WARNING","severity":"warning","security_severity_level":"critical","description":"Critical finding"},"most_recent_instance":{"category":"container-test-1-linux/amd64","created_at":"2026-04-30T10:01:00Z","location":{"path":"usr/lib/critical"}}},
+      {"rule":{"id":"NOTE-NO-SECURITY-SEVERITY","severity":"note","security_severity_level":null,"description":"Informational finding"},"most_recent_instance":{"category":"container-test-1-linux/amd64","created_at":"2026-04-30T10:02:00Z","location":{"path":"usr/lib/info"}}}
+    ]'
+
+    _install_gh_counter_mock
+    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
+    _fetch_trivy_alerts_once
+
+    local summary actual
+    summary=$(jq -c '."container-test-1-linux/amd64"' <<<"$_TRIVY_SUMMARY_MAP")
+    actual=$(jq -r '.counts.high' <<<"$summary")
+    [[ "$actual" == "1" ]] || { echo "expected counts.high=1, got $actual" >&2; return 1; }
+    actual=$(jq -r '.counts.critical' <<<"$summary")
+    [[ "$actual" == "1" ]] || { echo "expected counts.critical=1, got $actual" >&2; return 1; }
+    actual=$(jq -r '.counts.info' <<<"$summary")
+    [[ "$actual" == "1" ]] || { echo "expected counts.info=1, got $actual" >&2; return 1; }
+}
+
+@test "every alert enters exactly one severity bucket" {
+    export CANNED_ALERTS='[
+      {"rule":{"id":"HIGH-ERROR","severity":"error","security_severity_level":"high","description":"High finding"},"most_recent_instance":{"category":"container-test-2-linux/amd64","created_at":"2026-04-30T10:00:00Z","location":{"path":"usr/lib/high"}}},
+      {"rule":{"id":"CRITICAL-WARNING","severity":"warning","security_severity_level":"critical","description":"Critical finding"},"most_recent_instance":{"category":"container-test-2-linux/amd64","created_at":"2026-04-30T10:01:00Z","location":{"path":"usr/lib/critical"}}},
+      {"rule":{"id":"MEDIUM-NOTE","severity":"note","security_severity_level":"medium","description":"Medium finding"},"most_recent_instance":{"category":"container-test-2-linux/amd64","created_at":"2026-04-30T10:02:00Z","location":{"path":"usr/lib/medium"}}},
+      {"rule":{"id":"LOW-WARNING","severity":"warning","security_severity_level":"low","description":"Low finding"},"most_recent_instance":{"category":"container-test-2-linux/amd64","created_at":"2026-04-30T10:03:00Z","location":{"path":"usr/lib/low"}}},
+      {"rule":{"id":"NULL-NOTE","severity":"note","security_severity_level":null,"description":"Missing severity finding"},"most_recent_instance":{"category":"container-test-2-linux/amd64","created_at":"2026-04-30T10:04:00Z","location":{"path":"usr/lib/null"}}},
+      {"rule":{"id":"UNKNOWN-ERROR","severity":"error","security_severity_level":"unknown","description":"Unknown severity finding"},"most_recent_instance":{"category":"container-test-2-linux/amd64","created_at":"2026-04-30T10:05:00Z","location":{"path":"usr/lib/unknown"}}}
+    ]'
+
+    _install_gh_counter_mock
+    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
+    _fetch_trivy_alerts_once
+
+    local summary bucket_total
+    summary=$(jq -c '."container-test-2-linux/amd64"' <<<"$_TRIVY_SUMMARY_MAP")
+    bucket_total=$(jq '[.counts.critical, .counts.high, .counts.medium, .counts.low, .counts.info] | add' <<<"$summary")
+    [[ "$bucket_total" == "6" ]] || { echo "expected five-bucket total=6, got $bucket_total" >&2; return 1; }
+    local info_count
+    info_count=$(jq -r '.counts.info' <<<"$summary")
+    [[ "$info_count" == "2" ]] || { echo "expected counts.info=2, got $info_count" >&2; return 1; }
+}
+
+@test "advisory severity label uses the count bucket rather than SARIF level" {
+    export CANNED_ALERTS='[
+      {"rule":{"id":"HIGH-ERROR","severity":"error","security_severity_level":"high","description":"High finding"},"most_recent_instance":{"category":"container-test-3-linux/amd64","created_at":"2026-04-30T10:00:00Z","location":{"path":"usr/lib/high"}}}
+    ]'
+
+    _install_gh_counter_mock
+    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
+    _fetch_trivy_alerts_once
+
+    local actual
+    actual=$(jq -r '."container-test-3-linux/amd64".top_advisories[] | select(.rule_id == "HIGH-ERROR") | .severity' \
+        <<<"$_TRIVY_SUMMARY_MAP")
+    [[ "$actual" == "high" ]] || { echo "expected HIGH-ERROR advisory severity=high, got ${actual:-empty}" >&2; return 1; }
+}

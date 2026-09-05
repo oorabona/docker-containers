@@ -204,6 +204,14 @@ _fetch_trivy_alerts_once() {
     # Precompute per-category summaries in ONE jq pass so get_trivy_summary is a cheap lookup.
     # --paginate emits a stream of arrays; jq -s flattens them before grouping.
     _TRIVY_SUMMARY_MAP=$(echo "$_TRIVY_ALERTS_CACHE" | jq -s '
+        def severity_bucket:
+          .rule.security_severity_level as $severity
+          | if $severity == "critical" then "critical"
+            elif $severity == "high"     then "high"
+            elif $severity == "medium"   then "medium"
+            elif $severity == "low"      then "low"
+            else "info"
+            end;
         [.[][] | select(.most_recent_instance.category != null)]
         | group_by(.most_recent_instance.category)
         | map({
@@ -211,24 +219,25 @@ _fetch_trivy_alerts_once() {
             value: {
               last_scan: ([.[].most_recent_instance.created_at] | sort | reverse | .[0]),
               counts: {
-                critical: (map(select(.rule.severity == "critical")) | length),
-                high:     (map(select(.rule.severity == "high"))     | length),
-                medium:   (map(select(.rule.severity == "medium"))   | length),
-                low:      (map(select(.rule.severity == "low"))      | length),
-                info:     (map(select(.rule.severity == "warning" or .rule.severity == "note")) | length)
+                critical: (map(select(severity_bucket == "critical")) | length),
+                high:     (map(select(severity_bucket == "high"))     | length),
+                medium:   (map(select(severity_bucket == "medium"))   | length),
+                low:      (map(select(severity_bucket == "low"))      | length),
+                info:     (map(select(severity_bucket == "info"))     | length)
               },
               top_advisories: (
                 sort_by(
-                  if   .rule.severity == "critical" then 0
-                  elif .rule.severity == "high"     then 1
-                  elif .rule.severity == "medium"   then 2
-                  elif .rule.severity == "low"      then 3
-                  else 4 end
+                  severity_bucket
+                  | if   . == "critical" then 0
+                    elif . == "high"     then 1
+                    elif . == "medium"   then 2
+                    elif . == "low"      then 3
+                    else 4 end
                 )
                 | .[0:5]
                 | map({
                     rule_id:      .rule.id,
-                    severity:     .rule.severity,
+                    severity:     severity_bucket,
                     title:        .rule.description,
                     package_name: ((.most_recent_instance.location.path // "") | split("/") | .[-1])
                   })

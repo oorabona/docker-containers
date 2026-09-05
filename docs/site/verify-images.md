@@ -30,14 +30,14 @@ The SBOM badge in each container card opens the public attestation viewer direct
 
 Trivy scans run on every build in advisory mode: findings do not block the build, but they are surfaced. Results are uploaded to GitHub via `github/codeql-action/upload-sarif`, which populates the Code Scanning API. Note that the Security tab UI in GitHub requires authentication even for public repos — that is why each container's detail page embeds the scan summary directly. To query findings programmatically with any authenticated GitHub session (`gh auth login` is enough; no special scope is required):
 
-<div class="code-block" data-copy="gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category, package: .most_recent_instance.location.path}'">
+<div class="code-block" data-copy="gh api 'repos/oorabona/docker-containers/code-scanning/alerts?tool_name=Trivy&amp;state=open&amp;per_page=100' --paginate -q '.[] | {rule_id: .rule.id, severity: (if (.rule.security_severity_level | IN(&quot;critical&quot;; &quot;high&quot;; &quot;medium&quot;; &quot;low&quot;)) then .rule.security_severity_level else &quot;info&quot; end), category: .most_recent_instance.category, package: .most_recent_instance.location.path}'">
   <div class="code-block__header">
     <span class="code-block__lang">bash</span>
     <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
   </div>
-  <pre><code><span class="prompt">$</span> gh api repos/oorabona/docker-containers/code-scanning/alerts \
+  <pre><code><span class="prompt">$</span> gh api 'repos/oorabona/docker-containers/code-scanning/alerts?tool_name=Trivy&amp;state=open&amp;per_page=100' \
   --paginate \
-  -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category, package: .most_recent_instance.location.path}'</code></pre>
+  -q '.[] | {rule_id: .rule.id, severity: (if (.rule.security_severity_level | IN("critical"; "high"; "medium"; "low")) then .rule.security_severity_level else "info" end), category: .most_recent_instance.category, package: .most_recent_instance.location.path}'</code></pre>
 </div>
 
 To filter findings to a single container variant, match on the `category` field, which encodes the container name and platform:
