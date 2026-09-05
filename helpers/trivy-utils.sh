@@ -33,8 +33,10 @@ _TRIVY_SUMMARY_MAP=""
 
 # trivy_rfc3339_jq
 #
-# Emits the shared jq definition for a real RFC3339 instant.  Keep consumers
-# on this definition so record validation and API freshness cannot drift.
+# Emits the shared jq definition for RFC3339 date-time syntax and calendar
+# validity.  It deliberately accepts -00:00 for record validation; that zone
+# states an unknown local offset, so freshness comparison callers must not treat
+# it as establishing an instant.
 trivy_rfc3339_jq() {
     cat <<'JQ'
 def rfc3339_parts:
@@ -332,7 +334,7 @@ get_trivy_summary() {
             # For the API, use that validator's exact RFC3339 grammar before date(1)
             # converts its offset to an epoch. Timestamp parsing or conversion failure
             # makes freshness unknown, which must retain the API result.
-            local api_last_scan api_parts sc_parts api_fraction sc_fraction api_epoch sc_epoch date_error comparison_width
+            local api_last_scan api_parts sc_parts api_zone sc_zone api_fraction sc_fraction api_epoch sc_epoch date_error comparison_width
             api_last_scan=$(jq -r 'if .last_scan | type == "string" then .last_scan else empty end' <<<"$base")
             api_parts=$(jq -cn --arg timestamp "$api_last_scan" "$(trivy_rfc3339_jq)"'
                 $timestamp | rfc3339_parts
@@ -350,6 +352,20 @@ get_trivy_summary() {
             if [[ -z "$sc_parts" ]] || ! jq -e 'type == "object"' <<<"$sc_parts" >/dev/null 2>&1; then
                 [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
                     echo "[debug] trivy side-channel freshness unknown for category=$category (record timestamp is not RFC3339: $sc_last_scan)" >&2
+                echo "$base"
+                return 0
+            fi
+
+            if ! api_zone=$(jq -er '.zone' <<<"$api_parts") \
+                || ! sc_zone=$(jq -er '.zone' <<<"$sc_parts"); then
+                [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+                    echo "[debug] trivy side-channel freshness unknown for category=$category (timestamp zone extraction failed)" >&2
+                echo "$base"
+                return 0
+            fi
+            if [[ "$api_zone" == "-00:00" || "$sc_zone" == "-00:00" ]]; then
+                [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+                    echo "[debug] trivy side-channel freshness unknown for category=$category (timestamp offset is unknown: -00:00)" >&2
                 echo "$base"
                 return 0
             fi
@@ -375,25 +391,51 @@ get_trivy_summary() {
                 return 0
             fi
 
-            # date(1)'s epoch is intentionally whole seconds. Compare its result
-            # first, then compare the RFC3339 fractional fields exactly (after
-            # right-padding) when seconds tie, so accepted precision is never
-            # silently discarded.
-            api_fraction=$(jq -r '.fraction // ""' <<<"$api_parts")
-            sc_fraction=$(jq -r '.fraction // ""' <<<"$sc_parts")
-            api_fraction=${api_fraction#.}
-            sc_fraction=${sc_fraction#.}
-            comparison_width=${#api_fraction}
-            if ((${#sc_fraction} > comparison_width)); then
-                comparison_width=${#sc_fraction}
-            fi
-            while ((${#api_fraction} < comparison_width)); do api_fraction+=0; done
-            while ((${#sc_fraction} < comparison_width)); do sc_fraction+=0; done
-
-            if ((api_epoch > sc_epoch)) \
-                || { ((api_epoch == sc_epoch)) && [[ "$api_fraction" > "$sc_fraction" ]]; }; then
+            # date(1)'s epoch is intentionally whole seconds. Its result decides
+            # first; RFC3339 fractional fields are compared only when seconds tie.
+            if ((api_epoch > sc_epoch)); then
                 echo "$base"
                 return 0
+            fi
+            if ((api_epoch == sc_epoch)); then
+                if ! api_fraction=$(jq -r '.fraction // ""' <<<"$api_parts"); then
+                    [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+                        echo "[debug] trivy side-channel freshness unknown for category=$category (API timestamp fraction extraction failed)" >&2
+                    echo "$base"
+                    return 0
+                fi
+                if ! sc_fraction=$(jq -r '.fraction // ""' <<<"$sc_parts"); then
+                    [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+                        echo "[debug] trivy side-channel freshness unknown for category=$category (record timestamp fraction extraction failed)" >&2
+                    echo "$base"
+                    return 0
+                fi
+                api_fraction=${api_fraction#.}
+                sc_fraction=${sc_fraction#.}
+
+                # Real producers need at most nanosecond precision (nine digits),
+                # while date -Iseconds emits none. More digits cannot be compared
+                # reliably here, so retain the API result as for other uncertainty.
+                if ((${#api_fraction} > 9 || ${#sc_fraction} > 9)); then
+                    [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+                        echo "[debug] trivy side-channel freshness unknown for category=$category (fractional precision exceeds 9 digits)" >&2
+                    echo "$base"
+                    return 0
+                fi
+
+                comparison_width=${#api_fraction}
+                if ((${#sc_fraction} > comparison_width)); then
+                    comparison_width=${#sc_fraction}
+                fi
+                printf -v api_fraction "%-${comparison_width}s" "$api_fraction"
+                printf -v sc_fraction "%-${comparison_width}s" "$sc_fraction"
+                api_fraction=${api_fraction// /0}
+                sc_fraction=${sc_fraction// /0}
+
+                if [[ "$api_fraction" > "$sc_fraction" ]]; then
+                    echo "$base"
+                    return 0
+                fi
             fi
         fi
 
