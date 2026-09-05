@@ -35,15 +35,15 @@
       <div class="verify-step__body">
         <h2 class="verify-step__title">Read the Trivy scan results</h2>
         <p class="verify-step__summary">Trivy scans run on every build in advisory mode. Results land in GitHub's Code Scanning API and are queryable with any authenticated <code>gh</code> session — no special scope required.</p>
-        <div class="code-block" data-copy="gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category, package: .most_recent_instance.location.path}'">
+        <div class="code-block" data-copy="gh api 'repos/oorabona/docker-containers/code-scanning/alerts?tool_name=Trivy&amp;state=open&amp;per_page=100' --paginate -q '.[] | {rule_id: .rule.id, severity: (if (.rule.security_severity_level | IN(&quot;critical&quot;, &quot;high&quot;, &quot;medium&quot;, &quot;low&quot;)) then .rule.security_severity_level else &quot;info&quot; end), category: .most_recent_instance.category, package: .most_recent_instance.location.path}'">
           <div class="code-block__header">
             <span class="code-block__lang">bash</span>
             <button class="code-block__copy" type="button" data-copy-button
                     aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
           </div>
-          <pre><code><span class="prompt">$</span> gh api repos/oorabona/docker-containers/code-scanning/alerts \
+          <pre><code><span class="prompt">$</span> gh api 'repos/oorabona/docker-containers/code-scanning/alerts?tool_name=Trivy&amp;state=open&amp;per_page=100' \
   --paginate \
-  -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category, package: .most_recent_instance.location.path}'</code></pre>
+  -q '.[] | {rule_id: .rule.id, severity: (if (.rule.security_severity_level | IN("critical", "high", "medium", "low")) then .rule.security_severity_level else "info" end), category: .most_recent_instance.category, package: .most_recent_instance.location.path}'</code></pre>
         </div>
         <p>To filter to a single variant, match on the <code>category</code> field — it encodes the container name and platform (e.g. <code>container-postgres-18-alpine-linux/amd64</code>). The dashboard surfaces all scanned severities (CRITICAL through INFO); CRITICAL and HIGH are visually emphasised, the rest render as advisory context. Trivy <code>UNKNOWN</code> findings (severity unclassified upstream) are bucketed into the INFO column.</p>
       </div>

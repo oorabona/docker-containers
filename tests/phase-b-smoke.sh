@@ -191,6 +191,88 @@ else
   fail 'Expected page.name == "postgres" conditional guard in container-detail.html'
 fi
 
+# Published Trivy verification commands must query the same open Trivy alert
+# population. Enumerate every gh api code-scanning/alerts occurrence, rather
+# than recognising one particular jq output shape, so copyable, displayed, and
+# JSON-LD commands all receive the same endpoint and compilation assertions.
+VERIFY_COMMAND_FILES=(
+  "docs/site/verify-images.md"
+  "docs/site/_includes/components/verify-walkthrough.html"
+  "docs/site/_includes/jsonld-howto-verify.html"
+)
+TRIVY_ALERT_ENDPOINT='repos/oorabona/docker-containers/code-scanning/alerts?tool_name=Trivy&state=open&per_page=100'
+TRIVY_ALERT_SAMPLE='[{"rule":{"id":"CVE-TEST","security_severity_level":"high"},"most_recent_instance":{"category":"container-example-linux/amd64","location":{"path":"usr/lib/example"}}}]'
+VERIFY_COMMAND_COUNT=0
+
+if ! command -v jq >/dev/null 2>&1; then
+  fail "jq not available — published Trivy verification command validity was not established"
+fi
+
+for verify_file in "${VERIFY_COMMAND_FILES[@]}"; do
+  verify_path="${REPO_ROOT}/${verify_file}"
+  # A command can span lines, but its gh api endpoint is published on one line.
+  # Decode the nearby command text below to cover HTML attributes and JSON-LD.
+  mapfile -t trivy_command_lines < <(grep -nF 'gh api' "${verify_path}" | grep -F 'code-scanning/alerts' || true)
+  VERIFY_COMMAND_COUNT=$((VERIFY_COMMAND_COUNT + ${#trivy_command_lines[@]}))
+
+  if [[ "${#trivy_command_lines[@]}" -gt 0 ]]; then
+    pass "${verify_file} publishes ${#trivy_command_lines[@]} code-scanning alert command(s)"
+  else
+    fail "${verify_file} publishes no code-scanning alert command(s)"
+  fi
+
+  for command_line in "${trivy_command_lines[@]}"; do
+    line_number="${command_line%%:*}"
+    # Displayed HTML commands put -q on a following line. Three lines cover
+    # that form while still treating each endpoint occurrence independently.
+    command_text=$(sed -n "${line_number},$((line_number + 2))p" "${verify_path}" \
+      | sed 's/&amp;/\&/g; s/&quot;/"/g; s/\\"/"/g')
+
+    if [[ "${command_text}" == *"${TRIVY_ALERT_ENDPOINT}"* ]]; then
+      pass "${verify_file}:${line_number} queries the open Trivy alert population"
+    else
+      fail "${verify_file}:${line_number} does not query the open Trivy alert population"
+    fi
+
+    trivy_filter=$(printf '%s\n' "${command_text}" | sed -n "s/.*-q '\(.*\)'.*/\1/p")
+    if [[ -z "${trivy_filter}" ]]; then
+      fail "Could not extract jq filter from ${verify_file}:${line_number}"
+      continue
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+      # Wrapping results in an array makes an intentionally empty select()
+      # successful while retaining jq's parse and runtime errors.
+      if jq_result=$(jq -e -n --argjson alerts "${TRIVY_ALERT_SAMPLE}" '$alerts | [ ('"${trivy_filter}"') ]' 2>&1); then
+        pass "${verify_file}:${line_number} jq filter compiles"
+      else
+        fail "${verify_file}:${line_number} jq filter does not compile: ${jq_result}"
+      fi
+    fi
+  done
+done
+
+if [[ "${VERIFY_COMMAND_COUNT}" -gt 0 ]]; then
+  pass "Enumerated ${VERIFY_COMMAND_COUNT} published code-scanning alert command(s) across all verification surfaces"
+else
+  fail "No published code-scanning alert commands were found across verification surfaces"
+fi
+
+obsolete_severity_matches=$(grep -nH -F '.rule.severity' "${VERIFY_COMMAND_FILES[@]/#/${REPO_ROOT}/}" 2>/dev/null || true)
+if [[ -z "${obsolete_severity_matches}" ]]; then
+  pass "Published Trivy verification commands do not read obsolete .rule.severity"
+else
+  fail "Published Trivy verification commands read obsolete .rule.severity: ${obsolete_severity_matches}"
+fi
+
+for verify_file in "${VERIFY_COMMAND_FILES[@]}"; do
+  if grep -qF 'security_severity_level' "${REPO_ROOT}/${verify_file}"; then
+    pass "${verify_file} names security_severity_level as the severity source"
+  else
+    fail "${verify_file} does not name security_severity_level as the severity source"
+  fi
+done
+
 # 10. Vanilla web component checks (Block H rev3 — replaced Alpine 3)
 DASHBOARD_HTML="${REPO_ROOT}/docs/site/_layouts/dashboard.html"
 TRUST_STRIP_JS="${REPO_ROOT}/docs/site/assets/js/components/trust-strip.js"
