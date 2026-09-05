@@ -32,20 +32,27 @@ run_runner_suite() {
     run env -u OPENRESTY_IMAGE PATH="$nested_bin:$PATH" bats "$RUNNER"
 }
 
-stub_runner_docker() {
+stub_docker() {
     local docker_body="$1"
-    local nested_bin="$TEST_TEMP_DIR/nested-runner-bin"
+    local docker_bin="${2:-$TEST_TEMP_DIR/bin}"
 
-    mkdir -p "$nested_bin"
-    cat > "$nested_bin/docker" <<EOF
+    mkdir -p "$docker_bin"
+    cat > "$docker_bin/docker" <<EOF
 #!/usr/bin/env bash
+if [[ "\$#" -ne 4 || "\$1" != images || "\$2" != --no-trunc || "\$3" != --format || "\$4" != '{{.ID}} {{.Repository}}:{{.Tag}}' ]]; then
+    printf 'unexpected docker invocation:' >&2
+    printf ' %q' "\$@" >&2
+    printf '\\n' >&2
+    exit 64
+fi
 $docker_body
 EOF
-    chmod +x "$nested_bin/docker"
+    chmod +x "$docker_bin/docker"
+    export PATH="$docker_bin:$PATH"
 }
 
 @test "openresty image resolver: Docker's unreachable runtime diagnostic fails, not missing build" {
-    mock_command docker "printf '%s\\n' 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1"
+    stub_docker "printf '%s\\n' 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1"
 
     run_find_image
 
@@ -56,7 +63,7 @@ EOF
 }
 
 @test "openresty image resolver: Podman's unreachable runtime diagnostic fails, not missing build" {
-    mock_command docker "printf '%s\\n' 'Error: unable to connect to Podman socket: Get \\\"http://d/v4.0.0/libpod/images/json\\\": dial unix /run/user/1000/podman/podman.sock: connect: no such file or directory' >&2; exit 42"
+    stub_docker "printf '%s\\n' 'Error: unable to connect to Podman socket: Get \\\"http://d/v4.0.0/libpod/images/json\\\": dial unix /run/user/1000/podman/podman.sock: connect: no such file or directory' >&2; exit 42"
 
     run_find_image
 
@@ -67,7 +74,7 @@ EOF
 }
 
 @test "openresty image resolver: an unexplained listing error fails, not skips" {
-    mock_command docker 'exit 42'
+    stub_docker 'exit 42'
 
     run_find_image
 
@@ -79,7 +86,7 @@ EOF
 }
 
 @test "openresty image resolver: an empty reachable store reports the missing build" {
-    mock_command docker 'exit 0'
+    stub_docker 'exit 0'
 
     run_find_image
 
@@ -88,15 +95,9 @@ EOF
 }
 
 @test "openresty image resolver: distinct full IDs sharing a short prefix remain ambiguous" {
-    mock_command docker "if [[ \" \$* \" == *' --no-trunc '* ]]; then
-        printf '%s\\n' \\
-            'sha256:123456789abc000000000000000000000000000000000000000000000000 ghcr.io/oorabona/openresty:latest' \\
-            'sha256:123456789abc111111111111111111111111111111111111111111111111 openresty:dev'
-    else
-        printf '%s\\n' \\
-            'sha256:123456789abc ghcr.io/oorabona/openresty:latest' \\
-            'sha256:123456789abc openresty:dev'
-    fi"
+    stub_docker "printf '%s\\n' \\
+        'sha256:123456789abc000000000000000000000000000000000000000000000000 ghcr.io/oorabona/openresty:latest' \\
+        'sha256:123456789abc111111111111111111111111111111111111111111111111 openresty:dev'"
 
     run_find_image
 
@@ -105,7 +106,7 @@ EOF
 }
 
 @test "openresty image resolver: aliases for one image resolve to one image" {
-    mock_command docker "printf '%s\\n' \\
+    stub_docker "printf '%s\\n' \\
         'sha256:one ghcr.io/oorabona/openresty:latest' \\
         'sha256:one docker.io/oorabona/openresty:latest' \\
         'sha256:one openresty:dev'"
@@ -117,7 +118,7 @@ EOF
 }
 
 @test "openresty image resolver: one matching image returns its tag" {
-    mock_command docker "printf '%s\\n' 'sha256:one ghcr.io/oorabona/openresty:latest'"
+    stub_docker "printf '%s\\n' 'sha256:one ghcr.io/oorabona/openresty:latest'"
 
     run_find_image
 
@@ -126,7 +127,7 @@ EOF
 }
 
 @test "openresty image resolver: successful listing replays its warning to stderr" {
-    mock_command docker "printf '%s\\n' 'sha256:one ghcr.io/oorabona/openresty:latest'; printf '%s\\n' 'WARNING: image store is in degraded mode' >&2"
+    stub_docker "printf '%s\\n' 'sha256:one ghcr.io/oorabona/openresty:latest'; printf '%s\\n' 'WARNING: image store is in degraded mode' >&2"
 
     run_find_image --separate-stderr
 
@@ -136,7 +137,7 @@ EOF
 }
 
 @test "openresty image resolver: successful listing with empty stderr emits nothing extra" {
-    mock_command docker "printf '%s\\n' 'sha256:one ghcr.io/oorabona/openresty:latest'"
+    stub_docker "printf '%s\\n' 'sha256:one ghcr.io/oorabona/openresty:latest'"
 
     run_find_image --separate-stderr
 
@@ -146,7 +147,7 @@ EOF
 }
 
 @test "openresty runner: unreachable runtime fails the runner suite" {
-    stub_runner_docker "printf '%s\\n' 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1"
+    stub_docker "printf '%s\\n' 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1" "$TEST_TEMP_DIR/nested-runner-bin"
 
     run_runner_suite
 
@@ -156,10 +157,46 @@ EOF
 }
 
 @test "openresty runner: empty reachable store fails the runner suite" {
-    stub_runner_docker 'exit 0'
+    stub_docker 'exit 0' "$TEST_TEMP_DIR/nested-runner-bin"
 
     run_runner_suite
 
     [ "$status" -ne 0 ]
     [[ "$output" == *"ERROR: no built openresty image found"* ]]
+}
+
+@test "openresty image resolver stub: exact resolver invocation returns fixture rows" {
+    stub_docker "printf '%s\\n' 'sha256:one ghcr.io/oorabona/openresty:latest'"
+
+    run docker images --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}'
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "sha256:one ghcr.io/oorabona/openresty:latest" ]
+}
+
+@test "openresty image resolver stub: invocation without --format fails" {
+    stub_docker 'exit 0'
+
+    run docker images --no-trunc
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unexpected docker invocation"* ]]
+}
+
+@test "openresty image resolver stub: invocation with another subcommand fails" {
+    stub_docker 'exit 0'
+
+    run docker ps --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}'
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unexpected docker invocation"* ]]
+}
+
+@test "openresty image resolver stub: invocation with another format fails" {
+    stub_docker 'exit 0'
+
+    run docker images --no-trunc --format '{{.Repository}}:{{.Tag}}'
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unexpected docker invocation"* ]]
 }
