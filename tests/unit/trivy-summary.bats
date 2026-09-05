@@ -96,6 +96,57 @@ assert_history_rejected() {
     [ "$actual" = "$expected" ]
 }
 
+assert_history_timestamp_accepted() {
+    local timestamp="$1"
+    local month="$2"
+    printf '{"last_scan":"%s","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}\n' "$timestamp" > "$HISTORY_FILE"
+
+    run trivy_scan_history_record "$HISTORY_FILE"
+    [ "$status" -eq 0 ]
+    if [ "$(jq -r '.usable' <<<"$output")" != "true" ]; then
+        printf 'FAIL: expected %s last day (%s) to be accepted; got: %s\n' "$month" "$timestamp" "$output" >&2
+        return 1
+    fi
+    [ "$(jq -r '.last_scan' <<<"$output")" = "$timestamp" ]
+}
+
+assert_history_timestamp_rejected() {
+    local timestamp="$1"
+    printf '{"last_scan":"%s","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}\n' "$timestamp" > "$HISTORY_FILE"
+
+    run trivy_scan_history_record "$HISTORY_FILE"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.usable' <<<"$output")" = "false" ]
+    [ "$(jq -r '.reason' <<<"$output")" = "malformed-record" ]
+}
+
+@test "scan history accepts the last real day of every month" {
+    local month day month_day
+    for month_day in January:2026-01-31 February:2026-02-28 March:2026-03-31 April:2026-04-30 \
+                     May:2026-05-31 June:2026-06-30 July:2026-07-31 August:2026-08-31 \
+                     September:2026-09-30 October:2026-10-31 November:2026-11-30 December:2026-12-31; do
+        month=${month_day%%:*}
+        day=${month_day#*:}
+        assert_history_timestamp_accepted "${day}T00:00:00Z" "$month"
+    done
+}
+
+@test "scan history rejects the first impossible day of every month" {
+    local day
+    for day in 2026-01-32 2026-02-30 2026-03-32 2026-04-31 \
+               2026-05-32 2026-06-31 2026-07-32 2026-08-32 \
+               2026-09-31 2026-10-32 2026-11-31 2026-12-32; do
+        assert_history_timestamp_rejected "${day}T00:00:00Z"
+    done
+}
+
+@test "scan history applies Gregorian leap-year rules" {
+    assert_history_timestamp_accepted "2024-02-29T00:00:00Z" "February"
+    assert_history_timestamp_rejected "2026-02-29T00:00:00Z"
+    assert_history_timestamp_accepted "2000-02-29T00:00:00Z" "February"
+    assert_history_timestamp_rejected "1900-02-29T00:00:00Z"
+}
+
 @test "dirty record with empty or incomplete counts is rejected" {
     assert_history_rejected '{"last_scan":"2026-12-01T00:00:00+00:00","status":"dirty","counts":{},"alert_count":0}'
     assert_history_rejected '{"last_scan":"2026-12-01T00:00:00+00:00","status":"dirty","counts":{"critical":1},"alert_count":1}'

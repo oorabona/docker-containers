@@ -86,7 +86,7 @@ trivy_scan_history_record() {
              | (if .zone == "Z" then 0 else (.zone[4:6] | tonumber) end) as $zone_minute
              | [31,
                 (if (($year % 4 == 0 and $year % 100 != 0) or $year % 400 == 0) then 29 else 28 end),
-                31,30,31,30,31,30,31,31,30,31,30,31][$month - 1] as $days_in_month
+                31,30,31,30,31,31,30,31,30,31][$month - 1] as $days_in_month
              | $month >= 1 and $month <= 12
                and $day >= 1 and $day <= $days_in_month
                and $hour <= 23 and $minute <= 59 and $second <= 60
