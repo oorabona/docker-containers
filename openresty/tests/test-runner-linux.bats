@@ -36,6 +36,11 @@ _find_image() {
         return 1
     }
     if images=$(docker images --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}' 2>"$image_store_error"); then
+        if [[ -s "$image_store_error" ]] && ! cat "$image_store_error" >&2; then
+            rm -f "$image_store_error"
+            echo "ERROR: could not replay container runtime diagnostics" >&2
+            return 1
+        fi
         rm -f "$image_store_error"
     else
         list_status=$?

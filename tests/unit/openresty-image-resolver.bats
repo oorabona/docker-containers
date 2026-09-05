@@ -2,6 +2,11 @@
 
 load "../test_helper"
 
+bats_require_minimum_version 1.5.0
+
+# Bats's run --separate-stderr overwrites this capture variable in the tests below.
+stderr=""
+
 setup() {
     setup_temp_dir
     RUNNER="$PROJECT_ROOT/openresty/tests/test-runner-linux.bats"
@@ -12,7 +17,8 @@ teardown() {
 }
 
 run_find_image() {
-    run bash -c '
+    # Permit Bats run options such as --separate-stderr for channel assertions.
+    run "$@" bash -c '
         source <(awk "/^_find_image\\(\\) \\{/ { inside = 1 } inside { print } inside && /^}\$/ { exit }" "$1")
         _find_image
     ' _ "$RUNNER"
@@ -114,6 +120,26 @@ EOF
 
     [ "$status" -eq 0 ]
     [ "$output" = "ghcr.io/oorabona/openresty:latest" ]
+}
+
+@test "openresty image resolver: successful listing replays its warning to stderr" {
+    mock_command docker "printf '%s\\n' 'sha256:one ghcr.io/oorabona/openresty:latest'; printf '%s\\n' 'WARNING: image store is in degraded mode' >&2"
+
+    run_find_image --separate-stderr
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "ghcr.io/oorabona/openresty:latest" ]
+    [[ "$stderr" == *"WARNING: image store is in degraded mode"* ]]
+}
+
+@test "openresty image resolver: successful listing with empty stderr emits nothing extra" {
+    mock_command docker "printf '%s\\n' 'sha256:one ghcr.io/oorabona/openresty:latest'"
+
+    run_find_image --separate-stderr
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "ghcr.io/oorabona/openresty:latest" ]
+    [ "$stderr" = "" ]
 }
 
 @test "openresty runner: unreachable runtime skips all runner tests" {
