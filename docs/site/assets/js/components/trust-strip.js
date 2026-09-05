@@ -89,7 +89,7 @@
       }
       el.setAttribute('data-severity', sev);
       const date = (summary.last_scan || '').slice(0, 10);
-      const fullLabel = displayCount + ' ' + ariaSeverity + ' CVE(s) · scanned ' + date + ' · advisory mode (does not block builds)';
+      const fullLabel = displayCount + ' ' + ariaSeverity + ' finding(s) · scanned ' + date + ' · advisory mode (does not block builds)';
       // Compact label on dashboard cards (narrow width); full label on the
       // detail-page badge. Both surfaces duplicate the full label into
       // aria-label so screen-reader / touch users get the same context as
