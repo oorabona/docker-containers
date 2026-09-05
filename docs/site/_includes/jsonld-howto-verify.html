@@ -36,7 +36,7 @@
       "@type": "HowToStep",
       "position": 2,
       "name": "Read Trivy scan results",
-      "text": "Query findings via: gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category}'. Filter to a specific variant by matching the category field (e.g. container-postgres-18-alpine-linux/amd64). Trivy runs in advisory mode — findings are surfaced but do not block builds."
+      "text": "Query findings via: gh api 'repos/oorabona/docker-containers/code-scanning/alerts?tool_name=Trivy&state=open&per_page=100' --paginate -q '.[] | {rule_id: .rule.id, severity: (if (.rule.security_severity_level | IN(\"critical\", \"high\", \"medium\", \"low\")) then .rule.security_severity_level else \"info\" end), category: .most_recent_instance.category, package: .most_recent_instance.location.path}'. Filter to a specific variant by matching the category field (e.g. container-postgres-18-alpine-linux/amd64). Trivy runs in advisory mode — findings are surfaced but do not block builds."
     },
     {
       "@type": "HowToStep",

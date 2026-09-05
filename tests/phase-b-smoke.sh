@@ -191,6 +191,86 @@ else
   fail 'Expected page.name == "postgres" conditional guard in container-detail.html'
 fi
 
+# Published Trivy verification commands must query the same open Trivy alert
+# population and use the severity source bucketed by the dashboard. Extract the
+# jq filter from every displayed/copyable command so this verifies compilation,
+# not merely the presence of an IN() string.
+VERIFY_COMMAND_FILES=(
+  "docs/site/verify-images.md"
+  "docs/site/_includes/components/verify-walkthrough.html"
+  "docs/site/_includes/jsonld-howto-verify.html"
+)
+VERIFY_COMMAND_EXPECTED_COUNTS=(2 2 1)
+TRIVY_ALERT_ENDPOINT='repos/oorabona/docker-containers/code-scanning/alerts?tool_name=Trivy&state=open&per_page=100'
+TRIVY_JQ_FILTER='.[] | {rule_id: .rule.id, severity: (if (.rule.security_severity_level | IN("critical", "high", "medium", "low")) then .rule.security_severity_level else "info" end), category: .most_recent_instance.category, package: .most_recent_instance.location.path}'
+TRIVY_ALERT_SAMPLE='[{"rule":{"id":"CVE-TEST","security_severity_level":"high"},"most_recent_instance":{"category":"container-example-linux/amd64","location":{"path":"usr/lib/example"}}}]'
+
+for i in "${!VERIFY_COMMAND_FILES[@]}"; do
+  verify_file="${VERIFY_COMMAND_FILES[${i}]}"
+  verify_path="${REPO_ROOT}/${verify_file}"
+  expected_count="${VERIFY_COMMAND_EXPECTED_COUNTS[${i}]}"
+  mapfile -t trivy_command_lines < <(grep -n -- "-q '.*{rule_id:" "${verify_path}" || true)
+
+  if [[ "${#trivy_command_lines[@]}" -eq "${expected_count}" ]]; then
+    pass "${verify_file} publishes ${expected_count} Trivy verification command(s)"
+  else
+    fail "${verify_file} publishes ${#trivy_command_lines[@]} Trivy verification command(s), expected ${expected_count}"
+  fi
+
+  normalized_source=$(sed 's/&amp;/\&/g' "${verify_path}")
+  endpoint_count=$(grep -oF "${TRIVY_ALERT_ENDPOINT}" <<<"${normalized_source}" | wc -l || true)
+  if [[ "${endpoint_count}" -eq "${expected_count}" ]]; then
+    pass "${verify_file} applies the open Trivy alert endpoint filters to every command"
+  else
+    fail "${verify_file} has ${endpoint_count} open Trivy alert endpoint filter(s), expected ${expected_count}"
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    for command_line in "${trivy_command_lines[@]}"; do
+      line_number="${command_line%%:*}"
+      command_text="${command_line#*:}"
+      command_text=$(printf '%s' "${command_text}" | sed 's/&quot;/"/g; s/\\"/"/g')
+      trivy_filter=$(printf '%s\n' "${command_text}" | sed -n "s/.*-q '\(.*\)'.*/\1/p")
+
+      if [[ -z "${trivy_filter}" ]]; then
+        fail "Could not extract jq filter from ${verify_file}:${line_number}"
+        continue
+      fi
+
+      if jq_result=$(jq -e -n --argjson alerts "${TRIVY_ALERT_SAMPLE}" '$alerts | '"${trivy_filter}" 2>&1); then
+        if [[ "$(jq -r '.severity // empty' <<<"${jq_result}")" == "high" ]]; then
+          pass "${verify_file}:${line_number} jq filter compiles and returns the dashboard severity"
+        else
+          fail "${verify_file}:${line_number} jq filter compiled but returned an implausible result: ${jq_result}"
+        fi
+      else
+        fail "${verify_file}:${line_number} jq filter does not compile: ${jq_result}"
+      fi
+
+      if [[ "${trivy_filter}" != "${TRIVY_JQ_FILTER}" ]]; then
+        fail "${verify_file}:${line_number} jq filter does not match the published Trivy verification query"
+      fi
+    done
+  else
+    warn "jq not available — cannot compile published Trivy verification commands"
+  fi
+done
+
+obsolete_severity_matches=$(grep -nH -F '.rule.severity' "${VERIFY_COMMAND_FILES[@]/#/${REPO_ROOT}/}" 2>/dev/null || true)
+if [[ -z "${obsolete_severity_matches}" ]]; then
+  pass "Published Trivy verification commands do not read obsolete .rule.severity"
+else
+  fail "Published Trivy verification commands read obsolete .rule.severity: ${obsolete_severity_matches}"
+fi
+
+for verify_file in "${VERIFY_COMMAND_FILES[@]}"; do
+  if grep -qF 'security_severity_level' "${REPO_ROOT}/${verify_file}"; then
+    pass "${verify_file} names security_severity_level as the severity source"
+  else
+    fail "${verify_file} does not name security_severity_level as the severity source"
+  fi
+done
+
 # 10. Vanilla web component checks (Block H rev3 — replaced Alpine 3)
 DASHBOARD_HTML="${REPO_ROOT}/docs/site/_layouts/dashboard.html"
 TRUST_STRIP_JS="${REPO_ROOT}/docs/site/assets/js/components/trust-strip.js"
