@@ -25,6 +25,107 @@ api_fallback() {
     get_trivy_summary "$CATEGORY"
 }
 
+set_api_result() {
+    local result="$1"
+    _TRIVY_SUMMARY_MAP=$(jq -nc --arg category "$CATEGORY" --argjson result "$result" \
+        '{$category: $result}')
+}
+
+write_history_record() {
+    printf '%s\n' "$1" > "$HISTORY_FILE"
+}
+
+@test "API result strictly newer than the record survives byte-for-byte" {
+    set_api_result '{"last_scan":"2026-05-07T12:00:01Z","counts":{"critical":3,"high":2,"medium":1,"low":0,"info":0},"top_advisories":[{"rule_id":"CVE-api"}]}'
+    expected=$(api_fallback)
+    write_history_record '{"last_scan":"2026-05-07T12:00:00+00:00","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+
+    actual=$(get_trivy_summary "$CATEGORY")
+    [ "$actual" = "$expected" ]
+}
+
+@test "record strictly newer than the API overlays its counts" {
+    write_history_record '{"last_scan":"2026-05-07T12:00:01+00:00","status":"dirty","counts":{"critical":0,"high":7,"medium":0,"low":0,"info":0},"alert_count":7}'
+
+    run get_trivy_summary "$CATEGORY"
+    [ "$status" -eq 0 ]
+    run jq -e '.last_scan == "2026-05-07T12:00:01+00:00" and .counts.high == 7' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "equal instants with the same spelling retain the record overlay" {
+    set_api_result '{"last_scan":"2026-05-07T12:00:00+00:00","counts":{"critical":3,"high":2,"medium":1,"low":0,"info":0},"top_advisories":[{"rule_id":"CVE-api"}]}'
+    write_history_record '{"last_scan":"2026-05-07T12:00:00+00:00","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+
+    run get_trivy_summary "$CATEGORY"
+    [ "$status" -eq 0 ]
+    run jq -e '.last_scan == "2026-05-07T12:00:00+00:00" and .counts.high == 0' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "equal instants with +00:00 record and Z API retain the record overlay" {
+    set_api_result '{"last_scan":"2026-05-07T12:00:00Z","counts":{"critical":3,"high":2,"medium":1,"low":0,"info":0},"top_advisories":[{"rule_id":"CVE-api"}]}'
+    write_history_record '{"last_scan":"2026-05-07T12:00:00+00:00","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+
+    run get_trivy_summary "$CATEGORY"
+    [ "$status" -eq 0 ]
+    run jq -e '.last_scan == "2026-05-07T12:00:00+00:00" and .counts.high == 0' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "record newer by one second with +00:00 spelling overlays the Z API" {
+    set_api_result '{"last_scan":"2026-05-07T12:00:00Z","counts":{"critical":3,"high":2,"medium":1,"low":0,"info":0},"top_advisories":[{"rule_id":"CVE-api"}]}'
+    write_history_record '{"last_scan":"2026-05-07T12:00:01+00:00","status":"dirty","counts":{"critical":0,"high":8,"medium":0,"low":0,"info":0},"alert_count":8}'
+
+    run get_trivy_summary "$CATEGORY"
+    [ "$status" -eq 0 ]
+    run jq -e '.last_scan == "2026-05-07T12:00:01+00:00" and .counts.high == 8' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "API newer by one second across +00:00 and Z spellings survives unchanged" {
+    set_api_result '{"last_scan":"2026-05-07T12:00:01Z","counts":{"critical":3,"high":2,"medium":1,"low":0,"info":0},"top_advisories":[{"rule_id":"CVE-api"}]}'
+    expected=$(api_fallback)
+    write_history_record '{"last_scan":"2026-05-07T12:00:00+00:00","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+
+    actual=$(get_trivy_summary "$CATEGORY")
+    [ "$actual" = "$expected" ]
+}
+
+@test "record overlays when the API has no entry for its category" {
+    _TRIVY_SUMMARY_MAP='{}'
+    write_history_record '{"last_scan":"2026-05-07T12:00:00+00:00","status":"dirty","counts":{"critical":0,"high":6,"medium":0,"low":0,"info":0},"alert_count":6}'
+
+    run get_trivy_summary "$CATEGORY"
+    [ "$status" -eq 0 ]
+    run jq -e '.last_scan == "2026-05-07T12:00:00+00:00" and .counts.high == 6 and .top_advisories == []' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "unparseable API timestamps retain the record overlay" {
+    write_history_record '{"last_scan":"2026-05-07T12:00:00+00:00","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+
+    for api_timestamp in '2026-08-22T08:01:12' '1 year ago'; do
+        set_api_result "{\"last_scan\":\"$api_timestamp\",\"counts\":{\"critical\":3,\"high\":2,\"medium\":1,\"low\":0,\"info\":0},\"top_advisories\":[{\"rule_id\":\"CVE-api\"}]}"
+
+        run get_trivy_summary "$CATEGORY"
+        [ "$status" -eq 0 ]
+        run jq -e '.last_scan == "2026-05-07T12:00:00+00:00" and .counts.high == 0' <<<"$output"
+        [ "$status" -eq 0 ]
+    done
+}
+
+@test "a stale clean cache record cannot hide a newer API HIGH finding" {
+    set_api_result '{"last_scan":"2026-05-08T12:00:00Z","counts":{"critical":0,"high":1,"medium":0,"low":0,"info":0},"top_advisories":[{"rule_id":"CVE-TUESDAY-HIGH","severity":"high"}]}'
+    expected=$(api_fallback)
+    write_history_record '{"last_scan":"2026-05-07T12:00:00+00:00","status":"clean","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"alert_count":0}'
+
+    actual=$(get_trivy_summary "$CATEGORY")
+    [ "$actual" = "$expected" ]
+    run jq -e '.counts.high == 1 and .top_advisories[0].rule_id == "CVE-TUESDAY-HIGH"' <<<"$actual"
+    [ "$status" -eq 0 ]
+}
+
 @test "pre-fix dated error record leaves the API result byte-for-byte unchanged" {
     expected=$(api_fallback)
     printf '%s\n' '{"last_scan":"2026-12-01T00:00:00+00:00","status":"error","alert_count":-1,"counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0}}' \
