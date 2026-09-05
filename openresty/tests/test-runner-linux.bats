@@ -17,7 +17,7 @@
 # The build system tags as <container>:<version>; for the smoke test we
 # accept any locally-built tag that starts with "openresty:" (or the GHCR form).
 _find_image() {
-    # Deterministic image resolution — fail-closed on 0 or ambiguous images.
+    # Deterministic image resolution — fail-closed on no image or ambiguity.
     # $OPENRESTY_IMAGE is the explicit override: local runs and CI SHOULD set it
     # (a tracked follow-up will wire it in the upstream workflow).
     if [[ -n "${OPENRESTY_IMAGE:-}" ]]; then
@@ -30,8 +30,14 @@ _find_image() {
     # all sharing the SAME image ID — counting tags would wrongly report "multiple".
     # The repo-component filter is anchored to avoid matching base-image cache repos
     # or unrelated images that happen to contain "openresty" in a path component.
+    local images
+    if ! images=$(docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}'); then
+        echo "SKIP: container runtime image store is unreachable; set OPENRESTY_IMAGE to run the openresty smoke suite" >&2
+        return 2
+    fi
+
     local ids
-    ids=$(docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' \
+    ids=$(printf '%s\n' "$images" \
           | awk '$2 ~ /^(ghcr\.io\/oorabona\/openresty|docker\.io\/oorabona\/openresty|openresty):/ {print $1}' \
           | sort -u)
 
@@ -54,7 +60,7 @@ _find_image() {
 
     # Exactly 1 distinct image ID — return the first matching tag (docker run <tag> works).
     local tag
-    tag=$(docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' \
+    tag=$(printf '%s\n' "$images" \
           | awk -v id="$ids" '$1 == id && $2 ~ /^(ghcr\.io\/oorabona\/openresty|docker\.io\/oorabona\/openresty|openresty):/ {print $2; exit}')
     echo "$tag"
     return 0
@@ -65,7 +71,15 @@ _find_image() {
 # ---------------------------------------------------------------------------
 
 setup() {
-    IMAGE=$(_find_image) || return 1
+    if IMAGE=$(_find_image); then
+        :
+    else
+        local resolver_status=$?
+        if [[ "$resolver_status" -eq 2 ]]; then
+            skip "container runtime image store is unreachable; set OPENRESTY_IMAGE to run the openresty smoke suite"
+        fi
+        return "$resolver_status"
+    fi
     CONTAINER_ID=""
 
     # Nginx config with a regex location that proves PCRE2 regex matching is functional.
