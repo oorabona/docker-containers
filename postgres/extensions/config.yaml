@@ -111,7 +111,7 @@ extensions:
     # Citus 14.0.0 adds PG 18 support
     max_pg_version: 18
   timescaledb:
-    version: "2.29.2"
+    version: "2.30.0"
     description: "Time-series database for high-performance analytics"
     repo: "timescale/timescaledb"
     license: "Apache-2.0 + TSL"
@@ -127,7 +127,7 @@ extensions:
       resolver: "scripts/resolvers/timescaledb-ha.sh"
       retain_count: 12
   pg_cron:
-    version: "1.6.7"
+    version: "1.6.8"
     description: "Cron-based job scheduling inside PostgreSQL"
     repo: "citusdata/pg_cron"
     build_deps:
