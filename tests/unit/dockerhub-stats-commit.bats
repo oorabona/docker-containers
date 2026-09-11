@@ -214,6 +214,27 @@ exec "$real_date" "\$@"
 EOF
     chmod +x "$TEST_REPO/bin/date"
 
+cat > "$TEST_REPO/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+state="${FAKE_GIT_STATE:?}"
+while [[ "${1:-}" == --kill-after=* ]]; do
+  shift
+done
+duration="${1:-}"
+shift
+if [[ "${FAKE_TIMEOUT_MERGE_MODE:-}" == "exceeds_budget" && "${1:-}" == "gh" && "${2:-}" == "pr" && "${3:-}" == "merge" ]]; then
+  : > "$state/timeout_killed_merge"
+  if [[ "$duration" =~ ^([0-9]+)s?$ ]]; then
+    now=$(cat "$state/fake_time_epoch")
+    echo $((now + BASH_REMATCH[1])) > "$state/fake_time_epoch"
+  fi
+  exit 124
+fi
+exec "$@"
+EOF
+    chmod +x "$TEST_REPO/bin/timeout"
+
 cat > "$TEST_REPO/bin/jq" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -496,6 +517,10 @@ case "${1:-} ${2:-}" in
       : > "$(pr_field_path "$number" merge_pending)"
       exit 0
     fi
+    if [[ -n "${FAKE_GH_DIRECT_MERGE_ADVANCE_SECONDS:-}" ]]; then
+      now=$(cat "$state/fake_time_epoch")
+      echo $((now + FAKE_GH_DIRECT_MERGE_ADVANCE_SECONDS)) > "$state/fake_time_epoch"
+    fi
     echo "simulated direct merge refusal: unmet requirement" >&2
     exit 1
     ;;
@@ -521,6 +546,11 @@ case "${1:-} ${2:-}" in
       echo "simulated transient gh pr view failure" >&2
       exit 1
     fi
+    if [[ -n "${FAKE_GH_PR_VIEW_FAIL_AT_OR_AFTER:-}" ]] &&
+        (( $(cat "$state/fake_time_epoch") >= FAKE_GH_PR_VIEW_FAIL_AT_OR_AFTER )); then
+      echo "simulated deadline reconciliation gh pr view failure" >&2
+      exit 1
+    fi
 
     views=$(cat "$state/pr_view_count" 2>/dev/null || echo 0)
     views=$((views + 1))
@@ -534,6 +564,11 @@ case "${1:-} ${2:-}" in
     if [[ -n "${FAKE_GH_PR_VIEW_ADVANCE_SECONDS:-}" ]]; then
       now=$(cat "$state/fake_time_epoch")
       echo $((now + FAKE_GH_PR_VIEW_ADVANCE_SECONDS)) > "$state/fake_time_epoch"
+    fi
+
+    if [[ -n "${FAKE_GH_PR_VIEW_PAYLOAD:-}" ]]; then
+      printf '%s\n' "$FAKE_GH_PR_VIEW_PAYLOAD"
+      exit 0
     fi
 
     state_value=$(cat "$(pr_field_path "$number" state)")
@@ -659,7 +694,6 @@ teardown() {
     ! grep -qF -- "--auto" "$FAKE_GIT_STATE/gh.log"
     grep -qF "pr view 123" "$FAKE_GIT_STATE/gh.log"
     [ "$(wc -l < "$FAKE_GIT_STATE/gh.log")" -eq 4 ]
-    [ "$(get_output merge_path)" = "merged-immediately" ]
     [ ! -e "$FAKE_GIT_STATE/branch_bot_stats-snapshot-876123-1-attempt-1_stats" ]
 }
 
@@ -679,14 +713,14 @@ teardown() {
     run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
     [ "$status" -eq 0 ]
     [ "$(get_output persisted)" = "true" ]
-    [ "$(get_output merge_path)" = "merged-immediately" ]
     [ "$(cat "$FAKE_GIT_STATE/pr_merge_count")" -eq 1 ]
 }
 
 @test "commit-stats-snapshot falls back to auto-merge and spends the full remaining budget" {
     export FAKE_GH_DIRECT_MERGE_MODE="refused"
     export FAKE_GH_PR_VIEW_MODE="delayed_then_merged"
-    export FAKE_GH_MERGE_AFTER_VIEW="5"
+    export FAKE_GH_MERGE_AFTER_VIEW="8"
+    export FAKE_GH_MERGED_AT="1970-01-01T00:00:30Z"
     export STATS_PR_MERGE_TIMEOUT_SECONDS="30"
     export STATS_PR_MERGE_POLL_SECONDS="5"
     export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
@@ -702,9 +736,9 @@ teardown() {
     [ "${#merge_heads[@]}" -eq 2 ]
     [ "${merge_heads[0]}" = "commit-1" ]
     [ "${merge_heads[1]}" = "commit-1" ]
-    # A divided per-attempt share would end at 11; the shared deadline permits
-    # this same PR to remain open until its merge is observed at 17.
-    [ "$(cat "$FAKE_GIT_STATE/fake_time_epoch")" -eq 17 ]
+    # The merge is observable only at the full shared deadline, so an internal
+    # wait cap shorter than this configured budget cannot satisfy this test.
+    [ "$(cat "$FAKE_GIT_STATE/fake_time_epoch")" -eq 30 ]
 }
 
 @test "commit-stats-snapshot never closes an open PR whose state stays unreadable" {
@@ -719,6 +753,92 @@ teardown() {
     [ "$(grep -cF "pr create" "$FAKE_GIT_STATE/gh.log")" -eq 1 ]
 }
 
+@test "commit-stats-snapshot leaves the PR open when only deadline reconciliation cannot be read" {
+    export FAKE_GH_DIRECT_MERGE_MODE="queued"
+    export FAKE_GH_PR_VIEW_MODE="always_open"
+    export FAKE_GH_PR_VIEW_FAIL_AT_OR_AFTER="5"
+    export STATS_PR_MERGE_TIMEOUT_SECONDS="5"
+    export STATS_PR_MERGE_POLL_SECONDS="5"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [ ! -e "$FAKE_GIT_STATE/pr_close_called" ]
+    [[ "$output" == *"deadline reconciliation read"* ]]
+}
+
+@test "commit-stats-snapshot leaves the PR open after a successful unusable view payload" {
+    export FAKE_GH_DIRECT_MERGE_MODE="queued"
+    export FAKE_GH_PR_VIEW_PAYLOAD="not-a-pr-view-payload"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ ! -e "$FAKE_GIT_STATE/pr_close_called" ]
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [[ "$output" == *"received an unusable payload"* ]]
+}
+
+@test "commit-stats-snapshot does not arm auto-merge after a deadline reconciliation OPEN" {
+    export FAKE_GH_DIRECT_MERGE_MODE="refused"
+    export FAKE_GH_DIRECT_MERGE_ADVANCE_SECONDS="3"
+    export FAKE_GH_PR_VIEW_MODE="always_open"
+    export STATS_PR_MERGE_TIMEOUT_SECONDS="5"
+    export STATS_PR_MERGE_POLL_SECONDS="5"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    ! grep -qF -- "--auto" "$FAKE_GIT_STATE/gh.log"
+    [[ "$output" != *"enabling pinned auto-merge"* ]]
+}
+
+@test "commit-stats-snapshot does not arm auto-merge after a slow OPEN response crosses the deadline" {
+    export FAKE_GH_DIRECT_MERGE_MODE="refused"
+    export FAKE_GH_PR_VIEW_MODE="always_open"
+    export FAKE_GH_PR_VIEW_ADVANCE_SECONDS="3"
+    export STATS_PR_MERGE_TIMEOUT_SECONDS="5"
+    export STATS_PR_MERGE_POLL_SECONDS="5"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    ! grep -qF -- "--auto" "$FAKE_GIT_STATE/gh.log"
+    [[ "$output" != *"enabling pinned auto-merge"* ]]
+    [ "$(cat "$FAKE_GIT_STATE/fake_time_epoch")" -eq 5 ]
+}
+
+@test "commit-stats-snapshot reconciles a merge command killed at its remaining budget without arming auto-merge" {
+    export FAKE_GH_PR_VIEW_MODE="always_open"
+    export FAKE_TIMEOUT_MERGE_MODE="exceeds_budget"
+    export STATS_PR_MERGE_TIMEOUT_SECONDS="5"
+    export STATS_PR_MERGE_POLL_SECONDS="5"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [ -e "$FAKE_GIT_STATE/timeout_killed_merge" ]
+    ! grep -qF -- "--auto" "$FAKE_GIT_STATE/gh.log"
+    [[ "$output" != *"enabling pinned auto-merge"* ]]
+}
+
+@test "commit-stats-snapshot declines a merge command when no budget remains" {
+    export FAKE_GH_PR_VIEW_MODE="always_open"
+    export STATS_PR_MERGE_TIMEOUT_SECONDS="2"
+    export STATS_PR_MERGE_POLL_SECONDS="5"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [ ! -e "$FAKE_GIT_STATE/pr_merge_count" ]
+    [[ "$output" == *"Not starting merge for stats snapshot PR #123 because no wait budget remains"* ]]
+}
+
 @test "commit-stats-snapshot accepts a nonzero auto-merge response when the PR subsequently merges" {
     export FAKE_GH_DIRECT_MERGE_MODE="refused"
     export FAKE_GH_AUTO_MERGE_MODE="merged_but_error"
@@ -727,7 +847,6 @@ teardown() {
     run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
     [ "$status" -eq 0 ]
     [ "$(get_output persisted)" = "true" ]
-    [ "$(get_output merge_path)" = "auto-merge" ]
 }
 
 @test "commit-stats-snapshot accepts an in-budget merge observed after the deadline" {
@@ -788,7 +907,6 @@ teardown() {
     [ "$(wc -l < "$FAKE_GIT_STATE/gh.log")" -eq 7 ]
     [ "$(grep -cF "pr merge 123" "$FAKE_GIT_STATE/gh.log")" -eq 1 ]
     [ "$(grep -cF "pr view 123" "$FAKE_GIT_STATE/gh.log")" -eq 4 ]
-    [ "$(get_output merge_path)" = "queued-or-pending" ]
 }
 
 @test "commit-stats-snapshot does not let failed origin restore abort cleanup" {
@@ -1092,7 +1210,6 @@ teardown() {
     pushes=$(cat "$FAKE_GIT_STATE/push_count")
     [ "$pushes" -eq 1 ]
     [ "$(cat "$FAKE_GIT_STATE/pr_close_count")" -eq 1 ]
-    [ "$(get_output merge_path)" = "queued-or-pending" ]
     [ "$(cat "$FAKE_GIT_STATE/fake_time_epoch")" -eq 30 ]
     grep -qF "pr create --base master --head bot/stats-snapshot-876123-1-attempt-1" "$FAKE_GIT_STATE/gh.log"
     ! grep -qF "bot/stats-snapshot-876123-1-attempt-2" "$FAKE_GIT_STATE/gh.log"

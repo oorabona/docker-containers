@@ -191,15 +191,6 @@ emit_still_missing_after_reconcile_output() {
   fi
 }
 
-emit_merge_path_output() {
-  local merge_path="$1"
-
-  if [[ -n "${GITHUB_OUTPUT:-}" ]] && ! gha_output merge_path "$merge_path"; then
-    gha_warning 'Stats snapshot merge path output could not be delivered'
-    return 1
-  fi
-}
-
 # shellcheck disable=SC2329  # Invoked by the EXIT trap below.
 cleanup() {
   if [[ "$origin_restore_needed" == "true" && -n "$safe_origin_url" ]]; then
@@ -548,6 +539,12 @@ wait_for_pr_merge() {
     fi
 
     if ! pr_view=$(inspect_stats_snapshot_pr "$pr_number" "$query_timeout_seconds" 2>&1); then
+      if [[ "$reconciliation_read" == "true" ]]; then
+        printf '%s\n' "$pr_view" >&2
+        gha_warning 'Could not inspect stats snapshot PR #%s merge state during the deadline reconciliation read' "$pr_number"
+        STATS_PR_WAIT_OUTCOME="uninspectable"
+        return 1
+      fi
       consecutive_query_failures=$((consecutive_query_failures + 1))
       printf '%s\n' "$pr_view" >&2
       if ((consecutive_query_failures >= max_query_failures)); then
@@ -559,7 +556,15 @@ wait_for_pr_merge() {
     else
       consecutive_query_failures=0
 
+      state=""
+      merged_at=""
+      base_ref=""
       IFS='|' read -r state merged_at base_ref <<< "$pr_view"
+      if [[ "$state" != "MERGED" && "$state" != "OPEN" && "$state" != "CLOSED" ]]; then
+        gha_warning 'Could not inspect stats snapshot PR #%s merge state: received an unusable payload' "$pr_number"
+        STATS_PR_WAIT_OUTCOME="uninspectable"
+        return 1
+      fi
       if stats_snapshot_pr_persisted "$state" "$merged_at" "$base_ref"; then
         if stats_snapshot_pr_merged_within_budget "$merged_at" "$deadline_epoch"; then
           gha_notice 'Stats snapshot PR #%s merged' "$pr_number"
@@ -582,10 +587,26 @@ wait_for_pr_merge() {
         return 1
       fi
 
+      # A successful OPEN response can arrive after its bounded query crosses
+      # the deadline. Re-read the clock before returning open or considering
+      # auto-merge; at the deadline, this verified OPEN may be closed, which
+      # deliberately cancels a direct merge request still queued or pending.
+      if ! now_epoch=$(date +%s); then
+        gha_warning 'Could not read wall-clock time after inspecting stats snapshot PR #%s' "$pr_number"
+        STATS_PR_WAIT_OUTCOME="uninspectable"
+        return 1
+      fi
+      if ((now_epoch >= deadline_epoch)) || [[ "$reconciliation_read" == "true" ]]; then
+        gha_error 'Timed out waiting for stats snapshot PR #%s to merge into master' "$pr_number"
+        STATS_PR_WAIT_OUTCOME="timeout"
+        return 1
+      fi
+
       if [[ "$return_when_open" == "true" ]]; then
         STATS_PR_WAIT_OUTCOME="open"
         return 1
       fi
+
     fi
 
     if [[ "$reconciliation_read" == "true" ]]; then
@@ -604,6 +625,32 @@ wait_for_pr_merge() {
       return 1
     fi
   done
+}
+
+run_stats_snapshot_pr_merge() {
+  local pr_number="$1"
+  local deadline_epoch="$2"
+  local head_commit="$3"
+  local auto_merge="${4:-false}"
+  local remaining_seconds
+
+  if ! remaining_seconds=$(remaining_pr_budget_seconds "$deadline_epoch"); then
+    gha_warning 'Could not determine remaining budget before merging stats snapshot PR #%s' "$pr_number"
+    return 1
+  fi
+  if ((remaining_seconds <= 0)); then
+    gha_warning 'Not starting merge for stats snapshot PR #%s because no wait budget remains' "$pr_number"
+    return 1
+  fi
+
+  if [[ "$auto_merge" == "true" ]]; then
+    timeout --kill-after=1s "${remaining_seconds}s" gh pr merge "$pr_number" \
+      --squash --auto --delete-branch --match-head-commit "$head_commit"
+    return
+  fi
+
+  timeout --kill-after=1s "${remaining_seconds}s" gh pr merge "$pr_number" \
+    --squash --delete-branch --match-head-commit "$head_commit"
 }
 
 inspect_stats_snapshot_pr() {
@@ -753,8 +800,10 @@ ensure_stats_snapshot_pr() {
 persist_stats_snapshot_via_pr() {
   # The surrounding GitHub Actions job has a 45-minute hard timeout. This
   # function enforces one shared 35-minute wall-clock budget across all retry
-  # attempts (legacy STATS_PR_MERGE_TIMEOUT_SECONDS still overrides the default)
-  # so cleanup and output emission run before the job-level timeout can kill us.
+  # attempts, PR reads, and merge commands (legacy
+  # STATS_PR_MERGE_TIMEOUT_SECONDS still overrides the default), so cleanup and
+  # output emission run before the job-level timeout can kill us. At its
+  # deadline, closing a verified OPEN PR can cancel an in-flight direct merge.
   local total_budget_seconds="${STATS_PR_TOTAL_BUDGET_SECONDS:-${STATS_PR_MERGE_TIMEOUT_SECONDS:-2100}}"
   local min_wait_seconds="$STATS_PR_MIN_MERGE_WAIT_SECONDS"
   local poll_seconds="${STATS_PR_MERGE_POLL_SECONDS:-10}"
@@ -862,7 +911,7 @@ persist_stats_snapshot_via_pr() {
     fi
 
     direct_merge_succeeded=false
-    if merge_output=$(gh pr merge "$attempt_pr_number" --squash --delete-branch --match-head-commit "$head_commit" 2>&1); then
+    if merge_output=$(run_stats_snapshot_pr_merge "$attempt_pr_number" "$deadline_epoch" "$head_commit" 2>&1); then
       direct_merge_succeeded=true
     fi
     printf '%s\n' "$merge_output" >&2
@@ -870,7 +919,6 @@ persist_stats_snapshot_via_pr() {
     # A gh exit status is only transport feedback. Observe this PR before
     # deciding whether it merged, remains open, or can safely be cleaned up.
     if wait_for_pr_merge "$attempt_pr_number" "$deadline_epoch" "$poll_seconds" "$max_query_failures" true; then
-      STATS_PR_MERGE_PATH="merged-immediately"
       gha_notice 'Stats snapshot PR #%s merged directly' "$attempt_pr_number"
       return 0
     fi
@@ -878,12 +926,10 @@ persist_stats_snapshot_via_pr() {
     case "$STATS_PR_WAIT_OUTCOME" in
       open)
         if [[ "$direct_merge_succeeded" == "true" ]]; then
-          STATS_PR_MERGE_PATH="queued-or-pending"
           gha_notice 'Stats snapshot PR #%s merge request is queued or pending; waiting for the verified merge state' "$attempt_pr_number"
         else
-          STATS_PR_MERGE_PATH="auto-merge"
           gha_warning 'Direct merge response for stats snapshot PR #%s was nonzero; enabling pinned auto-merge on the same open PR' "$attempt_pr_number"
-          if merge_output=$(gh pr merge "$attempt_pr_number" --squash --auto --delete-branch --match-head-commit "$head_commit" 2>&1); then
+          if merge_output=$(run_stats_snapshot_pr_merge "$attempt_pr_number" "$deadline_epoch" "$head_commit" true 2>&1); then
             gha_notice 'Auto-merge enabled for stats snapshot PR #%s' "$attempt_pr_number"
           else
             printf '%s\n' "$merge_output" >&2
@@ -960,13 +1006,11 @@ else
 fi
 
 persisted=false
-STATS_PR_MERGE_PATH="not-attempted"
 if persist_stats_snapshot_via_pr; then
   persisted=true
 fi
 
 emit_persisted_output "$persisted"
-emit_merge_path_output "$STATS_PR_MERGE_PATH"
 
 still_missing_after_reconcile=true
 if [[ "$persisted" == "true" ]]; then
