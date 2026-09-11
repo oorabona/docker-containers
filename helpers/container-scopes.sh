@@ -5,6 +5,17 @@
 # expand_variants_for_containers, because that function delegates to
 # list_container_builds.
 
+# The build-cell predicate is shared by the legacy expansion helper and bake.
+# Keep it as data rather than a heredoc-producing subprocess so bake can embed
+# it directly in jq's active path.
+# shellcheck disable=SC2016 # jq variables are intentionally literal here.
+export _CONTAINER_SCOPE_FILTER_JQ='
+[.[] | select(
+  (($sv | length) == 0 or (.version as $v | $sv | any(. as $s | $v == $s or ($v | startswith($s + ".")) or ($v | startswith($s + "-"))))) and
+  (($sf | length) == 0 or (.flavor as $f | $sf | any(. == $f)))
+)]
+'
+
 normalize_container_scopes() {
     local container_scopes="${1:-}"
 
@@ -13,17 +24,52 @@ normalize_container_scopes() {
         return 0
     fi
 
-    local normalized
-    if ! normalized=$(printf '%s' "$container_scopes" | jq -c '
-        if type == "object" and
-           all(.[]; type == "object" and
-             (.versions == null or (.versions | type == "string")) and
-             (.flavors == null or (.flavors | type == "string")) and
-             (.extensions == null or (.extensions | type == "string")))
-        then .
-        else error("container_scopes must be a JSON object whose values are scope objects")
+    local validation_error
+    if ! validation_error=$(printf '%s' "$container_scopes" | jq -er '
+        if type != "object" then
+            "container_scopes must be a JSON object"
+        else
+            . as $scope_map
+            | ([$scope_map | to_entries[] | select(.value | type != "object") | .key] | first) as $invalid_container
+            # Restrict later field validation to object-valued entries. jq
+            # evaluates every `as` binding before selecting the final message,
+            # so this structural guard keeps a non-object from reaching
+            # `to_entries` or `split` while preserving diagnostic precedence.
+            | ([$scope_map | to_entries[] | select(.value | type == "object")] ) as $object_entries
+            | ([$object_entries[] | .key as $container | .value | to_entries[]
+                | select(.key != "versions" and .key != "flavors" and .key != "extensions")
+                | {container: $container, property: .key}] | first) as $unknown
+            | ([$object_entries[] | .key as $container | .value | to_entries[]
+                | select((.key == "versions" or .key == "flavors" or .key == "extensions") and (.value | type != "string"))
+                | {container: $container, property: .key}] | first) as $invalid_type
+            | ([$object_entries[] | .key as $container | .value | to_entries[]
+                | select(.key == "versions" or .key == "flavors" or .key == "extensions")
+                | select((.value | type == "string") and (.value | split(",") | any(. == "")))
+                | {container: $container, property: .key}] | first) as $empty_csv
+            | if $invalid_container != null then
+                "container_scopes value for container \($invalid_container | @json) must be an object"
+              elif $unknown != null then
+                "container_scopes property \($unknown.property | @json) is not accepted for container \($unknown.container | @json)"
+              elif $invalid_type != null then
+                "container_scopes property \($invalid_type.property | @json) for container \($invalid_type.container | @json) must be a string"
+              elif $empty_csv != null then
+                "container_scopes property \($empty_csv.property | @json) for container \($empty_csv.container | @json) contains an empty CSV element"
+              else
+                ""
+              end
         end
     ' 2>/dev/null); then
+        echo "::error::container_scopes must be a valid JSON object whose values are objects with optional string versions/flavors/extensions fields" >&2
+        return 1
+    fi
+
+    if [[ -n "$validation_error" ]]; then
+        echo "::error::${validation_error}" >&2
+        return 1
+    fi
+
+    local normalized
+    if ! normalized=$(printf '%s' "$container_scopes" | jq -c . 2>/dev/null); then
         echo "::error::container_scopes must be a valid JSON object whose values are objects with optional string versions/flavors/extensions fields" >&2
         return 1
     fi
@@ -205,10 +251,13 @@ filter_builds_by_version_flavor_scope() {
 
     echo "$container_builds" | jq -c \
       --argjson sv "$versions_filter" --argjson sf "$flavors_filter" \
-      '[.[] | select(
-        (($sv | length) == 0 or (.version as $v | $sv | any(. as $s | $v == $s or ($v | startswith($s + ".")) or ($v | startswith($s + "-"))))) and
-        (($sf | length) == 0 or (.flavor as $f | $sf | any(. == $f)))
-      )]'
+      "$(container_scope_filter_jq)"
+}
+
+# Print the shared jq filter for version/flavor scope selection. Callers bind
+# $sv and $sf to JSON arrays before concatenating this predicate.
+container_scope_filter_jq() {
+    printf '%s\n' "$_CONTAINER_SCOPE_FILTER_JQ"
 }
 
 expand_variants_for_containers() {
@@ -249,7 +298,10 @@ expand_variants_for_containers() {
         if [[ -n "$scope_versions" || -n "$scope_flavors" ]]; then
             local before_count
             before_count=$(echo "$container_builds" | jq 'length')
-            container_builds=$(filter_builds_by_version_flavor_scope "$container_builds" "$scope_versions" "$scope_flavors")
+            if ! container_builds=$(filter_builds_by_version_flavor_scope "$container_builds" "$scope_versions" "$scope_flavors"); then
+                echo "  Scope filter failed for $container" >&2
+                return 1
+            fi
             local after_count
             after_count=$(echo "$container_builds" | jq 'length')
 
@@ -289,4 +341,4 @@ expand_variants_for_containers() {
 
 export -f normalize_container_scopes container_scope_keys validate_container_scope_keys
 export -f container_scope_field extension_scope_for_changes
-export -f filter_builds_by_version_flavor_scope expand_variants_for_containers
+export -f container_scope_filter_jq filter_builds_by_version_flavor_scope expand_variants_for_containers

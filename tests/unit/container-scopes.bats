@@ -205,6 +205,55 @@ normalize_json() {
     [[ "$stderr" == *"::error::container_scopes"* ]]
 }
 
+@test "container_scopes rejects an unknown per-container property" {
+    # Catches: accepting unknown properties makes this scope a pass-all map.
+    run --separate-stderr normalize_container_scopes '{"terraform":{"flavours":"aws"}}'
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"flavours"* ]]
+    [[ "$stderr" == *"terraform"* ]]
+}
+
+@test "container_scopes accepts the documented extensions property" {
+    run --separate-stderr normalize_container_scopes '{"postgres":{"extensions":"pgvector"}}'
+
+    [ "$status" -eq 0 ]
+    [ "$(normalize_json "$output")" = "$(normalize_json '{"postgres":{"extensions":"pgvector"}}')" ]
+}
+
+@test "container_scopes rejects an empty CSV element" {
+    run --separate-stderr normalize_container_scopes '{"terraform":{"flavors":"aws,"}}'
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"flavors"* ]]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"empty CSV element"* ]]
+}
+
+@test "container_scopes names every wrong-typed field and a non-object container value" {
+    # Catches: evaluating split/to_entries in an `as` binding before the
+    # diagnostic branch, which returned only the generic schema error.
+    local input field
+    for input in \
+        '{"terraform":{"versions":42}}' \
+        '{"terraform":{"flavors":42}}' \
+        '{"terraform":{"extensions":42}}' \
+        '{"terraform":42}'; do
+        run --separate-stderr normalize_container_scopes "$input"
+
+        [ "$status" -ne 0 ]
+        [[ "$stderr" == *"terraform"* ]]
+        if [[ "$input" == *'":42}}'* ]]; then
+            field=$(jq -r '.terraform | keys[0]' <<< "$input")
+            [[ "$stderr" == *"$field"* ]]
+            [[ "$stderr" == *"must be a string"* ]]
+        else
+            [[ "$stderr" == *"must be an object"* ]]
+        fi
+        [[ "$stderr" != *"must be a valid JSON object whose values are objects"* ]]
+    done
+}
+
 @test "empty object container_scopes preserves legacy global scope_versions filtering" {
     scopes=$(normalize_container_scopes '{}')
     [ -z "$scopes" ]
@@ -262,4 +311,75 @@ normalize_json() {
 
     [ "$status" -eq 0 ]
     [ "$(normalize_json "$output")" = "$(normalize_json "$expected")" ]
+}
+
+@test "exported scope filter retains its predicate across an exec boundary" {
+    # Catches mutation: making _CONTAINER_SCOPE_FILTER_JQ readonly again leaves
+    # the exported function without a jq program in a fresh bash process.
+    local builds='[{"version":"1.16","flavor":"aws"},{"version":"1.16","flavor":"gcp"}]'
+
+    run --separate-stderr bash -c '
+        filter_builds_by_version_flavor_scope "$1" "" "aws"
+    ' bash "$builds"
+
+    [ "$status" -eq 0 ]
+    [ "$(normalize_json "$output")" = "$(normalize_json '[{"version":"1.16","flavor":"aws"}]')" ]
+}
+
+@test "exported scope expansion retains its filter across an exec boundary" {
+    # Catches mutation: making _CONTAINER_SCOPE_FILTER_JQ readonly again lets
+    # an exported expansion return an empty successful build plan.
+    run --separate-stderr bash -c '
+        expand_variants_for_containers \
+            "[\"postgres\"]" \
+            "{\"postgres\":\"18\"}" \
+            "{\"postgres\":false}" \
+            "" \
+            "" \
+            "full" \
+            ""
+    ' bash
+
+    [ "$status" -eq 0 ]
+    [ "$(jq 'length' <<< "$output")" -eq 1 ]
+    [ "$(jq -r '.[0].flavor' <<< "$output")" = "full" ]
+}
+
+@test "scope expansion returns a filter failure instead of an empty plan" {
+    # Catches mutation: removing the guarded assignment below converts a
+    # filter failure into a successful empty plan.
+    run --separate-stderr bash -c '
+        source "$1/helpers/variant-utils.sh"
+        source "$1/helpers/container-scopes.sh"
+        filter_builds_by_version_flavor_scope() {
+            echo "forced filter failure" >&2
+            return 70
+        }
+        expand_variants_for_containers \
+            "[\"postgres\"]" \
+            "{\"postgres\":\"18\"}" \
+            "{\"postgres\":false}" \
+            "" \
+            "" \
+            "full" \
+            ""
+    ' bash "$ORIG_DIR"
+
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"forced filter failure"* ]]
+    [[ "$stderr" == *"postgres"* ]]
+}
+
+@test "container scopes library is re-sourceable under set -euo pipefail" {
+    # Catches mutation: making _CONTAINER_SCOPE_FILTER_JQ readonly again
+    # aborts the second source before the trailing marker.
+    run --separate-stderr bash -euo pipefail -c '
+        source "$1"
+        source "$1"
+        echo RESOURCE-OK
+    ' bash "$ORIG_DIR/helpers/container-scopes.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "RESOURCE-OK" ]
 }

@@ -121,6 +121,46 @@ _run_generator_separate_stderr() {
     run --separate-stderr bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" "$@"
 }
 
+_make_jq_fault_shim() {
+    local shim_dir="${TEST_TEMP_DIR}/jq-fault-shim"
+    mkdir -p "$shim_dir"
+
+    {
+        printf '%s\n' '#!/usr/bin/env bash'
+        printf '%s\n' 'set -euo pipefail'
+        printf '%s\n' 'for arg in "$@"; do'
+        printf '%s\n' '    case "${JQ_FAULT_MATCH_TYPE:?}" in'
+        printf '%s\n' '        contains) [[ "$arg" == *"${JQ_FAULT_PROGRAM:?}"* ]] || continue ;;'
+        printf '%s\n' '        exact) [[ "$arg" == "${JQ_FAULT_PROGRAM:?}" ]] || continue ;;'
+        printf '%s\n' '    esac'
+        printf '%s\n' '    count=0'
+        printf '%s\n' '    [[ -f "${JQ_FAULT_LOG:?}" ]] && count=$(<"$JQ_FAULT_LOG")'
+        printf '%s\n' '    count=$((count + 1))'
+        printf '%s\n' '    printf "%s\\n" "$count" > "$JQ_FAULT_LOG"'
+        printf '%s\n' '    [[ "$count" -eq "${JQ_FAULT_AT:?}" ]] && exit "${JQ_FAULT_STATUS:-70}"'
+        printf '%s\n' '    break'
+        printf '%s\n' 'done'
+        printf '%s\n' 'exec "${JQ_REAL:?}" "$@"'
+    } > "$shim_dir/jq"
+    chmod +x "$shim_dir/jq"
+    printf '%s' "$shim_dir"
+}
+
+_run_generator_with_jq_fault() {
+    local match_type="$1" program="$2" fault_at="$3"
+    shift 3
+    local shim_dir real_jq fault_log
+    shim_dir=$(_make_jq_fault_shim)
+    real_jq=$(command -v jq)
+    fault_log="${TEST_TEMP_DIR}/jq-fault-count"
+    : > "$fault_log"
+
+    run --separate-stderr env "PATH=${shim_dir}:$PATH" JQ_REAL="$real_jq" \
+        JQ_FAULT_LOG="$fault_log" JQ_FAULT_MATCH_TYPE="$match_type" \
+        JQ_FAULT_PROGRAM="$program" JQ_FAULT_AT="$fault_at" \
+        bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" "$@"
+}
+
 _assert_no_uncontrolled_workflow_command() {
     if tail -n +2 <<< "$stderr" | grep -q '^::'; then
         output+=$'\nAssertion: no caller-supplied value starts a workflow-command line'
@@ -1596,11 +1636,12 @@ YAML
     [ "$actual_count" -eq "$expected_count" ]
 }
 
-@test "B4 — help documents scope refusal and its two successful-empty exceptions" {
+@test "B4 — help documents the two-level scope refusal contract" {
     _run_generator --help
     [ "$status" -eq 0 ]
-    [[ "$output" == *"active scope that selects no Linux build cells exits 1 without writing stdout"* ]]
-    [[ "$output" == *"already-empty matrix and a Windows-only matrix remain successful empty plans"* ]]
+    [[ "$output" == *"Non-empty per-container versions/flavors must select a Linux cell"* ]]
+    [[ "$output" == *"otherwise scope selection is aggregate"* ]]
+    [[ "$output" == *"Already-empty and Windows-only matrices remain successful empty plans"* ]]
     [[ "$output" == *"Container-scope keys/filter values and build-matrix string fields containing LF"* ]]
     [[ "$output" == *"or U+001F are refused rather than being passed through record-oriented readers"* ]]
 }
@@ -1970,6 +2011,30 @@ YAML
     [ "$per_container_json" = "$(echo "$output" | jq -cS '.')" ]
 }
 
+@test "container scopes — a JSON NUL does not coerce a flavor filter" {
+    # Catches: restore Bash CSV matching; command substitution drops the NUL
+    # and the aws cell reappears.
+    _run_generator_separate_stderr --cells \
+        --container-scopes '{"terraform":{"flavors":"aws\u0000"}}' terraform
+
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"matched no Linux build cells"* ]]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" != *"ignored null byte"* ]]
+}
+
+@test "container scopes — an empty CSV flavor element is refused before selection" {
+    _run_generator_separate_stderr --cells \
+        --container-scopes '{"terraform":{"flavors":"aws,"}}' terraform
+
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"flavors"* ]]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"empty CSV element"* ]]
+}
+
 @test "container scopes — terraform retained version scope keeps only matching-version cells" {
     local unscoped_output unscoped_count pick
     unscoped_output=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform 2>/dev/null)
@@ -2009,6 +2074,85 @@ YAML
     [ "$terraform_count" -gt 0 ]
     [ "$terraform_bad_flavors" -eq 0 ]
     [ "$debian_count" -eq "$unscoped_debian_count" ]
+}
+
+@test "container scopes — an unscoped sibling remains complete" {
+    # Catches: requiring a container absent from the scope map to select a
+    # scoped cell, rather than retaining all of its build cells.
+    _run_generator --cells debian
+    [ "$status" -eq 0 ]
+    local unscoped_debian_count
+    unscoped_debian_count=$(echo "$output" | jq 'length')
+    [ "$unscoped_debian_count" -gt 0 ]
+
+    _run_generator --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform debian
+    [ "$status" -eq 0 ]
+
+    local terraform_count terraform_bad_flavors debian_count
+    terraform_count=$(echo "$output" | jq '[.[] | select(.container == "terraform")] | length')
+    terraform_bad_flavors=$(echo "$output" | jq '[.[] | select(.container == "terraform" and .flavor != "aws")] | length')
+    debian_count=$(echo "$output" | jq '[.[] | select(.container == "debian")] | length')
+
+    [ "$terraform_count" -gt 0 ]
+    [ "$terraform_bad_flavors" -eq 0 ]
+    [ "$debian_count" -eq "$unscoped_debian_count" ]
+}
+
+@test "container scopes — empty scoped selection is not masked by a sibling" {
+    # Catches: restore the former aggregate-only counter, which exits 0 and
+    # emits debian's cells when terraform's scoped selection is empty.
+    _run_generator_separate_stderr --cells \
+        --container-scopes '{"terraform":{"flavors":"not-a-flavor"}}' \
+        terraform debian
+
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"matched no Linux build cells"* ]]
+    [[ "$stderr" == *"terraform"* ]]
+}
+
+@test "container scopes — well-formed multi-container scopes retain both containers" {
+    _run_generator --cells \
+        --container-scopes '{"terraform":{"flavors":"aws"},"debian":{"versions":"trixie"}}' \
+        terraform debian
+    [ "$status" -eq 0 ]
+
+    local terraform_count debian_count terraform_bad_flavors debian_bad_tags
+    terraform_count=$(echo "$output" | jq '[.[] | select(.container == "terraform")] | length')
+    debian_count=$(echo "$output" | jq '[.[] | select(.container == "debian")] | length')
+    terraform_bad_flavors=$(echo "$output" | jq '[.[] | select(.container == "terraform" and .flavor != "aws")] | length')
+    debian_bad_tags=$(echo "$output" | jq '[.[] | select(.container == "debian" and .tag != "trixie")] | length')
+
+    [ "$terraform_count" -gt 0 ]
+    [ "$debian_count" -gt 0 ]
+    [ "$terraform_bad_flavors" -eq 0 ]
+    [ "$debian_bad_tags" -eq 0 ]
+}
+
+@test "container scopes — every empty scoped selection is named" {
+    # Catches: reporting only the first empty per-container selection.
+    _run_generator_separate_stderr --cells \
+        --container-scopes '{"terraform":{"flavors":"not-a-flavor"},"debian":{"versions":"not-a-version"}}' \
+        terraform debian
+
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"matched no Linux build cells"* ]]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"debian"* ]]
+}
+
+@test "container scopes — global filters remain aggregate across containers" {
+    # Catches: applying the per-container refusal rule to global filters.
+    _run_generator --cells --scope-flavors aws terraform debian
+    [ "$status" -eq 0 ]
+
+    local terraform_count debian_count
+    terraform_count=$(echo "$output" | jq '[.[] | select(.container == "terraform")] | length')
+    debian_count=$(echo "$output" | jq '[.[] | select(.container == "debian")] | length')
+
+    [ "$terraform_count" -gt 0 ]
+    [ "$debian_count" -eq 0 ]
 }
 
 @test "container scopes — containers absent from the map fall back to global flavor scope" {
@@ -2080,4 +2224,190 @@ YAML
     [ "$status" -eq 0 ]
 
     [ "$(echo "$output" | jq -cS '.')" = "$no_flag_json" ]
+}
+
+@test "jq scope fault during cells emission refuses without stdout" {
+    _run_generator_with_jq_fault contains 'startswith($s + ".")' 9 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"passes the requested scope"* ]]
+}
+
+@test "jq scope fault during bake emission refuses without stdout" {
+    _run_generator_with_jq_fault contains 'startswith($s + ".")' 9 \
+        --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"passes the requested scope"* ]]
+}
+
+@test "jq scope fault during first-target discovery refuses without stdout" {
+    _run_generator_with_jq_fault contains 'startswith($s + ".")' 6 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"passes the requested scope"* ]]
+}
+
+@test "jq scope fault during preflight names the container and refuses without stdout" {
+    _run_generator_with_jq_fault contains 'startswith($s + ".")' 4 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"passes the requested scope"* ]]
+}
+
+@test "scoped cells mode keeps the 12-process scope-predicate baseline" {
+    _run_generator_with_jq_fault contains 'startswith($s + ".")' 999 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -eq 0 ]
+    [ "$(<"${TEST_TEMP_DIR}/jq-fault-count")" -eq 12 ]
+}
+
+@test "jq scope-activity fault does not skip preflight" {
+    _run_generator_with_jq_fault exact \
+        'any(.[]; (.versions // "") != "" or (.flavors // "") != "" or (.extensions // "") != "")' 1 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"scope request is active"* ]]
+}
+
+@test "jq per-container-scope fault does not read as unscoped" {
+    _run_generator_with_jq_fault exact 'has($c)' 1 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"per-container scope applies to terraform"* ]]
+}
+
+@test "jq per-container filter fault does not read as unscoped" {
+    _run_generator_with_jq_fault exact \
+        '(.[$c].versions // "") != "" or (.[$c].flavors // "") != ""' 1 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"per-container scope applies to terraform"* ]]
+}
+
+@test "a false scope predicate still skips only unselected cells" {
+    _run_generator --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -eq 0 ]
+    [ "$(jq 'length' <<< "$output")" -eq 1 ]
+    [ "$(jq '[.[] | select(.flavor != "aws")] | length' <<< "$output")" -eq 0 ]
+}
+
+@test "unscoped cells mode never invokes the scope predicate" {
+    # Catches: restoring the unconditional per-cell predicate call. The jq
+    # wrapper counts only programs containing the shared predicate, not the
+    # ordinary JSON decoding jq calls that every cell necessarily requires.
+    local predicate_log
+    predicate_log="${TEST_TEMP_DIR}/scope-predicate.log"
+    : > "$predicate_log"
+
+    jq() {
+        local arg
+        for arg in "$@"; do
+            if [[ "$arg" == *'startswith($s + ".")'* ]]; then
+                printf '1\n' >> "$PREDICATE_LOG"
+                break
+            fi
+        done
+        command jq "$@"
+    }
+    export -f jq
+    export PREDICATE_LOG="$predicate_log"
+
+    local -a containers=()
+    mapfile -t containers < <(cd "$PROJECT_ROOT" && ./make list)
+    [ "${#containers[@]}" -gt 1 ]
+
+    run --separate-stderr bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells "${containers[@]}"
+    [ "$status" -eq 0 ]
+    [ "$(command jq 'length' <<< "$output")" -gt 1 ]
+    [ ! -s "$predicate_log" ]
+}
+
+@test "scope selection parity keeps terraform counts and active global filtering" {
+    local case_scope count
+    for case_scope in \
+        '{"terraform":{"versions":"1"}}' \
+        '{"terraform":{"versions":"1.16"}}' \
+        '{"terraform":{"flavors":"aws"}}'; do
+        _run_generator --cells --container-scopes "$case_scope" terraform
+        [ "$status" -eq 0 ]
+        count=$(jq 'length' <<< "$output")
+        if [[ "$case_scope" == *'flavors'* ]]; then
+            [ "$count" -eq 1 ]
+        else
+            [ "$count" -eq 5 ]
+        fi
+    done
+
+    _run_generator --cells --scope-flavors aws terraform
+    [ "$status" -eq 0 ]
+    [ "$(jq 'length' <<< "$output")" -eq 1 ]
+
+    _run_generator --cells terraform
+    [ "$status" -eq 0 ]
+    [ "$(jq 'length' <<< "$output")" -eq 5 ]
+}
+
+@test "empty per-container scope overrides globals while an absent entry inherits them" {
+    _run_generator --cells --include-final-build --scope-flavors full \
+        --container-scopes '{"terraform":{}}' terraform postgres
+    [ "$status" -eq 0 ]
+
+    local terraform_count postgres_bad_flavors
+    terraform_count=$(jq '[.[] | select(.container == "terraform")] | length' <<< "$output")
+    postgres_bad_flavors=$(jq '[.[] | select(.container == "postgres" and .flavor != "full")] | length' <<< "$output")
+    [ "$terraform_count" -eq 5 ]
+    [ "$postgres_bad_flavors" -eq 0 ]
+}
+
+@test "extensions-only per-container scope leaves cell selection unfiltered" {
+    _run_generator --cells terraform
+    [ "$status" -eq 0 ]
+    local unscoped
+    unscoped=$(jq -cS . <<< "$output")
+
+    _run_generator --cells --container-scopes '{"terraform":{"extensions":"example"}}' terraform
+    [ "$status" -eq 0 ]
+    [ "$(jq -cS . <<< "$output")" = "$unscoped" ]
+}
+
+@test "bake and cells agree for scoped and unscoped requested container cells" {
+    local mode cells cells_json targets requested_targets dependency_targets
+    for mode in unscoped scoped; do
+        if [[ "$mode" == "scoped" ]]; then
+            _run_generator --cells --scope-flavors ubuntu-2404 github-runner
+        else
+            _run_generator --cells github-runner
+        fi
+        [ "$status" -eq 0 ]
+        cells_json="$output"
+        cells=$(jq -cS '[.[] | .target_id] | sort' <<< "$output")
+
+        if [[ "$mode" == "scoped" ]]; then
+            _run_generator --scope-flavors ubuntu-2404 github-runner
+        else
+            _run_generator github-runner
+        fi
+        [ "$status" -eq 0 ]
+        targets=$(jq -cS '.target | keys' <<< "$output")
+        requested_targets=$(jq -cS '[.target | keys[] | select(startswith("github_runner_"))] | sort' <<< "$output")
+        [ "$requested_targets" = "$cells" ]
+
+        if [[ "$mode" == "scoped" ]]; then
+            dependency_targets=$(jq '[.target | keys[] | select(startswith("debian_"))] | length' <<< "$output")
+            [ "$dependency_targets" -gt 0 ]
+            [ "$(jq '[.[] | select(.container == "debian")] | length' <<< "$cells_json")" -eq 0 ]
+        fi
+        [ "$(jq 'length' <<< "$targets")" -gt 0 ]
+    done
 }
