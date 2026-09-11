@@ -2184,3 +2184,113 @@ YAML
 
     [ "$(echo "$output" | jq -cS '.')" = "$no_flag_json" ]
 }
+
+@test "unscoped cells mode never invokes the scope predicate" {
+    # Catches: restoring the unconditional per-cell predicate call. The jq
+    # wrapper counts only programs containing the shared predicate, not the
+    # ordinary JSON decoding jq calls that every cell necessarily requires.
+    local predicate_log
+    predicate_log="${TEST_TEMP_DIR}/scope-predicate.log"
+    : > "$predicate_log"
+
+    jq() {
+        local arg
+        for arg in "$@"; do
+            if [[ "$arg" == *'startswith($s + ".")'* ]]; then
+                printf '1\n' >> "$PREDICATE_LOG"
+                break
+            fi
+        done
+        command jq "$@"
+    }
+    export -f jq
+    export PREDICATE_LOG="$predicate_log"
+
+    local -a containers=()
+    mapfile -t containers < <(cd "$PROJECT_ROOT" && ./make list)
+    [ "${#containers[@]}" -gt 1 ]
+
+    run --separate-stderr bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells "${containers[@]}"
+    [ "$status" -eq 0 ]
+    [ "$(command jq 'length' <<< "$output")" -gt 1 ]
+    [ ! -s "$predicate_log" ]
+}
+
+@test "scope selection parity keeps terraform counts and active global filtering" {
+    local case_scope count
+    for case_scope in \
+        '{"terraform":{"versions":"1"}}' \
+        '{"terraform":{"versions":"1.16"}}' \
+        '{"terraform":{"flavors":"aws"}}'; do
+        _run_generator --cells --container-scopes "$case_scope" terraform
+        [ "$status" -eq 0 ]
+        count=$(jq 'length' <<< "$output")
+        if [[ "$case_scope" == *'flavors'* ]]; then
+            [ "$count" -eq 1 ]
+        else
+            [ "$count" -eq 5 ]
+        fi
+    done
+
+    _run_generator --cells --scope-flavors aws terraform
+    [ "$status" -eq 0 ]
+    [ "$(jq 'length' <<< "$output")" -eq 1 ]
+
+    _run_generator --cells terraform
+    [ "$status" -eq 0 ]
+    [ "$(jq 'length' <<< "$output")" -eq 5 ]
+}
+
+@test "empty per-container scope overrides globals while an absent entry inherits them" {
+    _run_generator --cells --include-final-build --scope-flavors full \
+        --container-scopes '{"terraform":{}}' terraform postgres
+    [ "$status" -eq 0 ]
+
+    local terraform_count postgres_bad_flavors
+    terraform_count=$(jq '[.[] | select(.container == "terraform")] | length' <<< "$output")
+    postgres_bad_flavors=$(jq '[.[] | select(.container == "postgres" and .flavor != "full")] | length' <<< "$output")
+    [ "$terraform_count" -eq 5 ]
+    [ "$postgres_bad_flavors" -eq 0 ]
+}
+
+@test "extensions-only per-container scope leaves cell selection unfiltered" {
+    _run_generator --cells terraform
+    [ "$status" -eq 0 ]
+    local unscoped
+    unscoped=$(jq -cS . <<< "$output")
+
+    _run_generator --cells --container-scopes '{"terraform":{"extensions":"example"}}' terraform
+    [ "$status" -eq 0 ]
+    [ "$(jq -cS . <<< "$output")" = "$unscoped" ]
+}
+
+@test "bake and cells agree for scoped and unscoped requested container cells" {
+    local mode cells cells_json targets requested_targets dependency_targets
+    for mode in unscoped scoped; do
+        if [[ "$mode" == "scoped" ]]; then
+            _run_generator --cells --scope-flavors ubuntu-2404 github-runner
+        else
+            _run_generator --cells github-runner
+        fi
+        [ "$status" -eq 0 ]
+        cells_json="$output"
+        cells=$(jq -cS '[.[] | .target_id] | sort' <<< "$output")
+
+        if [[ "$mode" == "scoped" ]]; then
+            _run_generator --scope-flavors ubuntu-2404 github-runner
+        else
+            _run_generator github-runner
+        fi
+        [ "$status" -eq 0 ]
+        targets=$(jq -cS '.target | keys' <<< "$output")
+        requested_targets=$(jq -cS '[.target | keys[] | select(startswith("github_runner_"))] | sort' <<< "$output")
+        [ "$requested_targets" = "$cells" ]
+
+        if [[ "$mode" == "scoped" ]]; then
+            dependency_targets=$(jq '[.target | keys[] | select(startswith("debian_"))] | length' <<< "$output")
+            [ "$dependency_targets" -gt 0 ]
+            [ "$(jq '[.[] | select(.container == "debian")] | length' <<< "$cells_json")" -eq 0 ]
+        fi
+        [ "$(jq 'length' <<< "$targets")" -gt 0 ]
+    done
+}

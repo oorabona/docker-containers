@@ -5,6 +5,17 @@
 # expand_variants_for_containers, because that function delegates to
 # list_container_builds.
 
+# The build-cell predicate is shared by the legacy expansion helper and bake.
+# Keep it as data rather than a heredoc-producing subprocess so bake can embed
+# it directly in jq's active path.
+# shellcheck disable=SC2016 # jq variables are intentionally literal here.
+readonly _CONTAINER_SCOPE_FILTER_JQ='
+[.[] | select(
+  (($sv | length) == 0 or (.version as $v | $sv | any(. as $s | $v == $s or ($v | startswith($s + ".")) or ($v | startswith($s + "-"))))) and
+  (($sf | length) == 0 or (.flavor as $f | $sf | any(. == $f)))
+)]
+'
+
 normalize_container_scopes() {
     local container_scopes="${1:-}"
 
@@ -20,15 +31,20 @@ normalize_container_scopes() {
         else
             . as $scope_map
             | ([$scope_map | to_entries[] | select(.value | type != "object") | .key] | first) as $invalid_container
-            | ([$scope_map | to_entries[] | .key as $container | .value | to_entries[]
+            # Restrict later field validation to object-valued entries. jq
+            # evaluates every `as` binding before selecting the final message,
+            # so this structural guard keeps a non-object from reaching
+            # `to_entries` or `split` while preserving diagnostic precedence.
+            | ([$scope_map | to_entries[] | select(.value | type == "object")] ) as $object_entries
+            | ([$object_entries[] | .key as $container | .value | to_entries[]
                 | select(.key != "versions" and .key != "flavors" and .key != "extensions")
                 | {container: $container, property: .key}] | first) as $unknown
-            | ([$scope_map | to_entries[] | .key as $container | .value | to_entries[]
+            | ([$object_entries[] | .key as $container | .value | to_entries[]
                 | select((.key == "versions" or .key == "flavors" or .key == "extensions") and (.value | type != "string"))
                 | {container: $container, property: .key}] | first) as $invalid_type
-            | ([$scope_map | to_entries[] | .key as $container | .value | to_entries[]
+            | ([$object_entries[] | .key as $container | .value | to_entries[]
                 | select(.key == "versions" or .key == "flavors" or .key == "extensions")
-                | select(.value | split(",") | any(. == ""))
+                | select((.value | type == "string") and (.value | split(",") | any(. == "")))
                 | {container: $container, property: .key}] | first) as $empty_csv
             | if $invalid_container != null then
                 "container_scopes value for container \($invalid_container | @json) must be an object"
@@ -241,12 +257,7 @@ filter_builds_by_version_flavor_scope() {
 # Print the shared jq filter for version/flavor scope selection. Callers bind
 # $sv and $sf to JSON arrays before concatenating this predicate.
 container_scope_filter_jq() {
-    cat <<'JQ'
-[.[] | select(
-  (($sv | length) == 0 or (.version as $v | $sv | any(. as $s | $v == $s or ($v | startswith($s + ".")) or ($v | startswith($s + "-"))))) and
-  (($sf | length) == 0 or (.flavor as $f | $sf | any(. == $f)))
-)]
-JQ
+    printf '%s\n' "$_CONTAINER_SCOPE_FILTER_JQ"
 }
 
 expand_variants_for_containers() {

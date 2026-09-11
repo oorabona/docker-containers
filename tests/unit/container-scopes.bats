@@ -230,6 +230,30 @@ normalize_json() {
     [[ "$stderr" == *"empty CSV element"* ]]
 }
 
+@test "container_scopes names every wrong-typed field and a non-object container value" {
+    # Catches: evaluating split/to_entries in an `as` binding before the
+    # diagnostic branch, which returned only the generic schema error.
+    local input field
+    for input in \
+        '{"terraform":{"versions":42}}' \
+        '{"terraform":{"flavors":42}}' \
+        '{"terraform":{"extensions":42}}' \
+        '{"terraform":42}'; do
+        run --separate-stderr normalize_container_scopes "$input"
+
+        [ "$status" -ne 0 ]
+        [[ "$stderr" == *"terraform"* ]]
+        if [[ "$input" == *'":42}}'* ]]; then
+            field=$(jq -r '.terraform | keys[0]' <<< "$input")
+            [[ "$stderr" == *"$field"* ]]
+            [[ "$stderr" == *"must be a string"* ]]
+        else
+            [[ "$stderr" == *"must be an object"* ]]
+        fi
+        [[ "$stderr" != *"must be a valid JSON object whose values are objects"* ]]
+    done
+}
+
 @test "empty object container_scopes preserves legacy global scope_versions filtering" {
     scopes=$(normalize_container_scopes '{}')
     [ -z "$scopes" ]

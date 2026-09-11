@@ -220,16 +220,30 @@ _scope_filters_active_for_container() {
     local container_scopes="${_BAKE_CONTAINER_SCOPES:-}"
     [[ -n "$container_scopes" ]] || container_scopes='{}'
 
-    jq -e \
+    local jq_status
+    if jq -e \
         --arg c "$container" \
         --arg global_versions "${_BAKE_SCOPE_VERSIONS:-}" \
-        --arg global_flavors "${_BAKE_SCOPE_FLAVORS:-}" '
+        --arg global_flavors "${_BAKE_SCOPE_FLAVORS:-}" \
+        --arg build_scope "${_BAKE_SCOPE:-}" '
             if has($c) then
                 (.[$c].versions // "") != "" or (.[$c].flavors // "") != ""
             else
                 $global_versions != "" or $global_flavors != ""
             end
-        ' <<< "$container_scopes" >/dev/null || [[ -n "${_BAKE_SCOPE:-}" ]]
+            or $build_scope != ""
+        ' <<< "$container_scopes" >/dev/null 2>/dev/null; then
+        return 0
+    else
+        jq_status=$?
+    fi
+
+    if [[ "$jq_status" -eq 1 ]]; then
+        return 1
+    fi
+
+    gha_error 'could not determine whether the scope is active for container %s' "$container" >&2
+    return 2
 }
 
 # A scope request needs preflight only when it can narrow a build matrix.  An
@@ -389,11 +403,8 @@ _assert_requested_scope_matches_cells() {
 
     for c in "${requested_containers[@]}"; do
         local matrix="${_EC_all_matrix_json[$c]}"
-        local has_scope=false
+        local has_scope="${_EC_scope_active[$c]:-false}"
         local has_per_container_scope=false
-        if _scope_filters_active_for_container "$c"; then
-            has_scope=true
-        fi
         if [[ -n "${_BAKE_CONTAINER_SCOPES:-}" ]] && \
            jq -e --arg c "$c" 'has($c)' <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null && \
            jq -e --arg c "$c" \
@@ -478,8 +489,6 @@ _cell_passes_scope() {
     local cell="$2"
     local container_scopes="${_BAKE_CONTAINER_SCOPES:-}"
     [[ -n "$container_scopes" ]] || container_scopes='{}'
-    local predicate
-    predicate=$(container_scope_filter_jq)
 
     jq -e \
         --arg c "$container" \
@@ -493,9 +502,9 @@ _cell_passes_scope() {
                else
                     {versions: \$global_versions, flavors: \$global_flavors}
                end) as \$filters
-            | (\$filters.versions // \"\" | split(\",\")) as \$sv
-            | (\$filters.flavors // \"\" | split(\",\")) as \$sf
-            | ([\$cell] | ${predicate} | length == 1) as \$version_flavor_match
+            | (if (\$filters.versions | type) == \"string\" then \$filters.versions | split(\",\") else [] end) as \$sv
+            | (if (\$filters.flavors | type) == \"string\" then \$filters.flavors | split(\",\") else [] end) as \$sf
+            | ([\$cell] | ${_CONTAINER_SCOPE_FILTER_JQ} | length == 1) as \$version_flavor_match
             | \$version_flavor_match and
               (\$build_scope == \"\" or
                (\$cell.variant // \"\" | contains(\$build_scope)) or
@@ -1121,8 +1130,24 @@ _enumerate_cells_init() {
         fi
         _EC_all_matrix_json[$c]="$matrix"
 
+        # Decide scope activity once for every requested container. The jq
+        # status distinguishes pass-all (1) from a malformed scope input (>1),
+        # so a failed parse can never silently become an inactive scope.
+        local scope_active=false scope_status
+        if [[ -n "${_requested_set[$c]+set}" ]]; then
+            if _scope_filters_active_for_container "$c"; then
+                scope_active=true
+            else
+                scope_status=$?
+                if [[ "$scope_status" -ne 1 ]]; then
+                    return "$scope_status"
+                fi
+            fi
+        fi
+        _EC_scope_active[$c]="$scope_active"
+
         local first_entry
-        if [[ -n "${_requested_set[$c]+set}" ]] && _scope_filters_active_for_container "$c"; then
+        if [[ "${_EC_scope_active[$c]}" == "true" ]]; then
             first_entry=""
             local _first_ncells
             _first_ncells=$(jq 'length' <<< "$matrix")
@@ -1365,6 +1390,7 @@ _build_bake_json() {
     declare -a _EC_closure_containers=()
     declare -A _EC_all_matrix_json=()
     declare -A _EC_first_target_per_container=()
+    declare -A _EC_scope_active=()
     if ! _enumerate_cells_init "${requested_containers[@]}"; then
         return 1
     fi
@@ -1416,7 +1442,7 @@ _build_bake_json() {
             if [[ "$_EC_cell_os" == "windows" ]]; then
                 continue
             fi
-            if [[ -n "${_requested_set[$c]+set}" ]] && ! _cell_passes_scope "$c" "$cell"; then
+            if [[ "${_EC_scope_active[$c]:-false}" == "true" ]] && ! _cell_passes_scope "$c" "$cell"; then
                 continue
             fi
 
@@ -1546,6 +1572,7 @@ _emit_cells_json() {
     declare -a _EC_closure_containers=()
     declare -A _EC_all_matrix_json=()
     declare -A _EC_first_target_per_container=()
+    declare -A _EC_scope_active=()
     if ! _enumerate_cells_init "${requested_containers[@]}"; then
         return 1
     fi
@@ -1603,7 +1630,7 @@ _emit_cells_json() {
             if [[ "$_EC_cell_os" == "windows" ]]; then
                 continue
             fi
-            if ! _cell_passes_scope "$c" "$cell"; then
+            if [[ "${_EC_scope_active[$c]:-false}" == "true" ]] && ! _cell_passes_scope "$c" "$cell"; then
                 continue
             fi
 
