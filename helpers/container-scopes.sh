@@ -9,7 +9,7 @@
 # Keep it as data rather than a heredoc-producing subprocess so bake can embed
 # it directly in jq's active path.
 # shellcheck disable=SC2016 # jq variables are intentionally literal here.
-readonly _CONTAINER_SCOPE_FILTER_JQ='
+export _CONTAINER_SCOPE_FILTER_JQ='
 [.[] | select(
   (($sv | length) == 0 or (.version as $v | $sv | any(. as $s | $v == $s or ($v | startswith($s + ".")) or ($v | startswith($s + "-"))))) and
   (($sf | length) == 0 or (.flavor as $f | $sf | any(. == $f)))
@@ -298,7 +298,10 @@ expand_variants_for_containers() {
         if [[ -n "$scope_versions" || -n "$scope_flavors" ]]; then
             local before_count
             before_count=$(echo "$container_builds" | jq 'length')
-            container_builds=$(filter_builds_by_version_flavor_scope "$container_builds" "$scope_versions" "$scope_flavors")
+            if ! container_builds=$(filter_builds_by_version_flavor_scope "$container_builds" "$scope_versions" "$scope_flavors"); then
+                echo "  Scope filter failed for $container" >&2
+                return 1
+            fi
             local after_count
             after_count=$(echo "$container_builds" | jq 'length')
 
