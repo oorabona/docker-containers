@@ -2011,6 +2011,85 @@ YAML
     [ "$debian_count" -eq "$unscoped_debian_count" ]
 }
 
+@test "container scopes — an unscoped sibling remains complete" {
+    # Catches: requiring a container absent from the scope map to select a
+    # scoped cell, rather than retaining all of its build cells.
+    _run_generator --cells debian
+    [ "$status" -eq 0 ]
+    local unscoped_debian_count
+    unscoped_debian_count=$(echo "$output" | jq 'length')
+    [ "$unscoped_debian_count" -gt 0 ]
+
+    _run_generator --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform debian
+    [ "$status" -eq 0 ]
+
+    local terraform_count terraform_bad_flavors debian_count
+    terraform_count=$(echo "$output" | jq '[.[] | select(.container == "terraform")] | length')
+    terraform_bad_flavors=$(echo "$output" | jq '[.[] | select(.container == "terraform" and .flavor != "aws")] | length')
+    debian_count=$(echo "$output" | jq '[.[] | select(.container == "debian")] | length')
+
+    [ "$terraform_count" -gt 0 ]
+    [ "$terraform_bad_flavors" -eq 0 ]
+    [ "$debian_count" -eq "$unscoped_debian_count" ]
+}
+
+@test "container scopes — empty scoped selection is not masked by a sibling" {
+    # Catches: restore the former aggregate-only counter, which exits 0 and
+    # emits debian's cells when terraform's scoped selection is empty.
+    _run_generator_separate_stderr --cells \
+        --container-scopes '{"terraform":{"flavors":"not-a-flavor"}}' \
+        terraform debian
+
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"matched no Linux build cells"* ]]
+    [[ "$stderr" == *"terraform"* ]]
+}
+
+@test "container scopes — well-formed multi-container scopes retain both containers" {
+    _run_generator --cells \
+        --container-scopes '{"terraform":{"flavors":"aws"},"debian":{"versions":"trixie"}}' \
+        terraform debian
+    [ "$status" -eq 0 ]
+
+    local terraform_count debian_count terraform_bad_flavors debian_bad_tags
+    terraform_count=$(echo "$output" | jq '[.[] | select(.container == "terraform")] | length')
+    debian_count=$(echo "$output" | jq '[.[] | select(.container == "debian")] | length')
+    terraform_bad_flavors=$(echo "$output" | jq '[.[] | select(.container == "terraform" and .flavor != "aws")] | length')
+    debian_bad_tags=$(echo "$output" | jq '[.[] | select(.container == "debian" and .tag != "trixie")] | length')
+
+    [ "$terraform_count" -gt 0 ]
+    [ "$debian_count" -gt 0 ]
+    [ "$terraform_bad_flavors" -eq 0 ]
+    [ "$debian_bad_tags" -eq 0 ]
+}
+
+@test "container scopes — every empty scoped selection is named" {
+    # Catches: reporting only the first empty per-container selection.
+    _run_generator_separate_stderr --cells \
+        --container-scopes '{"terraform":{"flavors":"not-a-flavor"},"debian":{"versions":"not-a-version"}}' \
+        terraform debian
+
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"matched no Linux build cells"* ]]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"debian"* ]]
+}
+
+@test "container scopes — global filters remain aggregate across containers" {
+    # Catches: applying the per-container refusal rule to global filters.
+    _run_generator --cells --scope-flavors aws terraform debian
+    [ "$status" -eq 0 ]
+
+    local terraform_count debian_count
+    terraform_count=$(echo "$output" | jq '[.[] | select(.container == "terraform")] | length')
+    debian_count=$(echo "$output" | jq '[.[] | select(.container == "debian")] | length')
+
+    [ "$terraform_count" -gt 0 ]
+    [ "$debian_count" -eq 0 ]
+}
+
 @test "container scopes — containers absent from the map fall back to global flavor scope" {
     _run_generator --cells --include-final-build \
         --container-scopes '{"terraform":{"flavors":"aws"}}' \

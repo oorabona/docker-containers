@@ -390,6 +390,7 @@ _assert_requested_scope_matches_cells() {
     local matrix_cells=0
     local candidate_cells=0
     local selected_cells=0
+    local -a empty_scoped_containers=()
     local c
 
     _scope_request_active || return 0
@@ -398,8 +399,18 @@ _assert_requested_scope_matches_cells() {
     for c in "${requested_containers[@]}"; do
         local matrix="${_EC_all_matrix_json[$c]}"
         local has_scope=false
+        local has_per_container_scope=false
+        local effective_filters
+        effective_filters=$(_effective_scope_filters "$c")
+        local effective_versions="${effective_filters%%$'\t'*}"
+        local effective_flavors="${effective_filters#*$'\t'}"
         if _scope_filters_active_for_container "$c"; then
             has_scope=true
+        fi
+        if [[ -n "${_BAKE_CONTAINER_SCOPES:-}" ]] && \
+           jq -e --arg c "$c" 'has($c)' <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null && \
+           [[ -n "$effective_versions" || -n "$effective_flavors" ]]; then
+            has_per_container_scope=true
         fi
 
         local ncells
@@ -408,7 +419,11 @@ _assert_requested_scope_matches_cells() {
             gha_error 'could not parse build matrix for %s while checking requested scope' "$c" >&2
             return 1
         fi
+        local container_matrix_cells=0
+        local container_candidate_cells=0
+        local container_selected_cells=0
         matrix_cells=$((matrix_cells + ncells))
+        container_matrix_cells=$((container_matrix_cells + ncells))
         local i
         for (( i=0; i<ncells; i++ )); do
             local cell
@@ -424,14 +439,33 @@ _assert_requested_scope_matches_cells() {
 
             [[ "$_EC_cell_os" == "windows" ]] && continue
             candidate_cells=$((candidate_cells + 1))
+            container_candidate_cells=$((container_candidate_cells + 1))
 
             if [[ "$has_scope" == "false" ]] || \
                     _cell_passes_scope "$c" "$_EC_cell_version" "$_EC_cell_flavor" \
                         "$_EC_cell_variant" "$_EC_cell_os" "$_EC_cell_build_flavor"; then
                 selected_cells=$((selected_cells + 1))
+                container_selected_cells=$((container_selected_cells + 1))
             fi
         done
+
+        # Per-container filters must not be allowed to disappear from a
+        # multi-container plan just because a sibling selected cells.  Preserve
+        # the established successful empty-plan cases for already-empty and
+        # Windows-only matrices.
+        if [[ "$has_per_container_scope" == "true" &&
+              "$container_matrix_cells" -gt 0 &&
+              "$container_candidate_cells" -gt 0 &&
+              "$container_selected_cells" -eq 0 ]]; then
+            empty_scoped_containers+=("$c")
+        fi
     done
+
+    if [[ ${#empty_scoped_containers[@]} -gt 0 ]]; then
+        gha_error 'requested scope %s matched no Linux build cells for requested container(s): %s' \
+            "$(_requested_scope_description)" "${empty_scoped_containers[*]}" >&2
+        return 1
+    fi
 
     if [[ "$selected_cells" -eq 0 ]]; then
         # These are distinct successful empty-plan states. Keep the guards
