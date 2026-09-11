@@ -237,7 +237,8 @@ set -euo pipefail
 state="${FAKE_GIT_STATE:?}"
 head_stats="$state/head_stats"
 mkdir -p "$state"
-printf '%s\n' "$*" >> "$state/gh.log"
+printf '%q ' "$@" >> "$state/gh.log"
+printf '\n' >> "$state/gh.log"
 
 safe_ref() {
   printf '%s' "$1" | tr '/:' '__'
@@ -317,6 +318,11 @@ advance_auto_merge_for_view() {
         merge_pr_branch "$number"
       fi
       ;;
+    delayed_then_merged)
+      if [[ "$per_pr_views" -ge "${FAKE_GH_MERGE_AFTER_VIEW:-4}" && -f "$(pr_field_path "$number" auto_merge)" ]]; then
+        merge_pr_branch "$number"
+      fi
+      ;;
     stale_once_then_closed_then_merged)
       if [[ ! -f "$state/stale_once_done" ]]; then
         printf '{"ts":"2026-07-12T08:00:00Z","date":"2026-07-12","container":"gamma","pull_count":99,"star_count":9,"source":"dockerhub"}\n' \
@@ -359,6 +365,23 @@ advance_auto_merge_for_view() {
 }
 
 case "${1:-} ${2:-}" in
+  "pr list")
+    if [[ -n "${FAKE_GH_EXISTING_PR:-}" ]]; then
+      number="$FAKE_GH_EXISTING_PR"
+      branch="${FAKE_GH_EXISTING_PR_BRANCH:-bot/stats-snapshot-prior-run}"
+      if [[ ! -f "$(pr_field_path "$number" head)" ]]; then
+        printf '%s\n' "$branch" > "$(pr_field_path "$number" head)"
+        printf '%s\n' "OPEN" > "$(pr_field_path "$number" state)"
+        : > "$(pr_field_path "$number" merged_at)"
+        printf '%s\n' "$number" > "$(branch_pr_number_path "$branch")"
+        if [[ "${FAKE_GH_EXISTING_PR_HEALTHY:-}" == "1" ]]; then
+          : > "$(pr_field_path "$number" auto_merge)"
+        fi
+      fi
+      printf '%s|%s\n' "$number" "$branch"
+    fi
+    exit 0
+    ;;
   "pr create")
     if [[ "${FAKE_GH_PR_CREATE_FAIL:-}" == "1" ]]; then
       echo "simulated gh pr create failure" >&2
@@ -413,6 +436,7 @@ case "${1:-} ${2:-}" in
     fi
 
     match_head=""
+    auto_merge_requested=false
     delete_branch=false
     while (($# > 0)); do
       case "$1" in
@@ -422,6 +446,10 @@ case "${1:-} ${2:-}" in
           ;;
         --delete-branch)
           delete_branch=true
+          shift
+          ;;
+        --auto)
+          auto_merge_requested=true
           shift
           ;;
         *)
@@ -441,8 +469,18 @@ case "${1:-} ${2:-}" in
       : > "$(pr_field_path "$number" delete_branch)"
     fi
     printf '%s\n' "$match_head" >> "$state/pr_merge_head_commits"
-    : > "$(pr_field_path "$number" auto_merge)"
     : > "$state/pr_merge_called"
+    if [[ "$auto_merge_requested" != "true" ]]; then
+      if [[ "${FAKE_GH_DIRECT_MERGE_MODE:-refused}" == "success" ]]; then
+        merge_pr_branch "$number"
+        exit 0
+      fi
+      echo "simulated direct merge refusal: unmet requirement" >&2
+      exit 1
+    fi
+    if [[ "${FAKE_GH_PR_AUTO_MERGE_ABSENT:-}" != "1" ]]; then
+      : > "$(pr_field_path "$number" auto_merge)"
+    fi
     exit 0
     ;;
   "pr view")
@@ -475,7 +513,17 @@ case "${1:-} ${2:-}" in
 
     state_value=$(cat "$(pr_field_path "$number" state)")
     merged_at=$(cat "$(pr_field_path "$number" merged_at)")
-    printf '%s\t%s\n' "$state_value" "$merged_at"
+    merge_state="${FAKE_GH_PR_MERGE_STATE:-CLEAN}"
+    auto_merge="absent"
+    if [[ -f "$(pr_field_path "$number" auto_merge)" ]]; then
+      auto_merge="enabled"
+    fi
+    checks="${FAKE_GH_PR_CHECKS:-green}"
+    if [[ "$*" == *"mergeStateStatus"* ]]; then
+      printf '%s|%s|%s|%s|%s\n' "$state_value" "$merged_at" "$merge_state" "$auto_merge" "$checks"
+    else
+      printf '%s\t%s\n' "$state_value" "$merged_at"
+    fi
     exit 0
     ;;
   "pr close")
@@ -566,7 +614,9 @@ teardown() {
     [ ! -e "$FAKE_GIT_STATE/push_count" ]
 }
 
-@test "commit-stats-snapshot creates per-run branch, PR, label, auto-merge, and waits for merge" {
+@test "commit-stats-snapshot merges directly without enabling auto-merge or polling" {
+    export FAKE_GH_DIRECT_MERGE_MODE="success"
+
     run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
     [ "$status" -eq 0 ]
     [ "$(get_output persisted)" = "true" ]
@@ -589,9 +639,28 @@ teardown() {
     grep -qF "rev-parse HEAD" "$FAKE_GIT_STATE/git.log"
     grep -qF "pr create --base master --head bot/stats-snapshot-876123-1-attempt-1" "$FAKE_GIT_STATE/gh.log"
     grep -qF "pr edit 123 --add-label automation" "$FAKE_GIT_STATE/gh.log"
-    grep -qF "pr merge 123 --squash --auto --delete-branch --match-head-commit commit-1" "$FAKE_GIT_STATE/gh.log"
-    grep -qF "pr view 123 --json state,mergedAt" "$FAKE_GIT_STATE/gh.log"
+    grep -qF "pr merge 123 --squash --delete-branch --match-head-commit commit-1" "$FAKE_GIT_STATE/gh.log"
+    ! grep -qF -- "--auto" "$FAKE_GIT_STATE/gh.log"
+    ! grep -qF "pr view 123" "$FAKE_GIT_STATE/gh.log"
+    [ "$(wc -l < "$FAKE_GIT_STATE/gh.log")" -eq 4 ]
     [ ! -e "$FAKE_GIT_STATE/branch_bot_stats-snapshot-876123-1-attempt-1_stats" ]
+}
+
+@test "commit-stats-snapshot falls back to auto-merge and spends the full remaining budget" {
+    export FAKE_GH_PR_VIEW_MODE="delayed_then_merged"
+    export FAKE_GH_MERGE_AFTER_VIEW="4"
+    export STATS_PR_MERGE_TIMEOUT_SECONDS="30"
+    export STATS_PR_MERGE_POLL_SECONDS="5"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -eq 0 ]
+    [ "$(get_output persisted)" = "true" ]
+    [[ "$output" == *"::warning::Direct merge refused for stats snapshot PR #123; enabling auto-merge"* ]]
+    [ "$(cat "$FAKE_GIT_STATE/fake_time_epoch")" -eq 17 ]
+    [ "$(wc -l < "$FAKE_GIT_STATE/gh.log")" -eq 9 ]
+    [ "$(grep -cF "pr merge 123" "$FAKE_GIT_STATE/gh.log")" -eq 2 ]
+    [ "$(grep -cF "pr view 123" "$FAKE_GIT_STATE/gh.log")" -eq 4 ]
 }
 
 @test "commit-stats-snapshot does not let failed origin restore abort cleanup" {
@@ -874,22 +943,16 @@ teardown() {
     ' "$FAKE_GIT_STATE/head_stats" >/dev/null
 
     mapfile -t merge_heads < "$FAKE_GIT_STATE/pr_merge_head_commits"
-    [ "${#merge_heads[@]}" -eq 2 ]
+    [ "${#merge_heads[@]}" -eq 4 ]
     [ "${merge_heads[0]}" = "commit-1" ]
-    [ "${merge_heads[1]}" = "commit-2" ]
+    [ "${merge_heads[1]}" = "commit-1" ]
+    [ "${merge_heads[2]}" = "commit-2" ]
+    [ "${merge_heads[3]}" = "commit-2" ]
     [ ! -e "$FAKE_GIT_STATE/branch_bot_stats-snapshot-876123-1-attempt-1_stats" ]
     [ ! -e "$FAKE_GIT_STATE/branch_bot_stats-snapshot-876123-1-attempt-2_stats" ]
 }
 
-@test "commit-stats-snapshot caps each attempt's wait to a fair share of the shared deadline" {
-    # A PR that never resolves (always OPEN — modeling a blocked/conflicted
-    # PR, the most likely retry trigger since it happens exactly when a
-    # sibling stats PR merges first) must not be allowed to consume the
-    # entire shared budget on a single attempt's wait — that would starve
-    # the remaining attempts that exist specifically to recover from this
-    # case. Each attempt gets a fair, dynamically recomputed share of
-    # whatever budget remains, so multiple attempts genuinely get to run
-    # before the shared deadline is exhausted.
+@test "commit-stats-snapshot leaves a healthy waiting PR open instead of rotating it" {
     export FAKE_GH_PR_VIEW_MODE="always_open"
     export STATS_PR_MERGE_TIMEOUT_SECONDS="30"
     export STATS_PR_MERGE_POLL_SECONDS="5"
@@ -898,18 +961,15 @@ teardown() {
     run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
     [ "$status" -ne 0 ]
     [ "$(get_output persisted)" = "false" ]
-    [[ "$output" == *"::warning::Timed out waiting for stats snapshot PR #123 to merge"* ]]
-    [[ "$output" == *"::warning::Not enough stats PR budget remains before attempt 3"* ]]
+    [[ "$output" == *"::error::Stats snapshot PR #123 remains open after the budget (state=OPEN mergeability=CLEAN auto-merge=enabled checks=green); leaving it open for GitHub auto-merge"* ]]
 
     pushes=$(cat "$FAKE_GIT_STATE/push_count")
-    [ "$pushes" -eq 2 ]
-    [ "$(cat "$FAKE_GIT_STATE/pr_close_count")" -eq 2 ]
-    [ "$(cat "$FAKE_GIT_STATE/fake_time_epoch")" -le 30 ]
+    [ "$pushes" -eq 1 ]
+    [ ! -e "$FAKE_GIT_STATE/pr_close_count" ]
+    [ "$(cat "$FAKE_GIT_STATE/fake_time_epoch")" -eq 30 ]
     grep -qF "pr create --base master --head bot/stats-snapshot-876123-1-attempt-1" "$FAKE_GIT_STATE/gh.log"
-    grep -qF "pr create --base master --head bot/stats-snapshot-876123-1-attempt-2" "$FAKE_GIT_STATE/gh.log"
-    ! grep -qF "bot/stats-snapshot-876123-1-attempt-3" "$FAKE_GIT_STATE/gh.log"
-    [ ! -e "$FAKE_GIT_STATE/branch_bot_stats-snapshot-876123-1-attempt-1_stats" ]
-    [ ! -e "$FAKE_GIT_STATE/branch_bot_stats-snapshot-876123-1-attempt-2_stats" ]
+    ! grep -qF "bot/stats-snapshot-876123-1-attempt-2" "$FAKE_GIT_STATE/gh.log"
+    [ -e "$FAKE_GIT_STATE/branch_bot_stats-snapshot-876123-1-attempt-1_stats" ]
 }
 
 @test "commit-stats-snapshot uses a fresh PR when a prior attempt's PR closes" {
@@ -958,7 +1018,7 @@ teardown() {
     pushes=$(cat "$FAKE_GIT_STATE/push_count")
     [ "$pushes" -eq 1 ]
     [ "$(grep -cF "pr create --base master --head bot/stats-snapshot-876123-1-attempt-1" "$FAKE_GIT_STATE/gh.log")" -eq 1 ]
-    [ "$(grep -cF "pr view 123 --json state,mergedAt" "$FAKE_GIT_STATE/gh.log")" -eq 2 ]
+    [ "$(grep -cF "pr view 123" "$FAKE_GIT_STATE/gh.log")" -eq 2 ]
     ! grep -qF "bot/stats-snapshot-876123-1-attempt-2" "$FAKE_GIT_STATE/gh.log"
     jq -e 'select(.container == "alpha" and .pull_count == 42)' "$FAKE_GIT_STATE/head_stats" >/dev/null
 }
@@ -976,8 +1036,10 @@ teardown() {
     jq -e 'select(.container == "alpha" and .pull_count == 42)' "$FAKE_GIT_STATE/head_stats" >/dev/null
 }
 
-@test "commit-stats-snapshot fails closed and closes PR when merge polling times out" {
+@test "commit-stats-snapshot rotates a PR whose auto-merge is absent" {
+    export FAKE_GH_EXISTING_PR="122"
     export FAKE_GH_PR_VIEW_MODE="always_open"
+    export FAKE_GH_PR_AUTO_MERGE_ABSENT="1"
     export STATS_PR_MERGE_TIMEOUT_SECONDS="10"
     export STATS_PR_MERGE_POLL_SECONDS="10"
     export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
@@ -985,12 +1047,30 @@ teardown() {
     run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
     [ "$status" -ne 0 ]
     [ "$(get_output persisted)" = "false" ]
-    [[ "$output" == *"::warning::Timed out waiting for stats snapshot PR #123 to merge"* ]]
+    [[ "$output" == *"::warning::Closing unhealthy stats snapshot PR #122 (state=OPEN mergeability=CLEAN auto-merge=absent checks=green) before creating a replacement"* ]]
     [[ "$output" == *"::error::Could not persist stats snapshot this run"* ]]
 
     [ -e "$FAKE_GIT_STATE/pr_close_called" ]
-    [ ! -e "$FAKE_GIT_STATE/branch_bot_stats-snapshot-876123-1-attempt-1_stats" ]
+    grep -qF "pr close 122 --delete-branch" "$FAKE_GIT_STATE/gh.log"
+    grep -qF "pr create --base master --head bot/stats-snapshot-876123-1-attempt-1" "$FAKE_GIT_STATE/gh.log"
     [ ! -s "$FAKE_GIT_STATE/head_stats" ]
+}
+
+@test "commit-stats-snapshot adopts a healthy open snapshot PR without creating another" {
+    export FAKE_GH_EXISTING_PR="122"
+    export FAKE_GH_EXISTING_PR_HEALTHY="1"
+    export FAKE_GH_PR_VIEW_MODE="always_open"
+    export STATS_PR_MERGE_TIMEOUT_SECONDS="10"
+    export STATS_PR_MERGE_POLL_SECONDS="5"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [[ "$output" == *"::notice::Adopting open stats snapshot PR #122 from bot/stats-snapshot-prior-run"* ]]
+    ! grep -qF "pr create" "$FAKE_GIT_STATE/gh.log"
+    ! grep -qF "pr close 122" "$FAKE_GIT_STATE/gh.log"
+    [ "$(grep -cF "pr view 122" "$FAKE_GIT_STATE/gh.log")" -eq 4 ]
 }
 
 @test "commit-stats-snapshot fails closed and closes PR when GitHub reports it closed unmerged" {
@@ -1064,8 +1144,19 @@ teardown() {
 
     pushes=$(cat "$FAKE_GIT_STATE/push_count")
     [ "$pushes" -eq 3 ]
-    [ ! -e "$FAKE_GIT_STATE/gh.log" ]
+    [ "$(grep -cF "pr create" "$FAKE_GIT_STATE/gh.log" || true)" -eq 0 ]
     [ ! -s "$FAKE_GIT_STATE/head_stats" ]
+}
+
+@test "commit-stats-snapshot retries a one-shot submission push failure" {
+    export FAKE_GIT_PUSH_MODE="success_on_retry"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -eq 0 ]
+    [ "$(get_output persisted)" = "true" ]
+    [[ "$output" == *"::warning::Could not push stats snapshot branch bot/stats-snapshot-876123-1-attempt-1 on attempt 1"* ]]
+    [ "$(cat "$FAKE_GIT_STATE/push_count")" -eq 2 ]
+    grep -qF "pr create --base master --head bot/stats-snapshot-876123-1-attempt-2" "$FAKE_GIT_STATE/gh.log"
 }
 
 @test "commit-stats-snapshot fails closed when upfront candidate merge fails" {
@@ -1091,7 +1182,7 @@ teardown() {
 
     pushes=$(cat "$FAKE_GIT_STATE/push_count")
     [ "$pushes" -eq 3 ]
-    [ "$(cat "$FAKE_GIT_STATE/pr_merge_count")" -eq 3 ]
+    [ "$(cat "$FAKE_GIT_STATE/pr_merge_count")" -eq 6 ]
     [ -e "$FAKE_GIT_STATE/pr_close_called" ]
     [ ! -e "$FAKE_GIT_STATE/branch_bot_stats-snapshot-876123-1-attempt-1_stats" ]
 }
