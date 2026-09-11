@@ -55,6 +55,8 @@ readonly _BAKE_REMOTE_CR="${REMOTE_CR:-ghcr.io/oorabona}"
 # ---------------------------------------------------------------------------
 # shellcheck source=../helpers/variant-utils.sh
 source "${PROJECT_ROOT}/helpers/variant-utils.sh"
+# shellcheck source=../helpers/container-scopes.sh
+source "${PROJECT_ROOT}/helpers/container-scopes.sh"
 
 # Force config-only dep resolution (no ./make list-builds fan-out needed).
 # The generator runs before any build lineage exists.
@@ -213,32 +215,21 @@ _expand_closure() {
     printf '%s\n' "${closure[@]:-}"
 }
 
-# _effective_scope_filters <container>
-# Prints "<versions>\t<flavors>" for the container's effective scope filters.
-# A per-container map entry overrides the global version/flavor filters for
-# that container; containers absent from the map keep the global filters.
-_effective_scope_filters() {
-    local container="$1"
-    local scope_versions="${_BAKE_SCOPE_VERSIONS:-}"
-    local scope_flavors="${_BAKE_SCOPE_FLAVORS:-}"
-
-    if [[ -n "${_BAKE_CONTAINER_SCOPES:-}" ]] && \
-       jq -e --arg c "$container" 'has($c)' <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null; then
-        scope_versions=$(jq -r --arg c "$container" '.[$c].versions // ""' <<< "$_BAKE_CONTAINER_SCOPES")
-        scope_flavors=$(jq -r --arg c "$container" '.[$c].flavors // ""' <<< "$_BAKE_CONTAINER_SCOPES")
-    fi
-
-    printf '%s\t%s\n' "$scope_versions" "$scope_flavors"
-}
-
 _scope_filters_active_for_container() {
     local container="$1"
-    local filters
-    filters=$(_effective_scope_filters "$container")
-    local scope_versions="${filters%%$'\t'*}"
-    local scope_flavors="${filters#*$'\t'}"
+    local container_scopes="${_BAKE_CONTAINER_SCOPES:-}"
+    [[ -n "$container_scopes" ]] || container_scopes='{}'
 
-    [[ -n "$scope_versions" || -n "$scope_flavors" || -n "${_BAKE_SCOPE:-}" ]]
+    jq -e \
+        --arg c "$container" \
+        --arg global_versions "${_BAKE_SCOPE_VERSIONS:-}" \
+        --arg global_flavors "${_BAKE_SCOPE_FLAVORS:-}" '
+            if has($c) then
+                (.[$c].versions // "") != "" or (.[$c].flavors // "") != ""
+            else
+                $global_versions != "" or $global_flavors != ""
+            end
+        ' <<< "$container_scopes" >/dev/null || [[ -n "${_BAKE_SCOPE:-}" ]]
 }
 
 # A scope request needs preflight only when it can narrow a build matrix.  An
@@ -400,16 +391,14 @@ _assert_requested_scope_matches_cells() {
         local matrix="${_EC_all_matrix_json[$c]}"
         local has_scope=false
         local has_per_container_scope=false
-        local effective_filters
-        effective_filters=$(_effective_scope_filters "$c")
-        local effective_versions="${effective_filters%%$'\t'*}"
-        local effective_flavors="${effective_filters#*$'\t'}"
         if _scope_filters_active_for_container "$c"; then
             has_scope=true
         fi
         if [[ -n "${_BAKE_CONTAINER_SCOPES:-}" ]] && \
            jq -e --arg c "$c" 'has($c)' <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null && \
-           [[ -n "$effective_versions" || -n "$effective_flavors" ]]; then
+           jq -e --arg c "$c" \
+               '(.[$c].versions // "") != "" or (.[$c].flavors // "") != ""' \
+               <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null; then
             has_per_container_scope=true
         fi
 
@@ -441,9 +430,7 @@ _assert_requested_scope_matches_cells() {
             candidate_cells=$((candidate_cells + 1))
             container_candidate_cells=$((container_candidate_cells + 1))
 
-            if [[ "$has_scope" == "false" ]] || \
-                    _cell_passes_scope "$c" "$_EC_cell_version" "$_EC_cell_flavor" \
-                        "$_EC_cell_variant" "$_EC_cell_os" "$_EC_cell_build_flavor"; then
+            if [[ "$has_scope" == "false" ]] || _cell_passes_scope "$c" "$cell"; then
                 selected_cells=$((selected_cells + 1))
                 container_selected_cells=$((container_selected_cells + 1))
             fi
@@ -482,68 +469,40 @@ _assert_requested_scope_matches_cells() {
     fi
 }
 
-# _cell_passes_scope <container> <version> <flavor> <variant> <os> <build_flavor>
-# Returns 0 if the cell passes the active bake scope filters.
-# Empty scope variables mean pass-all.
+# _cell_passes_scope <container> <cell-json>
+# Returns 0 if the cell passes the active bake scope filters. Per-container
+# values remain JSON inside jq through comparison; they never cross a shell
+# record transport.
 _cell_passes_scope() {
     local container="$1"
-    local version="$2"
-    local flavor="$3"
-    local variant="$4"
-    local cell_os="$5"
-    local build_flavor="$6"
-    local filters
-    filters=$(_effective_scope_filters "$container")
-    local scope_versions="${filters%%$'\t'*}"
-    local scope_flavors="${filters#*$'\t'}"
+    local cell="$2"
+    local container_scopes="${_BAKE_CONTAINER_SCOPES:-}"
+    [[ -n "$container_scopes" ]] || container_scopes='{}'
+    local predicate
+    predicate=$(container_scope_filter_jq)
 
-    if [[ -n "$scope_versions" ]]; then
-        local version_match="false"
-        local versions_csv="${scope_versions},"
-        local scope_version
-        while [[ "$versions_csv" == *,* ]]; do
-            scope_version="${versions_csv%%,*}"
-            versions_csv="${versions_csv#*,}"
-
-            # Keep byte-identical semantics with
-            # .github/actions/detect-containers/action.yaml scope_versions jq:
-            # V == S OR V startswith(S + ".") OR V startswith(S + "-").
-            if [[ "$version" == "$scope_version" || \
-                  "$version" == "$scope_version."* || \
-                  "$version" == "$scope_version-"* ]]; then
-                version_match="true"
-                break
-            fi
-        done
-        [[ "$version_match" == "true" ]] || return 1
-    fi
-
-    if [[ -n "$scope_flavors" ]]; then
-        local flavor_match="false"
-        local flavors_csv="${scope_flavors},"
-        local scope_flavor
-        while [[ "$flavors_csv" == *,* ]]; do
-            scope_flavor="${flavors_csv%%,*}"
-            flavors_csv="${flavors_csv#*,}"
-            if [[ "$flavor" == "$scope_flavor" ]]; then
-                flavor_match="true"
-                break
-            fi
-        done
-        [[ "$flavor_match" == "true" ]] || return 1
-    fi
-
-    if [[ -n "${_BAKE_SCOPE:-}" ]]; then
-        local scope="${_BAKE_SCOPE}"
-        if [[ "$variant" != *"$scope"* && \
-              "$cell_os" != *"$scope"* && \
-              "$build_flavor" != *"$scope"* && \
-              "$flavor" != *"$scope"* ]]; then
-            return 1
-        fi
-    fi
-
-    return 0
+    jq -e \
+        --arg c "$container" \
+        --arg global_versions "${_BAKE_SCOPE_VERSIONS:-}" \
+        --arg global_flavors "${_BAKE_SCOPE_FLAVORS:-}" \
+        --arg build_scope "${_BAKE_SCOPE:-}" \
+        --argjson container_scopes "$container_scopes" "
+            . as \$cell
+            | (if \$container_scopes | has(\$c) then
+                    \$container_scopes[\$c]
+               else
+                    {versions: \$global_versions, flavors: \$global_flavors}
+               end) as \$filters
+            | (\$filters.versions // \"\" | split(\",\")) as \$sv
+            | (\$filters.flavors // \"\" | split(\",\")) as \$sf
+            | ([\$cell] | ${predicate} | length == 1) as \$version_flavor_match
+            | \$version_flavor_match and
+              (\$build_scope == \"\" or
+               (\$cell.variant // \"\" | contains(\$build_scope)) or
+               (\$cell.os // \"\" | contains(\$build_scope)) or
+               (\$cell.build_flavor // \"\" | contains(\$build_scope)) or
+               (\$cell.flavor // \"\" | contains(\$build_scope)))
+        " <<< "$cell" >/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -1179,8 +1138,7 @@ _enumerate_cells_init() {
                 if [[ "$_EC_cell_os" == "windows" ]]; then
                     continue
                 fi
-                if _cell_passes_scope "$c" "$_EC_cell_version" "$_EC_cell_flavor" \
-                        "$_EC_cell_variant" "$_EC_cell_os" "$_EC_cell_build_flavor"; then
+                if _cell_passes_scope "$c" "$_first_cell"; then
                     first_entry="$_first_cell"
                     break
                 fi
@@ -1458,9 +1416,7 @@ _build_bake_json() {
             if [[ "$_EC_cell_os" == "windows" ]]; then
                 continue
             fi
-            if [[ -n "${_requested_set[$c]+set}" ]] && \
-                    ! _cell_passes_scope "$c" "$_EC_cell_version" "$_EC_cell_flavor" \
-                        "$_EC_cell_variant" "$_EC_cell_os" "$_EC_cell_build_flavor"; then
+            if [[ -n "${_requested_set[$c]+set}" ]] && ! _cell_passes_scope "$c" "$cell"; then
                 continue
             fi
 
@@ -1647,8 +1603,7 @@ _emit_cells_json() {
             if [[ "$_EC_cell_os" == "windows" ]]; then
                 continue
             fi
-            if ! _cell_passes_scope "$c" "$_EC_cell_version" "$_EC_cell_flavor" \
-                    "$_EC_cell_variant" "$_EC_cell_os" "$_EC_cell_build_flavor"; then
+            if ! _cell_passes_scope "$c" "$cell"; then
                 continue
             fi
 
@@ -1791,14 +1746,7 @@ main() {
     done
 
     if [[ -n "$container_scopes" ]]; then
-        if ! jq -e '
-            type == "object"
-            and all(.[]; type == "object")
-            and all(.[]; ((.versions? // "") | type == "string"))
-            and all(.[]; ((.flavors? // "") | type == "string"))
-            and all(.[]; ((.extensions? // "") | type == "string"))
-        ' <<< "$container_scopes" >/dev/null 2>&1; then
-            printf 'ERROR: --container-scopes must be a JSON object mapping container names to scope objects with string versions/flavors/extensions fields\n' >&2
+        if ! container_scopes=$(normalize_container_scopes "$container_scopes"); then
             exit 2
         fi
     fi

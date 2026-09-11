@@ -1970,6 +1970,30 @@ YAML
     [ "$per_container_json" = "$(echo "$output" | jq -cS '.')" ]
 }
 
+@test "container scopes — a JSON NUL does not coerce a flavor filter" {
+    # Catches: restore Bash CSV matching; command substitution drops the NUL
+    # and the aws cell reappears.
+    _run_generator_separate_stderr --cells \
+        --container-scopes '{"terraform":{"flavors":"aws\u0000"}}' terraform
+
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"matched no Linux build cells"* ]]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" != *"ignored null byte"* ]]
+}
+
+@test "container scopes — an empty CSV flavor element is refused before selection" {
+    _run_generator_separate_stderr --cells \
+        --container-scopes '{"terraform":{"flavors":"aws,"}}' terraform
+
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"flavors"* ]]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"empty CSV element"* ]]
+}
+
 @test "container scopes — terraform retained version scope keeps only matching-version cells" {
     local unscoped_output unscoped_count pick
     unscoped_output=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform 2>/dev/null)

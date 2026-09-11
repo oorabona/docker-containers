@@ -205,6 +205,31 @@ normalize_json() {
     [[ "$stderr" == *"::error::container_scopes"* ]]
 }
 
+@test "container_scopes rejects an unknown per-container property" {
+    # Catches: accepting unknown properties makes this scope a pass-all map.
+    run --separate-stderr normalize_container_scopes '{"terraform":{"flavours":"aws"}}'
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"flavours"* ]]
+    [[ "$stderr" == *"terraform"* ]]
+}
+
+@test "container_scopes accepts the documented extensions property" {
+    run --separate-stderr normalize_container_scopes '{"postgres":{"extensions":"pgvector"}}'
+
+    [ "$status" -eq 0 ]
+    [ "$(normalize_json "$output")" = "$(normalize_json '{"postgres":{"extensions":"pgvector"}}')" ]
+}
+
+@test "container_scopes rejects an empty CSV element" {
+    run --separate-stderr normalize_container_scopes '{"terraform":{"flavors":"aws,"}}'
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"flavors"* ]]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"empty CSV element"* ]]
+}
+
 @test "empty object container_scopes preserves legacy global scope_versions filtering" {
     scopes=$(normalize_container_scopes '{}')
     [ -z "$scopes" ]
