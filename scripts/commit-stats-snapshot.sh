@@ -18,7 +18,7 @@ source "$GHA_HELPER"
 source "${SCRIPT_DIR}/../helpers/collect-lines.sh"
 
 if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
-  gha_error 'scripts/commit-stats-snapshot.sh is CI-only; refusing to run outside GitHub Actions because it opens and auto-merges stats PRs' >&2
+  gha_error 'scripts/commit-stats-snapshot.sh is CI-only; refusing to run outside GitHub Actions because it opens and merges stats PRs' >&2
   exit 2
 fi
 
@@ -507,50 +507,111 @@ wait_for_pr_merge() {
   local deadline_epoch="$2"
   local poll_seconds="$3"
   local max_query_failures="$4"
+  local return_when_open="${5:-false}"
   local consecutive_query_failures=0
-  local now_epoch pr_view remaining_seconds sleep_seconds state merged_at
+  local now_epoch pr_view remaining_seconds sleep_seconds query_timeout_seconds
+  local state="" merged_at="" base_ref=""
+  local reconciliation_read=false
+
+  STATS_PR_WAIT_OUTCOME=""
 
   while true; do
+    # Read time before the query: the query is bounded by the remaining budget,
+    # and a successful response is still accepted only when mergedAt is in it.
     if ! now_epoch=$(date +%s); then
       gha_warning 'Could not read wall-clock time while waiting for stats snapshot PR #%s' "$pr_number"
+      STATS_PR_WAIT_OUTCOME="uninspectable"
       return 1
     fi
     remaining_seconds=$((deadline_epoch - now_epoch))
     if ((remaining_seconds <= 0)); then
-      gha_warning 'Timed out waiting for stats snapshot PR #%s to merge' "$pr_number"
-      return 1
+      if [[ "$reconciliation_read" == "true" ]]; then
+        gha_error 'Timed out waiting for stats snapshot PR #%s to merge into master' "$pr_number"
+        STATS_PR_WAIT_OUTCOME="timeout"
+        return 1
+      fi
+      # A response may have been delayed across the deadline. Allow one short,
+      # bounded reconciliation read and accept it only if mergedAt is in budget.
+      reconciliation_read=true
+      query_timeout_seconds=1
+    else
+      query_timeout_seconds="$remaining_seconds"
     fi
 
-    if ! pr_view=$(gh pr view "$pr_number" --json state,mergedAt --jq '[.state, (.mergedAt // "")] | @tsv' 2>&1); then
+    if ! pr_view=$(inspect_stats_snapshot_pr "$pr_number" "$query_timeout_seconds" 2>&1); then
+      if [[ "$reconciliation_read" == "true" ]]; then
+        printf '%s\n' "$pr_view" >&2
+        gha_warning 'Could not inspect stats snapshot PR #%s merge state during the deadline reconciliation read' "$pr_number"
+        STATS_PR_WAIT_OUTCOME="uninspectable"
+        return 1
+      fi
       consecutive_query_failures=$((consecutive_query_failures + 1))
       printf '%s\n' "$pr_view" >&2
       if ((consecutive_query_failures >= max_query_failures)); then
         gha_warning 'Could not inspect stats snapshot PR #%s merge state after %s consecutive attempt(s)' "$pr_number" "$consecutive_query_failures"
+        STATS_PR_WAIT_OUTCOME="uninspectable"
         return 1
       fi
       gha_warning 'Could not inspect stats snapshot PR #%s merge state (attempt %s/%s); continuing within the remaining wait budget' "$pr_number" "$consecutive_query_failures" "$max_query_failures"
     else
       consecutive_query_failures=0
 
-      IFS=$'\t' read -r state merged_at <<< "$pr_view"
-      if [[ "$state" == "MERGED" || -n "${merged_at:-}" ]]; then
-        gha_notice 'Stats snapshot PR #%s merged' "$pr_number"
-        return 0
-      fi
-
-      if [[ "$state" == "CLOSED" ]]; then
-        gha_warning 'Stats snapshot PR #%s closed without merging' "$pr_number"
+      state=""
+      merged_at=""
+      base_ref=""
+      IFS='|' read -r state merged_at base_ref <<< "$pr_view"
+      if [[ "$state" != "MERGED" && "$state" != "OPEN" && "$state" != "CLOSED" ]]; then
+        gha_warning 'Could not inspect stats snapshot PR #%s merge state: received an unusable payload' "$pr_number"
+        STATS_PR_WAIT_OUTCOME="uninspectable"
         return 1
       fi
+      if stats_snapshot_pr_persisted "$state" "$merged_at" "$base_ref"; then
+        if stats_snapshot_pr_merged_within_budget "$merged_at" "$deadline_epoch"; then
+          gha_notice 'Stats snapshot PR #%s merged' "$pr_number"
+          return 0
+        fi
+        gha_error 'Stats snapshot PR #%s merged outside the configured wait budget' "$pr_number"
+        STATS_PR_WAIT_OUTCOME="merged-outside-budget"
+        return 1
+      fi
+
+      if [[ "$state" == "MERGED" ]]; then
+        gha_warning 'Stats snapshot PR #%s did not persist to master (state=%s merged-at=%s base=%s)' "$pr_number" "$state" "$merged_at" "$base_ref"
+        STATS_PR_WAIT_OUTCOME="merged-not-persisted"
+        return 1
+      fi
+
+      if [[ "$state" != "OPEN" ]]; then
+        gha_warning 'Stats snapshot PR #%s did not persist to master (state=%s merged-at=%s base=%s)' "$pr_number" "$state" "$merged_at" "$base_ref"
+        STATS_PR_WAIT_OUTCOME="terminal"
+        return 1
+      fi
+
+      # A successful OPEN response can arrive after its bounded query crosses
+      # the deadline. Re-read the clock before returning open or considering
+      # auto-merge; at the deadline, this verified OPEN may be closed, which
+      # deliberately cancels a direct merge request still queued or pending.
+      if ! now_epoch=$(date +%s); then
+        gha_warning 'Could not read wall-clock time after inspecting stats snapshot PR #%s' "$pr_number"
+        STATS_PR_WAIT_OUTCOME="uninspectable"
+        return 1
+      fi
+      if ((now_epoch >= deadline_epoch)) || [[ "$reconciliation_read" == "true" ]]; then
+        gha_error 'Timed out waiting for stats snapshot PR #%s to merge into master' "$pr_number"
+        STATS_PR_WAIT_OUTCOME="timeout"
+        return 1
+      fi
+
+      if [[ "$return_when_open" == "true" ]]; then
+        STATS_PR_WAIT_OUTCOME="open"
+        return 1
+      fi
+
     fi
 
-    if ! now_epoch=$(date +%s); then
-      gha_warning 'Could not read wall-clock time while waiting for stats snapshot PR #%s' "$pr_number"
-      return 1
-    fi
-    remaining_seconds=$((deadline_epoch - now_epoch))
-    if ((remaining_seconds <= 0)); then
-      gha_warning 'Timed out waiting for stats snapshot PR #%s to merge' "$pr_number"
+    if [[ "$reconciliation_read" == "true" ]]; then
+      gha_error 'Timed out waiting for stats snapshot PR #%s to merge into master' "$pr_number"
+      STATS_PR_WAIT_OUTCOME="timeout"
       return 1
     fi
 
@@ -560,9 +621,81 @@ wait_for_pr_merge() {
     fi
     if ! sleep "$sleep_seconds"; then
       gha_warning 'Stats snapshot PR merge polling sleep failed'
+      STATS_PR_WAIT_OUTCOME="uninspectable"
       return 1
     fi
   done
+}
+
+run_stats_snapshot_pr_merge() {
+  local pr_number="$1"
+  local deadline_epoch="$2"
+  local head_commit="$3"
+  local auto_merge="${4:-false}"
+  local remaining_seconds
+
+  if ! remaining_seconds=$(remaining_pr_budget_seconds "$deadline_epoch"); then
+    gha_warning 'Could not determine remaining budget before merging stats snapshot PR #%s' "$pr_number"
+    return 1
+  fi
+  if ((remaining_seconds <= 0)); then
+    gha_warning 'Not starting merge for stats snapshot PR #%s because no wait budget remains' "$pr_number"
+    return 1
+  fi
+
+  if [[ "$auto_merge" == "true" ]]; then
+    timeout --kill-after=1s "${remaining_seconds}s" gh pr merge "$pr_number" \
+      --squash --auto --delete-branch --match-head-commit "$head_commit"
+    return
+  fi
+
+  timeout --kill-after=1s "${remaining_seconds}s" gh pr merge "$pr_number" \
+    --squash --delete-branch --match-head-commit "$head_commit"
+}
+
+inspect_stats_snapshot_pr() {
+  local pr_number="$1"
+  local query_timeout_seconds="${2:-}"
+
+  if [[ -n "$query_timeout_seconds" ]]; then
+    timeout "$query_timeout_seconds" gh pr view "$pr_number" \
+      --json state,mergedAt,baseRefName \
+      --jq '[
+        .state,
+        (.mergedAt // ""),
+        (.baseRefName // "")
+      ] | join("|")'
+    return
+  fi
+
+  gh pr view "$pr_number" \
+    --json state,mergedAt,baseRefName \
+    --jq '[
+      .state,
+      (.mergedAt // ""),
+      (.baseRefName // "")
+    ] | join("|")'
+}
+
+stats_snapshot_pr_persisted() {
+  local state="$1"
+  local merged_at="$2"
+  local base_ref="$3"
+
+  [[ "$state" == "MERGED" && -n "$merged_at" && "$base_ref" == "master" ]]
+}
+
+stats_snapshot_pr_merged_within_budget() {
+  local merged_at="$1"
+  local deadline_epoch="$2"
+  local merged_epoch
+
+  if ! merged_epoch=$(date -d "$merged_at" +%s); then
+    gha_warning 'Could not parse stats snapshot PR merge time %s' "$merged_at"
+    return 1
+  fi
+
+  ((merged_epoch <= deadline_epoch))
 }
 
 validate_pr_budget_config() {
@@ -667,15 +800,17 @@ ensure_stats_snapshot_pr() {
 persist_stats_snapshot_via_pr() {
   # The surrounding GitHub Actions job has a 45-minute hard timeout. This
   # function enforces one shared 35-minute wall-clock budget across all retry
-  # attempts (legacy STATS_PR_MERGE_TIMEOUT_SECONDS still overrides the default)
-  # so cleanup and output emission run before the job-level timeout can kill us.
+  # attempts, PR reads, and merge commands (legacy
+  # STATS_PR_MERGE_TIMEOUT_SECONDS still overrides the default), so cleanup and
+  # output emission run before the job-level timeout can kill us. At its
+  # deadline, closing a verified OPEN PR can cancel an in-flight direct merge.
   local total_budget_seconds="${STATS_PR_TOTAL_BUDGET_SECONDS:-${STATS_PR_MERGE_TIMEOUT_SECONDS:-2100}}"
   local min_wait_seconds="$STATS_PR_MIN_MERGE_WAIT_SECONDS"
   local poll_seconds="${STATS_PR_MERGE_POLL_SECONDS:-10}"
   local max_query_failures="$STATS_PR_VIEW_MAX_FAILURES"
   local attempt attempt_pr_branch attempt_pr_number attempt_remote_branch_maybe_pushed
   local deadline_epoch diff_status head_commit remaining_seconds start_epoch
-  local attempts_remaining attempt_wait_epoch now_epoch_for_attempt_cap
+  local direct_merge_succeeded merge_output
 
   if [[ -z "$stats_pr_branch" ]]; then
     gha_warning 'GITHUB_RUN_ID or STATS_PR_BRANCH is required to name the stats snapshot PR branch'
@@ -775,41 +910,80 @@ persist_stats_snapshot_via_pr() {
       gha_warning 'Failed to apply automation label to stats snapshot PR #%s; PR created successfully — continuing' "$attempt_pr_number"
     fi
 
-    if gh pr merge "$attempt_pr_number" --squash --auto --delete-branch --match-head-commit "$head_commit" 2>&1; then
-      gha_notice 'Auto-merge enabled for stats snapshot PR #%s' "$attempt_pr_number"
-    else
-      gha_warning 'Failed to enable auto-merge for stats snapshot PR #%s on attempt %s' "$attempt_pr_number" "$attempt"
-      cleanup_failed_pr "$attempt_pr_number" "$attempt_pr_branch" "$attempt_remote_branch_maybe_pushed"
-      sleep_before_retry "$attempt" "$deadline_epoch"
-      continue
+    direct_merge_succeeded=false
+    if merge_output=$(run_stats_snapshot_pr_merge "$attempt_pr_number" "$deadline_epoch" "$head_commit" 2>&1); then
+      direct_merge_succeeded=true
     fi
+    printf '%s\n' "$merge_output" >&2
 
-    # Cap THIS attempt's own wait to a fair share of whatever budget remains,
-    # not the full shared deadline — otherwise a single blocked/conflicted PR
-    # (the most likely trigger for a retry at all, since it happens exactly
-    # when a sibling stats PR merges first) can burn the entire budget on one
-    # wait, leaving nothing for the attempts that exist specifically to
-    # recover from that case. Recomputed fresh each attempt (not a fixed
-    # 1/max_attempts of the original total) so an attempt that fails fast
-    # doesn't shrink what's available to the ones after it.
-    attempts_remaining=$((STATS_PERSIST_MAX_ATTEMPTS - attempt + 1))
-    if ! remaining_seconds=$(remaining_pr_budget_seconds "$deadline_epoch"); then
-      remaining_seconds=0
-    fi
-    if ! now_epoch_for_attempt_cap=$(date +%s); then
-      now_epoch_for_attempt_cap="$deadline_epoch"
-    fi
-    attempt_wait_epoch=$((now_epoch_for_attempt_cap + remaining_seconds / attempts_remaining))
-    if ((attempt_wait_epoch > deadline_epoch)); then
-      attempt_wait_epoch="$deadline_epoch"
-    fi
-
-    if wait_for_pr_merge "$attempt_pr_number" "$attempt_wait_epoch" "$poll_seconds" "$max_query_failures"; then
+    # A gh exit status is only transport feedback. Observe this PR before
+    # deciding whether it merged, remains open, or can safely be cleaned up.
+    if wait_for_pr_merge "$attempt_pr_number" "$deadline_epoch" "$poll_seconds" "$max_query_failures" true; then
+      gha_notice 'Stats snapshot PR #%s merged directly' "$attempt_pr_number"
       return 0
     fi
 
-    cleanup_failed_pr "$attempt_pr_number" "$attempt_pr_branch" "$attempt_remote_branch_maybe_pushed"
-    sleep_before_retry "$attempt" "$deadline_epoch"
+    case "$STATS_PR_WAIT_OUTCOME" in
+      open)
+        if [[ "$direct_merge_succeeded" == "true" ]]; then
+          gha_notice 'Stats snapshot PR #%s merge request is queued or pending; waiting for the verified merge state' "$attempt_pr_number"
+        else
+          gha_warning 'Direct merge response for stats snapshot PR #%s was nonzero; enabling pinned auto-merge on the same open PR' "$attempt_pr_number"
+          if merge_output=$(run_stats_snapshot_pr_merge "$attempt_pr_number" "$deadline_epoch" "$head_commit" true 2>&1); then
+            gha_notice 'Auto-merge enabled for stats snapshot PR #%s' "$attempt_pr_number"
+          else
+            printf '%s\n' "$merge_output" >&2
+            gha_warning 'Auto-merge response for stats snapshot PR #%s was nonzero; waiting for the verified merge state' "$attempt_pr_number"
+          fi
+        fi
+
+        if wait_for_pr_merge "$attempt_pr_number" "$deadline_epoch" "$poll_seconds" "$max_query_failures"; then
+          return 0
+        fi
+        ;;
+      terminal)
+        cleanup_failed_pr "$attempt_pr_number" "$attempt_pr_branch" "$attempt_remote_branch_maybe_pushed"
+        sleep_before_retry "$attempt" "$deadline_epoch"
+        continue
+        ;;
+      uninspectable)
+        # Do not close a PR whose final GitHub state could not be read.
+        return 1
+        ;;
+      merged-outside-budget|merged-not-persisted)
+        return 1
+        ;;
+      timeout)
+        cleanup_failed_pr "$attempt_pr_number" "$attempt_pr_branch" "$attempt_remote_branch_maybe_pushed"
+        return 1
+        ;;
+      *)
+        gha_warning 'Unexpected stats snapshot PR wait outcome: %s' "$STATS_PR_WAIT_OUTCOME"
+        return 1
+        ;;
+    esac
+
+    case "$STATS_PR_WAIT_OUTCOME" in
+      terminal)
+        cleanup_failed_pr "$attempt_pr_number" "$attempt_pr_branch" "$attempt_remote_branch_maybe_pushed"
+        sleep_before_retry "$attempt" "$deadline_epoch"
+        ;;
+      uninspectable)
+        # Do not close a PR whose final GitHub state could not be read.
+        return 1
+        ;;
+      merged-outside-budget|merged-not-persisted)
+        return 1
+        ;;
+      timeout)
+        cleanup_failed_pr "$attempt_pr_number" "$attempt_pr_branch" "$attempt_remote_branch_maybe_pushed"
+        return 1
+        ;;
+      *)
+        gha_warning 'Unexpected stats snapshot PR wait outcome: %s' "$STATS_PR_WAIT_OUTCOME"
+        return 1
+        ;;
+    esac
   done
 
   return 1
