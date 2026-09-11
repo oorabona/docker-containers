@@ -129,8 +129,9 @@ Options:
                           Per-container scope map:
                           {"<container>":{"versions":"csv","flavors":"csv","extensions":"csv"}}
 
-An active scope that selects no Linux build cells exits 1 without writing stdout.
-An already-empty matrix and a Windows-only matrix remain successful empty plans.
+Non-empty per-container versions/flavors must select a Linux cell for that
+container when it has Linux candidates; otherwise scope selection is aggregate.
+Already-empty and Windows-only matrices remain successful empty plans.
 Container-scope keys/filter values and build-matrix string fields containing LF
 or U+001F are refused rather than being passed through record-oriented readers.
   -h, --help              Show this help.
@@ -253,9 +254,16 @@ _scope_request_active() {
     [[ -n "${_BAKE_SCOPE_VERSIONS:-}" || -n "${_BAKE_SCOPE_FLAVORS:-}" || \
        -n "${_BAKE_SCOPE:-}" ]] && return 0
 
-    [[ -n "${_BAKE_CONTAINER_SCOPES:-}" ]] && \
-        jq -e 'any(.[]; (.versions // "") != "" or (.flavors // "") != "" or (.extensions // "") != "")' \
-            <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null
+    [[ -n "${_BAKE_CONTAINER_SCOPES:-}" ]] || return 1
+
+    local jq_status
+    jq -e 'any(.[]; (.versions // "") != "" or (.flavors // "") != "" or (.extensions // "") != "")' \
+        <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null || {
+        jq_status=$?
+        [[ "$jq_status" -eq 1 ]] && return 1
+        gha_error 'could not determine whether a scope request is active' >&2
+        exit "$jq_status"
+    }
 }
 
 # Describe the active request in diagnostics.  This is deliberately limited to
@@ -386,10 +394,13 @@ _decode_build_matrix_cell() {
         _EC_cell_is_default _EC_cell_is_latest_version <<< "$decoded"
 }
 
-# Refuse an explicit scope only when it eliminates every otherwise-buildable
-# requested cell.  A matrix that is already empty (or contains only Windows
-# cells) is a valid container state, not evidence that an operator's scope was
-# wrong, and keeps its established empty-plan success behavior.
+# A non-empty per-container versions/flavors filter must select a Linux cell
+# for that requested container when it has Linux candidates. Otherwise,
+# selection is aggregate across requested containers and refuses only if it
+# selects no Linux cells. Already-empty and Windows-only matrices remain
+# successful empty plans. A per-container entry overrides global
+# versions/flavors for that container, while --scope applies to every
+# container; empty and extensions-only entries do not narrow cells.
 _assert_requested_scope_matches_cells() {
     local -a requested_containers=("$@")
     local matrix_cells=0
@@ -405,12 +416,20 @@ _assert_requested_scope_matches_cells() {
         local matrix="${_EC_all_matrix_json[$c]}"
         local has_scope="${_EC_scope_active[$c]:-false}"
         local has_per_container_scope=false
-        if [[ -n "${_BAKE_CONTAINER_SCOPES:-}" ]] && \
-           jq -e --arg c "$c" 'has($c)' <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null && \
-           jq -e --arg c "$c" \
-               '(.[$c].versions // "") != "" or (.[$c].flavors // "") != ""' \
-               <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null; then
-            has_per_container_scope=true
+        if [[ -n "${_BAKE_CONTAINER_SCOPES:-}" ]]; then
+            local jq_status
+            if jq -e --arg c "$c" 'has($c)' <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null && \
+               jq -e --arg c "$c" \
+                   '(.[$c].versions // "") != "" or (.[$c].flavors // "") != ""' \
+                   <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null; then
+                has_per_container_scope=true
+            else
+                jq_status=$?
+                [[ "$jq_status" -eq 1 ]] || {
+                    gha_error 'could not determine whether a per-container scope applies to %s' "$c" >&2
+                    exit "$jq_status"
+                }
+            fi
         fi
 
         local ncells
@@ -483,13 +502,16 @@ _assert_requested_scope_matches_cells() {
 # _cell_passes_scope <container> <cell-json>
 # Returns 0 if the cell passes the active bake scope filters. Per-container
 # values remain JSON inside jq through comparison; they never cross a shell
-# record transport.
+# record transport. On a jq fault this exits the shell: every caller is a
+# direct main-shell call (preflight, first-target discovery, bake and cells
+# emission), so no command substitution can contain that termination.
 _cell_passes_scope() {
     local container="$1"
     local cell="$2"
     local container_scopes="${_BAKE_CONTAINER_SCOPES:-}"
     [[ -n "$container_scopes" ]] || container_scopes='{}'
 
+    local jq_status
     jq -e \
         --arg c "$container" \
         --arg global_versions "${_BAKE_SCOPE_VERSIONS:-}" \
@@ -511,7 +533,13 @@ _cell_passes_scope() {
                (\$cell.os // \"\" | contains(\$build_scope)) or
                (\$cell.build_flavor // \"\" | contains(\$build_scope)) or
                (\$cell.flavor // \"\" | contains(\$build_scope)))
-        " <<< "$cell" >/dev/null
+        " <<< "$cell" >/dev/null || {
+        jq_status=$?
+        [[ "$jq_status" -eq 1 ]] && return 1
+        gha_error 'could not determine whether cell %s for container %s passes the requested scope' \
+            "${_EC_cell_tag:-unknown}" "$container" >&2
+        exit "$jq_status"
+    }
 }
 
 # ---------------------------------------------------------------------------

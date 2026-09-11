@@ -121,6 +121,46 @@ _run_generator_separate_stderr() {
     run --separate-stderr bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" "$@"
 }
 
+_make_jq_fault_shim() {
+    local shim_dir="${TEST_TEMP_DIR}/jq-fault-shim"
+    mkdir -p "$shim_dir"
+
+    {
+        printf '%s\n' '#!/usr/bin/env bash'
+        printf '%s\n' 'set -euo pipefail'
+        printf '%s\n' 'for arg in "$@"; do'
+        printf '%s\n' '    case "${JQ_FAULT_MATCH_TYPE:?}" in'
+        printf '%s\n' '        contains) [[ "$arg" == *"${JQ_FAULT_PROGRAM:?}"* ]] || continue ;;'
+        printf '%s\n' '        exact) [[ "$arg" == "${JQ_FAULT_PROGRAM:?}" ]] || continue ;;'
+        printf '%s\n' '    esac'
+        printf '%s\n' '    count=0'
+        printf '%s\n' '    [[ -f "${JQ_FAULT_LOG:?}" ]] && count=$(<"$JQ_FAULT_LOG")'
+        printf '%s\n' '    count=$((count + 1))'
+        printf '%s\n' '    printf "%s\\n" "$count" > "$JQ_FAULT_LOG"'
+        printf '%s\n' '    [[ "$count" -eq "${JQ_FAULT_AT:?}" ]] && exit "${JQ_FAULT_STATUS:-70}"'
+        printf '%s\n' '    break'
+        printf '%s\n' 'done'
+        printf '%s\n' 'exec "${JQ_REAL:?}" "$@"'
+    } > "$shim_dir/jq"
+    chmod +x "$shim_dir/jq"
+    printf '%s' "$shim_dir"
+}
+
+_run_generator_with_jq_fault() {
+    local match_type="$1" program="$2" fault_at="$3"
+    shift 3
+    local shim_dir real_jq fault_log
+    shim_dir=$(_make_jq_fault_shim)
+    real_jq=$(command -v jq)
+    fault_log="${TEST_TEMP_DIR}/jq-fault-count"
+    : > "$fault_log"
+
+    run --separate-stderr env "PATH=${shim_dir}:$PATH" JQ_REAL="$real_jq" \
+        JQ_FAULT_LOG="$fault_log" JQ_FAULT_MATCH_TYPE="$match_type" \
+        JQ_FAULT_PROGRAM="$program" JQ_FAULT_AT="$fault_at" \
+        bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" "$@"
+}
+
 _assert_no_uncontrolled_workflow_command() {
     if tail -n +2 <<< "$stderr" | grep -q '^::'; then
         output+=$'\nAssertion: no caller-supplied value starts a workflow-command line'
@@ -1596,11 +1636,12 @@ YAML
     [ "$actual_count" -eq "$expected_count" ]
 }
 
-@test "B4 — help documents scope refusal and its two successful-empty exceptions" {
+@test "B4 — help documents the two-level scope refusal contract" {
     _run_generator --help
     [ "$status" -eq 0 ]
-    [[ "$output" == *"active scope that selects no Linux build cells exits 1 without writing stdout"* ]]
-    [[ "$output" == *"already-empty matrix and a Windows-only matrix remain successful empty plans"* ]]
+    [[ "$output" == *"Non-empty per-container versions/flavors must select a Linux cell"* ]]
+    [[ "$output" == *"otherwise scope selection is aggregate"* ]]
+    [[ "$output" == *"Already-empty and Windows-only matrices remain successful empty plans"* ]]
     [[ "$output" == *"Container-scope keys/filter values and build-matrix string fields containing LF"* ]]
     [[ "$output" == *"or U+001F are refused rather than being passed through record-oriented readers"* ]]
 }
@@ -2183,6 +2224,82 @@ YAML
     [ "$status" -eq 0 ]
 
     [ "$(echo "$output" | jq -cS '.')" = "$no_flag_json" ]
+}
+
+@test "jq scope fault during cells emission refuses without stdout" {
+    _run_generator_with_jq_fault contains 'startswith($s + ".")' 9 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"passes the requested scope"* ]]
+}
+
+@test "jq scope fault during bake emission refuses without stdout" {
+    _run_generator_with_jq_fault contains 'startswith($s + ".")' 9 \
+        --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"passes the requested scope"* ]]
+}
+
+@test "jq scope fault during first-target discovery refuses without stdout" {
+    _run_generator_with_jq_fault contains 'startswith($s + ".")' 6 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"passes the requested scope"* ]]
+}
+
+@test "jq scope fault during preflight names the container and refuses without stdout" {
+    _run_generator_with_jq_fault contains 'startswith($s + ".")' 4 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"terraform"* ]]
+    [[ "$stderr" == *"passes the requested scope"* ]]
+}
+
+@test "scoped cells mode keeps the 12-process scope-predicate baseline" {
+    _run_generator_with_jq_fault contains 'startswith($s + ".")' 999 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -eq 0 ]
+    [ "$(<"${TEST_TEMP_DIR}/jq-fault-count")" -eq 12 ]
+}
+
+@test "jq scope-activity fault does not skip preflight" {
+    _run_generator_with_jq_fault exact \
+        'any(.[]; (.versions // "") != "" or (.flavors // "") != "" or (.extensions // "") != "")' 1 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"scope request is active"* ]]
+}
+
+@test "jq per-container-scope fault does not read as unscoped" {
+    _run_generator_with_jq_fault exact 'has($c)' 1 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"per-container scope applies to terraform"* ]]
+}
+
+@test "jq per-container filter fault does not read as unscoped" {
+    _run_generator_with_jq_fault exact \
+        '(.[$c].versions // "") != "" or (.[$c].flavors // "") != ""' 1 \
+        --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"per-container scope applies to terraform"* ]]
+}
+
+@test "a false scope predicate still skips only unselected cells" {
+    _run_generator --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -eq 0 ]
+    [ "$(jq 'length' <<< "$output")" -eq 1 ]
+    [ "$(jq '[.[] | select(.flavor != "aws")] | length' <<< "$output")" -eq 0 ]
 }
 
 @test "unscoped cells mode never invokes the scope predicate" {
