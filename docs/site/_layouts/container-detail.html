@@ -51,6 +51,36 @@
           Zone 4 — Documentation (always visible)
       {%- endcomment -%}
       <article class="container-detail-page">
+        {%- comment -%}
+          Resolve the page's selected image before rendering any variant consumers.
+          Prefer a named variant across all versions, then any version variant,
+          then a flat variant. The page fallback preserves the existing
+          current_version-only container behaviour.
+        {%- endcomment -%}
+        {%- assign selected_variant = nil -%}
+        {%- if page.versions -%}
+          {%- for _selected_version in page.versions -%}
+            {%- for _selected_candidate in _selected_version.variants -%}
+              {%- if selected_variant == nil and _selected_candidate.name and _selected_candidate.name != "" -%}
+                {%- assign selected_variant = _selected_candidate -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+        {%- endif -%}
+        {%- if selected_variant == nil and page.versions -%}
+          {%- for _selected_version in page.versions -%}
+            {%- for _selected_candidate in _selected_version.variants -%}
+              {%- if selected_variant == nil -%}
+                {%- assign selected_variant = _selected_candidate -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+        {%- endif -%}
+        {%- if selected_variant == nil -%}
+          {%- assign selected_variant = page.variants[0] -%}
+        {%- endif -%}
+        {%- assign selected_variant = selected_variant | default: page -%}
+        {%- assign selected_variant_tag = selected_variant.tag | default: page.current_version -%}
 
         <!-- Back link -->
         <a href="{{ '/' | relative_url }}" class="back-link">
@@ -130,8 +160,8 @@
           <h2 class="zone-eyebrow">Trust posture</h2>
 
           <!-- Trust Strip -->
-          {%- assign default_variant = page.versions[0].variants[0] | default: page.variants[0] | default: page -%}
-          <trust-strip class="trust-strip" data-current-variant="{{ default_variant.tag | default: page.current_version }}">
+          {%- assign default_variant = selected_variant -%}
+          <trust-strip class="trust-strip">
             <a class="trust-badge trust-badge--sbom{% unless default_variant.attestation_url and default_variant.attestation_id %} is-pending{% endunless %}"
                data-trust="sbom"
                {% if default_variant.attestation_url and default_variant.attestation_id %}
@@ -692,21 +722,24 @@
           {%- endif -%}
 
           <!-- Security Scan Summary (Zone 2 — always visible trust surface) -->
-          {%- assign sec_variant = page.versions[0].variants[0] | default: page.variants[0] | default: page -%}
-          {%- if sec_variant.trivy_summary and sec_variant.trivy_summary.display_source -%}
+          {%- assign sec_variant = selected_variant -%}
           <div id="security-scan" class="security-scan-card">
             <header class="security-scan-card-header">
               <p class="eyebrow">Security evidence</p>
               {%- if sec_variant.trivy_summary.display_source == "code-scanning" -%}
-              <h3 data-scan="heading">Trivy · Code Scanning fetched {{ sec_variant.trivy_summary.as_of | date: "%Y-%m-%d" }}</h3>
+              <h3 data-scan="heading">Trivy · Code Scanning for image {{ selected_variant_tag }} fetched {{ sec_variant.trivy_summary.as_of | date: "%Y-%m-%d" }}</h3>
               {%- elsif sec_variant.trivy_summary.display_source == "scan-record" -%}
-              <h3 data-scan="heading">Trivy · recorded scan {{ sec_variant.trivy_summary.as_of | date: "%Y-%m-%d" }}</h3>
+              <h3 data-scan="heading">Trivy · recorded scan for image {{ selected_variant_tag }} {{ sec_variant.trivy_summary.as_of | date: "%Y-%m-%d" }}</h3>
               {%- elsif sec_variant.trivy_summary.display_source == "unavailable" -%}
-              <h3 data-scan="heading">Security evidence unavailable</h3>
+              <h3 data-scan="heading">Security evidence unavailable for image {{ selected_variant_tag }}</h3>
+              {%- else -%}
+              <h3 data-scan="heading">Security evidence is not recorded for image {{ selected_variant_tag }}</h3>
               {%- endif -%}
             </header>
-            <security-scan id="security" class="security-section" data-current-variant="{{ sec_variant.tag | default: page.current_version }}">
-              {%- if sec_variant.trivy_summary.display_source == "unavailable" -%}
+            <security-scan id="security" class="security-section">
+              {%- if sec_variant.trivy_summary == nil or sec_variant.trivy_summary.display_source == nil -%}
+              <p class="scan-meta evidence-empty" data-scan="no-evidence-message">No security evidence is recorded for image {{ selected_variant_tag }}. This is different from an unavailable source, which means a source was tried but could not be read.</p>
+              {%- elsif sec_variant.trivy_summary.display_source == "unavailable" -%}
               <p class="scan-meta evidence-empty" data-scan="unavailable-message">No security evidence available — Code Scanning could not be read and no usable scan record was found</p>
               {%- else -%}
               {%- assign sec_critical = sec_variant.trivy_summary.counts.critical | plus: 0 -%}
@@ -782,7 +815,6 @@
               </a>
             </footer>
           </div>
-          {%- endif -%}
 
         </section>{%- comment -%} /Zone 2 — Trust posture {%- endcomment -%}
 
@@ -899,7 +931,7 @@
                 {%- for _svv in _sv.variants -%}
                   {%- if _svv.name == "" or _svv.name == nil -%}
                   <button type="button"
-                          class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
+                          class="variant-tag{% if _svv.tag == selected_variant_tag %} selected{% endif %}"
                           data-tag="{{ _svv.tag }}"
                           data-size-amd64="{{ _svv.size_amd64 | default: '' }}"
                           data-size-arm64="{{ _svv.size_arm64 | default: '' }}"
@@ -915,7 +947,7 @@
                           {%- if _svv.trivy_summary %} data-trivy-summary='{{ _svv.trivy_summary | jsonify | escape }}'{% endif -%}
                           {%- if _svv.multi_arch_platforms %} data-multi-arch-platforms='{{ _svv.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                           {%- if _svv.variant_deps %} data-variant-deps='{{ _svv.variant_deps | jsonify | escape }}'{% endif -%}
-                          aria-selected="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
+                          aria-selected="{% if _svv.tag == selected_variant_tag %}true{% else %}false{% endif %}"
                           aria-hidden="true"
                           tabindex="-1"></button>
                   {%- endif -%}
@@ -946,7 +978,7 @@
               <div class="variants-section glass">
                 <div class="variants-content">
                   {% if page.versions %}
-                    <version-tabs class="version-tabs" data-active-tag="{{ default_variant.tag }}">
+                    <version-tabs class="version-tabs" data-active-tag="{{ selected_variant_tag }}">
                       {% for version in page.versions %}
                       {%- assign _selectable_v = version.variants | where_exp: "v", "v.name != ''" -%}
                       {%- if _selectable_v.size > 0 -%}
@@ -954,7 +986,7 @@
                         <p class="eyebrow version-tabs-group-label">{{ version.base_tag | default: version.tag }}</p>
                         {%- for variant in _selectable_v -%}
                           <button type="button"
-                                  class="version-tab{% if forloop.first and forloop.parentloop.first %} version-tab--selected{% endif %} variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
+                                  class="version-tab{% if variant.tag == selected_variant_tag %} version-tab--selected{% endif %} variant-tag{% if variant.tag == selected_variant_tag %} selected{% endif %}"
                                   role="tab"
                                   data-tag="{{ variant.tag }}"
                                   data-size-amd64="{{ variant.size_amd64 | default: '' }}"
@@ -971,7 +1003,7 @@
                                   {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
                                   {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                                   {%- if variant.variant_deps %} data-variant-deps='{{ variant.variant_deps | jsonify | escape }}'{% endif -%}
-                                  aria-selected="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
+                                  aria-selected="{% if variant.tag == selected_variant_tag %}true{% else %}false{% endif %}"
                                   title="{{ variant.when_to_use | default: variant.description | escape }}">
                             {{ variant.name }}{% if variant.is_default %} <span class="version-tab-default-badge">default</span>{% endif %}{% if variant.build_digest == "unknown" %} <i class="ti ti-alert-triangle" style="color: var(--accent-yellow); font-size: 0.7rem;" title="Build not yet available" aria-label="Warning: build not yet available"></i>{% endif %}
                           </button>
@@ -981,12 +1013,12 @@
                       {% endfor %}
                     </version-tabs>
                   {% elsif page.variants %}
-                    <version-tabs class="version-tabs" data-active-tag="{{ page.variants[0].tag }}">
+                    <version-tabs class="version-tabs" data-active-tag="{{ selected_variant_tag }}">
                       <div class="version-tabs-group" role="tablist" aria-label="Available variants">
                         <p class="eyebrow version-tabs-group-label">Variants</p>
                         {% for variant in page.variants %}
                           <button type="button"
-                                  class="version-tab{% if forloop.first %} version-tab--selected{% endif %} variant-tag{% if forloop.first %} selected{% endif %}"
+                                  class="version-tab{% if variant.tag == selected_variant_tag %} version-tab--selected{% endif %} variant-tag{% if variant.tag == selected_variant_tag %} selected{% endif %}"
                                   role="tab"
                                   data-tag="{{ variant.tag }}"
                                   data-size-amd64="{{ variant.size_amd64 | default: '' }}"
@@ -995,7 +1027,7 @@
                                   {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
                                   {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
                                   {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
-                                  aria-selected="{% if forloop.first %}true{% else %}false{% endif %}"
+                                  aria-selected="{% if variant.tag == selected_variant_tag %}true{% else %}false{% endif %}"
                                   title="{{ variant.when_to_use | default: variant.description | escape }}">
                             {{ variant.tag }}{% if variant.is_default %} <span class="version-tab-default-badge">default</span>{% endif %}{% if variant.build_digest == "unknown" %} <i class="ti ti-alert-triangle" style="color: var(--accent-yellow); font-size: 0.7rem;" title="Build not yet available" aria-label="Warning: build not yet available"></i>{% endif %}
                           </button>

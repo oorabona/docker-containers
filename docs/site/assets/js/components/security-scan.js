@@ -17,6 +17,11 @@
       && textualFields.every((field) => adv[field] === null || typeof adv[field] === 'string');
   }
 
+  function noEvidenceMessage(tag) {
+    return 'No security evidence is recorded for image ' + (tag || 'this image')
+      + '. This is different from an unavailable source, which means a source was tried but could not be read.';
+  }
+
   class SecurityScan extends HTMLElement {
     connectedCallback() {
       this._handler = (e) => this._update(e.detail);
@@ -29,7 +34,13 @@
 
     _update(variant) {
       if (!variant || !variant.trivy_summary || !variant.trivy_summary.display_source) {
-        this.style.display = 'none';
+        this.style.display = '';
+        while (this.firstChild) this.removeChild(this.firstChild);
+        const noEvidence = document.createElement('p');
+        noEvidence.className = 'scan-meta evidence-empty';
+        noEvidence.setAttribute('data-scan', 'no-evidence-message');
+        noEvidence.textContent = noEvidenceMessage(variant && variant.tag);
+        this.appendChild(noEvidence);
         return;
       }
       const summary = variant.trivy_summary;
@@ -60,7 +71,11 @@
       } else if (source === 'scan-record') {
         summaryLabel = total + ' finding(s) from the recorded scan · scanned ' + date + ' · advisory mode (does not block builds)';
       } else {
-        this.style.display = 'none';
+        const noEvidence = document.createElement('p');
+        noEvidence.className = 'scan-meta evidence-empty';
+        noEvidence.setAttribute('data-scan', 'no-evidence-message');
+        noEvidence.textContent = noEvidenceMessage(variant.tag);
+        this.appendChild(noEvidence);
         return;
       }
 

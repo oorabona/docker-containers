@@ -83,3 +83,22 @@ jobs:
 
       - name: Assert rendered verification wording
         run: ./tests/assert-rendered-site.sh ./_site-check
+
+      - name: Assemble container page fixture source
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture_source=./_container-page-fixture-source
+          rm -rf "${fixture_source}"
+          cp -a ./docs/site "${fixture_source}"
+          rm -rf "${fixture_source}/_containers"
+          cp -a ./tests/fixtures/container-pages/_containers "${fixture_source}/_containers"
+
+      - name: Build container page fixture site
+        uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1
+        with:
+          source: ./_container-page-fixture-source
+          destination: ./_site-container-page-fixture
+
+      - name: Assert rendered container page fixture variants
+        run: ./tests/assert-container-page-fixtures.sh ./_site-container-page-fixture

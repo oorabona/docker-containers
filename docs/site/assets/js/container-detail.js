@@ -848,22 +848,26 @@
       var card = document.querySelector('.security-scan-card');
       if (!card) return;
       var summary = detail.trivy_summary;
+      var header = card.querySelector('.security-scan-card-header h3');
       if (!summary || !summary.display_source) {
-        card.style.display = 'none';
+        card.style.display = '';
+        if (header) {
+          header.textContent = 'Security evidence is not recorded for image ' + (detail.tag || 'this image');
+        }
         return;
       }
       card.style.display = '';
-      var header = card.querySelector('.security-scan-card-header h3');
       if (!header) return;
       var dateStr = (summary.as_of || '').slice(0, 10);
+      var imageTag = detail.tag || 'this image';
       if (summary.display_source === 'code-scanning') {
-        header.textContent = 'Trivy · Code Scanning fetched ' + dateStr;
+        header.textContent = 'Trivy · Code Scanning for image ' + imageTag + ' fetched ' + dateStr;
       } else if (summary.display_source === 'scan-record') {
-        header.textContent = 'Trivy · recorded scan ' + dateStr;
+        header.textContent = 'Trivy · recorded scan for image ' + imageTag + ' ' + dateStr;
       } else if (summary.display_source === 'unavailable') {
-        header.textContent = 'Security evidence unavailable';
+        header.textContent = 'Security evidence unavailable for image ' + imageTag;
       } else {
-        card.style.display = 'none';
+        header.textContent = 'Security evidence is not recorded for image ' + (detail.tag || 'this image');
       }
     });
 
