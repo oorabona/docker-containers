@@ -41,7 +41,10 @@ assert_javascript_label() {
 assert_verification_total_findings_sentence() {
     local surface="$1"
 
-    run grep -qF "$verification_total_findings_sentence" "$surface"
+    # Not -q: quiet grep stops at the first match, so a read failure in the
+    # rest of the file would never surface. Reading it through keeps an I/O
+    # error non-zero.
+    run grep -F -- "$verification_total_findings_sentence" "$surface"
     [ "$status" -eq 0 ] || {
         echo "missing total-findings sentence in $surface" >&2
         return 1
