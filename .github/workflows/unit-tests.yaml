@@ -98,6 +98,7 @@ jobs:
           cp -a ./docs/site "${fixture_source}"
           rm -rf "${fixture_source}/_containers"
           cp -a ./tests/fixtures/container-pages/_containers "${fixture_source}/_containers"
+          cp -a ./tests/fixtures/container-pages/_data/containers.yml "${fixture_source}/_data/containers.yml"
 
       - name: Build container page fixture site
         uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1

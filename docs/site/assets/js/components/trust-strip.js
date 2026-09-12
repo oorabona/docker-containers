@@ -85,6 +85,16 @@
         el.removeAttribute('aria-hidden');
         return;
       }
+      if (source !== 'code-scanning' && source !== 'scan-record') {
+        const fullLabel = 'Security evidence is not recorded for this image';
+        el.setAttribute('data-severity', 'not-recorded');
+        el.textContent = '🛡 not recorded';
+        el.title = fullLabel;
+        el.setAttribute('aria-label', fullLabel);
+        el.style.display = '';
+        el.removeAttribute('aria-hidden');
+        return;
+      }
       const counts = summary.counts || {};
       const critical = counts.critical || 0;
       const high = counts.high || 0;
@@ -108,11 +118,6 @@
       } else if (source === 'scan-record') {
         badgeText = total + ' findings';
         fullLabel = total + ' finding(s) from the recorded scan · scanned ' + date + ' · advisory mode (does not block builds)';
-      } else {
-        el.textContent = '';
-        el.style.display = 'none';
-        el.setAttribute('aria-hidden', 'true');
-        return;
       }
       el.textContent = '🛡 ' + badgeText;
       el.title = fullLabel;

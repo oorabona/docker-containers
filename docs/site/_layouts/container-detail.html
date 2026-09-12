@@ -209,6 +209,11 @@
                   {%- assign trivy_badge_text = trivy_count | append: " findings" -%}
                   {%- capture trivy_full_label -%}{{ trivy_count }} finding(s) from the recorded scan · scanned {{ trivy_date }} · advisory mode (does not block builds){%- endcapture -%}
                 {%- endif -%}
+            {%- elsif trivy_source -%}
+              {%- assign trivy_visible = true -%}
+              {%- assign trivy_sev = "not-recorded" -%}
+              {%- assign trivy_badge_text = "not recorded" -%}
+              {%- assign trivy_full_label = "Security evidence is not recorded for this image" -%}
             {%- endif -%}
             {%- if trivy_visible -%}
               <a class="trust-badge trust-badge--trivy"
@@ -341,7 +346,7 @@
               {%- for _prov_var in _prov_version.variants -%}
                 {%- assign prov_empty_count = 0 -%}
                 {%- unless _prov_var.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-                {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source == "unavailable" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
+                {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source and _prov_var.trivy_summary.display_source != "code-scanning" and _prov_var.trivy_summary.display_source != "scan-record" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
                 {%- unless _prov_var.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
                 {%- unless _prov_var.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
                 {%- unless _prov_var.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
@@ -422,6 +427,8 @@
                 <dd>Recorded scan {{ _prov_var.trivy_summary.as_of | date: "%Y-%m-%d %H:%M UTC" }}</dd>
                 {%- elsif _prov_var.trivy_summary.display_source == "unavailable" -%}
                 <dd class="evidence-empty">evidence unavailable</dd>
+                {%- else -%}
+                <dd class="evidence-empty">evidence not recorded</dd>
                 {%- endif -%}
               </div>
               {%- else -%}
@@ -474,7 +481,7 @@
             {%- for _prov_var in page.variants -%}
               {%- assign prov_empty_count = 0 -%}
               {%- unless _prov_var.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-              {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source == "unavailable" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
+              {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source and _prov_var.trivy_summary.display_source != "code-scanning" and _prov_var.trivy_summary.display_source != "scan-record" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
               {%- unless _prov_var.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
               {%- unless _prov_var.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
               {%- unless _prov_var.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
@@ -555,6 +562,8 @@
                 <dd>Recorded scan {{ _prov_var.trivy_summary.as_of | date: "%Y-%m-%d %H:%M UTC" }}</dd>
                 {%- elsif _prov_var.trivy_summary.display_source == "unavailable" -%}
                 <dd class="evidence-empty">evidence unavailable</dd>
+                {%- else -%}
+                <dd class="evidence-empty">evidence not recorded</dd>
                 {%- endif -%}
               </div>
               {%- else -%}
@@ -602,7 +611,7 @@
             {%- assign prov_variant = page -%}
             {%- assign prov_empty_count = 0 -%}
             {%- unless prov_variant.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-            {%- if prov_variant.trivy_summary and prov_variant.trivy_summary.display_source == "unavailable" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
+            {%- if prov_variant.trivy_summary and prov_variant.trivy_summary.display_source and prov_variant.trivy_summary.display_source != "code-scanning" and prov_variant.trivy_summary.display_source != "scan-record" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
             {%- unless prov_variant.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
             {%- unless prov_variant.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
             {%- unless prov_variant.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
@@ -685,6 +694,8 @@
                 <dd>Recorded scan {{ prov_variant.trivy_summary.as_of | date: "%Y-%m-%d %H:%M UTC" }}</dd>
                 {%- elsif prov_variant.trivy_summary.display_source == "unavailable" -%}
                 <dd class="evidence-empty">evidence unavailable</dd>
+                {%- else -%}
+                <dd class="evidence-empty">evidence not recorded</dd>
                 {%- endif -%}
               </div>
               {%- else -%}
