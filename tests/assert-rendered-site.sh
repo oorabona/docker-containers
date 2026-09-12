@@ -21,7 +21,7 @@ case $# in
     ;;
   *)
     echo "usage: $0 [--with-containers] <rendered-site-directory>" >&2
-    echo "default: checks verify-page panels, FAQ JSON-LD, the Trivy anchor, and raw Liquid in index.html and verify-images/index.html" >&2
+    echo "default: checks verify-page panels, FAQ JSON-LD, the Trivy anchor, and raw Liquid in index.html and verify-images/index.html; extracted text excludes comments and script, style, template, and noscript contents, collapses whitespace, and concatenates document-order text nodes without element separators. It models neither CSS nor runtime JavaScript, so elements hidden by a stylesheet or by script are read." >&2
     echo "--with-containers: additionally checks postgres and sslh container-page variants-table and raw-Liquid claims" >&2
     exit 2
     ;;
@@ -35,22 +35,38 @@ fail() {
   exit 1
 }
 
+assert_token_absent() {
+  local file=$1
+  local pattern=$2
+  local claim=$3
+  local status
+
+  if grep -E -- "${pattern}" "${file}" >/dev/null; then
+    fail "${claim}: ${file}"
+  else
+    status=$?
+    if [[ ${status} -ne 1 ]]; then
+      fail "could not search ${file} for ${claim}; grep exited ${status}"
+    fi
+  fi
+}
+
 [[ -f "${PAGE}" && -s "${PAGE}" ]] || fail 'verify-images/index.html must be a non-empty regular file'
 
 for panel in view-reference view-walkthrough; do
   panel_text=$(python3 "${EXTRACTOR}" text --within "${panel}" "${PAGE}") \
-    || fail "could not extract reader-visible text from ${panel}"
+    || fail "could not extract text from ${panel}"
   grep -Fq -- "${REQUIRED_SENTENCE}" <<<"${panel_text}" \
-    || fail "${panel} reader-visible text is missing the required verification sentence"
+    || fail "${panel} extracted text is missing the required verification sentence"
 done
 
-visible_text=$(python3 "${EXTRACTOR}" text "${PAGE}") \
-  || fail 'could not extract reader-visible text from the whole page'
+extracted_text=$(python3 "${EXTRACTOR}" text "${PAGE}") \
+  || fail 'could not extract text from the whole page'
 
-grep -Fq -- "${REJECTED_VISIBLE_PHRASE}" <<<"${visible_text}" \
-  && fail "reader-visible text contains rejected wording: ${REJECTED_VISIBLE_PHRASE}"
-grep -Fq -- "${REJECTED_SHORT_PHRASE}" <<<"${visible_text}" \
-  && fail "reader-visible text contains rejected wording: ${REJECTED_SHORT_PHRASE}"
+grep -Fq -- "${REJECTED_VISIBLE_PHRASE}" <<<"${extracted_text}" \
+  && fail "extracted text contains rejected wording: ${REJECTED_VISIBLE_PHRASE}"
+grep -Fq -- "${REJECTED_SHORT_PHRASE}" <<<"${extracted_text}" \
+  && fail "extracted text contains rejected wording: ${REJECTED_SHORT_PHRASE}"
 
 jsonld_scripts=$(python3 "${EXTRACTOR}" jsonld "${PAGE}") \
   || fail 'could not extract JSON-LD scripts'
@@ -61,6 +77,15 @@ import json
 import sys
 
 sentence = sys.argv[1]
+
+def reject_duplicate_member(pairs):
+    value = {}
+    for name, member in pairs:
+        if name in value:
+            raise ValueError(f"duplicate JSON member {name!r}")
+        value[name] = member
+    return value
+
 try:
     scripts = json.load(sys.stdin)
 except json.JSONDecodeError as error:
@@ -70,8 +95,8 @@ except json.JSONDecodeError as error:
 faq_pages = []
 for index, script in enumerate(scripts, start=1):
     try:
-        value = json.loads(script)
-    except json.JSONDecodeError as error:
+        value = json.loads(script, object_pairs_hook=reject_duplicate_member)
+    except (json.JSONDecodeError, ValueError) as error:
         print(f"JSON-LD parse error in script {index}: {error}", file=sys.stderr)
         sys.exit(3)
     if isinstance(value, dict) and value.get("@type") == "FAQPage":
@@ -146,16 +171,16 @@ case ${faq_result} in
   *) fail "could not inspect JSON-LD FAQ content: ${faq_result}" ;;
 esac
 
-grep -Fq -- 'id="trivy"' "${PAGE}" \
-  || fail 'verify-images/index.html is missing id="trivy"'
+trivy_count=$(python3 "${EXTRACTOR}" count --id trivy "${PAGE}") \
+  || fail 'could not count elements with id="trivy"'
+[[ ${trivy_count} -eq 1 ]] \
+  || fail "verify-images/index.html must contain exactly one element with id=\"trivy\"; found ${trivy_count}"
 
 # The blog tree is excluded because blog/the-healthcheck-that-wasnt-stripped/index.html
 # legitimately quotes Liquid or Go template syntax as post content.
 for rendered_page in "${SITE_DIR}/index.html" "${PAGE}"; do
   [[ -f ${rendered_page} ]] || fail "required rendered page is missing: ${rendered_page}"
-  if grep -qE '\{\{|\{%' "${rendered_page}"; then
-    fail "rendered page contains raw Liquid syntax: ${rendered_page}"
-  fi
+  assert_token_absent "${rendered_page}" '\{\{|\{%' 'rendered page contains raw Liquid syntax'
 done
 
 if [[ ${WITH_CONTAINERS} == true ]]; then
@@ -163,14 +188,15 @@ if [[ ${WITH_CONTAINERS} == true ]]; then
   sslh_page="${SITE_DIR}/container/sslh/index.html"
   [[ -f ${postgres_page} ]] || fail 'container/postgres/index.html must exist with --with-containers'
   [[ -f ${sslh_page} ]] || fail 'container/sslh/index.html must exist with --with-containers'
-  grep -Fq -- 'class="variants-table"' "${postgres_page}" \
-    || fail 'container/postgres/index.html is missing class="variants-table"'
-  if grep -Fq -- 'class="variants-table"' "${sslh_page}"; then
-    fail 'container/sslh/index.html must not contain class="variants-table"'
-  fi
+  postgres_variants_count=$(python3 "${EXTRACTOR}" count --class variants-table "${postgres_page}") \
+    || fail 'could not count elements whose class list contains "variants-table" in container/postgres/index.html'
+  [[ ${postgres_variants_count} -ge 1 ]] \
+    || fail 'container/postgres/index.html is missing an element whose class list contains "variants-table"'
+  sslh_variants_count=$(python3 "${EXTRACTOR}" count --class variants-table "${sslh_page}") \
+    || fail 'could not count elements whose class list contains "variants-table" in container/sslh/index.html'
+  [[ ${sslh_variants_count} -eq 0 ]] \
+    || fail "container/sslh/index.html must not contain an element whose class list contains \"variants-table\"; found ${sslh_variants_count}"
   for container_page in "${postgres_page}" "${sslh_page}"; do
-    if grep -qE '\{\{|\{%' "${container_page}"; then
-      fail "container page contains raw Liquid syntax: ${container_page}"
-    fi
+    assert_token_absent "${container_page}" '\{\{|\{%' 'container page contains raw Liquid syntax'
   done
 fi

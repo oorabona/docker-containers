@@ -515,11 +515,10 @@ else
   fail "One or more Trivy badge producers lack the advisory state"
 fi
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Phase 3 — Live URL probes (opt-in via --probe; requires internet + curl)
+# Phase 2 — Live URL probes (opt-in via --probe; requires internet + curl)
 # ---------------------------------------------------------------------------
 echo ""
-echo "Phase 3 — Live URL probes"
+echo "Phase 2 — Live URL probes"
 echo "──────────────────────────"
 
 if [[ "${PROBE}" == "false" ]]; then
@@ -527,7 +526,7 @@ if [[ "${PROBE}" == "false" ]]; then
 elif ! command -v curl &>/dev/null; then
   warn "curl not available — cannot run live URL probes"
 else
-  # 16. SBOM attestation URL (sample from first container that has one)
+  # 20. SBOM attestation URL (sample from first container that has one)
   if [[ "${CONTAINERS_YML_AVAILABLE}" -eq 1 ]]; then
     attest_url=$(yq '.[] | select(.versions[0].variants[0].attestation_url != null) | .versions[0].variants[0].attestation_url' \
       "${CONTAINERS_YML}" 2>/dev/null | head -1)
@@ -542,10 +541,10 @@ else
       warn "No attestation_url found in containers.yml to probe"
     fi
   else
-    warn "Skipping check 16 — containers.yml not available"
+    warn "Skipping check 20 — containers.yml not available"
   fi
 
-  # 17. Upstream-monitor workflow page
+  # 21. Upstream-monitor workflow page
   wf_url="https://github.com/oorabona/docker-containers/actions/workflows/upstream-monitor.yaml"
   http_code=$(curl -sI --max-time 10 -o /dev/null -w "%{http_code}" "${wf_url}" 2>/dev/null || true)
   if [[ "${http_code}" == "200" ]]; then
@@ -554,7 +553,7 @@ else
     fail "Upstream-monitor workflow page returned HTTP ${http_code}: ${wf_url}"
   fi
 
-  # 18. GHCR postgres package page
+  # 22. GHCR postgres package page
   ghcr_url="https://github.com/oorabona/docker-containers/pkgs/container/postgres"
   http_code=$(curl -sI --max-time 10 -o /dev/null -w "%{http_code}" "${ghcr_url}" 2>/dev/null || true)
   if [[ "${http_code}" == "200" ]]; then
