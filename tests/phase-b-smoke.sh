@@ -2,7 +2,7 @@
 # Phase B trust-signal layer smoke test
 #
 # Usage:
-#   ./tests/phase-b-smoke.sh           # Run all static + rendered checks
+#   ./tests/phase-b-smoke.sh           # Run all static checks (rendered assertions live in tests/assert-rendered-site.sh)
 #   ./tests/phase-b-smoke.sh --probe   # Also run live URL probes (needs internet)
 #
 # Exit code: 0 if FAIL == 0, 1 otherwise.

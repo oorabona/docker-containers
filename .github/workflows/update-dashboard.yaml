@@ -670,7 +670,7 @@ jobs:
           fi
 
       - name: Assert rendered verification wording
-        run: ./tests/assert-rendered-site.sh ./_site
+        run: ./tests/assert-rendered-site.sh --with-containers ./_site
 
       - name: Remove stale pages artifact
         # On rerun, the build job re-executes (deploy depends on it) and
