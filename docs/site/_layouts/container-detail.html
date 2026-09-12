@@ -706,15 +706,15 @@
               {%- endif -%}
             </header>
             <security-scan id="security" class="security-section" data-current-variant="{{ sec_variant.tag | default: page.current_version }}">
-              {%- assign sec_critical = sec_variant.trivy_summary.counts.critical | default: 0 | plus: 0 -%}
-              {%- assign sec_high = sec_variant.trivy_summary.counts.high | default: 0 | plus: 0 -%}
-              {%- assign sec_medium = sec_variant.trivy_summary.counts.medium | default: 0 | plus: 0 -%}
-              {%- assign sec_low = sec_variant.trivy_summary.counts.low | default: 0 | plus: 0 -%}
-              {%- assign sec_info = sec_variant.trivy_summary.counts.info | default: 0 | plus: 0 -%}
-              {%- assign sec_count = sec_critical | plus: sec_high | plus: sec_medium | plus: sec_low | plus: sec_info -%}
               {%- if sec_variant.trivy_summary.display_source == "unavailable" -%}
               <p class="scan-meta evidence-empty" data-scan="unavailable-message">No security evidence available — Code Scanning could not be read and no usable scan record was found</p>
               {%- else -%}
+              {%- assign sec_critical = sec_variant.trivy_summary.counts.critical | plus: 0 -%}
+              {%- assign sec_high = sec_variant.trivy_summary.counts.high | plus: 0 -%}
+              {%- assign sec_medium = sec_variant.trivy_summary.counts.medium | plus: 0 -%}
+              {%- assign sec_low = sec_variant.trivy_summary.counts.low | plus: 0 -%}
+              {%- assign sec_info = sec_variant.trivy_summary.counts.info | plus: 0 -%}
+              {%- assign sec_count = sec_critical | plus: sec_high | plus: sec_medium | plus: sec_low | plus: sec_info -%}
               <p class="scan-meta">
                 {%- if sec_variant.trivy_summary.display_source == "code-scanning" -%}
                 <span data-scan="summary-label">{{ sec_count }} open Code Scanning alerts · fetched {{ sec_variant.trivy_summary.as_of | date: "%Y-%m-%d" }} · advisory mode (does not block builds)</span>
@@ -752,9 +752,9 @@
               <div class="severity-grid">
                 <div{% if sec_critical > 0 %} class="nonzero"{% endif %}><span class="count{% if sec_critical > 0 %} nonzero{% endif %}" data-scan-count="critical">{{ sec_critical }}</span><span class="label">Critical</span></div>
                 <div{% if sec_high > 0 %} class="nonzero"{% endif %}><span class="count{% if sec_high > 0 %} nonzero{% endif %}" data-scan-count="high">{{ sec_high }}</span><span class="label">High</span></div>
-                <div><span class="count" data-scan-count="medium">{{ sec_variant.trivy_summary.counts.medium | default: 0 }}</span><span class="label">Medium</span></div>
-                <div><span class="count" data-scan-count="low">{{ sec_variant.trivy_summary.counts.low | default: 0 }}</span><span class="label">Low</span></div>
-                <div><span class="count" data-scan-count="info">{{ sec_variant.trivy_summary.counts.info | default: 0 }}</span><span class="label">Info</span></div>
+                <div><span class="count" data-scan-count="medium">{{ sec_medium }}</span><span class="label">Medium</span></div>
+                <div><span class="count" data-scan-count="low">{{ sec_low }}</span><span class="label">Low</span></div>
+                <div><span class="count" data-scan-count="info">{{ sec_info }}</span><span class="label">Info</span></div>
               </div>
 
               {%- if sec_count == 0 and sec_variant.trivy_summary.display_source == "code-scanning" -%}

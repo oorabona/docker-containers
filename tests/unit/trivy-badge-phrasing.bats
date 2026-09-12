@@ -158,6 +158,91 @@ NODE
     [ "$status" -eq 0 ]
 }
 
+@test "browser Trivy renderers preserve all evidence states across a variant switch" {
+    run node - \
+        "$PROJECT_ROOT/docs/site/assets/js/components/security-scan.js" \
+        "$PROJECT_ROOT/docs/site/assets/js/components/trust-strip.js" <<'NODE'
+const fs = require('fs');
+const [securitySource, trustSource] = process.argv.slice(-2).map((file) => fs.readFileSync(file, 'utf8'));
+const listeners = {};
+
+class Element {
+  constructor(tag = '') {
+    this.tag = tag;
+    this.children = [];
+    this.attributes = {};
+    this.style = {};
+    this.className = '';
+    this.textContent = '';
+    this.classList = { add() {}, remove() {} };
+  }
+  appendChild(child) { this.children.push(child); return child; }
+  removeChild(child) { this.children.splice(this.children.indexOf(child), 1); }
+  get firstChild() { return this.children[0] || null; }
+  get childElementCount() { return this.children.filter((child) => child.tag).length; }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return this.attributes[name] || ''; }
+  removeAttribute(name) { delete this.attributes[name]; }
+  closest() { return null; }
+  querySelector() { return null; }
+}
+
+global.HTMLElement = Element;
+global.document = {
+  addEventListener(name, listener) { (listeners[name] ||= []).push(listener); },
+  removeEventListener() {},
+  createElement(tag) { return new Element(tag); },
+  createTextNode(text) { return { textContent: String(text) }; },
+  dispatch(detail) { (listeners['phase-b-variant-changed'] || []).forEach((listener) => listener({ detail })); },
+};
+global.customElements = { define(name, component) { global[name] = component; } };
+eval(securitySource);
+eval(trustSource);
+
+const codeZero = { trivy_summary: { display_source: 'code-scanning', as_of: '2026-09-05T14:00:00Z', counts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 }, top_advisories: [], scan_record: null, code_scanning: { fetched_at: '2026-09-05T14:00:00Z', counts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 }, top_advisories: [] } } };
+const codeFinding = { trivy_summary: { display_source: 'code-scanning', as_of: '2026-09-05T14:00:00Z', counts: { critical: 1, high: 0, medium: 0, low: 0, info: 0 }, top_advisories: [], scan_record: null, code_scanning: { fetched_at: '2026-09-05T14:00:00Z', counts: { critical: 1, high: 0, medium: 0, low: 0, info: 0 }, top_advisories: [] } } };
+const scanRecord = { trivy_summary: { display_source: 'scan-record', as_of: '2026-09-04T14:00:00Z', counts: { critical: 0, high: 1, medium: 0, low: 0, info: 0 }, top_advisories: [], scan_record: { scan_at: '2026-09-04T14:00:00Z', counts: { critical: 0, high: 1, medium: 0, low: 0, info: 0 } }, code_scanning: null } };
+const unavailable = { trivy_summary: { display_source: 'unavailable', as_of: null, counts: null, top_advisories: [], scan_record: null, code_scanning: null } };
+
+function text(node) {
+  return [node.textContent || '', ...(node.children || []).map(text)].join(' ');
+}
+function hasCount(node) {
+  return !!node.attributes && Object.prototype.hasOwnProperty.call(node.attributes, 'data-scan-count')
+    || (node.children || []).some(hasCount);
+}
+function assert(condition, message) { if (!condition) throw new Error(message); }
+
+const security = new global['security-scan']();
+security.connectedCallback();
+document.dispatch(codeZero);
+assert(/No open Code Scanning alerts/.test(text(security)), 'Code-Scanning zero did not render clean observation');
+document.dispatch(codeFinding);
+assert(/1 open Code Scanning alerts/.test(text(security)), 'Code-Scanning finding did not render its count');
+document.dispatch(scanRecord);
+assert(/1 finding\(s\) from the recorded scan/.test(text(security)), 'scan record did not render its count');
+document.dispatch(unavailable);
+assert(/No security evidence available/.test(text(security)), 'unavailable security section did not render neutral state');
+assert(!/\b0\b|No open|No CRITICAL or HIGH/.test(text(security)), 'unavailable security section rendered a number or clean sentence');
+assert(!hasCount(security), 'unavailable security section rendered a severity count');
+
+const trust = new global['trust-strip']();
+const badge = new Element('a');
+trust.querySelector = (selector) => selector === '[data-trust="trivy"]' ? badge : null;
+trust.connectedCallback();
+document.dispatch(codeZero);
+assert(/0 open alerts/.test(badge.textContent), 'Code-Scanning zero badge did not render');
+document.dispatch(codeFinding);
+assert(/1 open alerts/.test(badge.textContent), 'Code-Scanning finding badge did not render');
+document.dispatch(scanRecord);
+assert(/1 findings/.test(badge.textContent), 'scan record badge did not render');
+document.dispatch(unavailable);
+assert(badge.textContent === '🛡 no evidence', 'unavailable badge did not render neutral state');
+assert(!/\d|No open|No CRITICAL or HIGH/.test(badge.textContent + ' ' + badge.attributes['aria-label']), 'unavailable badge rendered a number or clean sentence');
+NODE
+    [ "$status" -eq 0 ]
+}
+
 @test "verification guide mirrors the Code Scanning severity field and filters" {
     local guide="$PROJECT_ROOT/docs/site/verify-images.md"
 

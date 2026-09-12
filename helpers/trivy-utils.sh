@@ -20,7 +20,7 @@ if [[ -z "${_LOGGING_LOADED:-}" ]]; then
 fi
 
 # Empty Trivy summary emitted when neither evidence channel is available.
-_TRIVY_EMPTY='{"display_source":"unavailable","last_scan":null,"as_of":null,"counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"top_advisories":[],"scan_record":null,"code_scanning":null}'
+_TRIVY_EMPTY='{"display_source":"unavailable","last_scan":null,"as_of":null,"counts":null,"top_advisories":[],"scan_record":null,"code_scanning":null}'
 
 # Precomputed per-category summary map (JSON object) — built once by _fetch_trivy_alerts_once.
 # get_trivy_summary does a cheap jq key-lookup against this map instead of re-processing
@@ -111,7 +111,9 @@ def trivy_summary_valid:
   and ($summary.display_source == "code-scanning" or $summary.display_source == "scan-record" or $summary.display_source == "unavailable")
   and ($summary.last_scan == null or ($summary.last_scan | type == "string" and rfc3339))
   and ($summary.as_of == null or ($summary.as_of | type == "string" and rfc3339))
-  and ($summary.counts | trivy_counts)
+  and (if $summary.display_source == "unavailable" then $summary.counts == null
+       else ($summary.counts | trivy_counts)
+       end)
   and ($summary.top_advisories | type == "array" and all(.[]; trivy_advisory))
   and ($summary.scan_record == null or ($summary.scan_record | trivy_scan_record_channel))
   and ($summary.code_scanning == null or ($summary.code_scanning | trivy_code_scanning_channel))
@@ -134,7 +136,7 @@ def trivy_summary_valid:
       and $summary.top_advisories == []
     else
       $summary.as_of == null
-      and $summary.counts == {critical: 0, high: 0, medium: 0, low: 0, info: 0}
+      and $summary.counts == null
       and $summary.top_advisories == []
       and $summary.scan_record == null
       and $summary.code_scanning == null
@@ -246,13 +248,19 @@ _fetch_trivy_alerts_once() {
             # constrained to newline-free scalar values by this validation.
             # U+001F is escaped in compact JSON and cannot occur in the enum
             # or RFC3339 fields, so it safely separates this single jq result.
-            if IFS=$'\x1f' read -r cached_summary_map cached_outcome cached_fetched_at < <(jq -er "$(trivy_rfc3339_jq)"'
-                if type == "object"
+            if IFS=$'\x1f' read -r cached_summary_map cached_outcome cached_fetched_at < <(jq -er "$(trivy_summary_jq)"'
+                . as $envelope
+                | if type == "object"
                    and (keys | sort) == ["fetched_at", "outcome", "summary_map"]
                    and (.outcome == "ok" or .outcome == "unavailable")
                    and (.summary_map | type == "object")
                    and (if .outcome == "ok" then (.fetched_at | type == "string" and rfc3339)
                         else .fetched_at == null end)
+                   # A missing category is a zero-alert observation only after
+                   # the complete cached map has been trusted.
+                   and ([.summary_map[]
+                         | {fetched_at: $envelope.fetched_at} + .
+                         | trivy_code_scanning_channel] | all)
                 then [(.summary_map | tojson), .outcome, (.fetched_at // "")]
                      | join("\u001f")
                 else empty
@@ -437,7 +445,6 @@ get_trivy_summary() {
 
     # This is the sole display resolver: it never merges the two channels.
     jq -cn --argjson scan_record "$scan_channel" --argjson code_scanning "$code_channel" '
-        def zero_counts: {critical: 0, high: 0, medium: 0, low: 0, info: 0};
         (if $code_scanning != null then "code-scanning"
          elif $scan_record != null then "scan-record"
          else "unavailable" end) as $display_source
@@ -446,7 +453,7 @@ get_trivy_summary() {
         | {display_source: $display_source,
            last_scan: (if $scan_record == null then null else $scan_record.scan_at end),
            as_of: (if $display == null then null elif $display_source == "code-scanning" then $display.fetched_at else $display.scan_at end),
-           counts: (if $display == null then zero_counts else $display.counts end),
+           counts: (if $display == null then null else $display.counts end),
            top_advisories: (if $display_source == "code-scanning" then $display.top_advisories else [] end),
            scan_record: $scan_record, code_scanning: $code_scanning}
     '
@@ -491,7 +498,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     _TRIVY_FETCH_OUTCOME="unavailable"
     _TRIVY_FETCHED_AT=""
     result=$(get_trivy_summary "container-missing-latest-linux/amd64")
-    jq -e '.display_source == "unavailable" and .last_scan == null and .as_of == null and .counts == {critical:0,high:0,medium:0,low:0,info:0}' <<<"$result" >/dev/null
+    jq -e '.display_source == "unavailable" and .last_scan == null and .as_of == null and .counts == null' <<<"$result" >/dev/null
     echo "PASS test-3: unavailable API is not fabricated as zero"
     echo "All self-tests passed."
 fi

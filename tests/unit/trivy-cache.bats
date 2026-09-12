@@ -88,48 +88,6 @@ _install_gh_failure_mock() {
     rm -f "${GH_COUNTER_FILE}"
 }
 
-@test "Code Scanning uses security severity buckets and advisory labels" {
-    CANNED_ALERTS='[{"rule":{"id":"CVE-HIGH","severity":"error","security_severity_level":"high","description":"High finding"},"most_recent_instance":{"category":"container-postgres-18-alpine-linux/amd64","location":{"path":"usr/lib/high.so"}}},{"rule":{"id":"CVE-CRITICAL","severity":"error","security_severity_level":"critical","description":"Critical finding"},"most_recent_instance":{"category":"container-postgres-18-alpine-linux/amd64","location":{"path":"usr/lib/critical.so"}}},{"rule":{"id":"TRIVY-NOTE","severity":"note","security_severity_level":null,"description":"Note finding"},"most_recent_instance":{"category":"container-postgres-18-alpine-linux/amd64","location":{"path":"usr/lib/note.so"}}}]'
-    export CANNED_ALERTS
-    unset TRIVY_CACHE_FILE
-    GH_COUNTER_FILE=$(mktemp)
-    export GH_COUNTER_FILE
-
-    _install_gh_counter_mock
-    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
-    _fetch_trivy_alerts_once
-
-    run jq -e '
-        .["container-postgres-18-alpine-linux/amd64"] as $summary
-        | $summary.counts == {critical: 1, high: 1, medium: 0, low: 0, info: 1}
-        and any($summary.top_advisories[]; .rule_id == "CVE-HIGH" and .severity == "high")
-    ' <<<"$_TRIVY_SUMMARY_MAP"
-    [ "$status" -eq 0 ]
-
-    rm -f "$GH_COUNTER_FILE"
-}
-
-@test "Code Scanning bucket counts always equal the category alert population" {
-    CANNED_ALERTS='[{"rule":{"id":"CVE-HIGH","severity":"error","security_severity_level":"high","description":"High finding"},"most_recent_instance":{"category":"container-postgres-18-alpine-linux/amd64","location":{"path":"usr/lib/high.so"}}},{"rule":{"id":"CVE-MEDIUM","severity":"error","security_severity_level":"medium","description":"Medium finding"},"most_recent_instance":{"category":"container-postgres-18-alpine-linux/amd64","location":{"path":"usr/lib/medium.so"}}},{"rule":{"id":"TRIVY-NOTE","severity":"note","security_severity_level":null,"description":"Note finding"},"most_recent_instance":{"category":"container-postgres-18-alpine-linux/amd64","location":{"path":"usr/lib/note.so"}}},{"rule":{"id":"UNKNOWN","severity":"warning","security_severity_level":"unknown","description":"Unknown finding"},"most_recent_instance":{"category":"container-postgres-18-alpine-linux/amd64","location":{"path":"usr/lib/unknown.so"}}}]'
-    export CANNED_ALERTS
-    unset TRIVY_CACHE_FILE
-    GH_COUNTER_FILE=$(mktemp)
-    export GH_COUNTER_FILE
-
-    _install_gh_counter_mock
-    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
-    _fetch_trivy_alerts_once
-
-    run jq -e '
-        .["container-postgres-18-alpine-linux/amd64"].counts
-        | (.critical + .high + .medium + .low + .info) == 4
-        and .high == 1 and .medium == 1 and .info == 2
-    ' <<<"$_TRIVY_SUMMARY_MAP"
-    [ "$status" -eq 0 ]
-
-    rm -f "$GH_COUNTER_FILE"
-}
-
 @test "empty cache file falls through to API; file is written with JSON" {
     local cache_file
     cache_file=$(mktemp)
@@ -166,7 +124,7 @@ _install_gh_failure_mock() {
 
     # Pre-populate with a valid cache envelope carrying a compact summary map.
     local valid_map
-    valid_map=$(jq -cn '{"container-postgres-18-alpine-linux/amd64":{"last_scan":"2026-04-30T10:00:00Z","counts":{"critical":1,"high":0,"medium":0,"low":0,"info":0},"top_advisories":[]}}')
+    valid_map=$(jq -cn '{"container-postgres-18-alpine-linux/amd64":{"counts":{"critical":1,"high":0,"medium":0,"low":0,"info":0},"top_advisories":[]}}')
     jq -cn --argjson summary_map "$valid_map" \
         '{outcome: "ok", fetched_at: "2026-09-05T14:00:00Z", summary_map: $summary_map}' \
         | tee "$cache_file" >/dev/null

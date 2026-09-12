@@ -142,25 +142,34 @@ run_record_parser_failure_with_errexit() {
     [ "$(wc -l < "$calls")" -eq 0 ]
 }
 
-@test "a malformed cross-subshell cache envelope is a cache miss" {
+@test "a malformed cache entry rejects the whole envelope and refetches through get_trivy_summary" {
     local cache_file="$TEST_TEMP_DIR/trivy-cache.json"
     local calls="$TEST_TEMP_DIR/gh-calls"
     : > "$calls"
-    printf '%s\n' '{"summary_map":{}}' > "$cache_file"
+    jq -cn \
+        --arg category "$CATEGORY" \
+        --argjson valid_entry '{"counts":{"critical":0,"high":1,"medium":0,"low":0,"info":0},"top_advisories":[]}' \
+        '{outcome: "ok", fetched_at: "2026-09-05T14:00:00Z", summary_map: {($category): $valid_entry, broken: "garbage"}}' \
+        > "$cache_file"
 
     run bash -c '
         source "$1/helpers/trivy-utils.sh"
         TRIVY_CACHE_FILE="$2"
         calls="$3"
+        category="$4"
         log_warning() { :; }
-        gh() { printf "x\\n" >> "$calls"; return 1; }
+        gh() {
+            printf "x\\n" >> "$calls"
+            printf "%s\\n" "[{\"rule\":{\"id\":\"CVE-refetched\",\"severity\":\"warning\",\"security_severity_level\":\"high\",\"description\":\"Refetched finding\"},\"most_recent_instance\":{\"category\":\"$category\",\"location\":{\"path\":\"usr/lib/refetched.so\"}}}]"
+        }
         unset _TRIVY_FETCH_OUTCOME _TRIVY_FETCHED_AT _TRIVY_SUMMARY_MAP
-        _fetch_trivy_alerts_once
-    ' _ "$PROJECT_ROOT" "$cache_file" "$calls"
+        get_trivy_summary "$category"
+    ' _ "$PROJECT_ROOT" "$cache_file" "$calls" "$CATEGORY"
 
     [ "$status" -eq 0 ]
-    [ -f "$calls" ]
-    [ "$(wc -l < "$calls")" -eq 3 ]
+    [ "$(wc -l < "$calls")" -eq 1 ]
+    run jq -e '.display_source == "code-scanning" and .counts.high == 1 and .top_advisories[0].rule_id == "CVE-refetched"' <<<"$output"
+    [ "$status" -eq 0 ]
 }
 
 @test "parser failure under inherited errexit retains the API result" {
@@ -193,12 +202,40 @@ run_record_parser_failure_with_errexit() {
 }
 
 @test "unavailable API does not fabricate a zero observation" {
+    local unavailable_summary
     _TRIVY_FETCH_OUTCOME=unavailable
     _TRIVY_FETCHED_AT=''
 
     run get_trivy_summary "$CATEGORY"
     [ "$status" -eq 0 ]
-    run jq -e '.display_source == "unavailable" and .display_source != "code-scanning" and .as_of == null and .code_scanning == null and .counts == {critical:0,high:0,medium:0,low:0,info:0}' <<<"$output"
+    unavailable_summary="$output"
+    run jq -e '.display_source == "unavailable" and .display_source != "code-scanning" and .as_of == null and .code_scanning == null and .counts == null' <<<"$unavailable_summary"
+    [ "$status" -eq 0 ]
+    assert_summary_valid "$unavailable_summary"
+    assert_summary_rejected "$(jq -c '.counts = {critical: 0, high: 0, medium: 0, low: 0, info: 0}' <<<"$unavailable_summary")"
+}
+
+@test "a category absent from a validated cache envelope is a zero-alert Code Scanning observation" {
+    local cache_file="$TEST_TEMP_DIR/trivy-cache.json"
+    local calls="$TEST_TEMP_DIR/gh-calls"
+    local other_category='container-other-latest-linux/amd64'
+    : > "$calls"
+    jq -cn --arg other_category "$other_category" \
+        '{outcome: "ok", fetched_at: "2026-09-05T14:00:00Z", summary_map: {($other_category): {counts: {critical: 0, high: 1, medium: 0, low: 0, info: 0}, top_advisories: []}}}' \
+        > "$cache_file"
+
+    run bash -c '
+        source "$1/helpers/trivy-utils.sh"
+        TRIVY_CACHE_FILE="$2"
+        calls="$3"
+        category="$4"
+        gh() { printf "x\\n" >> "$calls"; return 1; }
+        get_trivy_summary "$category"
+    ' _ "$PROJECT_ROOT" "$cache_file" "$calls" "$CATEGORY"
+
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$calls")" -eq 0 ]
+    run jq -e '.display_source == "code-scanning" and .counts == {critical:0,high:0,medium:0,low:0,info:0}' <<<"$output"
     [ "$status" -eq 0 ]
 }
 
