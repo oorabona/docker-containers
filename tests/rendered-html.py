@@ -8,6 +8,9 @@ between elements. It models neither CSS nor runtime JavaScript, so it still
 reads text in an element hidden by a stylesheet or by script.
 The count and attribute commands likewise inspect elements only outside those
 skipped subtrees.
+Duplicate attributes are rejected only on elements a command inspects; markup
+inside a skipped subtree is not read and cannot fail a run. Crossing closes and
+unterminated skipped subtrees remain parse failures.
 A skipped subtree closes only at its matching closing tag. Orphan closing tags
 cannot end one; crossing closes and unterminated skipped subtrees are parse
 failures.
@@ -74,15 +77,26 @@ class VisibleTextParser(SkippedSubtreeParser):
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
-        reject_duplicate_attribute(attrs, "id", tag)
-        attributes = {name.lower(): value for name, value in attrs}
-        if self.within_id is not None and attributes.get("id") == self.within_id:
-            self.match_count += 1
-            if self.match_count == 1:
-                self.match_tag = tag
-                self.match_tag_depth = 1
-                self.match_active = tag not in VOID_ELEMENTS
-        elif self.match_active and tag == self.match_tag and tag not in VOID_ELEMENTS:
+        inspects_element = (
+            not self.in_skipped_subtree and tag not in HIDDEN_ELEMENTS
+        )
+        matches_within_id = False
+        if self.within_id is not None and inspects_element:
+            reject_duplicate_attribute(attrs, "id", tag)
+            attributes = {name.lower(): value for name, value in attrs}
+            if attributes.get("id") == self.within_id:
+                matches_within_id = True
+                self.match_count += 1
+                if self.match_count == 1:
+                    self.match_tag = tag
+                    self.match_tag_depth = 1
+                    self.match_active = tag not in VOID_ELEMENTS
+        if (
+            not matches_within_id
+            and self.match_active
+            and tag == self.match_tag
+            and tag not in VOID_ELEMENTS
+        ):
             self.match_tag_depth += 1
         self.handle_skipped_starttag(tag)
 
@@ -153,17 +167,17 @@ class SelectorCountParser(SkippedSubtreeParser):
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
         attribute = "id" if self.selector_kind == "id" else "class"
-        reject_duplicate_attribute(attrs, attribute, tag)
-        attributes = {name.lower(): value for name, value in attrs}
-        if not self.in_skipped_subtree and tag not in HIDDEN_ELEMENTS and self.selector_kind == "id":
-            if attributes.get("id") == self.value:
+        inspects_element = (
+            not self.in_skipped_subtree and tag not in HIDDEN_ELEMENTS
+        )
+        if inspects_element:
+            reject_duplicate_attribute(attrs, attribute, tag)
+            attributes = {name.lower(): value for name, value in attrs}
+            if self.selector_kind == "id":
+                if attributes.get("id") == self.value:
+                    self.count += 1
+            elif self.value in (attributes.get("class") or "").split():
                 self.count += 1
-        elif (
-            not self.in_skipped_subtree
-            and tag not in HIDDEN_ELEMENTS
-            and self.value in (attributes.get("class") or "").split()
-        ):
-            self.count += 1
         self.handle_skipped_starttag(tag)
 
     def handle_endtag(self, tag):
@@ -183,16 +197,20 @@ class AttributeParser(SkippedSubtreeParser):
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
         selector_attribute = "id" if self.selector_kind == "id" else "class"
-        reject_duplicate_attribute(attrs, selector_attribute, tag)
-        attributes = {name.lower(): value for name, value in attrs}
-        matches_selector = (
-            attributes.get("id") == self.selector_value
-            if self.selector_kind == "id"
-            else self.selector_value in (attributes.get("class") or "").split()
+        inspects_element = (
+            not self.in_skipped_subtree and tag not in HIDDEN_ELEMENTS
         )
-        if not self.in_skipped_subtree and tag not in HIDDEN_ELEMENTS and matches_selector:
-            reject_duplicate_attribute(attrs, self.attribute, tag)
-            self.matches.append(attributes.get(self.attribute))
+        if inspects_element:
+            reject_duplicate_attribute(attrs, selector_attribute, tag)
+            attributes = {name.lower(): value for name, value in attrs}
+            matches_selector = (
+                attributes.get("id") == self.selector_value
+                if self.selector_kind == "id"
+                else self.selector_value in (attributes.get("class") or "").split()
+            )
+            if matches_selector:
+                reject_duplicate_attribute(attrs, self.attribute, tag)
+                self.matches.append(attributes.get(self.attribute))
         self.handle_skipped_starttag(tag)
 
     def handle_endtag(self, tag):

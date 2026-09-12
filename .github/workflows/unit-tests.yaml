@@ -24,6 +24,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Exercise rendered HTML skipped-subtree extractor
+        run: |
+          python3 --version
+          ./tests/rendered-html-skipped-subtree.sh
+
       - name: Install jq
         timeout-minutes: 5
         run: |
