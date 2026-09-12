@@ -18,7 +18,7 @@ setup() {
     export CANNED_ALERTS
 
     # Reset in-process cache vars between tests (re-sourcing resets them too).
-    unset _TRIVY_ALERTS_CACHE _TRIVY_SUMMARY_MAP TRIVY_CACHE_FILE
+    unset _TRIVY_SUMMARY_MAP TRIVY_CACHE_FILE
 }
 
 # ---------------------------------------------------------------------------
@@ -43,6 +43,19 @@ _install_gh_poison() {
         _n=$(cat "${GH_COUNTER_FILE}" 2>/dev/null || echo 0)
         echo $(( _n + 1 )) | tee "${GH_COUNTER_FILE}" >/dev/null
         echo "POISON: gh was called unexpectedly" >&2
+        return 1
+    }
+    export -f gh
+}
+
+# Helper: install a failing gh mock whose stderr is supplied by
+# GH_FAILURE_MESSAGE. Caller must set GH_COUNTER_FILE and GH_FAILURE_MESSAGE.
+_install_gh_failure_mock() {
+    gh() {
+        local _n
+        _n=$(cat "${GH_COUNTER_FILE}" 2>/dev/null || echo 0)
+        printf '%s\n' $(( _n + 1 )) > "${GH_COUNTER_FILE}"
+        printf '%s\n' "${GH_FAILURE_MESSAGE}" >&2
         return 1
     }
     export -f gh
@@ -109,10 +122,12 @@ _install_gh_poison() {
     local cache_file
     cache_file=$(mktemp)
 
-    # Pre-populate with a compact valid summary map.
+    # Pre-populate with a valid cache envelope carrying a compact summary map.
     local valid_map
-    valid_map=$(jq -cn '{"container-postgres-18-alpine-linux/amd64":{"last_scan":"2026-04-30T10:00:00Z","counts":{"critical":1,"high":0,"medium":0,"low":0,"info":0},"top_advisories":[]}}')
-    echo "$valid_map" | tee "$cache_file" >/dev/null
+    valid_map=$(jq -cn '{"container-postgres-18-alpine-linux/amd64":{"counts":{"critical":1,"high":0,"medium":0,"low":0,"info":0},"top_advisories":[]}}')
+    jq -cn --argjson summary_map "$valid_map" \
+        '{outcome: "ok", fetched_at: "2026-09-05T14:00:00Z", summary_map: $summary_map}' \
+        | tee "$cache_file" >/dev/null
     export TRIVY_CACHE_FILE="$cache_file"
 
     GH_COUNTER_FILE=$(mktemp)
@@ -331,4 +346,144 @@ _install_gh_poison() {
     actual=$(jq -r '."container-test-3-linux/amd64".top_advisories[] | select(.rule_id == "HIGH-ERROR") | .severity' \
         <<<"$_TRIVY_SUMMARY_MAP")
     [[ "$actual" == "high" ]] || { echo "expected HIGH-ERROR advisory severity=high, got ${actual:-empty}" >&2; return 1; }
+}
+
+@test "a transport failure containing authentication is retried three times" {
+    unset TRIVY_CACHE_FILE
+    GH_COUNTER_FILE="$BATS_TEST_TMPDIR/authentication-transport-calls"
+    GH_FAILURE_MESSAGE='failed to contact authentication service'
+    export GH_COUNTER_FILE GH_FAILURE_MESSAGE
+    : > "$GH_COUNTER_FILE"
+
+    _install_gh_failure_mock
+    sleep() { :; }
+    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
+
+    _fetch_trivy_alerts_once
+
+    [[ "$(cat "$GH_COUNTER_FILE")" -eq 3 ]]
+    [[ "$_TRIVY_FETCH_OUTCOME" == "unavailable" ]]
+    [[ "$_TRIVY_SUMMARY_MAP" == "{}" ]]
+}
+
+@test "every gh failure shape gets the same three attempts" {
+    unset TRIVY_CACHE_FILE
+    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
+    sleep() { :; }
+
+    local label message
+    while IFS='|' read -r label message; do
+        GH_COUNTER_FILE="$BATS_TEST_TMPDIR/${label}-calls"
+        GH_FAILURE_MESSAGE="$message"
+        export GH_COUNTER_FILE GH_FAILURE_MESSAGE
+        : > "$GH_COUNTER_FILE"
+        _TRIVY_SUMMARY_MAP=''
+        _TRIVY_FETCH_OUTCOME=''
+        _TRIVY_FETCHED_AT=''
+        _install_gh_failure_mock
+
+        _fetch_trivy_alerts_once
+
+        [[ "$(cat "$GH_COUNTER_FILE")" -eq 3 ]] || {
+            printf 'expected three calls for %s, got %s\n' "$label" "$(cat "$GH_COUNTER_FILE")" >&2
+            return 1
+        }
+    done <<'FAILURES'
+http-401|HTTP 401: Bad credentials
+http-403|HTTP 403: Forbidden
+http-429|HTTP 429: Too Many Requests
+unresolvable-host|could not resolve host: api.github.com
+FAILURES
+}
+
+@test "a fresh malformed summary map is unavailable without a refetch through get_trivy_summary" {
+    local calls="$BATS_TEST_TMPDIR/malformed-summary-map-calls"
+    local malformed_category='container-malformed-linux/amd64'
+    local absent_category='container-absent-linux/amd64'
+    : > "$calls"
+
+    run bash -c '
+        source "$1/helpers/trivy-utils.sh"
+        calls="$2"
+        malformed_category="$3"
+        requested_category="$4"
+        log_warning() { :; }
+        gh() {
+            printf "x\\n" >> "$calls"
+            printf "[{\\\"rule\\\":{\\\"id\\\":\\\"CVE-malformed\\\",\\\"severity\\\":\\\"warning\\\",\\\"security_severity_level\\\":\\\"high\\\",\\\"description\\\":{\\\"not\\\":\\\"a string\\\"}},\\\"most_recent_instance\\\":{\\\"category\\\":\\\"%s\\\",\\\"location\\\":{\\\"path\\\":\\\"usr/lib/bad.so\\\"}}}]\\n" "$malformed_category"
+        }
+        get_trivy_summary "$requested_category"
+    ' _ "$PROJECT_ROOT" "$calls" "$malformed_category" "$absent_category"
+
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$calls")" -eq 1 ]
+    run jq -e '.display_source == "unavailable" and .counts == null and .code_scanning == null' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "a well-formed summary map remains an ok Code Scanning observation through get_trivy_summary" {
+    local calls="$BATS_TEST_TMPDIR/well-formed-summary-map-calls"
+    local category='container-well-formed-linux/amd64'
+    : > "$calls"
+
+    run bash -c '
+        source "$1/helpers/trivy-utils.sh"
+        calls="$2"
+        category="$3"
+        gh() {
+            printf "x\\n" >> "$calls"
+            printf "[{\\\"rule\\\":{\\\"id\\\":\\\"CVE-well-formed\\\",\\\"severity\\\":\\\"warning\\\",\\\"security_severity_level\\\":\\\"high\\\",\\\"description\\\":\\\"A well-formed finding\\\"},\\\"most_recent_instance\\\":{\\\"category\\\":\\\"%s\\\",\\\"location\\\":{\\\"path\\\":\\\"usr/lib/good.so\\\"}}}]\\n" "$category"
+        }
+        get_trivy_summary "$category"
+    ' _ "$PROJECT_ROOT" "$calls" "$category"
+
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$calls")" -eq 1 ]
+    run jq -e '.display_source == "code-scanning" and .counts.high == 1 and .top_advisories[0].title == "A well-formed finding"' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "a malformed summary map has the same unavailable verdict on both sides of the cache" {
+    local cache_file="$BATS_TEST_TMPDIR/malformed-summary-map-cache.json"
+    local calls="$BATS_TEST_TMPDIR/malformed-summary-map-cache-calls"
+    local malformed_category='container-malformed-cache-linux/amd64'
+    local absent_category='container-absent-cache-linux/amd64'
+    : > "$calls"
+
+    run bash -c '
+        source "$1/helpers/trivy-utils.sh"
+        cache_file="$2"
+        calls="$3"
+        malformed_category="$4"
+        requested_category="$5"
+        TRIVY_CACHE_FILE="$cache_file"
+        log_warning() { :; }
+        gh() {
+            printf "x\\n" >> "$calls"
+            printf "[{\\\"rule\\\":{\\\"id\\\":\\\"CVE-malformed\\\",\\\"severity\\\":\\\"warning\\\",\\\"security_severity_level\\\":\\\"high\\\",\\\"description\\\":{\\\"not\\\":\\\"a string\\\"}},\\\"most_recent_instance\\\":{\\\"category\\\":\\\"%s\\\",\\\"location\\\":{\\\"path\\\":\\\"usr/lib/bad.so\\\"}}}]\\n" "$malformed_category"
+        }
+        get_trivy_summary "$requested_category"
+    ' _ "$PROJECT_ROOT" "$cache_file" "$calls" "$malformed_category" "$absent_category"
+
+    [ "$status" -eq 0 ]
+    run jq -e '.display_source == "unavailable" and .counts == null' <<<"$output"
+    [ "$status" -eq 0 ]
+    run jq -e '.outcome == "unavailable" and .fetched_at == null and .summary_map == {}' "$cache_file"
+    [ "$status" -eq 0 ]
+
+    run bash -c '
+        source "$1/helpers/trivy-utils.sh"
+        cache_file="$2"
+        calls="$3"
+        requested_category="$4"
+        TRIVY_CACHE_FILE="$cache_file"
+        log_warning() { :; }
+        gh() { printf "unexpected cache refetch\\n" >&2; return 1; }
+        get_trivy_summary "$requested_category"
+    ' _ "$PROJECT_ROOT" "$cache_file" "$calls" "$absent_category"
+
+    [ "$status" -eq 0 ]
+    run jq -e '.display_source == "unavailable" and .counts == null' <<<"$output"
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$calls")" -eq 1 ]
 }

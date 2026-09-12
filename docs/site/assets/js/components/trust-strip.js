@@ -67,39 +67,54 @@
     _updateTrivy(summary) {
       const el = this.querySelector('[data-trust="trivy"]');
       if (!el) return;
-      if (!summary || !summary.last_scan) {
+      if (!summary || !summary.display_source) {
         // WCAG 4.1.2: anchor with display:none must be removed from the AT tree.
+        el.textContent = '';
         el.style.display = 'none';
         el.setAttribute('aria-hidden', 'true');
+        return;
+      }
+      const source = summary.display_source;
+      if (source === 'unavailable') {
+        const fullLabel = 'No security evidence available — Code Scanning could not be read and no usable scan record was found';
+        el.setAttribute('data-severity', 'unknown');
+        el.textContent = '🛡 no evidence';
+        el.title = fullLabel;
+        el.setAttribute('aria-label', fullLabel);
+        el.style.display = '';
+        el.removeAttribute('aria-hidden');
         return;
       }
       const counts = summary.counts || {};
       const critical = counts.critical || 0;
       const high = counts.high || 0;
-      // Pick the count + label of the active severity so the number on the
-      // badge always matches the badge colour. info-level (no CRIT, no HIGH)
-      // surfaces "0" so the chip stays a positive signal rather than blank.
-      let sev, displayCount, compactLabel, ariaSeverity;
+      const total = critical + high + (counts.medium || 0) + (counts.low || 0) + (counts.info || 0);
+      let sev;
       if (critical > 0) {
-        sev = 'critical'; displayCount = critical; compactLabel = 'CRIT'; ariaSeverity = 'CRITICAL';
+        sev = 'critical';
       } else if (high > 0) {
-        sev = 'high';     displayCount = high;     compactLabel = 'HIGH'; ariaSeverity = 'HIGH';
+        sev = 'high';
+      } else if (total > 0) {
+        sev = 'advisory';
       } else {
-        sev = 'info';     displayCount = 0;        compactLabel = '';     ariaSeverity = 'critical / high';
+        sev = 'info';
       }
       el.setAttribute('data-severity', sev);
-      const date = (summary.last_scan || '').slice(0, 10);
-      const fullLabel = displayCount + ' ' + ariaSeverity + ' finding(s) · scanned ' + date + ' · advisory mode (does not block builds)';
-      // Compact label on dashboard cards (narrow width); full label on the
-      // detail-page badge. Both surfaces duplicate the full label into
-      // aria-label so screen-reader / touch users get the same context as
-      // hover-tooltip users.
-      const isCardSurface = !!this.closest('.container-card');
-      if (isCardSurface) {
-        el.textContent = '🛡 ' + displayCount + (compactLabel ? ' ' + compactLabel : '');
+      const date = (summary.as_of || '').slice(0, 10);
+      let badgeText, fullLabel;
+      if (source === 'code-scanning') {
+        badgeText = total + ' open alerts';
+        fullLabel = total + ' open Code Scanning alerts · fetched ' + date + ' · advisory mode (does not block builds)';
+      } else if (source === 'scan-record') {
+        badgeText = total + ' findings';
+        fullLabel = total + ' finding(s) from the recorded scan · scanned ' + date + ' · advisory mode (does not block builds)';
       } else {
-        el.textContent = '🛡 TRIVY: ' + displayCount + ' ' + ariaSeverity + ' (advisory) · SCANNED ' + date;
+        el.textContent = '';
+        el.style.display = 'none';
+        el.setAttribute('aria-hidden', 'true');
+        return;
       }
+      el.textContent = '🛡 ' + badgeText;
       el.title = fullLabel;
       el.setAttribute('aria-label', fullLabel);
       el.style.display = '';

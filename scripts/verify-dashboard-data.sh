@@ -23,6 +23,10 @@ set -euo pipefail
 
 YAML="${1:-docs/site/_data/containers.yml}"
 STRICT="${STRICT:-0}"
+VERIFY_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Keep completeness in lockstep with the producer's evidence contract.
+source "$VERIFY_SCRIPT_DIR/helpers/trivy-utils.sh"
 
 if ! command -v yq >/dev/null 2>&1; then
   echo "::error::yq required (install: https://github.com/mikefarah/yq)" >&2
@@ -78,7 +82,7 @@ fi
 # - has_variants:false path: v_idx is "no-variants"; fields are at container level.
 # - Each (container, version, variant, missing-field) tuple emits one row.
 # - Empty/null/{}/[] all count as missing.
-gaps_tsv=$(jq -r '
+gaps_tsv=$(jq -r "$(trivy_summary_jq)"'
   .[] | .name as $c |
   if (.has_variants != null and .has_variants == false) then
     # Container-level fields (generate-dashboard.sh non-variant path)
@@ -93,12 +97,9 @@ gaps_tsv=$(jq -r '
       .value == "" or
       (.value | type == "object" and length == 0) or
       (.value | type == "array" and length == 0) or
-      # Require last_scan + counts object + counts.critical as number (sentinel for
-      # standard severity keys critical/high/medium/low/info; avoids partial badge renders).
-      (.key == "trivy_summary" and (.value | type == "object") and (
-        (.value.last_scan // null) == null or
-        (.value.counts // null | type) != "object" or
-        ((.value.counts.critical // null | type) != "number")
+      (.key == "trivy_summary" and (
+        (.value | trivy_summary_valid | not) or
+        ((.value | type) == "object" and .value.display_source == "unavailable")
       ))
     ) |
     "\($c)\tno-variants\t-\t-\t\(.key)"
@@ -125,12 +126,9 @@ gaps_tsv=$(jq -r '
         .value == "" or
         (.value | type == "object" and length == 0) or
         (.value | type == "array" and length == 0) or
-        # Require last_scan + counts object + counts.critical as number (sentinel for
-        # standard severity keys critical/high/medium/low/info; avoids partial badge renders).
-        (.key == "trivy_summary" and (.value | type == "object") and (
-          (.value.last_scan // null) == null or
-          (.value.counts // null | type) != "object" or
-          ((.value.counts.critical // null | type) != "number")
+        (.key == "trivy_summary" and (
+          (.value | trivy_summary_valid | not) or
+          ((.value | type) == "object" and .value.display_source == "unavailable")
         ))
       ) |
       "\($c)\t\($v)\t\($i)\t\($tag)\t\(.key)"
@@ -155,12 +153,9 @@ gaps_tsv=$(jq -r '
         .value == "" or
         (.value | type == "object" and length == 0) or
         (.value | type == "array" and length == 0) or
-        # Require last_scan + counts object + counts.critical as number (sentinel for
-        # standard severity keys critical/high/medium/low/info; avoids partial badge renders).
-        (.key == "trivy_summary" and (.value | type == "object") and (
-          (.value.last_scan // null) == null or
-          (.value.counts // null | type) != "object" or
-          ((.value.counts.critical // null | type) != "number")
+        (.key == "trivy_summary" and (
+          (.value | trivy_summary_valid | not) or
+          ((.value | type) == "object" and .value.display_source == "unavailable")
         ))
       ) |
       "\($c)\tsingle\t\($i)\t\($tag)\t\(.key)"

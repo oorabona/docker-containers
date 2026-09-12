@@ -942,7 +942,7 @@
       line-height: var(--line-height-normal);
     }
 
-    /* "→ Full report via gh api" CTA line at the foot of security-scan-card */
+    /* "Verification steps" link at the foot of security-scan-card */
     .full-report {
       font-size: var(--font-size-body-sm);   /* 14px */
       color: var(--color-text-muted);

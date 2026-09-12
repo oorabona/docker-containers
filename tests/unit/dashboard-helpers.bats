@@ -13,6 +13,7 @@ setup() {
     source "$ORIG_DIR/helpers/logging.sh" 2>/dev/null || true
     source "$ORIG_DIR/helpers/variant-utils.sh" 2>/dev/null || true
     source "$ORIG_DIR/generate-dashboard.sh" 2>/dev/null || true
+    source "$ORIG_DIR/helpers/trivy-utils.sh" 2>/dev/null || true
 
     # Override SCRIPT_DIR AFTER sourcing — generate-dashboard.sh line 11
     # sets it to dirname "$0", we need it pointing to our test dir
@@ -215,7 +216,7 @@ EOF
 # non-variant (has_variants:false) code path is exercised end-to-end.
 # ===================================================================
 
-@test "generate_data: non-variant container emits attestation_url and trivy_summary" {
+@test "generate_data: non-variant container emits only a well-formed trivy_summary" {
     # ---- fixture: minimal container directory (no variants.yaml) ----
     mkdir -p "$TEST_DIR/myapp"
     printf '#!/bin/bash\necho "1.2.3"\n' > "$TEST_DIR/myapp/version.sh"
@@ -261,7 +262,11 @@ EOF
     build_trivy_category()           { echo "myapp:1.2.3"; }
     get_attestation_id()             { echo "att-id-xyz"; }
     get_attestation_url()            { echo "https://example.com/att/att-id-xyz"; }
-    get_trivy_summary()              { echo '{"last_scan":"2026-05-04T12:00:00Z","counts":{"critical":0,"high":0,"medium":2,"low":5,"info":0},"top_advisories":[]}'; }
+    TEST_NONVARIANT_TRIVY_SUMMARY='{"display_source":"unavailable","last_scan":null,"as_of":null,"counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"top_advisories":[],"scan_record":null,"code_scanning":null}'
+    get_trivy_summary() {
+        [[ "${TEST_NONVARIANT_TRIVY_FAILURE:-false}" == "true" ]] && return 1
+        printf '%s\n' "$TEST_NONVARIANT_TRIVY_SUMMARY"
+    }
     generate_container_page()        { :; }
     fetch_recent_activity()          { echo "[]"; }
     calculate_build_success_rate()   { echo "5:5:100"; }
@@ -283,12 +288,116 @@ EOF
     [[ "$yml_content" == *"attestation_url"* ]]
     [[ "$yml_content" == *"trivy_summary"* ]]
     [[ "$yml_content" == *"att-id-xyz"* ]]
-    [[ "$yml_content" == *"last_scan"* ]]
+    [[ "$yml_content" == *"display_source: unavailable"* ]]
     # Validate production schema: counts sub-object must be present (not flat critical/high at top level).
     # yq -P serialises {"counts":{"critical":0,...}} as "counts:\n  critical: 0" in YAML.
     [[ "$yml_content" == *"counts:"* ]]
 
+    # An invalid helper object is an internal invariant failure, not ordinary
+    # absence: publish the explicit unavailable state and make it observable.
+    TEST_NONVARIANT_TRIVY_SUMMARY='{"display_source":"scan-record","last_scan":"2026-09-04T00:00:00Z","as_of":"2026-09-04T00:00:00Z","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"top_advisories":[],"scan_record":{"scan_at":"2026-09-04T00:00:00Z","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0}},"code_scanning":{"fetched_at":"2026-09-05T00:00:00Z","counts":{"critical":0,"high":1,"medium":0,"low":0,"info":0},"top_advisories":[]}}'
+    run generate_data
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"invalid helper result"* ]]
+    [[ "$output" == *"myapp:1.2.3"* ]]
+    run yq -e '.[0].trivy_summary.display_source == "unavailable"' "$DATA_FILE"
+    [ "$status" -eq 0 ]
+
+    # A helper failure receives the same treatment rather than the historical
+    # empty-object substitution that omitted trivy_summary altogether.
+    TEST_NONVARIANT_TRIVY_FAILURE=true
+    run generate_data
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"get_trivy_summary failed"* ]]
+    [[ "$output" == *"myapp:1.2.3"* ]]
+    run yq -e '.[0].trivy_summary.display_source == "unavailable"' "$DATA_FILE"
+    [ "$status" -eq 0 ]
+
     rm -f "$TRIVY_CACHE_FILE"
+}
+
+# ===================================================================
+# Variant Trivy-summary emission
+# ===================================================================
+
+_collect_variant_yaml_with_trivy_summary() {
+    variant_image_tag() { printf '%s-%s\n' "$1" "$2"; }
+    variant_property() {
+        case "$3" in
+            description) printf 'Base variant\n' ;;
+            default) printf 'true\n' ;;
+            *) printf '\n' ;;
+        esac
+    }
+    resolve_variant_lineage_json() { printf '%s\n' '{"build_digest":"sha256:variant","base_image":"alpine:3.19"}'; }
+    get_variant_build_args_json() { printf '[]\n'; }
+    get_sbom_summary() { printf '{}\n'; }
+    get_sbom_packages() { printf '{}\n'; }
+    get_changelog() { printf '{}\n'; }
+    get_build_history() { printf '[]\n'; }
+    get_attestation_id() { return 1; }
+    build_trivy_category() { printf 'variant:1.0-base\n'; }
+    get_trivy_summary() {
+        [[ "${TEST_VARIANT_TRIVY_FAILURE:-false}" == "true" ]] && return 1
+        printf '%s\n' "$TEST_TRIVY_SUMMARY"
+    }
+    variant_deps_for_flavor() { printf '[]\n'; }
+
+    collect_variant_json "variant" "$TEST_DIR/variant" "base" "1.0" "1.0" "alpine:3.19" false false 2>/dev/null | yq -P
+}
+
+@test "collect_variant_json: Code Scanning evidence without scan record is emitted" {
+    TEST_TRIVY_SUMMARY='{"display_source":"code-scanning","last_scan":null,"as_of":"2026-09-05T00:00:00Z","counts":{"critical":1,"high":0,"medium":0,"low":0,"info":0},"top_advisories":[],"scan_record":null,"code_scanning":{"fetched_at":"2026-09-05T00:00:00Z","counts":{"critical":1,"high":0,"medium":0,"low":0,"info":0},"top_advisories":[]}}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e '.trivy_summary.display_source == "code-scanning" and .trivy_summary.counts.critical == 1' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json publishes unavailable evidence for a scan record that hides Code Scanning" {
+    TEST_TRIVY_SUMMARY='{"display_source":"scan-record","last_scan":"2026-09-04T00:00:00Z","as_of":"2026-09-04T00:00:00Z","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"top_advisories":[],"scan_record":{"scan_at":"2026-09-04T00:00:00Z","counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0}},"code_scanning":{"fetched_at":"2026-09-05T00:00:00Z","counts":{"critical":0,"high":1,"medium":0,"low":0,"info":0},"top_advisories":[]}}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e '.trivy_summary.display_source == "unavailable"' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json: unavailable evidence is emitted" {
+    TEST_TRIVY_SUMMARY='{"display_source":"unavailable","last_scan":null,"as_of":null,"counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"top_advisories":[],"scan_record":null,"code_scanning":null}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e '.trivy_summary.display_source == "unavailable"' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json: empty Trivy fallback publishes unavailable evidence" {
+    TEST_TRIVY_SUMMARY='{}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e '.trivy_summary.display_source == "unavailable"' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json: malformed Trivy evidence publishes unavailable evidence" {
+    TEST_TRIVY_SUMMARY='{"display_source":"bogus","counts":{"critical":0,"high":"2"}}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e '.trivy_summary.display_source == "unavailable"' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json: Trivy helper failure publishes unavailable evidence" {
+    TEST_VARIANT_TRIVY_FAILURE=true
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e '.trivy_summary.display_source == "unavailable"' <<<"$output"
+    [ "$status" -eq 0 ]
 }
 
 # ===================================================================

@@ -1,11 +1,11 @@
-- name: top-counts-missing
+- name: scan-record-counts-missing
   versions:
     - version: "1.0"
       variants:
         - name: base
-          tag: 1.0-top-counts
+          tag: 1.0-scan-record-counts
           is_default: true
-          attestation_url: "https://example.com/att/top-counts"
+          attestation_url: "https://example.com/att/scan-record-counts"
           multi_arch_platforms: [linux/amd64]
           sbom_summary:
             total_packages: 10
@@ -13,13 +13,13 @@
             display_source: "scan-record"
             last_scan: "2026-05-01T10:00:00Z"
             as_of: "2026-05-01T10:00:00Z"
+            counts:
+              critical: 0
+              high: 0
+              medium: 0
+              low: 0
+              info: 0
             top_advisories: []
             scan_record:
               scan_at: "2026-05-01T10:00:00Z"
-              counts:
-                critical: 0
-                high: 0
-                medium: 0
-                low: 0
-                info: 0
             code_scanning: null
