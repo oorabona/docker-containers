@@ -9,6 +9,32 @@ setup() {
     FIXTURE_COMPLETE="$PROJECT_ROOT/tests/fixtures/containers-complete.yml"
     FIXTURE_MISSING="$PROJECT_ROOT/tests/fixtures/containers-missing.yml"
     FIXTURE_MULTI_VARIANT="$PROJECT_ROOT/tests/fixtures/containers-multi-variant.yml"
+    FIXTURE_TRIVY_NO_COUNTS="$PROJECT_ROOT/tests/fixtures/containers-trivy-no-counts.yml"
+    FIXTURE_TRIVY_NO_SCAN_RECORD_COUNTS="$PROJECT_ROOT/tests/fixtures/containers-trivy-no-scan-record-counts.yml"
+    FIXTURE_TRIVY_EMPTY_COUNTS="$PROJECT_ROOT/tests/fixtures/containers-trivy-empty-counts.yml"
+}
+
+trivy_summary_from_fixture() {
+    local fixture="$1"
+    local container_index="$2"
+
+    yq -o=json ".[$container_index].versions[0].variants[0].trivy_summary" "$fixture"
+}
+
+assert_trivy_summary_valid() {
+    local summary="$1"
+
+    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
+    run jq -e "$(trivy_summary_jq)"'trivy_summary_valid' <<<"$summary"
+    [ "$status" -eq 0 ]
+}
+
+assert_trivy_summary_rejected() {
+    local summary="$1"
+
+    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
+    run jq -e "$(trivy_summary_jq)"'trivy_summary_valid | not' <<<"$summary"
+    [ "$status" -eq 0 ]
 }
 
 @test "verify-dashboard-data: complete fixture exits 0 with notice" {
@@ -72,51 +98,49 @@ setup() {
     [[ "$output" == *"single-version"* ]]
 }
 
-@test "verify-dashboard-data: missing counts in trivy_summary is flagged" {
-    FIXTURE_NO_COUNTS="$PROJECT_ROOT/tests/fixtures/containers-trivy-no-counts.yml"
-    run "$VERIFY_SCRIPT" "$FIXTURE_NO_COUNTS"
+@test "verify-dashboard-data: missing top-level trivy counts is flagged" {
+    local summary repaired_summary
+    summary=$(trivy_summary_from_fixture "$FIXTURE_TRIVY_NO_COUNTS" 0)
+    repaired_summary=$(jq -c '.counts = {critical: 0, high: 0, medium: 0, low: 0, info: 0}' <<<"$summary")
+
+    assert_trivy_summary_rejected "$summary"
+    assert_trivy_summary_valid "$repaired_summary"
+
+    run "$VERIFY_SCRIPT" "$FIXTURE_TRIVY_NO_COUNTS"
     # Advisory mode: exits 0 but must warn
     [ "$status" -eq 0 ]
-    [[ "$output" == *"::warning"* ]]
-    # Must mention trivy_summary and the affected container
-    [[ "$output" == *"trivy_summary"* ]]
-    [[ "$output" == *"myapp"* ]]
+    [[ "$output" == *"Missing trivy_summary for top-counts-missing variant 1.0-top-counts"* ]]
 }
 
-@test "verify-dashboard-data STRICT=1: missing counts in trivy_summary exits 1" {
-    FIXTURE_NO_COUNTS="$PROJECT_ROOT/tests/fixtures/containers-trivy-no-counts.yml"
-    STRICT=1 run "$VERIFY_SCRIPT" "$FIXTURE_NO_COUNTS"
+@test "verify-dashboard-data STRICT=1: missing scan-record trivy counts exits 1" {
+    local summary repaired_summary
+    summary=$(trivy_summary_from_fixture "$FIXTURE_TRIVY_NO_SCAN_RECORD_COUNTS" 0)
+    repaired_summary=$(jq -c '.scan_record.counts = {critical: 0, high: 0, medium: 0, low: 0, info: 0}' <<<"$summary")
+
+    assert_trivy_summary_rejected "$summary"
+    assert_trivy_summary_valid "$repaired_summary"
+
+    STRICT=1 run "$VERIFY_SCRIPT" "$FIXTURE_TRIVY_NO_SCAN_RECORD_COUNTS"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"trivy_summary"* ]]
+    [[ "$output" == *"Missing trivy_summary for scan-record-counts-missing variant 1.0-scan-record-counts"* ]]
 }
 
 @test "verify-dashboard-data: trivy_summary with display_source + empty counts object is flagged" {
-    tmpfile=$(mktemp --suffix=.yml)
-    cat > "$tmpfile" <<'EOF'
-- name: scanonly
-  versions:
-    - version: "2.0"
-      variants:
-        - name: base
-          tag: 2.0-base
-          is_default: true
-          build_digest: "sha256:abcdef"
-          attestation_url: "https://example.com/att/1"
-          multi_arch_platforms:
-            - linux/amd64
-          sbom_summary:
-            total_packages: 10
-          trivy_summary:
-            display_source: "scan-record"
-            last_scan: "2026-05-01T10:00:00Z"
-            counts: {}
-EOF
-    run "$VERIFY_SCRIPT" "$tmpfile"
-    rm -f "$tmpfile"
-    # counts: {} lacks counts.critical — must be flagged
+    local empty_summary control_summary
+    empty_summary=$(trivy_summary_from_fixture "$FIXTURE_TRIVY_EMPTY_COUNTS" 0)
+    control_summary=$(trivy_summary_from_fixture "$FIXTURE_TRIVY_EMPTY_COUNTS" 1)
+
+    assert_trivy_summary_valid "$control_summary"
+    run jq -en --argjson empty "$empty_summary" --argjson control "$control_summary" '
+        ($empty | del(.counts, .scan_record.counts)) == ($control | del(.counts, .scan_record.counts))
+    '
     [ "$status" -eq 0 ]
-    [[ "$output" == *"::warning"* ]]
-    [[ "$output" == *"trivy_summary"* ]]
+    assert_trivy_summary_rejected "$empty_summary"
+
+    run "$VERIFY_SCRIPT" "$FIXTURE_TRIVY_EMPTY_COUNTS"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Missing trivy_summary for empty-counts variant 2.0-empty-counts"* ]]
+    ! [[ "$output" == *"Missing trivy_summary for empty-counts-control variant 2.0-empty-counts-control"* ]]
 }
 
 @test "the canonical unavailable Trivy summary satisfies the evidence validator" {
