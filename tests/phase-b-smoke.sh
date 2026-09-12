@@ -2,7 +2,7 @@
 # Phase B trust-signal layer smoke test
 #
 # Usage:
-#   ./tests/phase-b-smoke.sh           # Run all static + rendered checks
+#   ./tests/phase-b-smoke.sh           # Run all static checks (rendered assertions live in tests/assert-rendered-site.sh)
 #   ./tests/phase-b-smoke.sh --probe   # Also run live URL probes (needs internet)
 #
 # Exit code: 0 if FAIL == 0, 1 otherwise.
@@ -515,89 +515,10 @@ else
   fail "One or more Trivy badge producers lack the advisory state"
 fi
 # ---------------------------------------------------------------------------
-# Phase 2 — Rendered HTML checks (requires jekyll build output in docs/site/_site/)
+# Phase 2 — Live URL probes (opt-in via --probe; requires internet + curl)
 # ---------------------------------------------------------------------------
 echo ""
-echo "Phase 2 — Rendered HTML checks"
-echo "────────────────────────────────"
-
-SITE_DIR="${REPO_ROOT}/docs/site/_site"
-PHASE2_SKIP=false
-
-if [[ ! -d "${SITE_DIR}" ]]; then
-  warn "_site/ not found — run 'bundle exec jekyll build' in docs/site/ first (or check Block I in CI)"
-  PHASE2_SKIP=true
-fi
-
-# Detect stale build: if detail layout is newer than the rendered postgres page,
-# the _site/ predates Phase B. Rendered checks are downgraded to WARN in that case.
-PHASE2_STALE=false
-if [[ "${PHASE2_SKIP}" == "false" ]]; then
-  _pg="${SITE_DIR}/container/postgres/index.html"
-  if [[ -f "${_pg}" && "${DETAIL_HTML}" -nt "${_pg}" ]]; then
-    warn "_site/ appears stale (container-detail.html is newer than rendered postgres page) — re-run jekyll build for definitive Phase 2 results; continuing with degraded checks"
-    PHASE2_STALE=true
-  fi
-fi
-
-if [[ "${PHASE2_SKIP}" == "false" ]]; then
-  VERIFY_HTML="${SITE_DIR}/verify-images/index.html"
-  PG_HTML="${SITE_DIR}/container/postgres/index.html"
-  SSLH_HTML="${SITE_DIR}/container/sslh/index.html"
-  SITE_INDEX="${SITE_DIR}/index.html"
-
-  # 11. verify-images page rendered
-  if [[ -f "${VERIFY_HTML}" ]]; then
-    pass "verify-images/index.html exists in _site/"
-  else
-    fail "verify-images/index.html not found in _site/"
-  fi
-
-  # 12. Trivy anchor in verify-images
-  if grep -q 'id="trivy"' "${VERIFY_HTML}" 2>/dev/null; then
-    pass 'id="trivy" anchor found in verify-images/index.html'
-  else
-    fail 'id="trivy" anchor missing from verify-images/index.html'
-  fi
-
-  # 13. Postgres detail has variants-table
-  if [[ -f "${PG_HTML}" ]]; then
-    if grep -q 'class="variants-table"' "${PG_HTML}" 2>/dev/null; then
-      pass "variants-table present in container/postgres/index.html"
-    elif [[ "${PHASE2_STALE}" == "true" ]]; then
-      warn "variants-table not found in container/postgres/index.html — stale build, rebuild jekyll to confirm"
-    else
-      fail "variants-table NOT found in container/postgres/index.html"
-    fi
-  else
-    warn "container/postgres/index.html not found in _site/ — cannot check variants-table"
-  fi
-
-  # 14. Sslh detail does NOT have variants-table
-  if [[ -f "${SSLH_HTML}" ]]; then
-    if grep -q 'class="variants-table"' "${SSLH_HTML}" 2>/dev/null; then
-      fail "variants-table found in sslh detail page — should only appear for postgres"
-    else
-      pass "variants-table correctly absent from container/sslh/index.html"
-    fi
-  else
-    warn "container/sslh/index.html not found in _site/ — cannot check absence of variants-table"
-  fi
-
-  # 15. No unrendered Liquid in built output
-  raw_liquid=$(grep -lE '\{\{|\{%' "${SITE_INDEX}" "${PG_HTML}" 2>/dev/null | head -1 || true)
-  if [[ -z "${raw_liquid}" ]]; then
-    pass "No raw Liquid syntax ({{ or {%) found in built HTML output"
-  else
-    fail "Unrendered Liquid found in: ${raw_liquid}"
-  fi
-fi
-
-# ---------------------------------------------------------------------------
-# Phase 3 — Live URL probes (opt-in via --probe; requires internet + curl)
-# ---------------------------------------------------------------------------
-echo ""
-echo "Phase 3 — Live URL probes"
+echo "Phase 2 — Live URL probes"
 echo "──────────────────────────"
 
 if [[ "${PROBE}" == "false" ]]; then
@@ -605,7 +526,7 @@ if [[ "${PROBE}" == "false" ]]; then
 elif ! command -v curl &>/dev/null; then
   warn "curl not available — cannot run live URL probes"
 else
-  # 16. SBOM attestation URL (sample from first container that has one)
+  # 20. SBOM attestation URL (sample from first container that has one)
   if [[ "${CONTAINERS_YML_AVAILABLE}" -eq 1 ]]; then
     attest_url=$(yq '.[] | select(.versions[0].variants[0].attestation_url != null) | .versions[0].variants[0].attestation_url' \
       "${CONTAINERS_YML}" 2>/dev/null | head -1)
@@ -620,10 +541,10 @@ else
       warn "No attestation_url found in containers.yml to probe"
     fi
   else
-    warn "Skipping check 16 — containers.yml not available"
+    warn "Skipping check 20 — containers.yml not available"
   fi
 
-  # 17. Upstream-monitor workflow page
+  # 21. Upstream-monitor workflow page
   wf_url="https://github.com/oorabona/docker-containers/actions/workflows/upstream-monitor.yaml"
   http_code=$(curl -sI --max-time 10 -o /dev/null -w "%{http_code}" "${wf_url}" 2>/dev/null || true)
   if [[ "${http_code}" == "200" ]]; then
@@ -632,7 +553,7 @@ else
     fail "Upstream-monitor workflow page returned HTTP ${http_code}: ${wf_url}"
   fi
 
-  # 18. GHCR postgres package page
+  # 22. GHCR postgres package page
   ghcr_url="https://github.com/oorabona/docker-containers/pkgs/container/postgres"
   http_code=$(curl -sI --max-time 10 -o /dev/null -w "%{http_code}" "${ghcr_url}" 2>/dev/null || true)
   if [[ "${http_code}" == "200" ]]; then

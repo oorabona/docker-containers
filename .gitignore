@@ -67,6 +67,9 @@ docs/audit/
 docs/site/_site
 docs/site/.claude
 
+# Written by python3 -m py_compile tests/rendered-html.py
+__pycache__/
+
 # Build lineage metadata (cached in GitHub Actions, not committed)
 .build-lineage/
 

@@ -74,3 +74,12 @@ jobs:
           # run-tests.sh runs all unit/*.bats in one `bats --jobs 4` pass (~9-12 min
           # on the 2-core runner; see timeout-minutes above).
           ./tests/run-tests.sh 2>&1 | tee /tmp/unit-tests.log
+
+      - name: Build rendered site for verification assertion
+        uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1
+        with:
+          source: ./docs/site
+          destination: ./_site-check
+
+      - name: Assert rendered verification wording
+        run: ./tests/assert-rendered-site.sh ./_site-check
