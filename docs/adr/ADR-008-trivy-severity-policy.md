@@ -43,6 +43,10 @@ Specific changes (PR implementing this ADR):
   result is the base; side-channel overlays `last_scan` and `counts` (authoritative for
   pipeline-fresh data). Legacy files without `counts` fall back to the `alert_count` → critical
   back-compat path with no migration required.
+  **Superseded by `docs/adr/ADR-017-trivy-evidence-channels.md`**, which replaces the overlay with two
+  independent observations and a named display source. The overlay described here is what
+  `helpers/trivy-utils.sh` still ships; the legacy `alert_count` → critical path survives the change,
+  inside the scan-record channel.
 
 ## Consequences
 
@@ -65,15 +69,13 @@ Specific changes (PR implementing this ADR):
   project's stated brand value.
 - SARIF uploads are approximately 30% larger (more rules + results). Accepted: the upload step
   already runs `continue-on-error: true`; size increase has no operational impact on builds.
-- Code Scanning indexing lag for non-CRITICAL alerts is longer. Mitigated: the side-channel
-  file is written in-pipeline and is authoritative for dashboard counts only when it is
-  demonstrably not older than the Code Scanning result. When that comparison is unknown, the
-  dashboard keeps the Code Scanning result; persisted cache records can otherwise be stale after
-  a later SARIF upload succeeds but its scan-history artifact upload fails. One case is exempt
-  from that proof: when Code Scanning holds no entry for the category there is nothing to compare
-  against, and the record is overlaid whatever its age. The API is queried for open alerts only, so
-  an absent entry and a container with no open alerts are the same observation, and a stale record
-  can publish counts Code Scanning no longer holds — tracked in oorabona/docker-containers#1716.
+- Code Scanning indexing lag for non-CRITICAL alerts is longer. **The mitigation described here — a
+  timestamp comparison between the side-channel record and the Code Scanning result, with the record
+  overlaid whenever the API held no entry — is superseded by
+  `docs/adr/ADR-017-trivy-evidence-channels.md`**, which reports the two sources as independent
+  observations rather than merging them, makes no comparison between them, and gives the display to a
+  successful fetch whether or not it found alerts. Whether a record describes the image currently
+  published stays unanswered either way, and is tracked in oorabona/docker-containers#1716.
 
 ## Alternatives Rejected
 
