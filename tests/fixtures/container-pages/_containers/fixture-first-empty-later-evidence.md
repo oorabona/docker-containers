@@ -2,7 +2,7 @@
 layout: container-detail
 name: fixture-first-empty-later-evidence
 current_version: current-without-variant
-current_version_confirmed: false
+current_version_confirmed: true
 github_username: fixture-owner
 dockerhub_username: fixture-owner
 has_variants: true

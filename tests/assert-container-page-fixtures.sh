@@ -152,7 +152,71 @@ assert_page() {
   fi
 }
 
+assert_selected_image_consumers() {
+  local container=$1
+  local expected_tag=$2
+  local stale_tag=$3
+  PAGE="${SITE_DIR}/container/${container}/index.html"
+  [[ -f "${PAGE}" && -s "${PAGE}" ]] || fail 'container fixture page must be a non-empty regular file'
+
+  local action_bar_tag
+  action_bar_tag=$(python3 "${EXTRACTOR}" attribute data-default-tag --id variant-action-bar "${PAGE}") \
+    || fail 'could not read data-default-tag from variant-action-bar'
+  [[ ${action_bar_tag} == "${expected_tag}" ]] \
+    || fail "variant-action-bar default tag does not name ${expected_tag}; found ${action_bar_tag}"
+
+  local noscript_markup
+  noscript_markup=$(awk '/<noscript>/{inside=1} inside{print} /<\/noscript>/{exit}' "${PAGE}")
+  [[ -n ${noscript_markup} ]] || fail 'could not extract variant-action-bar noscript markup'
+
+  local selected_pull="docker pull ghcr.io/fixture-owner/${container}:${expected_tag}"
+  if grep -Fq -- "${selected_pull}" <<<"${noscript_markup}"; then
+    :
+  else
+    classify_grep_status $? "noscript pull command does not name selected tag ${expected_tag}"
+  fi
+
+  local selected_verify="cosign verify ghcr.io/fixture-owner/${container}:${expected_tag}"
+  if grep -Fq -- "${selected_verify}" <<<"${noscript_markup}"; then
+    :
+  else
+    classify_grep_status $? "noscript verify command does not name selected tag ${expected_tag}"
+  fi
+
+  if grep -Fq -- "${stale_tag}" <<<"${noscript_markup}"; then
+    classify_grep_status 0 "noscript commands name stale tag ${stale_tag}" absent
+  else
+    classify_grep_status $? "could not check noscript commands for stale tag ${stale_tag}" absent
+  fi
+
+  local provenance_sections
+  local grep_status
+  set +e
+  provenance_sections=$(grep -oE -- '<section class="provenance"[^>]*>' "${PAGE}")
+  grep_status=$?
+  set -e
+  classify_grep_status "${grep_status}" 'could not find provenance sections'
+
+  local visible_provenance_count=0
+  local visible_provenance_tag=''
+  local provenance_section
+  while IFS= read -r provenance_section; do
+    if [[ ${provenance_section} != *'style="display:none"'* ]]; then
+      visible_provenance_count=$((visible_provenance_count + 1))
+      case ${provenance_section} in
+        *"data-variant-tag=\"${expected_tag}\""*) visible_provenance_tag=${expected_tag} ;;
+        *) visible_provenance_tag=other ;;
+      esac
+    fi
+  done <<<"${provenance_sections}"
+  [[ ${visible_provenance_count} -eq 1 ]] \
+    || fail "expected exactly one visible provenance section; found ${visible_provenance_count}"
+  [[ ${visible_provenance_tag} == "${expected_tag}" ]] \
+    || fail "visible provenance section does not name ${expected_tag}"
+}
+
 assert_page fixture-first-empty-later-evidence retained-evidence-alpine evidenced 2026-09-12 0 1 0 0 0 pending retained-evidence-sibling
+assert_selected_image_consumers fixture-first-empty-later-evidence retained-evidence-alpine current-without-variant
 assert_page fixture-no-security-evidence no-evidence-alpine absent '' '' '' '' '' '' pending ''
 assert_page fixture-selected-security-evidence selected-evidence-alpine evidenced 2026-09-12 0 0 0 0 0 pending selected-evidence-sibling
 assert_page fixture-contract-invalid-security-evidence bogus-source-alpine not-recorded '' '' '' '' '' '' attested ''

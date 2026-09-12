@@ -7,9 +7,10 @@
   Data model expected on page.*:
     page.name            — container slug
     page.github_username — registry owner
-    page.current_version — default tag
+    page.current_version — fallback default tag when no variant resolves
     page.versions[]      — array of { tag, base_tag, variants[] } (multi-version containers)
     page.variants[]      — flat array of variants (single-version containers)
+    selected_variant_tag — resolved selected image tag from the enclosing layout
 
   The JS component tolerates missing versions/variants gracefully (single-image
   containers will show only the pull + verify commands and a signals strip).
@@ -94,19 +95,40 @@
 
 {%- assign _vab_default_version = "" -%}
 {%- assign _vab_default_flavor = "" -%}
+{%- assign _vab_default_tag = page.current_version -%}
 {%- if page.versions and page.versions.size > 0 -%}
   {%- assign _vab_default_version = page.versions[0].base_tag | default: page.versions[0].tag -%}
   {%- if page.versions[0].variants[0].name -%}
     {%- assign _vab_default_flavor = page.versions[0].variants[0].name -%}
   {%- endif -%}
 {%- endif -%}
+{%- if page.versions -%}
+  {%- for _vab_ver in page.versions -%}
+    {%- for _vab_v in _vab_ver.variants -%}
+      {%- if _vab_v.tag == selected_variant_tag -%}
+        {%- assign _vab_default_tag = _vab_v.tag -%}
+        {%- assign _vab_default_version = _vab_ver.base_tag | default: _vab_ver.tag -%}
+        {%- assign _vab_default_flavor = _vab_v.name | default: "" -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endfor -%}
+{%- elsif page.variants -%}
+  {%- for _vab_v in page.variants -%}
+    {%- if _vab_v.tag == selected_variant_tag -%}
+      {%- assign _vab_default_tag = _vab_v.tag -%}
+      {%- assign _vab_default_version = "" -%}
+      {%- assign _vab_default_flavor = _vab_v.tag -%}
+    {%- endif -%}
+  {%- endfor -%}
+{%- endif -%}
 
 {%- capture _vab_registries -%}[{"id":"ghcr","label":"GHCR"},{"id":"dockerhub","label":"Docker Hub"}]{%- endcapture -%}
 
 <section id="variants-pull" class="vab-section" aria-label="Variant selector and pull commands">
   <variant-action-bar
+    id="variant-action-bar"
     data-container="{{ page.name | escape }}"
-    data-default-tag="{{ page.current_version | escape }}"
+    data-default-tag="{{ _vab_default_tag | escape }}"
     data-default-version="{{ _vab_default_version | escape }}"
     data-default-flavor="{{ _vab_default_flavor | escape }}"
     data-versions="{{ _vab_ver_arr | strip | escape }}"
@@ -120,8 +142,8 @@
   <noscript>
     <div class="vab-noscript">
       <p class="vab-noscript-label">JavaScript is disabled — showing default variant.</p>
-      <pre><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ page.current_version | escape }}</code></pre>
-      <pre><code>cosign verify ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ page.current_version | escape }} \
+      <pre><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _vab_default_tag | escape }}</code></pre>
+      <pre><code>cosign verify ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _vab_default_tag | escape }} \
   --certificate-identity-regexp=https://github.com/{{ page.github_username | escape }} \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com</code></pre>
       {%- if page.versions or page.variants -%}

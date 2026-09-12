@@ -325,6 +325,37 @@
               variants carry a real build_digest while last_build_iso is
               still absent from containers.yml.
           {%- endcomment -%}
+          {%- assign _prov_selected_available = false -%}
+          {%- if page.versions -%}
+            {%- for _prov_version in page.versions -%}
+              {%- for _prov_var in _prov_version.variants -%}
+                {%- assign _prov_selected_empty_count = 0 -%}
+                {%- unless _prov_var.attestation_url -%}{%- assign _prov_selected_empty_count = _prov_selected_empty_count | plus: 1 -%}{%- endunless -%}
+                {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source == "unavailable" -%}{%- assign _prov_selected_empty_count = _prov_selected_empty_count | plus: 1 -%}{%- endif -%}
+                {%- unless _prov_var.build_digest -%}{%- assign _prov_selected_empty_count = _prov_selected_empty_count | plus: 1 -%}{%- endunless -%}
+                {%- unless _prov_var.multi_arch_index_digest -%}{%- assign _prov_selected_empty_count = _prov_selected_empty_count | plus: 1 -%}{%- endunless -%}
+                {%- unless _prov_var.manifest_digest_amd64 -%}{%- assign _prov_selected_empty_count = _prov_selected_empty_count | plus: 1 -%}{%- endunless -%}
+                {%- unless _prov_var.manifest_digest_arm64 -%}{%- assign _prov_selected_empty_count = _prov_selected_empty_count | plus: 1 -%}{%- endunless -%}
+                {%- if _prov_var.tag == selected_variant_tag and _prov_selected_empty_count < 6 -%}
+                  {%- assign _prov_selected_available = true -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endfor -%}
+          {%- elsif page.variants -%}
+            {%- for _prov_var in page.variants -%}
+              {%- assign _prov_selected_empty_count = 0 -%}
+              {%- unless _prov_var.attestation_url -%}{%- assign _prov_selected_empty_count = _prov_selected_empty_count | plus: 1 -%}{%- endunless -%}
+              {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source == "unavailable" -%}{%- assign _prov_selected_empty_count = _prov_selected_empty_count | plus: 1 -%}{%- endif -%}
+              {%- unless _prov_var.build_digest -%}{%- assign _prov_selected_empty_count = _prov_selected_empty_count | plus: 1 -%}{%- endunless -%}
+              {%- unless _prov_var.multi_arch_index_digest -%}{%- assign _prov_selected_empty_count = _prov_selected_empty_count | plus: 1 -%}{%- endunless -%}
+              {%- unless _prov_var.manifest_digest_amd64 -%}{%- assign _prov_selected_empty_count = _prov_selected_empty_count | plus: 1 -%}{%- endunless -%}
+              {%- unless _prov_var.manifest_digest_arm64 -%}{%- assign _prov_selected_empty_count = _prov_selected_empty_count | plus: 1 -%}{%- endunless -%}
+              {%- if _prov_var.tag == selected_variant_tag and _prov_selected_empty_count < 6 -%}
+                {%- assign _prov_selected_available = true -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endif -%}
+
           {%- if page.versions -%}
             {%- comment -%}
               P0-N2 fix: heading lifted OUT of the per-variant loop.
@@ -347,7 +378,13 @@
                 {%- unless _prov_var.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
                 {%- unless _prov_var.manifest_digest_arm64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
                 {%- if prov_empty_count < 6 -%}
-          <section class="provenance" data-variant-tag="{{ _prov_var.tag }}"{% unless _prov_first %} style="display:none"{% endunless %} aria-labelledby="provenance-heading">
+                  {%- assign _prov_hidden = false -%}
+                  {%- if _prov_selected_available -%}
+                    {%- unless _prov_var.tag == selected_variant_tag -%}{%- assign _prov_hidden = true -%}{%- endunless -%}
+                  {%- elsif _prov_first == false -%}
+                    {%- assign _prov_hidden = true -%}
+                  {%- endif -%}
+          <section class="provenance" data-variant-tag="{{ _prov_var.tag }}"{% if _prov_hidden %} style="display:none"{% endif %} aria-labelledby="provenance-heading">
             <dl class="evidence-list">
               {%- if page.last_commit_short or site.github.build_revision -%}
               <div class="evidence-row">
@@ -480,7 +517,13 @@
               {%- unless _prov_var.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
               {%- unless _prov_var.manifest_digest_arm64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
               {%- if prov_empty_count < 6 -%}
-          <section class="provenance" data-variant-tag="{{ _prov_var.tag }}"{% unless _prov_first %} style="display:none"{% endunless %} aria-labelledby="provenance-heading">
+                {%- assign _prov_hidden = false -%}
+                {%- if _prov_selected_available -%}
+                  {%- unless _prov_var.tag == selected_variant_tag -%}{%- assign _prov_hidden = true -%}{%- endunless -%}
+                {%- elsif _prov_first == false -%}
+                  {%- assign _prov_hidden = true -%}
+                {%- endif -%}
+          <section class="provenance" data-variant-tag="{{ _prov_var.tag }}"{% if _prov_hidden %} style="display:none"{% endif %} aria-labelledby="provenance-heading">
             <dl class="evidence-list">
               {%- if page.last_commit_short or site.github.build_revision -%}
               <div class="evidence-row">
