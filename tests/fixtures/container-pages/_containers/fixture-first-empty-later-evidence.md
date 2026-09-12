@@ -25,5 +25,19 @@ versions:
             low: 0
             info: 0
           top_advisories: []
+      - name: sibling
+        tag: retained-evidence-sibling
+        attestation_url: https://example.test/attestations/retained-evidence-sibling
+        attestation_id: retained-evidence-sibling-attestation
+        trivy_summary:
+          display_source: code-scanning
+          as_of: "2026-09-11"
+          counts:
+            critical: 1
+            high: 0
+            medium: 2
+            low: 3
+            info: 4
+          top_advisories: []
 ---
 # Fixture: selected later evidenced variant

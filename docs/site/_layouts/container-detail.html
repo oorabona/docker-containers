@@ -173,13 +173,19 @@
                rel="noopener noreferrer"
                >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM ATTESTED{% else %}📋 SBOM PENDING{% endif %}</a>
 
-            {%- if default_variant.trivy_summary and default_variant.trivy_summary.display_source -%}
-              {%- assign trivy_source = default_variant.trivy_summary.display_source -%}
-              {%- if trivy_source == "unavailable" -%}
-                {%- assign trivy_sev = "unknown" -%}
-                {%- assign trivy_badge_text = "no evidence" -%}
-                {%- assign trivy_full_label = "No security evidence available — Code Scanning could not be read and no usable scan record was found" -%}
-              {%- else -%}
+            {%- assign trivy_source = default_variant.trivy_summary.display_source -%}
+            {%- assign trivy_visible = false -%}
+            {%- assign trivy_count = 0 -%}
+            {%- assign trivy_sev = nil -%}
+            {%- assign trivy_badge_text = nil -%}
+            {%- assign trivy_full_label = nil -%}
+            {%- if trivy_source == "unavailable" -%}
+              {%- assign trivy_visible = true -%}
+              {%- assign trivy_sev = "unknown" -%}
+              {%- assign trivy_badge_text = "no evidence" -%}
+              {%- assign trivy_full_label = "No security evidence available — Code Scanning could not be read and no usable scan record was found" -%}
+            {%- elsif trivy_source == "code-scanning" or trivy_source == "scan-record" -%}
+              {%- assign trivy_visible = true -%}
                 {%- assign trivy_critical = default_variant.trivy_summary.counts.critical | plus: 0 -%}
                 {%- assign trivy_high     = default_variant.trivy_summary.counts.high     | plus: 0 -%}
                 {%- assign trivy_medium   = default_variant.trivy_summary.counts.medium   | plus: 0 -%}
@@ -203,7 +209,8 @@
                   {%- assign trivy_badge_text = trivy_count | append: " findings" -%}
                   {%- capture trivy_full_label -%}{{ trivy_count }} finding(s) from the recorded scan · scanned {{ trivy_date }} · advisory mode (does not block builds){%- endcapture -%}
                 {%- endif -%}
-              {%- endif -%}
+            {%- endif -%}
+            {%- if trivy_visible -%}
               <a class="trust-badge trust-badge--trivy"
                  data-trust="trivy"
                  data-severity="{{ trivy_sev }}"
@@ -741,7 +748,7 @@
               <p class="scan-meta evidence-empty" data-scan="no-evidence-message">No security evidence is recorded for image {{ selected_variant_tag }}. This is different from an unavailable source, which means a source was tried but could not be read.</p>
               {%- elsif sec_variant.trivy_summary.display_source == "unavailable" -%}
               <p class="scan-meta evidence-empty" data-scan="unavailable-message">No security evidence available — Code Scanning could not be read and no usable scan record was found</p>
-              {%- else -%}
+              {%- elsif sec_variant.trivy_summary.display_source == "code-scanning" or sec_variant.trivy_summary.display_source == "scan-record" -%}
               {%- assign sec_critical = sec_variant.trivy_summary.counts.critical | plus: 0 -%}
               {%- assign sec_high = sec_variant.trivy_summary.counts.high | plus: 0 -%}
               {%- assign sec_medium = sec_variant.trivy_summary.counts.medium | plus: 0 -%}
@@ -806,6 +813,8 @@
               </div>
 
               <p class="full-report">→ See <a href="{{ '/verify-images/' | relative_url }}#trivy">verification steps</a>.</p>
+              {%- else -%}
+              <p class="scan-meta evidence-empty" data-scan="no-evidence-message">No security evidence is recorded for image {{ selected_variant_tag }}. This is different from an unavailable source, which means a source was tried but could not be read.</p>
               {%- endif -%}
             </security-scan>
             <footer class="security-scan-card-footer">

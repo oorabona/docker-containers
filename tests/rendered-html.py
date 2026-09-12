@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Extract rendered HTML text, JSON-LD script bodies, or element counts.
+"""Extract rendered HTML text, JSON-LD script bodies, element counts, or attributes.
 
 The text command emits text outside comments and outside the contents of script,
 style, template, and noscript elements. It collapses runs of whitespace to one
 space and concatenates text nodes in document order without adding separators
 between elements. It models neither CSS nor runtime JavaScript, so it still
 reads text in an element hidden by a stylesheet or by script.
-The count command likewise counts elements only outside those skipped subtrees.
+The count and attribute commands likewise inspect elements only outside those
+skipped subtrees.
 A skipped subtree closes only at its matching closing tag. Orphan closing tags
 cannot end one; crossing closes and unterminated skipped subtrees are parse
 failures.
@@ -169,6 +170,35 @@ class SelectorCountParser(SkippedSubtreeParser):
         self.handle_skipped_endtag(tag.lower())
 
 
+class AttributeParser(SkippedSubtreeParser):
+    """Read one attribute from the one element matched by a selector."""
+
+    def __init__(self, selector_kind, selector_value, attribute):
+        super().__init__(convert_charrefs=True)
+        self.selector_kind = selector_kind
+        self.selector_value = selector_value
+        self.attribute = attribute.lower()
+        self.matches = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        selector_attribute = "id" if self.selector_kind == "id" else "class"
+        reject_duplicate_attribute(attrs, selector_attribute, tag)
+        attributes = {name.lower(): value for name, value in attrs}
+        matches_selector = (
+            attributes.get("id") == self.selector_value
+            if self.selector_kind == "id"
+            else self.selector_value in (attributes.get("class") or "").split()
+        )
+        if not self.in_skipped_subtree and tag not in HIDDEN_ELEMENTS and matches_selector:
+            reject_duplicate_attribute(attrs, self.attribute, tag)
+            self.matches.append(attributes.get(self.attribute))
+        self.handle_skipped_starttag(tag)
+
+    def handle_endtag(self, tag):
+        self.handle_skipped_endtag(tag.lower())
+
+
 def reject_duplicate_attribute(attrs, attribute, tag):
     """Reject attributes this parser reads for a decision when repeated."""
     if sum(name.lower() == attribute for name, _value in attrs) > 1:
@@ -194,6 +224,7 @@ def usage():
         "       rendered-html.py text --within <element-id> <html-file>\n"
         "       rendered-html.py jsonld <html-file>\n"
         "       rendered-html.py count (--id <value> | --class <token>) <html-file>\n"
+        "       rendered-html.py attribute <attribute> (--id <value> | --class <token>) <html-file>\n"
         "text reads text outside comments and script, style, template, and noscript contents; "
         "it collapses whitespace and concatenates document-order text nodes without element "
         "separators. It models neither CSS nor runtime JavaScript, so it reads elements hidden "
@@ -213,7 +244,12 @@ def main(argv):
         and argv[1] == "count"
         and argv[2] in {"--id", "--class"}
     )
-    if not (text_command or within_text_command or jsonld_command or count_command):
+    attribute_command = (
+        len(argv) == 6
+        and argv[1] == "attribute"
+        and argv[3] in {"--id", "--class"}
+    )
+    if not (text_command or within_text_command or jsonld_command or count_command or attribute_command):
         usage()
         return 2
 
@@ -224,6 +260,8 @@ def main(argv):
         parser = VisibleTextParser(within_id)
     elif command == "jsonld":
         parser = JsonLdParser()
+    elif command == "attribute":
+        parser = AttributeParser(argv[3][2:], argv[4], argv[2])
     else:
         parser = SelectorCountParser(argv[2][2:], argv[3])
     try:
@@ -246,6 +284,21 @@ def main(argv):
         print(" ".join("".join(parser.text_parts).split()))
     elif command == "jsonld":
         print(json.dumps(parser.scripts))
+    elif command == "attribute":
+        selector = f"{argv[3]} {argv[4]!r}"
+        if len(parser.matches) == 0:
+            print(f"rendered-html.py: no element matches {selector}", file=sys.stderr)
+            return 1
+        if len(parser.matches) > 1:
+            print(f"rendered-html.py: more than one element matches {selector}", file=sys.stderr)
+            return 1
+        if parser.matches[0] is None:
+            print(
+                f"rendered-html.py: element matching {selector} has no {argv[2]} attribute",
+                file=sys.stderr,
+            )
+            return 1
+        print(parser.matches[0])
     else:
         print(parser.count)
     return 0

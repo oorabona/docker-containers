@@ -22,5 +22,19 @@ versions:
             low: 0
             info: 0
           top_advisories: []
+      - name: sibling
+        tag: selected-evidence-sibling
+        attestation_url: https://example.test/attestations/selected-evidence-sibling
+        attestation_id: selected-evidence-sibling-attestation
+        trivy_summary:
+          display_source: scan-record
+          as_of: "2026-09-11"
+          counts:
+            critical: 1
+            high: 2
+            medium: 3
+            low: 4
+            info: 5
+          top_advisories: []
 ---
 # Fixture: selected evidenced variant
