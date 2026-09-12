@@ -22,6 +22,11 @@
       + '. This is different from an unavailable source, which means a source was tried but could not be read.';
   }
 
+  function unreadableEvidenceMessage(tag) {
+    return 'The security evidence payload for image ' + (tag || 'this image')
+      + ' could not be read.';
+  }
+
   class SecurityScan extends HTMLElement {
     connectedCallback() {
       this._handler = (e) => this._update(e.detail);
@@ -33,6 +38,16 @@
     }
 
     _update(variant) {
+      if (variant && variant.trivy_summary_state === 'unreadable') {
+        this.style.display = '';
+        while (this.firstChild) this.removeChild(this.firstChild);
+        const unreadable = document.createElement('p');
+        unreadable.className = 'scan-meta evidence-empty';
+        unreadable.setAttribute('data-scan', 'unreadable-message');
+        unreadable.textContent = unreadableEvidenceMessage(variant.tag);
+        this.appendChild(unreadable);
+        return;
+      }
       if (!variant || !variant.trivy_summary || !variant.trivy_summary.display_source) {
         this.style.display = '';
         while (this.firstChild) this.removeChild(this.firstChild);

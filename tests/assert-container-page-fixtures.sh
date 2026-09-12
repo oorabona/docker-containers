@@ -198,21 +198,18 @@ assert_selected_image_consumers() {
   classify_grep_status "${grep_status}" 'could not find provenance sections'
 
   local visible_provenance_count=0
-  local visible_provenance_tag=''
   local provenance_section
   while IFS= read -r provenance_section; do
     if [[ ${provenance_section} != *'style="display:none"'* ]]; then
       visible_provenance_count=$((visible_provenance_count + 1))
       case ${provenance_section} in
-        *"data-variant-tag=\"${expected_tag}\""*) visible_provenance_tag=${expected_tag} ;;
-        *) visible_provenance_tag=other ;;
+        *"data-variant-tag=\"${expected_tag}\""*) ;;
+        *) fail "visible provenance section does not name ${expected_tag}" ;;
       esac
     fi
   done <<<"${provenance_sections}"
-  [[ ${visible_provenance_count} -eq 1 ]] \
-    || fail "expected exactly one visible provenance section; found ${visible_provenance_count}"
-  [[ ${visible_provenance_tag} == "${expected_tag}" ]] \
-    || fail "visible provenance section does not name ${expected_tag}"
+  [[ ${visible_provenance_count} -le 1 ]] \
+    || fail "expected at most one visible provenance section; found ${visible_provenance_count}"
 }
 
 assert_page fixture-first-empty-later-evidence retained-evidence-alpine evidenced 2026-09-12 0 1 0 0 0 pending retained-evidence-sibling

@@ -70,11 +70,20 @@
         attestation_url: el.dataset.attestationUrl || '',
         attestation_id: el.dataset.attestationId || '',
         trivy_summary: null,
+        // Each dispatch starts absent, becomes parsed only after JSON.parse(), or
+        // unreadable on parse failure. Rebuilding it here prevents stale state.
+        trivy_summary_state: 'absent',
         multi_arch_platforms: []
       };
       try {
-        if (el.dataset.trivySummary) variantData.trivy_summary = JSON.parse(el.dataset.trivySummary);
-      } catch (e) { /* swallow */ }
+        if (Object.prototype.hasOwnProperty.call(el.dataset, 'trivySummary')) {
+          variantData.trivy_summary = JSON.parse(el.dataset.trivySummary);
+          variantData.trivy_summary_state = 'parsed';
+        }
+      } catch {
+        variantData.trivy_summary = null;
+        variantData.trivy_summary_state = 'unreadable';
+      }
       try {
         if (el.dataset.multiArchPlatforms) variantData.multi_arch_platforms = JSON.parse(el.dataset.multiArchPlatforms);
       } catch (e) { /* swallow */ }
@@ -849,6 +858,13 @@
       if (!card) return;
       var summary = detail.trivy_summary;
       var header = card.querySelector('.security-scan-card-header h3');
+      if (detail.trivy_summary_state === 'unreadable') {
+        card.style.display = '';
+        if (header) {
+          header.textContent = 'Security evidence could not be read for image ' + (detail.tag || 'this image');
+        }
+        return;
+      }
       if (!summary || !summary.display_source) {
         card.style.display = '';
         if (header) {
