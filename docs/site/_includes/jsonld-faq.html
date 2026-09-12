@@ -22,7 +22,7 @@
       "name": "Why does the dashboard show Trivy scan results are advisory?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Trivy runs as continue-on-error in CI. The build does not fail when CVEs are detected; it surfaces the count for the operator to triage. Use the count as input to your image-acceptance policy, not as a blocking gate."
+        "text": "Trivy runs as continue-on-error in CI. The build does not fail when findings are detected; it surfaces the total reported count for the operator to triage. Use the count as input to your image-acceptance policy, not as a blocking gate."
       }
     },
     {

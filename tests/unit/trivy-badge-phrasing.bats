@@ -9,6 +9,9 @@ setup() {
     javascript_unavailable_label="        const fullLabel = 'No security evidence available — Code Scanning could not be read and no usable scan record was found';"
     javascript_code_scanning_label="        fullLabel = total + ' open Code Scanning alerts · fetched ' + date + ' · advisory mode (does not block builds)';"
     javascript_scan_record_label="        fullLabel = total + ' finding(s) from the recorded scan · scanned ' + date + ' · advisory mode (does not block builds)';"
+    verification_total_findings_sentence='The build does not fail when findings are detected; it surfaces the total reported count for the operator to triage.'
+    legacy_cves_detected_spelling='The build does not fail when CVEs are detected; it surfaces the count for the operator to triage.'
+    legacy_badge_count_spelling='The badge count is the number of findings. One CVE affecting multiple packages contributes multiple findings.'
 }
 
 assert_template_label() {
@@ -35,6 +38,34 @@ assert_javascript_label() {
     [ "$status" -eq 0 ]
 }
 
+assert_verification_total_findings_sentence() {
+    local surface="$1"
+
+    # Not -q: quiet grep stops at the first match, so a read failure in the
+    # rest of the file would never surface. Reading it through keeps an I/O
+    # error non-zero.
+    run grep -F -- "$verification_total_findings_sentence" "$surface"
+    [ "$status" -eq 0 ] || {
+        echo "missing total-findings sentence in $surface" >&2
+        return 1
+    }
+}
+
+assert_legacy_verification_spelling_absent() {
+    local spelling="$1"
+    local surface="$2"
+
+    run grep -qF "$spelling" "$surface"
+    if [ "$status" -gt 1 ]; then
+        echo "grep failed while checking $surface for a legacy spelling" >&2
+        return 1
+    fi
+    [ "$status" -eq 1 ] || {
+        echo "legacy spelling remains in $surface: $spelling" >&2
+        return 1
+    }
+}
+
 assert_trivy_severity_transitions() {
     local badge_file="$1"
     local producer="$2"
@@ -58,8 +89,33 @@ NODE
     }
 }
 
-# This source-level guard proves the label lines agree for each display source.
-# It does not prove which line renders, nor what a sink ultimately displays.
+# These source-level guards prove only the pinned source text: a sentence moved
+# into a Liquid or HTML comment still satisfies them. Asserting the rendered
+# phrasing needs a Jekyll build in CI, which is #1766.
+@test "verification surfaces carry the total-findings sentence" {
+    assert_verification_total_findings_sentence "$PROJECT_ROOT/docs/site/verify-images.md"
+    assert_verification_total_findings_sentence "$PROJECT_ROOT/docs/site/_includes/components/verify-walkthrough.html"
+    assert_verification_total_findings_sentence "$PROJECT_ROOT/docs/site/_includes/jsonld-faq.html"
+}
+
+@test "verification surfaces reject the known legacy CVEs-detected spelling" {
+    for surface in \
+        "$PROJECT_ROOT/docs/site/verify-images.md" \
+        "$PROJECT_ROOT/docs/site/_includes/components/verify-walkthrough.html" \
+        "$PROJECT_ROOT/docs/site/_includes/jsonld-faq.html"; do
+        assert_legacy_verification_spelling_absent "$legacy_cves_detected_spelling" "$surface"
+    done
+}
+
+@test "verification surfaces reject the known legacy badge-count spelling" {
+    for surface in \
+        "$PROJECT_ROOT/docs/site/verify-images.md" \
+        "$PROJECT_ROOT/docs/site/_includes/components/verify-walkthrough.html" \
+        "$PROJECT_ROOT/docs/site/_includes/jsonld-faq.html"; do
+        assert_legacy_verification_spelling_absent "$legacy_badge_count_spelling" "$surface"
+    done
+}
+
 @test "badge producers define matching source-specific label lines" {
     for badge_file in \
         "$PROJECT_ROOT/docs/site/_includes/container-card.html" \

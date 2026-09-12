@@ -111,7 +111,7 @@ BuildKit must be enabled (`DOCKER_BUILDKIT=1` or Docker 23+). The `./make` entry
 
 ### Why does the dashboard show "Trivy scan results are advisory"?
 
-Trivy runs as `continue-on-error` in CI. The build does not fail when CVEs are detected; it surfaces the count for the operator to triage. Use the count as input to your image-acceptance policy, not as a blocking gate.
+Trivy runs as `continue-on-error` in CI. The build does not fail when findings are detected; it surfaces the total reported count for the operator to triage. Use the count as input to your image-acceptance policy, not as a blocking gate.
 
 ### What does the SBOM badge state mean?
 
