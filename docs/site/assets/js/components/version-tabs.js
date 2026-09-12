@@ -64,15 +64,22 @@
         attestation_url: tab.dataset.attestationUrl || '',
         attestation_id: tab.dataset.attestationId || '',
         trivy_summary: null,
+        // Each dispatch starts absent, becomes parsed only after JSON.parse(), or
+        // unreadable on parse failure. Rebuilding it here prevents stale state.
+        trivy_summary_state: 'absent',
         multi_arch_platforms: [],
         size_amd64: tab.dataset.sizeAmd64 || '',
         size_arm64: tab.dataset.sizeArm64 || ''
       };
       try {
-        if (tab.dataset.trivySummary) {
+        if (Object.prototype.hasOwnProperty.call(tab.dataset, 'trivySummary')) {
           variantData.trivy_summary = JSON.parse(tab.dataset.trivySummary);
+          variantData.trivy_summary_state = 'parsed';
         }
-      } catch (_) { /* swallow malformed JSON */ }
+      } catch {
+        variantData.trivy_summary = null;
+        variantData.trivy_summary_state = 'unreadable';
+      }
       try {
         if (tab.dataset.multiArchPlatforms) {
           variantData.multi_arch_platforms = JSON.parse(tab.dataset.multiArchPlatforms);
@@ -206,15 +213,22 @@
         attestation_url: initialTab.dataset.attestationUrl || '',
         attestation_id: initialTab.dataset.attestationId || '',
         trivy_summary: null,
+        // Each dispatch starts absent, becomes parsed only after JSON.parse(), or
+        // unreadable on parse failure. Rebuilding it here prevents stale state.
+        trivy_summary_state: 'absent',
         multi_arch_platforms: [],
         size_amd64: initialTab.dataset.sizeAmd64 || '',
         size_arm64: initialTab.dataset.sizeArm64 || ''
       };
       try {
-        if (initialTab.dataset.trivySummary) {
+        if (Object.prototype.hasOwnProperty.call(initialTab.dataset, 'trivySummary')) {
           variantData.trivy_summary = JSON.parse(initialTab.dataset.trivySummary);
+          variantData.trivy_summary_state = 'parsed';
         }
-      } catch (_) { /* swallow */ }
+      } catch {
+        variantData.trivy_summary = null;
+        variantData.trivy_summary_state = 'unreadable';
+      }
       try {
         if (initialTab.dataset.multiArchPlatforms) {
           variantData.multi_arch_platforms = JSON.parse(initialTab.dataset.multiArchPlatforms);

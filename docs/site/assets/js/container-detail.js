@@ -70,11 +70,20 @@
         attestation_url: el.dataset.attestationUrl || '',
         attestation_id: el.dataset.attestationId || '',
         trivy_summary: null,
+        // Each dispatch starts absent, becomes parsed only after JSON.parse(), or
+        // unreadable on parse failure. Rebuilding it here prevents stale state.
+        trivy_summary_state: 'absent',
         multi_arch_platforms: []
       };
       try {
-        if (el.dataset.trivySummary) variantData.trivy_summary = JSON.parse(el.dataset.trivySummary);
-      } catch (e) { /* swallow */ }
+        if (Object.prototype.hasOwnProperty.call(el.dataset, 'trivySummary')) {
+          variantData.trivy_summary = JSON.parse(el.dataset.trivySummary);
+          variantData.trivy_summary_state = 'parsed';
+        }
+      } catch {
+        variantData.trivy_summary = null;
+        variantData.trivy_summary_state = 'unreadable';
+      }
       try {
         if (el.dataset.multiArchPlatforms) variantData.multi_arch_platforms = JSON.parse(el.dataset.multiArchPlatforms);
       } catch (e) { /* swallow */ }
@@ -848,22 +857,33 @@
       var card = document.querySelector('.security-scan-card');
       if (!card) return;
       var summary = detail.trivy_summary;
+      var header = card.querySelector('.security-scan-card-header h3');
+      if (detail.trivy_summary_state === 'unreadable') {
+        card.style.display = '';
+        if (header) {
+          header.textContent = 'Security evidence could not be read for image ' + (detail.tag || 'this image');
+        }
+        return;
+      }
       if (!summary || !summary.display_source) {
-        card.style.display = 'none';
+        card.style.display = '';
+        if (header) {
+          header.textContent = 'Security evidence is not recorded for image ' + (detail.tag || 'this image');
+        }
         return;
       }
       card.style.display = '';
-      var header = card.querySelector('.security-scan-card-header h3');
       if (!header) return;
       var dateStr = (summary.as_of || '').slice(0, 10);
+      var imageTag = detail.tag || 'this image';
       if (summary.display_source === 'code-scanning') {
-        header.textContent = 'Trivy · Code Scanning fetched ' + dateStr;
+        header.textContent = 'Trivy · Code Scanning for image ' + imageTag + ' fetched ' + dateStr;
       } else if (summary.display_source === 'scan-record') {
-        header.textContent = 'Trivy · recorded scan ' + dateStr;
+        header.textContent = 'Trivy · recorded scan for image ' + imageTag + ' ' + dateStr;
       } else if (summary.display_source === 'unavailable') {
-        header.textContent = 'Security evidence unavailable';
+        header.textContent = 'Security evidence unavailable for image ' + imageTag;
       } else {
-        card.style.display = 'none';
+        header.textContent = 'Security evidence is not recorded for image ' + (detail.tag || 'this image');
       }
     });
 

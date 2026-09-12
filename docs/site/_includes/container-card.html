@@ -37,7 +37,7 @@
       <trust-strip> custom element — CSP-clean, no Alpine. Liquid renders initial state;
       web component updates child [data-trust] badges on `phase-b-variant-changed` events.
     {%- endcomment -%}
-    <trust-strip class="trust-strip row-trust" data-current-variant="{{ default_variant.tag | default: include.current_version }}">
+    <trust-strip class="trust-strip row-trust">
       <a class="trust-badge trust-badge--sbom{% unless default_variant.attestation_url and default_variant.attestation_id %} is-pending{% endunless %}"
          data-trust="sbom"
          {% if default_variant.attestation_url and default_variant.attestation_id %}
