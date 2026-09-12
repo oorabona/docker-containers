@@ -109,3 +109,30 @@ assert_skipped_boundary_failure 'crossing skipped close fails' "${FIXTURES_DIR}/
 
 write_fixture unterminated-template.html '<template><div class="x">hidden</div>'
 assert_skipped_boundary_failure 'unterminated template fails' "${FIXTURES_DIR}/unterminated-template.html" 'unterminated skipped element'
+
+for tag in template script style noscript; do
+  fixture="${FIXTURES_DIR}/self-closing-${tag}.html"
+  write_fixture "self-closing-${tag}.html" "<${tag}/><a id=\"hidden\" class=\"hidden\" data-tag=\"hidden\">hidden</a></${tag}>"
+  assert_output "self-closing ${tag} hides id" '0' count --id hidden "${fixture}"
+  assert_output "self-closing ${tag} hides class" '0' count --class hidden "${fixture}"
+  assert_failure "self-closing ${tag} hides attribute" attribute data-tag --id hidden "${fixture}"
+  assert_failure "self-closing ${tag} hides text --within" text --within hidden "${fixture}"
+done
+
+write_fixture self-closing-div.html '<div id="target">before<div/>middle</div>outside</div>'
+assert_output 'self-closing div remains open in HTML' 'beforemiddleoutside' text --within target "${FIXTURES_DIR}/self-closing-div.html"
+
+write_fixture self-closing-svg.html '<svg id="target">before<svg/>middle</svg><p>outside</p>'
+assert_output 'self-closing svg closes in foreign content' 'beforemiddle' text --within target "${FIXTURES_DIR}/self-closing-svg.html"
+
+write_fixture self-closing-math.html '<math id="target">before<math/>middle</math><p>outside</p>'
+assert_output 'self-closing math closes in foreign content' 'beforemiddle' text --within target "${FIXTURES_DIR}/self-closing-math.html"
+
+write_fixture self-closing-jsonld.html '<script type="application/ld+json"/>{"x":1}</script>'
+assert_output 'self-closing JSON-LD script remains open' '["{\"x\":1}"]' jsonld "${FIXTURES_DIR}/self-closing-jsonld.html"
+
+write_fixture self-closing-unterminated-template.html '<template/>'
+assert_skipped_boundary_failure 'self-closing unterminated template fails' "${FIXTURES_DIR}/self-closing-unterminated-template.html" 'unterminated skipped element <template>'
+
+write_fixture self-closing-br.html '<div id="target">before<br/>middle</div>outside'
+assert_output 'self-closing void br preserves boundary' 'beforemiddle' text --within target "${FIXTURES_DIR}/self-closing-br.html"

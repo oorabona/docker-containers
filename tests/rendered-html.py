@@ -13,6 +13,8 @@ inside a skipped subtree is not read and cannot fail a run. Crossing closes and
 unterminated skipped subtrees remain parse failures.
 A skipped subtree closes only at its matching closing tag. Orphan closing tags
 cannot end one.
+The self-closing flag is ignored on an HTML element and honoured inside svg and
+math, as a browser does.
 """
 
 import json
@@ -26,14 +28,45 @@ VOID_ELEMENTS = {
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
     "meta", "param", "source", "track", "wbr",
 }
+FOREIGN_CONTENT_ELEMENTS = {"svg", "math"}
 
 
-class SkippedSubtreeParser(HTMLParser):
+class ForeignContentParser(HTMLParser):
+    """Track foreign content while dispatching self-closing tags."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.foreign_content_depth = 0
+        self.foreign_content_tags = []
+
+    def handle_foreign_content_starttag(self, tag):
+        if tag in FOREIGN_CONTENT_ELEMENTS:
+            self.foreign_content_tags.append(tag)
+            self.foreign_content_depth += 1
+
+    def handle_foreign_content_endtag(self, tag):
+        if (
+            self.foreign_content_tags
+            and tag == self.foreign_content_tags[-1]
+        ):
+            self.foreign_content_tags.pop()
+            self.foreign_content_depth -= 1
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag.lower() in VOID_ELEMENTS or self.foreign_content_depth:
+            self.handle_endtag(tag)
+
+
+class SkippedSubtreeParser(ForeignContentParser):
     """Track skipped subtrees shared by visible-text and selector parsers."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.skipped_tags = []
+
+    def handle_startendtag(self, tag, attrs):
+        super().handle_startendtag(tag, attrs)
 
     def handle_skipped_starttag(self, tag):
         if tag in HIDDEN_ELEMENTS:
@@ -76,6 +109,7 @@ class VisibleTextParser(SkippedSubtreeParser):
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
+        self.handle_foreign_content_starttag(tag)
         inspects_element = (
             not self.in_skipped_subtree and tag not in HIDDEN_ELEMENTS
         )
@@ -104,12 +138,14 @@ class VisibleTextParser(SkippedSubtreeParser):
         tag = tag.lower()
         if self.in_skipped_subtree:
             self.handle_skipped_endtag(tag)
+            self.handle_foreign_content_endtag(tag)
             return
         if self.match_active and tag == self.match_tag:
             self.match_tag_depth -= 1
             if self.match_tag_depth == 0:
                 self.match_active = False
         self.handle_skipped_endtag(tag)
+        self.handle_foreign_content_endtag(tag)
 
     def handle_data(self, data):
         in_requested_subtree = (
@@ -123,7 +159,7 @@ class VisibleTextParser(SkippedSubtreeParser):
         pass
 
 
-class JsonLdParser(HTMLParser):
+class JsonLdParser(ForeignContentParser):
     """Collect the raw body of every application/ld+json script element."""
 
     def __init__(self):
@@ -133,7 +169,9 @@ class JsonLdParser(HTMLParser):
         self.scripts = []
 
     def handle_starttag(self, tag, attrs):
-        if tag.lower() != "script":
+        tag = tag.lower()
+        self.handle_foreign_content_starttag(tag)
+        if tag != "script":
             return
         reject_duplicate_attribute(attrs, "type", "script")
         attributes = {name.lower(): value for name, value in attrs}
@@ -143,10 +181,12 @@ class JsonLdParser(HTMLParser):
             self.current_script = []
 
     def handle_endtag(self, tag):
-        if tag.lower() == "script" and self.in_jsonld_script:
+        tag = tag.lower()
+        if tag == "script" and self.in_jsonld_script:
             self.scripts.append("".join(self.current_script))
             self.current_script = []
             self.in_jsonld_script = False
+        self.handle_foreign_content_endtag(tag)
 
     def handle_data(self, data):
         if self.in_jsonld_script:
@@ -169,6 +209,7 @@ class SelectorCountParser(SkippedSubtreeParser):
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
+        self.handle_foreign_content_starttag(tag)
         attribute = "id" if self.selector_kind == "id" else "class"
         inspects_element = (
             not self.in_skipped_subtree and tag not in HIDDEN_ELEMENTS
@@ -184,7 +225,9 @@ class SelectorCountParser(SkippedSubtreeParser):
         self.handle_skipped_starttag(tag)
 
     def handle_endtag(self, tag):
-        self.handle_skipped_endtag(tag.lower())
+        tag = tag.lower()
+        self.handle_skipped_endtag(tag)
+        self.handle_foreign_content_endtag(tag)
 
 
 class AttributeParser(SkippedSubtreeParser):
@@ -199,6 +242,7 @@ class AttributeParser(SkippedSubtreeParser):
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
+        self.handle_foreign_content_starttag(tag)
         selector_attribute = "id" if self.selector_kind == "id" else "class"
         inspects_element = (
             not self.in_skipped_subtree and tag not in HIDDEN_ELEMENTS
@@ -217,7 +261,9 @@ class AttributeParser(SkippedSubtreeParser):
         self.handle_skipped_starttag(tag)
 
     def handle_endtag(self, tag):
-        self.handle_skipped_endtag(tag.lower())
+        tag = tag.lower()
+        self.handle_skipped_endtag(tag)
+        self.handle_foreign_content_endtag(tag)
 
 
 def reject_duplicate_attribute(attrs, attribute, tag):
