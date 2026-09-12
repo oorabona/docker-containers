@@ -21,7 +21,7 @@ case $# in
     ;;
   *)
     echo "usage: $0 [--with-containers] <rendered-site-directory>" >&2
-    echo "default: checks verify-page panels, FAQ JSON-LD, the Trivy anchor, and raw Liquid in index.html and verify-images/index.html; extracted text excludes comments and script, style, template, and noscript contents, collapses whitespace, and concatenates document-order text nodes without element separators. It models neither CSS nor runtime JavaScript, so elements hidden by a stylesheet or by script are read." >&2
+    echo "default: checks verify-page panels, supported top-level FAQPage JSON-LD roots, the Trivy anchor, and raw Liquid in index.html and verify-images/index.html; nested and context-aliased JSON-LD nodes are outside inspection. Extracted text excludes comments and script, style, template, and noscript contents, collapses whitespace, and concatenates document-order text nodes without element separators. It models neither CSS nor runtime JavaScript, so elements hidden by a stylesheet or by script are read." >&2
     echo "--with-containers: additionally checks postgres and sslh container-page variants-table and raw-Liquid claims" >&2
     exit 2
     ;;
@@ -234,13 +234,13 @@ fi
 
 case ${faq_result} in
   ok) ;;
-  faq-page-count:*) fail "expected exactly one application/ld+json FAQPage object; found ${faq_result#*:}" ;;
+  faq-page-count:*) fail "expected exactly one supported top-level FAQPage root; found ${faq_result#*:}" ;;
   jsonld-root-shape:*) fail "JSON-LD script ${faq_result#*:} has a root shape this check does not inspect" ;;
   jsonld-graph-shape:*) fail "JSON-LD script ${faq_result#*:} has an @graph shape this check does not inspect" ;;
   jsonld-type-shape:*) fail "JSON-LD script ${faq_result#*:} has an @type shape this check does not inspect" ;;
   faq-context) fail 'the JSON-LD FAQPage object must have @context https://schema.org' ;;
   faq-main-entity) fail 'the JSON-LD FAQPage object must have a mainEntity list' ;;
-  faq-question-type-shape) fail 'a FAQ Question has an @type shape this check does not inspect' ;;
+  faq-question-type-shape) fail 'a mainEntity item has an @type shape this check does not inspect' ;;
   faq-question-count:*) fail "expected exactly one FAQ Question named 'Why does the dashboard show Trivy scan results are advisory?'; found ${faq_result#*:}" ;;
   faq-accepted-answer-shape) fail 'a FAQ acceptedAnswer has a shape this check does not inspect' ;;
   faq-answer-type-shape) fail 'a FAQ acceptedAnswer has an @type shape this check does not inspect' ;;

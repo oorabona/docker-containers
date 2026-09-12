@@ -7,6 +7,9 @@ space and concatenates text nodes in document order without adding separators
 between elements. It models neither CSS nor runtime JavaScript, so it still
 reads text in an element hidden by a stylesheet or by script.
 The count command likewise counts elements only outside those skipped subtrees.
+A skipped subtree closes only at its matching closing tag. Orphan closing tags
+cannot end one; crossing closes and unterminated skipped subtrees are parse
+failures.
 """
 
 import json
@@ -22,13 +25,46 @@ VOID_ELEMENTS = {
 }
 
 
-class VisibleTextParser(HTMLParser):
+class SkippedSubtreeParser(HTMLParser):
+    """Track skipped subtrees shared by visible-text and selector parsers."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.skipped_tags = []
+
+    def handle_skipped_starttag(self, tag):
+        if tag in HIDDEN_ELEMENTS:
+            self.skipped_tags.append(tag)
+
+    def handle_skipped_endtag(self, tag):
+        if tag not in HIDDEN_ELEMENTS:
+            return
+        if tag not in self.skipped_tags:
+            return
+        if self.skipped_tags[-1] != tag:
+            open_tag = self.skipped_tags[-1]
+            raise ValueError(
+                f"closing skipped element </{tag}> crosses open <{open_tag}>"
+            )
+        self.skipped_tags.pop()
+
+    @property
+    def in_skipped_subtree(self):
+        return bool(self.skipped_tags)
+
+    def close(self):
+        super().close()
+        # An unfinished skipped subtree can otherwise hide arbitrary trailing markup.
+        if self.skipped_tags:
+            raise ValueError(f"unterminated skipped element <{self.skipped_tags[-1]}>")
+
+
+class VisibleTextParser(SkippedSubtreeParser):
     """Collect text outside comments and skipped element contents."""
 
     def __init__(self, within_id=None):
         super().__init__(convert_charrefs=True)
         self.within_id = within_id
-        self.hidden_depth = 0
         self.match_tag = None
         self.match_tag_depth = 0
         self.match_active = False
@@ -47,8 +83,7 @@ class VisibleTextParser(HTMLParser):
                 self.match_active = tag not in VOID_ELEMENTS
         elif self.match_active and tag == self.match_tag and tag not in VOID_ELEMENTS:
             self.match_tag_depth += 1
-        if tag in HIDDEN_ELEMENTS:
-            self.hidden_depth += 1
+        self.handle_skipped_starttag(tag)
 
     def handle_endtag(self, tag):
         tag = tag.lower()
@@ -56,15 +91,14 @@ class VisibleTextParser(HTMLParser):
             self.match_tag_depth -= 1
             if self.match_tag_depth == 0:
                 self.match_active = False
-        if tag in HIDDEN_ELEMENTS and self.hidden_depth:
-            self.hidden_depth -= 1
+        self.handle_skipped_endtag(tag)
 
     def handle_data(self, data):
         in_requested_subtree = (
             self.within_id is None
             or self.match_active
         )
-        if not self.hidden_depth and in_requested_subtree:
+        if not self.in_skipped_subtree and in_requested_subtree:
             self.text_parts.append(data)
 
     def handle_comment(self, data):
@@ -106,7 +140,7 @@ class JsonLdParser(HTMLParser):
             raise ValueError("unterminated application/ld+json script element")
 
 
-class SelectorCountParser(HTMLParser):
+class SelectorCountParser(SkippedSubtreeParser):
     """Count elements whose id or class token matches a requested value."""
 
     def __init__(self, selector_kind, value):
@@ -114,28 +148,25 @@ class SelectorCountParser(HTMLParser):
         self.selector_kind = selector_kind
         self.value = value
         self.count = 0
-        self.hidden_depth = 0
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
         attribute = "id" if self.selector_kind == "id" else "class"
         reject_duplicate_attribute(attrs, attribute, tag)
         attributes = {name.lower(): value for name, value in attrs}
-        if not self.hidden_depth and tag not in HIDDEN_ELEMENTS and self.selector_kind == "id":
+        if not self.in_skipped_subtree and tag not in HIDDEN_ELEMENTS and self.selector_kind == "id":
             if attributes.get("id") == self.value:
                 self.count += 1
         elif (
-            not self.hidden_depth
+            not self.in_skipped_subtree
             and tag not in HIDDEN_ELEMENTS
             and self.value in (attributes.get("class") or "").split()
         ):
             self.count += 1
-        if tag in HIDDEN_ELEMENTS:
-            self.hidden_depth += 1
+        self.handle_skipped_starttag(tag)
 
     def handle_endtag(self, tag):
-        if tag.lower() in HIDDEN_ELEMENTS and self.hidden_depth:
-            self.hidden_depth -= 1
+        self.handle_skipped_endtag(tag.lower())
 
 
 def reject_duplicate_attribute(attrs, attribute, tag):
