@@ -46,14 +46,32 @@ assert_failure() {
   echo "PASS: ${name} (failure: ${output})"
 }
 
+assert_failure_containing() {
+  local name=$1
+  local expected=$2
+  shift 2
+  local output
+
+  if output=$(python3 "${EXTRACTOR}" "$@" 2>&1); then
+    echo "FAIL: ${name} unexpectedly succeeded: ${output}" >&2
+    exit 1
+  fi
+  if [[ ${output} != *"${expected}"* ]]; then
+    echo "FAIL: ${name} failure was ${output@Q}; expected substring ${expected@Q}" >&2
+    exit 1
+  fi
+  echo "PASS: ${name} (failure: ${output})"
+}
+
 assert_skipped_boundary_failure() {
   local name=$1
   local fixture=$2
+  local expected_failure=$3
 
-  assert_failure "${name}: text" text "${fixture}"
-  assert_failure "${name}: text --within" text --within y "${fixture}"
-  assert_failure "${name}: count" count --class x "${fixture}"
-  assert_failure "${name}: attribute" attribute data-tag --class x "${fixture}"
+  assert_failure_containing "${name}: text" "${expected_failure}" text "${fixture}"
+  assert_failure_containing "${name}: text --within" "${expected_failure}" text --within y "${fixture}"
+  assert_failure_containing "${name}: count" "${expected_failure}" count --class x "${fixture}"
+  assert_failure_containing "${name}: attribute" "${expected_failure}" attribute data-tag --class x "${fixture}"
 }
 
 write_fixture control.html '<div id="y" class="selected" data-tag="outside">control</div>'
@@ -80,8 +98,14 @@ assert_output 'text --within ignores duplicate id in template' 'outside' text --
 write_fixture text-hidden-duplicate.html '<div>outside</div><template><span id="x" id="x">hidden</span></template>'
 assert_output 'plain text ignores duplicate id in template' 'outside' text "${FIXTURES_DIR}/text-hidden-duplicate.html"
 
-write_fixture crossing-close.html '<template></style>'
-assert_skipped_boundary_failure 'crossing skipped close fails' "${FIXTURES_DIR}/crossing-close.html"
+write_fixture same-name-start-in-template.html '<div id="y">inside<template><div id="y">hidden</template>after</div>outside'
+assert_output 'text --within ignores same-name start in template' 'insideafter' text --within y "${FIXTURES_DIR}/same-name-start-in-template.html"
+
+write_fixture same-name-close-in-template.html '<div id="y">inside<template></div>hidden</template>after</div>outside'
+assert_output 'text --within ignores same-name close in template' 'insideafter' text --within y "${FIXTURES_DIR}/same-name-close-in-template.html"
+
+write_fixture crossing-close.html '<template><noscript></template></noscript>'
+assert_skipped_boundary_failure 'crossing skipped close fails' "${FIXTURES_DIR}/crossing-close.html" 'crosses open'
 
 write_fixture unterminated-template.html '<template><div class="x">hidden</div>'
-assert_skipped_boundary_failure 'unterminated template fails' "${FIXTURES_DIR}/unterminated-template.html"
+assert_skipped_boundary_failure 'unterminated template fails' "${FIXTURES_DIR}/unterminated-template.html" 'unterminated skipped element'

@@ -208,8 +208,8 @@ assert_selected_image_consumers() {
       esac
     fi
   done <<<"${provenance_sections}"
-  [[ ${visible_provenance_count} -le 1 ]] \
-    || fail "expected at most one visible provenance section; found ${visible_provenance_count}"
+  [[ ${visible_provenance_count} -eq 1 ]] \
+    || fail "expected exactly one visible provenance section; found ${visible_provenance_count}"
 }
 
 assert_page fixture-first-empty-later-evidence retained-evidence-alpine evidenced 2026-09-12 0 1 0 0 0 pending retained-evidence-sibling

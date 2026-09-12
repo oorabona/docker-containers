@@ -12,8 +12,7 @@ Duplicate attributes are rejected only on elements a command inspects; markup
 inside a skipped subtree is not read and cannot fail a run. Crossing closes and
 unterminated skipped subtrees remain parse failures.
 A skipped subtree closes only at its matching closing tag. Orphan closing tags
-cannot end one; crossing closes and unterminated skipped subtrees are parse
-failures.
+cannot end one.
 """
 
 import json
@@ -94,6 +93,7 @@ class VisibleTextParser(SkippedSubtreeParser):
         if (
             not matches_within_id
             and self.match_active
+            and not self.in_skipped_subtree
             and tag == self.match_tag
             and tag not in VOID_ELEMENTS
         ):
@@ -102,6 +102,9 @@ class VisibleTextParser(SkippedSubtreeParser):
 
     def handle_endtag(self, tag):
         tag = tag.lower()
+        if self.in_skipped_subtree:
+            self.handle_skipped_endtag(tag)
+            return
         if self.match_active and tag == self.match_tag:
             self.match_tag_depth -= 1
             if self.match_tag_depth == 0:
