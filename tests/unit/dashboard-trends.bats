@@ -8,6 +8,7 @@ setup() {
     source "$ORIG_DIR/helpers/logging.sh" 2>/dev/null || true
     source "$ORIG_DIR/helpers/variant-utils.sh" 2>/dev/null || true
     source "$ORIG_DIR/generate-dashboard.sh" 2>/dev/null || true
+    source "$ORIG_DIR/helpers/trivy-utils.sh" 2>/dev/null || true
     eval "$(declare -f get_container_versions | sed '1s/get_container_versions/_real_get_container_versions/')"
     export SCRIPT_DIR="$TEST_DIR"
     DOCKERHUB_PULL_TRENDS_CACHE=""

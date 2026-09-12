@@ -1,7 +1,6 @@
 # ADR-017: Trivy Evidence Channels — Two Observations, One Named Display Source
 
-**Status:** Accepted — decision recorded ahead of the change; `helpers/trivy-utils.sh` still ships the
-ADR-008 overlay until oorabona/docker-containers#1692 and #1707 land
+**Status:** Accepted
 **Date:** 2026-09-05
 **Supersedes (in part):** ADR-008's side-channel overlay merge
 

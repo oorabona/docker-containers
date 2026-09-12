@@ -219,7 +219,21 @@
   background: var(--color-trust-trivy-warn-bg-hover);
   border-color: var(--color-trust-trivy-warn-border-hover);
 }
-/* medium / low / info: inherit .trust-badge--trivy (green) */
+.trust-badge--trivy[data-severity="unknown"] {
+  background: var(--color-surface-overlay);
+  border-color: var(--color-border-subtle);
+  color: var(--color-text-muted);
+}
+.trust-badge--trivy[data-severity="unknown"]:hover {
+  background: var(--color-surface-raised);
+  border-color: var(--color-text-muted);
+}
+.trust-badge--trivy[data-severity="advisory"],
+.trust-badge--trivy[data-severity="advisory"]:hover {
+  background: var(--color-surface-raised);
+  border-color: var(--color-border-subtle);
+  color: var(--color-text-muted);
+}
 
 /* ==========================================================
    Global resets and base styles

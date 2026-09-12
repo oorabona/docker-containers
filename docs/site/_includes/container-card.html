@@ -51,7 +51,7 @@
          rel="noopener"
          >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM{% else %}📋 SBOM{% endif %}</a>
 
-      {%- if default_variant.trivy_summary and default_variant.trivy_summary.last_scan -%}
+      {%- if default_variant.trivy_summary and default_variant.trivy_summary.display_source -%}
         {%- comment -%}
           Compact card label tracks the active severity bucket: emit the count
           of the most severe non-zero level so the number on the badge always
@@ -60,32 +60,42 @@
           (screen reader / touch focus); the badge link itself targets the
           detail-page security section so touch users land on the full surface.
         {%- endcomment -%}
-        {%- assign trivy_critical = default_variant.trivy_summary.counts.critical | plus: 0 -%}
-        {%- assign trivy_high     = default_variant.trivy_summary.counts.high     | plus: 0 -%}
-        {%- if trivy_critical > 0 -%}
-          {%- assign trivy_sev = "critical" -%}
-          {%- assign trivy_count = trivy_critical -%}
-          {%- assign trivy_label = "CRIT" -%}
-          {%- assign trivy_aria_label = "CRITICAL" -%}
-        {%- elsif trivy_high > 0 -%}
-          {%- assign trivy_sev = "high" -%}
-          {%- assign trivy_count = trivy_high -%}
-          {%- assign trivy_label = "HIGH" -%}
-          {%- assign trivy_aria_label = "HIGH" -%}
+        {%- assign trivy_source = default_variant.trivy_summary.display_source -%}
+        {%- if trivy_source == "unavailable" -%}
+          {%- assign trivy_sev = "unknown" -%}
+          {%- assign trivy_badge_text = "no evidence" -%}
+          {%- assign trivy_full_label = "No security evidence available — Code Scanning could not be read and no usable scan record was found" -%}
         {%- else -%}
-          {%- assign trivy_sev = "info" -%}
-          {%- assign trivy_count = 0 -%}
-          {%- assign trivy_label = "" -%}
-          {%- assign trivy_aria_label = "critical / high" -%}
+          {%- assign trivy_critical = default_variant.trivy_summary.counts.critical | plus: 0 -%}
+          {%- assign trivy_high     = default_variant.trivy_summary.counts.high     | plus: 0 -%}
+          {%- assign trivy_medium   = default_variant.trivy_summary.counts.medium   | plus: 0 -%}
+          {%- assign trivy_low      = default_variant.trivy_summary.counts.low      | plus: 0 -%}
+          {%- assign trivy_info     = default_variant.trivy_summary.counts.info     | plus: 0 -%}
+          {%- assign trivy_count = trivy_critical | plus: trivy_high | plus: trivy_medium | plus: trivy_low | plus: trivy_info -%}
+          {%- if trivy_critical > 0 -%}
+            {%- assign trivy_sev = "critical" -%}
+          {%- elsif trivy_high > 0 -%}
+            {%- assign trivy_sev = "high" -%}
+          {%- elsif trivy_count > 0 -%}
+            {%- assign trivy_sev = "advisory" -%}
+          {%- else -%}
+            {%- assign trivy_sev = "info" -%}
+          {%- endif -%}
+          {%- assign trivy_date = default_variant.trivy_summary.as_of | date: "%Y-%m-%d" -%}
+          {%- if trivy_source == "code-scanning" -%}
+            {%- assign trivy_badge_text = trivy_count | append: " open alerts" -%}
+            {%- capture trivy_full_label -%}{{ trivy_count }} open Code Scanning alerts · fetched {{ trivy_date }} · advisory mode (does not block builds){%- endcapture -%}
+          {%- elsif trivy_source == "scan-record" -%}
+            {%- assign trivy_badge_text = trivy_count | append: " findings" -%}
+            {%- capture trivy_full_label -%}{{ trivy_count }} finding(s) from the recorded scan · scanned {{ trivy_date }} · advisory mode (does not block builds){%- endcapture -%}
+          {%- endif -%}
         {%- endif -%}
-        {%- assign trivy_scan_date = default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" -%}
-        {%- capture trivy_full_label -%}{{ trivy_count }} {{ trivy_aria_label }} finding(s) · scanned {{ trivy_scan_date }} · advisory mode (does not block builds){%- endcapture -%}
         <a class="trust-badge trust-badge--trivy"
            data-trust="trivy"
            data-severity="{{ trivy_sev }}"
            href="{{ '/container/' | append: include.name | append: '/' | relative_url }}#security"
            aria-label="{{ trivy_full_label | escape }}"
-           title="{{ trivy_full_label | escape }}">🛡 {{ trivy_count }}{% if trivy_label %} {{ trivy_label }}{% endif %}</a>
+           title="{{ trivy_full_label | escape }}">🛡 {{ trivy_badge_text }}</a>
       {%- else -%}
         <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
         <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" aria-hidden="true" href="{{ '/container/' | append: include.name | append: '/' | relative_url }}#security"></a>

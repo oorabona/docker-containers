@@ -52,9 +52,19 @@ To filter findings to a single container variant, match on the `category` field,
   -q '.[] | select(.most_recent_instance.category == "container-postgres-18-alpine-linux/amd64")'</code></pre>
 </div>
 
+If the badge says **recorded scan** rather than **Code Scanning**, its source is the scan record, not an API observation. In the dashboard checkout, inspect the matching `.trivy-scan-history/<category-without-container-prefix-and-with-/-replaced-by-->.json` file and compare its `last_scan` and five `counts` values with the badge. For example:
+
+<div class="code-block" data-copy="jq '{last_scan, status, counts, alert_count}' .trivy-scan-history/postgres-18-alpine-linux-amd64.json">
+  <div class="code-block__header">
+    <span class="code-block__lang">bash</span>
+    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
+  </div>
+  <pre><code><span class="prompt">$</span> jq '{last_scan, status, counts, alert_count}' .trivy-scan-history/postgres-18-alpine-linux-amd64.json</code></pre>
+</div>
+
 ### Per-severity breakdown
 
-Each container's detail page surfaces all scanned severities (CRITICAL → INFO). CRITICAL gets the strongest visual emphasis (red ring); HIGH gets a warning emphasis. MEDIUM, LOW, and INFO render as advisory context with neutral styling. Findings tagged `UNKNOWN` by Trivy (severity not classified upstream) are bucketed into the **INFO** column. All findings, including non-blocking ones, are uploaded to GitHub Code Scanning under category `container-<name>-<tag>-<platform>`; query the full advisory list via the `gh api` command above.
+Each container's detail page surfaces all scanned severities (CRITICAL → INFO). CRITICAL gets the strongest visual emphasis (red ring); HIGH gets a warning emphasis. MEDIUM, LOW, and INFO render as advisory context with neutral styling. The resolver reads `.rule.security_severity_level`; `UNKNOWN`, a missing value, and any other unclassified value fall into the **INFO** column. All findings, including non-blocking ones, are uploaded to GitHub Code Scanning under category `container-<name>-<tag>-<platform>`; query the full advisory list via the `gh api` command above.
 
 The scan policy runs all severities (`UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL`) in advisory mode — full scan chosen for transparency over alert-list cleanliness. `continue-on-error: true` is permanent policy — no severity level blocks the build. The severity parameter lives in `.github/actions/build-container/action.yaml` (`vulnerability_severity` input, default `UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL`) and can be narrowed per-call if alert volume becomes operationally noisy.
 

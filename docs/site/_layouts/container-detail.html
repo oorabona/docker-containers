@@ -143,30 +143,43 @@
                rel="noopener noreferrer"
                >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM ATTESTED{% else %}📋 SBOM PENDING{% endif %}</a>
 
-            {%- if default_variant.trivy_summary and default_variant.trivy_summary.last_scan -%}
-              {%- assign trivy_critical = default_variant.trivy_summary.counts.critical | plus: 0 -%}
-              {%- assign trivy_high     = default_variant.trivy_summary.counts.high     | plus: 0 -%}
-              {%- if trivy_critical > 0 -%}
-                {%- assign trivy_sev = "critical" -%}
-                {%- assign trivy_count = trivy_critical -%}
-                {%- assign trivy_aria_label = "CRITICAL" -%}
-              {%- elsif trivy_high > 0 -%}
-                {%- assign trivy_sev = "high" -%}
-                {%- assign trivy_count = trivy_high -%}
-                {%- assign trivy_aria_label = "HIGH" -%}
+            {%- if default_variant.trivy_summary and default_variant.trivy_summary.display_source -%}
+              {%- assign trivy_source = default_variant.trivy_summary.display_source -%}
+              {%- if trivy_source == "unavailable" -%}
+                {%- assign trivy_sev = "unknown" -%}
+                {%- assign trivy_badge_text = "no evidence" -%}
+                {%- assign trivy_full_label = "No security evidence available — Code Scanning could not be read and no usable scan record was found" -%}
               {%- else -%}
-                {%- assign trivy_sev = "info" -%}
-                {%- assign trivy_count = 0 -%}
-                {%- assign trivy_aria_label = "critical / high" -%}
+                {%- assign trivy_critical = default_variant.trivy_summary.counts.critical | plus: 0 -%}
+                {%- assign trivy_high     = default_variant.trivy_summary.counts.high     | plus: 0 -%}
+                {%- assign trivy_medium   = default_variant.trivy_summary.counts.medium   | plus: 0 -%}
+                {%- assign trivy_low      = default_variant.trivy_summary.counts.low      | plus: 0 -%}
+                {%- assign trivy_info     = default_variant.trivy_summary.counts.info     | plus: 0 -%}
+                {%- assign trivy_count = trivy_critical | plus: trivy_high | plus: trivy_medium | plus: trivy_low | plus: trivy_info -%}
+                {%- if trivy_critical > 0 -%}
+                  {%- assign trivy_sev = "critical" -%}
+                {%- elsif trivy_high > 0 -%}
+                  {%- assign trivy_sev = "high" -%}
+                {%- elsif trivy_count > 0 -%}
+                  {%- assign trivy_sev = "advisory" -%}
+                {%- else -%}
+                  {%- assign trivy_sev = "info" -%}
+                {%- endif -%}
+                {%- assign trivy_date = default_variant.trivy_summary.as_of | date: "%Y-%m-%d" -%}
+                {%- if trivy_source == "code-scanning" -%}
+                  {%- assign trivy_badge_text = trivy_count | append: " open alerts" -%}
+                  {%- capture trivy_full_label -%}{{ trivy_count }} open Code Scanning alerts · fetched {{ trivy_date }} · advisory mode (does not block builds){%- endcapture -%}
+                {%- elsif trivy_source == "scan-record" -%}
+                  {%- assign trivy_badge_text = trivy_count | append: " findings" -%}
+                  {%- capture trivy_full_label -%}{{ trivy_count }} finding(s) from the recorded scan · scanned {{ trivy_date }} · advisory mode (does not block builds){%- endcapture -%}
+                {%- endif -%}
               {%- endif -%}
-              {%- assign trivy_scan_date = default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" -%}
-              {%- capture trivy_full_label -%}{{ trivy_count }} {{ trivy_aria_label }} finding(s) · scanned {{ trivy_scan_date }} · advisory mode (does not block builds){%- endcapture -%}
               <a class="trust-badge trust-badge--trivy"
                  data-trust="trivy"
                  data-severity="{{ trivy_sev }}"
                  href="#security"
                  aria-label="{{ trivy_full_label | escape }}"
-                 title="{{ trivy_full_label | escape }}">🛡 TRIVY: {{ trivy_count }} {{ trivy_aria_label }} (advisory) · SCANNED {{ trivy_scan_date }}</a>
+                 title="{{ trivy_full_label | escape }}">🛡 {{ trivy_badge_text }}</a>
             {%- else -%}
               <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
               <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" aria-hidden="true" href="#security"></a>
@@ -291,7 +304,7 @@
               {%- for _prov_var in _prov_version.variants -%}
                 {%- assign prov_empty_count = 0 -%}
                 {%- unless _prov_var.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-                {%- unless _prov_var.trivy_summary -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+                {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source == "unavailable" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
                 {%- unless _prov_var.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
                 {%- unless _prov_var.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
                 {%- unless _prov_var.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
@@ -361,14 +374,20 @@
                 <dd class="evidence-empty">awaiting next build{%- if _prov_var.last_build_iso %} — last attempted {{ _prov_var.last_build_iso | date: "%Y-%m-%d" }}{%- endif -%}</dd>
               </div>
               {%- endif -%}
-              {%- if _prov_var.trivy_summary.last_scan -%}
+              {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source -%}
               <div class="evidence-row">
-                <dt>Trivy last scan</dt>
-                <dd>{{ _prov_var.trivy_summary.last_scan | date: "%Y-%m-%d %H:%M UTC" }}</dd>
+                <dt>Trivy evidence</dt>
+                {%- if _prov_var.trivy_summary.display_source == "code-scanning" -%}
+                <dd>Code Scanning fetched {{ _prov_var.trivy_summary.as_of | date: "%Y-%m-%d %H:%M UTC" }}</dd>
+                {%- elsif _prov_var.trivy_summary.display_source == "scan-record" -%}
+                <dd>Recorded scan {{ _prov_var.trivy_summary.as_of | date: "%Y-%m-%d %H:%M UTC" }}</dd>
+                {%- elsif _prov_var.trivy_summary.display_source == "unavailable" -%}
+                <dd class="evidence-empty">evidence unavailable</dd>
+                {%- endif -%}
               </div>
               {%- else -%}
               <div class="evidence-row">
-                <dt>Trivy last scan</dt>
+                <dt>Trivy evidence</dt>
 
                 <dd class="evidence-empty">awaiting next build{%- if _prov_var.last_build_iso %} — last attempted {{ _prov_var.last_build_iso | date: "%Y-%m-%d" }}{%- endif -%}</dd>
               </div>
@@ -418,7 +437,7 @@
             {%- for _prov_var in page.variants -%}
               {%- assign prov_empty_count = 0 -%}
               {%- unless _prov_var.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-              {%- unless _prov_var.trivy_summary -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+              {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source == "unavailable" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
               {%- unless _prov_var.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
               {%- unless _prov_var.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
               {%- unless _prov_var.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
@@ -488,14 +507,20 @@
                 <dd class="evidence-empty">awaiting next build{%- if _prov_var.last_build_iso %} — last attempted {{ _prov_var.last_build_iso | date: "%Y-%m-%d" }}{%- endif -%}</dd>
               </div>
               {%- endif -%}
-              {%- if _prov_var.trivy_summary.last_scan -%}
+              {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source -%}
               <div class="evidence-row">
-                <dt>Trivy last scan</dt>
-                <dd>{{ _prov_var.trivy_summary.last_scan | date: "%Y-%m-%d %H:%M UTC" }}</dd>
+                <dt>Trivy evidence</dt>
+                {%- if _prov_var.trivy_summary.display_source == "code-scanning" -%}
+                <dd>Code Scanning fetched {{ _prov_var.trivy_summary.as_of | date: "%Y-%m-%d %H:%M UTC" }}</dd>
+                {%- elsif _prov_var.trivy_summary.display_source == "scan-record" -%}
+                <dd>Recorded scan {{ _prov_var.trivy_summary.as_of | date: "%Y-%m-%d %H:%M UTC" }}</dd>
+                {%- elsif _prov_var.trivy_summary.display_source == "unavailable" -%}
+                <dd class="evidence-empty">evidence unavailable</dd>
+                {%- endif -%}
               </div>
               {%- else -%}
               <div class="evidence-row">
-                <dt>Trivy last scan</dt>
+                <dt>Trivy evidence</dt>
 
                 <dd class="evidence-empty">awaiting next build{%- if _prov_var.last_build_iso %} — last attempted {{ _prov_var.last_build_iso | date: "%Y-%m-%d" }}{%- endif -%}</dd>
               </div>
@@ -539,7 +564,7 @@
             {%- assign prov_variant = page -%}
             {%- assign prov_empty_count = 0 -%}
             {%- unless prov_variant.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-            {%- unless prov_variant.trivy_summary -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+            {%- if prov_variant.trivy_summary and prov_variant.trivy_summary.display_source == "unavailable" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
             {%- unless prov_variant.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
             {%- unless prov_variant.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
             {%- unless prov_variant.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
@@ -613,14 +638,20 @@
                 <dd class="evidence-empty">awaiting next build{%- if prov_variant.last_build_iso %} — last attempted {{ prov_variant.last_build_iso | date: "%Y-%m-%d" }}{%- endif -%}</dd>
               </div>
               {%- endif -%}
-              {%- if prov_variant.trivy_summary.last_scan -%}
+              {%- if prov_variant.trivy_summary and prov_variant.trivy_summary.display_source -%}
               <div class="evidence-row">
-                <dt>Trivy last scan</dt>
-                <dd>{{ prov_variant.trivy_summary.last_scan | date: "%Y-%m-%d %H:%M UTC" }}</dd>
+                <dt>Trivy evidence</dt>
+                {%- if prov_variant.trivy_summary.display_source == "code-scanning" -%}
+                <dd>Code Scanning fetched {{ prov_variant.trivy_summary.as_of | date: "%Y-%m-%d %H:%M UTC" }}</dd>
+                {%- elsif prov_variant.trivy_summary.display_source == "scan-record" -%}
+                <dd>Recorded scan {{ prov_variant.trivy_summary.as_of | date: "%Y-%m-%d %H:%M UTC" }}</dd>
+                {%- elsif prov_variant.trivy_summary.display_source == "unavailable" -%}
+                <dd class="evidence-empty">evidence unavailable</dd>
+                {%- endif -%}
               </div>
               {%- else -%}
               <div class="evidence-row">
-                <dt>Trivy last scan</dt>
+                <dt>Trivy evidence</dt>
 
                 <dd class="evidence-empty">awaiting next build{%- if prov_variant.last_build_iso %} — last attempted {{ prov_variant.last_build_iso | date: "%Y-%m-%d" }}{%- endif -%}</dd>
               </div>
@@ -662,36 +693,74 @@
 
           <!-- Security Scan Summary (Zone 2 — always visible trust surface) -->
           {%- assign sec_variant = page.versions[0].variants[0] | default: page.variants[0] | default: page -%}
-          {%- if sec_variant.trivy_summary and sec_variant.trivy_summary.last_scan -%}
+          {%- if sec_variant.trivy_summary and sec_variant.trivy_summary.display_source -%}
           <div id="security-scan" class="security-scan-card">
             <header class="security-scan-card-header">
               <p class="eyebrow">Security scan results</p>
-              <h3>Trivy · last scan {{ sec_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</h3>
+              {%- if sec_variant.trivy_summary.display_source == "code-scanning" -%}
+              <h3 data-scan="heading">Trivy · Code Scanning fetched {{ sec_variant.trivy_summary.as_of | date: "%Y-%m-%d" }}</h3>
+              {%- elsif sec_variant.trivy_summary.display_source == "scan-record" -%}
+              <h3 data-scan="heading">Trivy · recorded scan {{ sec_variant.trivy_summary.as_of | date: "%Y-%m-%d" }}</h3>
+              {%- elsif sec_variant.trivy_summary.display_source == "unavailable" -%}
+              <h3 data-scan="heading">Security evidence unavailable</h3>
+              {%- endif -%}
             </header>
             <security-scan id="security" class="security-section" data-current-variant="{{ sec_variant.tag | default: page.current_version }}">
+              {%- assign sec_critical = sec_variant.trivy_summary.counts.critical | default: 0 | plus: 0 -%}
+              {%- assign sec_high = sec_variant.trivy_summary.counts.high | default: 0 | plus: 0 -%}
+              {%- assign sec_medium = sec_variant.trivy_summary.counts.medium | default: 0 | plus: 0 -%}
+              {%- assign sec_low = sec_variant.trivy_summary.counts.low | default: 0 | plus: 0 -%}
+              {%- assign sec_info = sec_variant.trivy_summary.counts.info | default: 0 | plus: 0 -%}
+              {%- assign sec_count = sec_critical | plus: sec_high | plus: sec_medium | plus: sec_low | plus: sec_info -%}
+              {%- if sec_variant.trivy_summary.display_source == "unavailable" -%}
+              <p class="scan-meta evidence-empty" data-scan="unavailable-message">No security evidence available — Code Scanning could not be read and no usable scan record was found</p>
+              {%- else -%}
               <p class="scan-meta">
-                Last scan: <time data-scan="last-scan">{{ sec_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</time>
-                (advisory mode — Trivy runs <code>continue-on-error</code> in CI; we surface findings, we do not block builds on them).
+                {%- if sec_variant.trivy_summary.display_source == "code-scanning" -%}
+                <span data-scan="summary-label">{{ sec_count }} open Code Scanning alerts · fetched {{ sec_variant.trivy_summary.as_of | date: "%Y-%m-%d" }} · advisory mode (does not block builds)</span>
+                {%- elsif sec_variant.trivy_summary.display_source == "scan-record" -%}
+                <span data-scan="summary-label">{{ sec_count }} finding(s) from the recorded scan · scanned {{ sec_variant.trivy_summary.as_of | date: "%Y-%m-%d" }} · advisory mode (does not block builds)</span>
+                {%- endif -%}
               </p>
 
+              <div class="scan-observations" data-scan="observations">
+                {%- if sec_variant.trivy_summary.code_scanning -%}
+                {%- assign sec_code_critical = sec_variant.trivy_summary.code_scanning.counts.critical | default: 0 | plus: 0 -%}
+                {%- assign sec_code_high = sec_variant.trivy_summary.code_scanning.counts.high | default: 0 | plus: 0 -%}
+                {%- assign sec_code_medium = sec_variant.trivy_summary.code_scanning.counts.medium | default: 0 | plus: 0 -%}
+                {%- assign sec_code_low = sec_variant.trivy_summary.code_scanning.counts.low | default: 0 | plus: 0 -%}
+                {%- assign sec_code_info = sec_variant.trivy_summary.code_scanning.counts.info | default: 0 | plus: 0 -%}
+                {%- assign sec_code_count = sec_code_critical | plus: sec_code_high | plus: sec_code_medium | plus: sec_code_low | plus: sec_code_info -%}
+                <span>Code Scanning: {{ sec_code_count }} open alerts · fetched {{ sec_variant.trivy_summary.code_scanning.fetched_at | date: "%Y-%m-%d" }}</span>
+                {%- endif -%}
+                {%- if sec_variant.trivy_summary.scan_record -%}
+                {%- assign sec_record_critical = sec_variant.trivy_summary.scan_record.counts.critical | default: 0 | plus: 0 -%}
+                {%- assign sec_record_high = sec_variant.trivy_summary.scan_record.counts.high | default: 0 | plus: 0 -%}
+                {%- assign sec_record_medium = sec_variant.trivy_summary.scan_record.counts.medium | default: 0 | plus: 0 -%}
+                {%- assign sec_record_low = sec_variant.trivy_summary.scan_record.counts.low | default: 0 | plus: 0 -%}
+                {%- assign sec_record_info = sec_variant.trivy_summary.scan_record.counts.info | default: 0 | plus: 0 -%}
+                {%- assign sec_record_count = sec_record_critical | plus: sec_record_high | plus: sec_record_medium | plus: sec_record_low | plus: sec_record_info -%}
+                <span>Recorded scan: {{ sec_record_count }} findings · scanned {{ sec_variant.trivy_summary.scan_record.scan_at | date: "%Y-%m-%d" }}</span>
+                {%- endif -%}
+              </div>
+
               {%- comment -%}
-                P1-N3 fix: emit .nonzero server-side where count > 0 (mirrors security-scan.js:46-47
-                span.classList.toggle('nonzero', value > 0) + parentElement.classList.toggle).
-                Eliminates FOUC where CSS paints critical=5 in clean teal before JS adds .nonzero.
-                JS _update() remains idempotent — toggling an already-set class is a no-op.
+                P1-N3 fix: emit .nonzero server-side where count > 0, matching the grid that
+                security-scan.js deletes and rebuilds with classList.add('nonzero').
+                Eliminates FOUC where CSS paints critical=5 in clean teal before client rendering.
               {%- endcomment -%}
               <div class="severity-grid">
-                {%- assign _crit = sec_variant.trivy_summary.counts.critical | default: 0 -%}
-                {%- assign _high = sec_variant.trivy_summary.counts.high | default: 0 -%}
-                <div{% if _crit > 0 %} class="nonzero"{% endif %}><span class="count{% if _crit > 0 %} nonzero{% endif %}" data-scan-count="critical">{{ _crit }}</span><span class="label">Critical</span></div>
-                <div{% if _high > 0 %} class="nonzero"{% endif %}><span class="count{% if _high > 0 %} nonzero{% endif %}" data-scan-count="high">{{ _high }}</span><span class="label">High</span></div>
+                <div{% if sec_critical > 0 %} class="nonzero"{% endif %}><span class="count{% if sec_critical > 0 %} nonzero{% endif %}" data-scan-count="critical">{{ sec_critical }}</span><span class="label">Critical</span></div>
+                <div{% if sec_high > 0 %} class="nonzero"{% endif %}><span class="count{% if sec_high > 0 %} nonzero{% endif %}" data-scan-count="high">{{ sec_high }}</span><span class="label">High</span></div>
                 <div><span class="count" data-scan-count="medium">{{ sec_variant.trivy_summary.counts.medium | default: 0 }}</span><span class="label">Medium</span></div>
                 <div><span class="count" data-scan-count="low">{{ sec_variant.trivy_summary.counts.low | default: 0 }}</span><span class="label">Low</span></div>
                 <div><span class="count" data-scan-count="info">{{ sec_variant.trivy_summary.counts.info | default: 0 }}</span><span class="label">Info</span></div>
               </div>
 
-              {%- if sec_variant.trivy_summary.counts.critical == 0 and sec_variant.trivy_summary.counts.high == 0 -%}
-              <p class="scan-clean-msg">No CRITICAL alerts at last scan ({{ sec_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}).</p>
+              {%- if sec_count == 0 and sec_variant.trivy_summary.display_source == "code-scanning" -%}
+              <p class="scan-clean-msg">No open Code Scanning alerts as of {{ sec_variant.trivy_summary.as_of | date: "%Y-%m-%d" }}.</p>
+              {%- elsif sec_critical == 0 and sec_high == 0 and sec_variant.trivy_summary.display_source == "scan-record" -%}
+              <p class="scan-clean-msg">No CRITICAL or HIGH findings in recorded scan ({{ sec_variant.trivy_summary.as_of | date: "%Y-%m-%d" }}).</p>
               {%- endif -%}
 
               <div data-scan="advisories-wrap"{% if sec_variant.trivy_summary.top_advisories.size == 0 %} style="display: none"{% endif %}>
@@ -704,11 +773,12 @@
               </div>
 
               <p class="full-report">→ Full report via <code>gh api</code> — see <a href="{{ '/verify-images/' | relative_url }}#trivy">Verify Images</a>.</p>
+              {%- endif -%}
             </security-scan>
             <footer class="security-scan-card-footer">
               <a href="{{ '/verify-images/' | relative_url }}#trivy" class="trust-badge trust-badge--verify"
-                 title="Reproduce this scan locally — verification guide">
-                🔍 REPRODUCE THIS SCAN LOCALLY
+                 title="Reproduce these security checks locally — verification guide">
+                🔍 REPRODUCE THESE SECURITY CHECKS LOCALLY
               </a>
             </footer>
           </div>

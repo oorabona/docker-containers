@@ -40,7 +40,7 @@ CONTAINERS_YML="${REPO_ROOT}/docs/site/_data/containers.yml"
 required_files=(
   "docs/site/assets/js/components/trust-strip.js"
   "docs/site/assets/js/components/security-scan.js"
-  "docs/site/assets/css/blog.css"
+  "docs/site/assets/css/theme.css"
   "docs/site/assets/js/dashboard.js"
   "docs/site/assets/js/container-detail.js"
   "docs/site/_includes/container-card.html"
@@ -69,7 +69,7 @@ echo "────────────────────────�
 
 CARD_HTML="${REPO_ROOT}/docs/site/_includes/container-card.html"
 DETAIL_HTML="${REPO_ROOT}/docs/site/_layouts/container-detail.html"
-BLOG_CSS="${REPO_ROOT}/docs/site/assets/css/blog.css"
+THEME_CSS="${REPO_ROOT}/docs/site/assets/css/theme.css"
 DASHBOARD_JS="${REPO_ROOT}/docs/site/assets/js/dashboard.js"
 DETAIL_JS="${REPO_ROOT}/docs/site/assets/js/container-detail.js"
 
@@ -91,13 +91,13 @@ else
   fail "Found ${inner_count} raw .innerHTML= assignment(s) in JS — XSS risk; use textContent or createElement"
 fi
 
-# 2. Trust-strip CSS selectors present (expect >= 4)
+# 2. Trust-strip CSS selectors present in their owning stylesheet (expect >= 4)
 trust_css_count=$(grep -cE '^\.trust-strip|^\.trust-badge|^\.security-section|^\.severity-grid' \
-  "${BLOG_CSS}" 2>/dev/null || true)
+  "${THEME_CSS}" 2>/dev/null || true)
 if [[ "${trust_css_count}" -ge 4 ]]; then
-  pass "Trust-strip CSS selectors present in blog.css (${trust_css_count} matching rules)"
+  pass "Trust-strip CSS selectors present in theme.css (${trust_css_count} matching rules)"
 else
-  fail "Expected >= 4 trust-strip CSS selectors in blog.css, found ${trust_css_count}"
+  fail "Expected >= 4 trust-strip CSS selectors in theme.css, found ${trust_css_count}"
 fi
 
 # 3. value_proposition populated for >= 10 containers
@@ -153,10 +153,10 @@ else
 fi
 
 # 7. Trust strip class in container-card include
-if grep -q 'class="trust-strip"' "${CARD_HTML}" 2>/dev/null; then
+if grep -qE 'class="[^"]*\btrust-strip\b' "${CARD_HTML}" 2>/dev/null; then
   pass "trust-strip div found in container-card.html"
 else
-  fail 'class="trust-strip" not found in container-card.html'
+  fail 'trust-strip class token not found in container-card.html'
 fi
 
 # 8. Four structural checks in container-detail.html
@@ -384,6 +384,136 @@ else
   fail "Found ${inner_comp_count} raw .innerHTML= assignment(s) in component files — XSS risk"
 fi
 
+# Trivy evidence source contract: display_source, not last_scan, determines
+# whether evidence is rendered. Keep this list aligned with every renderer.
+TRIVY_RENDERERS=(
+  "${CARD_HTML}"
+  "${DETAIL_HTML}"
+  "${SECURITY_SCAN_JS}"
+  "${TRUST_STRIP_JS}"
+  "${DETAIL_JS}"
+)
+
+# 11. A scan timestamp must never decide visibility; each renderer must have
+# a positive display_source control so an empty negative grep cannot pass.
+last_scan_gates=$(grep -nE '\{%-?[[:space:]]*(if|unless|elsif)[^%]*last_scan|if[[:space:]]*\([^)]*last_scan' \
+  "${TRIVY_RENDERERS[@]}" 2>/dev/null || true)
+if [[ -z "${last_scan_gates}" ]]; then
+  pass "Trivy renderers do not gate display on last_scan"
+else
+  fail "Trivy renderer(s) still gate display on last_scan: ${last_scan_gates}"
+fi
+
+display_source_missing=0
+for renderer in "${TRIVY_RENDERERS[@]}"; do
+  if ! grep -q 'display_source' "${renderer}" 2>/dev/null; then
+    fail "Trivy renderer lacks a display_source control: ${renderer#"${REPO_ROOT}/"}"
+    display_source_missing=$((display_source_missing + 1))
+  fi
+done
+if [[ "${display_source_missing}" -eq 0 ]]; then
+  pass "Every Trivy renderer has a display_source control"
+fi
+
+# 12. Every renderer that decides the display recognizes the complete contract.
+trivy_state_missing=0
+for renderer in "${TRIVY_RENDERERS[@]}"; do
+  for state in code-scanning scan-record unavailable; do
+    if ! grep -q "${state}" "${renderer}" 2>/dev/null; then
+      fail "Trivy renderer lacks ${state}: ${renderer#"${REPO_ROOT}/"}"
+      trivy_state_missing=$((trivy_state_missing + 1))
+    fi
+  done
+done
+if [[ "${trivy_state_missing}" -eq 0 ]]; then
+  pass "Every Trivy renderer recognizes code-scanning, scan-record, and unavailable"
+fi
+
+# 13. Unavailable is a literal, non-numeric badge, not a zero-like count.
+unavailable_badge_failures=0
+for renderer in "${CARD_HTML}" "${DETAIL_HTML}"; do
+  if ! grep -qE 'assign trivy_badge_text = "no evidence"' "${renderer}" 2>/dev/null; then
+    fail "Unavailable badge is not the literal no evidence in ${renderer#"${REPO_ROOT}/"}"
+    unavailable_badge_failures=$((unavailable_badge_failures + 1))
+  fi
+  if grep -qE 'no evidence[^\n]*\{\{' "${renderer}" 2>/dev/null; then
+    fail "Unavailable badge interpolates a value in ${renderer#"${REPO_ROOT}/"}"
+    unavailable_badge_failures=$((unavailable_badge_failures + 1))
+  fi
+done
+if [[ "${unavailable_badge_failures}" -eq 0 ]]; then
+  pass "Unavailable badges are literal no evidence with no interpolated count"
+fi
+
+# 14. Unavailable Trivy evidence counts as empty provenance; a missing legacy
+# key remains distinguishable as awaiting next build in the evidence row.
+prov_key_presence_gates=$(grep -nE '\{%-?[[:space:]]*unless[[:space:]]+(_prov_var|prov_variant)\.trivy_summary[[:space:]]*-?%\}' \
+  "${DETAIL_HTML}" 2>/dev/null || true)
+if [[ -z "${prov_key_presence_gates}" ]]; then
+  pass "prov_empty_count tests display_source rather than Trivy key presence"
+else
+  fail "prov_empty_count still tests Trivy key presence: ${prov_key_presence_gates}"
+fi
+
+# 15. Code Scanning's all-clear must use the five-bucket total. Recorded-scan
+# messaging intentionally remains CRITICAL/HIGH-only because that is its claim.
+all_clear_legacy_liquid=$(grep -nE 'sec_critical == 0 and sec_high == 0 and sec_variant\.trivy_summary\.display_source == "code-scanning"' \
+  "${DETAIL_HTML}" 2>/dev/null || true)
+all_clear_legacy_js=$(grep -nE "source === 'code-scanning'[^[:cntrl:]]*(critical|high)|(critical|high)[^[:cntrl:]]*source === 'code-scanning'" \
+  "${SECURITY_SCAN_JS}" 2>/dev/null || true)
+if [[ -z "${all_clear_legacy_liquid}" && -z "${all_clear_legacy_js}" ]]; then
+  pass "Code Scanning all-clear is not gated only on CRITICAL/HIGH"
+else
+  fail "Code Scanning all-clear still uses a CRITICAL/HIGH-only gate: ${all_clear_legacy_liquid}${all_clear_legacy_js}"
+fi
+if grep -qE 'sec_count == 0 and sec_variant\.trivy_summary\.display_source == "code-scanning"' "${DETAIL_HTML}" \
+  && grep -qF "source === 'code-scanning' && total === 0" "${SECURITY_SCAN_JS}"; then
+  pass "Code Scanning all-clear uses the five-bucket total in both renderers"
+else
+  fail "Code Scanning all-clear lacks a total-based gate in one or both renderers"
+fi
+
+# 16. Nested scan_record carries scan_at; top-level last_scan is a separate
+# compatibility field and must not be read by a site renderer.
+nested_last_scan=$(grep -R -n -E 'scan_record\.last_scan|scanRecord\.last_scan' "${REPO_ROOT}/docs/site" 2>/dev/null || true)
+if [[ -z "${nested_last_scan}" ]]; then
+  pass "Site renderers do not read nested scan_record.last_scan"
+else
+  fail "Site renderer(s) still read nested last_scan: ${nested_last_scan}"
+fi
+if grep -qF 'sec_variant.trivy_summary.scan_record.scan_at' "${DETAIL_HTML}" \
+  && grep -qF 'scanRecord.scan_at' "${SECURITY_SCAN_JS}"; then
+  pass "Both scan-record renderers read scan_at"
+else
+  fail "One or both scan-record renderers do not read scan_at"
+fi
+
+# 17. The footer guides verification without asserting a scan exists.
+if grep -qF 'REPRODUCE THIS SCAN' "${DETAIL_HTML}"; then
+  fail "Security footer still claims an existing scan"
+else
+  pass "Security footer makes no claim that a scan exists"
+fi
+
+# 18. An unknown display_source must reset and hide the Trivy badge, matching
+# security-scan.js's unreadable-state marker so variant switches cannot leak data.
+trust_unknown_hides=$(grep -A5 -F "} else if (source === 'scan-record') {" "${TRUST_STRIP_JS}" 2>/dev/null \
+  | grep -F "el.style.display = 'none';" || true)
+if [[ -n "${trust_unknown_hides}" ]]; then
+  pass "Trust-strip hides the Trivy badge for an unknown display_source"
+else
+  fail "Trust-strip unknown display_source path does not hide the Trivy badge"
+fi
+
+# 19. Lower-only findings are advisory, not clean.
+if grep -qF 'assign trivy_sev = "advisory"' "${CARD_HTML}" \
+  && grep -qF 'assign trivy_sev = "advisory"' "${DETAIL_HTML}" \
+  && grep -qF "sev = 'advisory';" "${TRUST_STRIP_JS}" \
+  && grep -qF 'data-severity="advisory"' "${THEME_CSS}"; then
+  pass "Lower-only findings use the neutral advisory badge state in every producer"
+else
+  fail "One or more Trivy badge producers lack the advisory state"
+fi
 # ---------------------------------------------------------------------------
 # Phase 2 — Rendered HTML checks (requires jekyll build output in docs/site/_site/)
 # ---------------------------------------------------------------------------

@@ -841,36 +841,28 @@
       }
     });
 
-    // Fix #3: update security-scan-card chrome (header h3 date + card visibility) on variant change
-    // M-N4: also update the clean-scan message (.scan-clean-msg) reactively.
+    // Update security-scan-card chrome (header h3 + card visibility) on variant change.
     document.addEventListener('phase-b-variant-changed', function(e) {
       var detail = e.detail;
       if (!detail) return;
       var card = document.querySelector('.security-scan-card');
       if (!card) return;
-      if (detail.trivy_summary && detail.trivy_summary.last_scan) {
-        card.style.display = '';
-        var header = card.querySelector('.security-scan-card-header h3');
-        if (header) {
-          var dateStr = (detail.trivy_summary.last_scan || '').slice(0, 10);
-          header.textContent = 'Trivy · last scan ' + dateStr;
-        }
-        // Update the clean-scan message: show iff critical + high == 0
-        var cleanMsg = card.querySelector('.scan-clean-msg');
-        if (cleanMsg) {
-          var counts = (detail.trivy_summary && detail.trivy_summary.counts) || {};
-          var critical = counts.critical || 0;
-          var high = counts.high || 0;
-          var scanDate = (detail.trivy_summary.last_scan || '').slice(0, 10);
-          if (critical === 0 && high === 0) {
-            cleanMsg.textContent = 'No CRITICAL alerts at last scan (' + scanDate + ').';
-            cleanMsg.style.display = '';
-          } else {
-            cleanMsg.style.display = 'none';
-          }
-        }
+      var summary = detail.trivy_summary;
+      if (!summary || !summary.display_source) {
+        card.style.display = 'none';
+        return;
+      }
+      card.style.display = '';
+      var header = card.querySelector('.security-scan-card-header h3');
+      if (!header) return;
+      var dateStr = (summary.as_of || '').slice(0, 10);
+      if (summary.display_source === 'code-scanning') {
+        header.textContent = 'Trivy · Code Scanning fetched ' + dateStr;
+      } else if (summary.display_source === 'scan-record') {
+        header.textContent = 'Trivy · recorded scan ' + dateStr;
+      } else if (summary.display_source === 'unavailable') {
+        header.textContent = 'Security evidence unavailable';
       } else {
-        // Variant has no Trivy data — hide the entire card
         card.style.display = 'none';
       }
     });

@@ -43,10 +43,9 @@ Specific changes (PR implementing this ADR):
   result is the base; side-channel overlays `last_scan` and `counts` (authoritative for
   pipeline-fresh data). Legacy files without `counts` fall back to the `alert_count` → critical
   back-compat path with no migration required.
-  **Superseded by `docs/adr/ADR-017-trivy-evidence-channels.md`**, which replaces the overlay with two
-  independent observations and a named display source. The overlay described here is what
-  `helpers/trivy-utils.sh` still ships; the legacy `alert_count` → critical path survives the change,
-  inside the scan-record channel.
+  **Superseded by `docs/adr/ADR-017-trivy-evidence-channels.md`**, which replaced the overlay with two
+  independent observations and a named display source. The legacy `alert_count` → critical path
+  survived that change, inside the scan-record channel.
 
 ## Consequences
 
@@ -71,7 +70,7 @@ Specific changes (PR implementing this ADR):
   already runs `continue-on-error: true`; size increase has no operational impact on builds.
 - Code Scanning indexing lag for non-CRITICAL alerts is longer. **The mitigation described here — a
   timestamp comparison between the side-channel record and the Code Scanning result, with the record
-  overlaid whenever the API held no entry — is superseded by
+  overlaid whenever the API held no entry — was replaced by
   `docs/adr/ADR-017-trivy-evidence-channels.md`**, which reports the two sources as independent
   observations rather than merging them, makes no comparison between them, and gives the display to a
   successful fetch whether or not it found alerts. Whether a record describes the image currently
@@ -87,6 +86,6 @@ Specific changes (PR implementing this ADR):
 ## References
 
 - `docs/adr/ADR-007-phase-c-redesign.md` — trust-strip identity, persona Camille, Phase B pipeline
-- `helpers/trivy-utils.sh` — side-channel overlay merge implementation
+- `helpers/trivy-utils.sh` — Trivy summary and evidence-channel helpers
 - `.github/actions/build-container/action.yaml` — `vulnerability_severity` input, scan-history writer
 - `docs/site/verify-images.md` — public-facing severity policy documentation

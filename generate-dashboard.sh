@@ -717,7 +717,13 @@ collect_variant_json() {
     # Trivy: collect vulnerability summary for the primary platform (linux/amd64)
     local trivy_category trivy_summary
     trivy_category=$(build_trivy_category "$container" "$variant_tag" "linux/amd64")
-    trivy_summary=$(get_trivy_summary "$trivy_category")
+    if ! trivy_summary=$(get_trivy_summary "$trivy_category"); then
+        log_warning "Trivy summary unavailable for category $trivy_category: get_trivy_summary failed; publishing unavailable evidence"
+        trivy_summary="$_TRIVY_EMPTY"
+    elif ! printf '%s\n' "$trivy_summary" | jq -e "$(trivy_summary_jq)"'trivy_summary_valid' >/dev/null 2>&1; then
+        log_warning "Trivy summary unavailable for category $trivy_category: invalid helper result; publishing unavailable evidence"
+        trivy_summary="$_TRIVY_EMPTY"
+    fi
     [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
         echo "[debug] trivy_summary for $container-$variant_tag = ${trivy_summary:0:60}…" >&2
     [[ -n "${DASHBOARD_TRACE:-}" ]] && printf '[trace] %s post-trivy %s:%s\n' "$(date -Iseconds)" "$container" "$variant_tag" >&2
@@ -863,7 +869,7 @@ collect_variant_json() {
         --argjson extensions "$extensions_json" \
         --arg when_to_use "$when_to_use" \
         --argjson variant_deps "$variant_deps_json" \
-        '
+        "$(trivy_summary_jq)"'
         .[0] as $lineage |
         .[1] as $build_args |
         .[2] as $sbom_summary |
@@ -892,7 +898,7 @@ collect_variant_json() {
         + (if ($sbom_packages | keys | length) > 0 then {sbom_packages: $sbom_packages} else {} end)
         + (if ($changelog | keys | length) > 0 then {changelog: $changelog} else {} end)
         + (if ($build_history | length) > 0 then {build_history: $build_history} else {} end)
-        + (if ($trivy_summary | type) == "object" and $trivy_summary.last_scan != null then {trivy_summary: $trivy_summary} else {} end)
+        + (if ($trivy_summary | trivy_summary_valid) then {trivy_summary: $trivy_summary} else {} end)
         + (if ($extensions | type) == "array" and ($extensions | length) > 0 then {extensions: $extensions} else {} end)
         + (if ($when_to_use | length) > 0 then {when_to_use: $when_to_use} else {} end)'
 }
@@ -1816,7 +1822,13 @@ generate_data() {
             fi
             log_latency "gh-attestation" "$_t0_att" 20
             trivy_category=$(build_trivy_category "$container" "$current_version" "linux/amd64")
-            trivy_summary=$(get_trivy_summary "$trivy_category" || echo "{}")
+            if ! trivy_summary=$(get_trivy_summary "$trivy_category"); then
+                log_warning "Trivy summary unavailable for category $trivy_category: get_trivy_summary failed; publishing unavailable evidence"
+                trivy_summary="$_TRIVY_EMPTY"
+            elif ! printf '%s\n' "$trivy_summary" | jq -e "$(trivy_summary_jq)"'trivy_summary_valid' >/dev/null 2>&1; then
+                log_warning "Trivy summary unavailable for category $trivy_category: invalid helper result; publishing unavailable evidence"
+                trivy_summary="$_TRIVY_EMPTY"
+            fi
             [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
                 echo "[debug] non-variant: trivy_summary for $container-$current_version = ${trivy_summary:0:60}…" >&2
 
@@ -1825,7 +1837,8 @@ generate_data() {
                 "$container_json" "$sbom_summary" "$sbom_packages" "$changelog" "$build_history" \
                 "$trivy_summary" | \
                 jq -s --arg attestation_id "$attestation_id" \
-                       --arg attestation_url "$attestation_url" '
+                       --arg attestation_url "$attestation_url" \
+                       "$(trivy_summary_jq)"'
                 .[0] as $base |
                 .[1] as $sbom_summary |
                 .[2] as $sbom_packages |
@@ -1838,7 +1851,7 @@ generate_data() {
                 + (if ($changelog | keys | length) > 0 then {changelog: $changelog} else {} end)
                 + (if ($build_history | length) > 0 then {build_history: $build_history} else {} end)
                 + (if ($attestation_id | length) > 0 then {attestation_id: $attestation_id, attestation_url: $attestation_url} else {} end)
-                + (if ($trivy_summary | type) == "object" and $trivy_summary.last_scan != null then {trivy_summary: $trivy_summary} else {} end)
+                + (if ($trivy_summary | trivy_summary_valid) then {trivy_summary: $trivy_summary} else {} end)
                 ')
         fi
 

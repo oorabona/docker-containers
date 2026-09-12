@@ -18,6 +18,7 @@ setup() {
     source "$ORIG_DIR/helpers/logging.sh" 2>/dev/null || true
     source "$ORIG_DIR/helpers/variant-utils.sh" 2>/dev/null || true
     source "$ORIG_DIR/generate-dashboard.sh" 2>/dev/null || true
+    source "$ORIG_DIR/helpers/trivy-utils.sh" 2>/dev/null || true
 
     # Override SCRIPT_DIR after sourcing
     export SCRIPT_DIR="$TEST_DIR"
@@ -63,7 +64,7 @@ EOF
     build_trivy_category()           { echo "myprof:2.0.0"; }
     get_attestation_id()             { echo "att-prof-id"; }
     get_attestation_url()            { echo "https://example.com/att/att-prof-id"; }
-    get_trivy_summary()              { echo '{"last_scan":"2026-05-17T12:00:00Z","counts":{"critical":0,"high":0,"medium":0,"low":1,"info":0},"top_advisories":[]}'; }
+    get_trivy_summary()              { echo '{"display_source":"scan-record","last_scan":"2026-05-17T12:00:00Z","as_of":"2026-05-17T12:00:00Z","counts":{"critical":0,"high":0,"medium":0,"low":1,"info":0},"top_advisories":[],"scan_record":{"scan_at":"2026-05-17T12:00:00Z","counts":{"critical":0,"high":0,"medium":0,"low":1,"info":0}},"code_scanning":null}'; }
     generate_container_page()        { :; }
     fetch_recent_activity()          { echo "[]"; }
     calculate_build_success_rate()   { echo "3:3:100"; }
@@ -155,6 +156,16 @@ teardown() {
     unset DASHBOARD_PROFILE
     generate_data 2>"$TEST_DIR/off_stderr.txt"
     cp "$DATA_FILE" "$TEST_DIR/containers_prof_off.yml"
+
+    # Both modes must carry the fixture's valid Trivy summary before their
+    # serialized output is compared. Without these presence checks, a malformed
+    # nested scan_record makes the differential comparison vacuous.
+    for profile_yml in "$TEST_DIR/containers_prof_on.yml" "$TEST_DIR/containers_prof_off.yml"; do
+        if ! yq -e '.[] | select(.name == "myprof") | .trivy_summary.display_source == "scan-record"' "$profile_yml" >/dev/null; then
+            echo "FAIL: fixture trivy_summary missing from ${profile_yml}"
+            return 1
+        fi
+    done
 
     # No PROFILE line must appear in stderr of the OFF run
     if grep -q 'PROFILE ' "$TEST_DIR/off_stderr.txt" 2>/dev/null; then
