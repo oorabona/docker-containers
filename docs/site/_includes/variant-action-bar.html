@@ -48,25 +48,28 @@
 ]{%- else -%}[]{%- endif -%}
 {%- endcapture -%}
 
-{%- comment -%} Determine unique flavors for flavor pills {%- endcomment -%}
+{%- comment -%} Determine flavor pills across every version {%- endcomment -%}
 {%- assign _has_flavors = false -%}
 {%- if page.versions and page.versions.size > 0 -%}
-  {%- assign _first_ver = page.versions[0] -%}
-  {%- for _fv in _first_ver.variants -%}
-    {%- if _fv.name and _fv.name != "" -%}
-      {%- assign _has_flavors = true -%}
-    {%- endif -%}
+  {%- for _fv_ver in page.versions -%}
+    {%- for _fv in _fv_ver.variants -%}
+      {%- if _fv.name and _fv.name != "" -%}
+        {%- assign _has_flavors = true -%}
+      {%- endif -%}
+    {%- endfor -%}
   {%- endfor -%}
 {%- endif -%}
 {%- capture _vab_fla_arr -%}
 {%- if _has_flavors -%}[
   {%- assign _fla_first = true -%}
-  {%- for _fv in _first_ver.variants -%}
-    {%- if _fv.name and _fv.name != "" -%}
-      {%- unless _fla_first -%},{%- endunless -%}
-      {%- assign _fla_first = false -%}
-      {"name":{{ _fv.name | jsonify }},"label":{{ _fv.name | jsonify }}}
-    {%- endif -%}
+  {%- for _fv_ver in page.versions -%}
+    {%- for _fv in _fv_ver.variants -%}
+      {%- if _fv.name and _fv.name != "" -%}
+        {%- unless _fla_first -%},{%- endunless -%}
+        {%- assign _fla_first = false -%}
+        {"name":{{ _fv.name | jsonify }},"label":{{ _fv.name | jsonify }}}
+      {%- endif -%}
+    {%- endfor -%}
   {%- endfor -%}
 ]{%- else -%}[]{%- endif -%}
 {%- endcapture -%}
@@ -96,28 +99,37 @@
 {%- assign _vab_default_version = "" -%}
 {%- assign _vab_default_flavor = "" -%}
 {%- assign _vab_default_tag = page.current_version -%}
-{%- if page.versions and page.versions.size > 0 -%}
-  {%- assign _vab_default_version = page.versions[0].base_tag | default: page.versions[0].tag -%}
-  {%- if page.versions[0].variants[0].name -%}
-    {%- assign _vab_default_flavor = page.versions[0].variants[0].name -%}
-  {%- endif -%}
-{%- endif -%}
+{%- assign _vab_default_found = false -%}
 {%- if page.versions -%}
   {%- for _vab_ver in page.versions -%}
     {%- for _vab_v in _vab_ver.variants -%}
-      {%- if _vab_v.tag == selected_variant_tag -%}
+      {%- if _vab_default_found == false and _vab_v.tag and _vab_v.tag != "" -%}
         {%- assign _vab_default_tag = _vab_v.tag -%}
         {%- assign _vab_default_version = _vab_ver.base_tag | default: _vab_ver.tag -%}
         {%- assign _vab_default_flavor = _vab_v.name | default: "" -%}
+        {%- assign _vab_default_found = true -%}
+      {%- endif -%}
+      {%- if _vab_v.tag == selected_variant_tag and _vab_v.tag != "" -%}
+        {%- assign _vab_default_tag = _vab_v.tag -%}
+        {%- assign _vab_default_version = _vab_ver.base_tag | default: _vab_ver.tag -%}
+        {%- assign _vab_default_flavor = _vab_v.name | default: "" -%}
+        {%- assign _vab_default_found = true -%}
       {%- endif -%}
     {%- endfor -%}
   {%- endfor -%}
 {%- elsif page.variants -%}
   {%- for _vab_v in page.variants -%}
-    {%- if _vab_v.tag == selected_variant_tag -%}
+    {%- if _vab_default_found == false and _vab_v.tag and _vab_v.tag != "" -%}
       {%- assign _vab_default_tag = _vab_v.tag -%}
       {%- assign _vab_default_version = "" -%}
       {%- assign _vab_default_flavor = _vab_v.tag -%}
+      {%- assign _vab_default_found = true -%}
+    {%- endif -%}
+    {%- if _vab_v.tag == selected_variant_tag and _vab_v.tag != "" -%}
+      {%- assign _vab_default_tag = _vab_v.tag -%}
+      {%- assign _vab_default_version = "" -%}
+      {%- assign _vab_default_flavor = _vab_v.tag -%}
+      {%- assign _vab_default_found = true -%}
     {%- endif -%}
   {%- endfor -%}
 {%- endif -%}

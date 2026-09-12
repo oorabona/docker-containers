@@ -156,6 +156,8 @@ assert_selected_image_consumers() {
   local container=$1
   local expected_tag=$2
   local stale_tag=$3
+  local expected_version=$4
+  local expected_flavor=$5
   PAGE="${SITE_DIR}/container/${container}/index.html"
   [[ -f "${PAGE}" && -s "${PAGE}" ]] || fail 'container fixture page must be a non-empty regular file'
 
@@ -164,6 +166,18 @@ assert_selected_image_consumers() {
     || fail 'could not read data-default-tag from variant-action-bar'
   [[ ${action_bar_tag} == "${expected_tag}" ]] \
     || fail "variant-action-bar default tag does not name ${expected_tag}; found ${action_bar_tag}"
+
+  local action_bar_version
+  action_bar_version=$(python3 "${EXTRACTOR}" attribute data-default-version --id variant-action-bar "${PAGE}") \
+    || fail 'could not read data-default-version from variant-action-bar'
+  [[ ${action_bar_version} == "${expected_version}" ]] \
+    || fail "variant-action-bar default version does not name ${expected_version}; found ${action_bar_version}"
+
+  local action_bar_flavor
+  action_bar_flavor=$(python3 "${EXTRACTOR}" attribute data-default-flavor --id variant-action-bar "${PAGE}") \
+    || fail 'could not read data-default-flavor from variant-action-bar'
+  [[ ${action_bar_flavor} == "${expected_flavor}" ]] \
+    || fail "variant-action-bar default flavor does not name ${expected_flavor}; found ${action_bar_flavor}"
 
   local noscript_markup
   noscript_markup=$(awk '/<noscript>/{inside=1} inside{print} /<\/noscript>/{exit}' "${PAGE}")
@@ -212,8 +226,36 @@ assert_selected_image_consumers() {
     || fail "expected exactly one visible provenance section; found ${visible_provenance_count}"
 }
 
+assert_variant_action_bar_options() {
+  local container=$1
+  local empty_version=$2
+  local populated_version=$3
+  local expected_flavors=$4
+  PAGE="${SITE_DIR}/container/${container}/index.html"
+  [[ -f "${PAGE}" && -s "${PAGE}" ]] || fail 'container fixture page must be a non-empty regular file'
+
+  local versions
+  versions=$(python3 "${EXTRACTOR}" attribute data-versions --id variant-action-bar "${PAGE}") \
+    || fail 'could not read data-versions from variant-action-bar'
+  [[ ${versions} == *"\"tag\":\"${empty_version}\""* ]] \
+    || fail "version list omits empty version ${empty_version}"
+  [[ ${versions} == *"\"tag\":\"${populated_version}\""* ]] \
+    || fail "version list omits populated version ${populated_version}"
+
+  local flavors
+  flavors=$(python3 "${EXTRACTOR}" attribute data-flavors --id variant-action-bar "${PAGE}") \
+    || fail 'could not read data-flavors from variant-action-bar'
+  local flavor
+  IFS=',' read -r -a expected_flavor_list <<< "${expected_flavors}"
+  for flavor in "${expected_flavor_list[@]}"; do
+    [[ ${flavors} == *"\"name\":\"${flavor}\""* ]] \
+      || fail "flavor list omits ${flavor} from a later version"
+  done
+}
+
 assert_page fixture-first-empty-later-evidence retained-evidence-alpine evidenced 2026-09-12 0 1 0 0 0 pending retained-evidence-sibling
-assert_selected_image_consumers fixture-first-empty-later-evidence retained-evidence-alpine current-without-variant
+assert_selected_image_consumers fixture-first-empty-later-evidence retained-evidence-alpine current-without-variant retained-evidence alpine
+assert_variant_action_bar_options fixture-first-empty-later-evidence current-without-variant retained-evidence alpine,sibling
 assert_page fixture-no-security-evidence no-evidence-alpine absent '' '' '' '' '' '' pending ''
 assert_page fixture-selected-security-evidence selected-evidence-alpine evidenced 2026-09-12 0 0 0 0 0 pending selected-evidence-sibling
 assert_page fixture-contract-invalid-security-evidence bogus-source-alpine not-recorded '' '' '' '' '' '' attested ''

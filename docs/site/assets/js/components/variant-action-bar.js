@@ -108,45 +108,52 @@
       // variants: flat lookup array of all variant objects
       this._variants = parse(this.dataset.variants, []);
 
-      // Select the first version/flavor as default
-      this._selectedVersion = this.dataset.defaultVersion
-        || (this._versions[0] && this._versions[0].tag) || '';
-      this._selectedFlavor = this.dataset.defaultFlavor
-        || (this._flavors[0] && this._flavors[0].name) || '';
-
-      // Find initial selected variant
-      this._currentVariant = this._findVariant(this._selectedVersion, this._selectedFlavor);
+      // The Liquid defaults name a real variant. Retain that contract in the
+      // component too: accept the resolved tag/version/flavor only as one
+      // matching variant, then use the first selectable variant rather than a
+      // positional version/flavor fallback.
+      var configuredVariant = this._findVariantByTag(this._defaultTag);
+      if (!configuredVariant ||
+          configuredVariant.version !== (this.dataset.defaultVersion || '') ||
+          configuredVariant.flavor !== (this.dataset.defaultFlavor || '')) {
+        configuredVariant = null;
+      }
+      this._currentVariant = configuredVariant || this._firstSelectableVariant();
+      this._selectedVersion = this._currentVariant ? this._currentVariant.version : '';
+      this._selectedFlavor = this._currentVariant ? this._currentVariant.flavor : '';
     }
 
-    // Find a variant matching version + flavor.
-    // Falls back to defaultTag match, then first variant.
-    _findVariant(version, flavor) {
-      var variants = this._variants;
-      if (!variants || variants.length === 0) { return null; }
+    _findVariantByTag(tag) {
+      if (!tag) { return null; }
+      for (var i = 0; i < this._variants.length; i++) {
+        if (this._variants[i].tag === tag) { return this._variants[i]; }
+      }
+      return null;
+    }
 
-      // Exact match on version + flavor
-      if (version && flavor) {
-        for (var i = 0; i < variants.length; i++) {
-          var v = variants[i];
-          if (v.version === version && v.flavor === flavor) { return v; }
+    _firstSelectableVariant() {
+      for (var i = 0; i < this._variants.length; i++) {
+        if (this._variants[i] && this._variants[i].tag) { return this._variants[i]; }
+      }
+      return null;
+    }
+
+    _findVariantForVersion(version) {
+      for (var i = 0; i < this._variants.length; i++) {
+        var variant = this._variants[i];
+        if (variant && variant.version === version && variant.tag) { return variant; }
+      }
+      return null;
+    }
+
+    _findVariantForVersionAndFlavor(version, flavor) {
+      for (var i = 0; i < this._variants.length; i++) {
+        var variant = this._variants[i];
+        if (variant && variant.version === version && variant.flavor === flavor && variant.tag) {
+          return variant;
         }
       }
-
-      // Match by version only (no flavor dimension)
-      if (version) {
-        for (var j = 0; j < variants.length; j++) {
-          if (variants[j].version === version) { return variants[j]; }
-        }
-      }
-
-      // Match by default tag
-      if (this._defaultTag) {
-        for (var k = 0; k < variants.length; k++) {
-          if (variants[k].tag === this._defaultTag) { return variants[k]; }
-        }
-      }
-
-      return variants[0] || null;
+      return null;
     }
 
     // -------------------------------------------------------
@@ -242,13 +249,21 @@
 
       for (var i = 0; i < items.length; i++) {
         var item = items[i];
-        var isActive = item[valueKey] === selected;
+        var isUnavailableVersion = pillClass === 'vab-version-pill'
+          && !this._findVariantForVersion(item[valueKey]);
+        var isActive = !isUnavailableVersion && item[valueKey] === selected;
         var pill = document.createElement('button');
         pill.type = 'button';
         pill.className = pillClass + (isActive ? ' vab-pill--active' : '');
         pill.setAttribute('role', 'radio');
         pill.setAttribute('aria-checked', isActive ? 'true' : 'false');
         pill.setAttribute('data-value', item[valueKey]);
+        if (isUnavailableVersion) {
+          // The version remains discoverable; readers hear it as unavailable,
+          // and activating it leaves the current published variant selected.
+          pill.disabled = true;
+          pill.setAttribute('aria-disabled', 'true');
+        }
         // F4: roving tabindex — only the selected pill is in the tab sequence
         pill.tabIndex = isActive ? 0 : -1;
         pill.textContent = item.label || item[valueKey];
@@ -559,18 +574,27 @@
     // -------------------------------------------------------
 
     _onVersionPillClick(value) {
-      this._selectedVersion = value;
-      this._updatePillActive('vab-version-pill', value);
-      this._currentVariant = this._findVariant(this._selectedVersion, this._selectedFlavor);
+      var next = this._findVariantForVersionAndFlavor(value, this._selectedFlavor)
+        || this._findVariantForVersion(value);
+      // Empty version pills remain visible but do not change commands, state,
+      // or emitted tags; a reader continues to encounter the selected variant.
+      if (!next) { return; }
+      this._selectedVersion = next.version;
+      this._selectedFlavor = next.flavor;
+      this._currentVariant = next;
+      this._updatePillActive('vab-version-pill', this._selectedVersion);
+      this._updatePillActive('vab-flavor-pill', this._selectedFlavor);
       this._updateCommands();
       this._updateSignals();
       this._dispatchVariantChanged();
     }
 
     _onFlavorPillClick(value) {
-      this._selectedFlavor = value;
-      this._updatePillActive('vab-flavor-pill', value);
-      this._currentVariant = this._findVariant(this._selectedVersion, this._selectedFlavor);
+      var next = this._findVariantForVersionAndFlavor(this._selectedVersion, value);
+      if (!next) { return; }
+      this._selectedFlavor = next.flavor;
+      this._currentVariant = next;
+      this._updatePillActive('vab-flavor-pill', this._selectedFlavor);
       this._updateCommands();
       this._updateSignals();
       this._dispatchVariantChanged();
@@ -685,14 +709,9 @@
 
     _dispatchVariantChanged() {
       var v = this._currentVariant;
-      var detail = {
-        variant: v,
-        tag: (v && v.tag) || this._defaultTag,
-        attestation_url: (v && v.attestation_url) || '',
-        attestation_id:  (v && v.attestation_id)  || '',
-        trivy_summary:   (v && v.trivy_summary)    || null,
-        multi_arch_platforms: (v && v.multi_arch_platforms) || []
-      };
+      var detail = buildPhaseBVariantPayload(v || {});
+      detail.variant = v;
+      detail.tag = (v && v.tag) || this._defaultTag;
 
       document.dispatchEvent(new CustomEvent('variant-action-bar:variant-changed', {
         bubbles: true, detail: detail
@@ -709,7 +728,7 @@
       // and prevent A<->B ping-pong.
       var versionTabsEvent = new CustomEvent('version-tabs-changed', {
         bubbles: true,
-        detail: { variant: v, tag: detail.tag, source: 'variant-action-bar' }
+        detail: { tag: detail.tag, source: 'variant-action-bar' }
       });
       document.body.dispatchEvent(versionTabsEvent);
     }
@@ -846,7 +865,10 @@
       if (keys.indexOf(e.key) === -1) { return; }
       e.preventDefault();
       var group = pill.parentElement;
-      var pills = Array.prototype.slice.call(group.querySelectorAll('button'));
+      var pills = Array.prototype.slice.call(group.querySelectorAll('button')).filter(function (button) {
+        return !button.disabled;
+      });
+      if (pills.length === 0) { return; }
       var idx = pills.indexOf(pill);
       var next;
       if (e.key === 'ArrowLeft')       { next = (idx - 1 + pills.length) % pills.length; }

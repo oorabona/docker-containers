@@ -22,6 +22,7 @@
 
       this.addEventListener('click', this._clickHandler);
       this.addEventListener('keydown', this._keydownHandler);
+      this._normaliseTabState();
 
       // Fix #1: dispatch phase-b-variant-changed for the initial active tab so
       // <trust-strip>, <security-scan>, and Provenance are correctly initialized
@@ -42,49 +43,12 @@
     /* ------------------------------------------------------------------ */
 
     _activateTab(tab) {
-      if (!tab || tab.getAttribute('aria-selected') === 'true') return;
+      if (!tab || !this.contains(tab)) return;
 
-      // Deselect all tabs in the SAME tablist
-      var tablist = tab.closest('[role="tablist"]');
-      if (tablist) {
-        tablist.querySelectorAll('[role="tab"]').forEach(function (t) {
-          t.setAttribute('aria-selected', 'false');
-          t.classList.remove('version-tab--selected');
-        });
-      }
-
-      // Activate clicked tab
-      tab.setAttribute('aria-selected', 'true');
-      tab.classList.add('version-tab--selected');
+      this._normaliseTabState(tab);
       tab.focus();
 
-      // Build variant payload — same shape as container-detail.js selectVariant() L110–121
-      var variantData = {
-        tag: tab.dataset.tag || '',
-        attestation_url: tab.dataset.attestationUrl || '',
-        attestation_id: tab.dataset.attestationId || '',
-        trivy_summary: null,
-        // Each dispatch starts absent, becomes parsed only after JSON.parse(), or
-        // unreadable on parse failure. Rebuilding it here prevents stale state.
-        trivy_summary_state: 'absent',
-        multi_arch_platforms: [],
-        size_amd64: tab.dataset.sizeAmd64 || '',
-        size_arm64: tab.dataset.sizeArm64 || ''
-      };
-      try {
-        if (Object.prototype.hasOwnProperty.call(tab.dataset, 'trivySummary')) {
-          variantData.trivy_summary = JSON.parse(tab.dataset.trivySummary);
-          variantData.trivy_summary_state = 'parsed';
-        }
-      } catch {
-        variantData.trivy_summary = null;
-        variantData.trivy_summary_state = 'unreadable';
-      }
-      try {
-        if (tab.dataset.multiArchPlatforms) {
-          variantData.multi_arch_platforms = JSON.parse(tab.dataset.multiArchPlatforms);
-        }
-      } catch (_) { /* swallow malformed JSON */ }
+      var variantData = buildPhaseBVariantPayload(tab.dataset);
 
       // Dispatch `phase-b-variant-changed` — <trust-strip> and <security-scan>
       // listen on document; keeps backward-compat with container-detail.js selectVariant()
@@ -95,9 +59,30 @@
 
       // Also dispatch a component-scoped event for container-detail.js to intercept
       this.dispatchEvent(new CustomEvent('version-tabs-changed', {
-        detail: variantData,
+        detail: { tag: variantData.tag },
         bubbles: true
       }));
+    }
+
+    // This host, rather than each nested tablist, owns the selected tab. The
+    // hidden data carriers outside <version-tabs> have no role="tab" and are
+    // deliberately not part of this state.
+    _normaliseTabState(selectedTab) {
+      var tabs = Array.from(this.querySelectorAll('[role="tab"]'));
+      if (tabs.length === 0) return null;
+      var selected = selectedTab && tabs.indexOf(selectedTab) !== -1 ? selectedTab : null;
+      if (!selected) {
+        selected = tabs.find(function (tab) {
+          return tab.getAttribute('aria-selected') === 'true';
+        }) || tabs[0];
+      }
+      tabs.forEach(function (tab) {
+        var active = tab === selected;
+        tab.setAttribute('aria-selected', active ? 'true' : 'false');
+        tab.classList.toggle('version-tab--selected', active);
+        tab.tabIndex = active ? 0 : -1;
+      });
+      return selected;
     }
 
     /* ------------------------------------------------------------------ */
@@ -205,35 +190,9 @@
        multi-version pages (where container-detail.js may only have the hidden
        synthetic .variant-tag.selected to work from). */
     _dispatchInitialVariant() {
-      // Find the first [aria-selected="true"] tab in the component
-      var initialTab = this.querySelector('[role="tab"][aria-selected="true"]');
+      var initialTab = this._normaliseTabState();
       if (!initialTab) return;
-      var variantData = {
-        tag: initialTab.dataset.tag || '',
-        attestation_url: initialTab.dataset.attestationUrl || '',
-        attestation_id: initialTab.dataset.attestationId || '',
-        trivy_summary: null,
-        // Each dispatch starts absent, becomes parsed only after JSON.parse(), or
-        // unreadable on parse failure. Rebuilding it here prevents stale state.
-        trivy_summary_state: 'absent',
-        multi_arch_platforms: [],
-        size_amd64: initialTab.dataset.sizeAmd64 || '',
-        size_arm64: initialTab.dataset.sizeArm64 || ''
-      };
-      try {
-        if (Object.prototype.hasOwnProperty.call(initialTab.dataset, 'trivySummary')) {
-          variantData.trivy_summary = JSON.parse(initialTab.dataset.trivySummary);
-          variantData.trivy_summary_state = 'parsed';
-        }
-      } catch {
-        variantData.trivy_summary = null;
-        variantData.trivy_summary_state = 'unreadable';
-      }
-      try {
-        if (initialTab.dataset.multiArchPlatforms) {
-          variantData.multi_arch_platforms = JSON.parse(initialTab.dataset.multiArchPlatforms);
-        }
-      } catch (_) { /* swallow */ }
+      var variantData = buildPhaseBVariantPayload(initialTab.dataset);
       document.dispatchEvent(new CustomEvent('phase-b-variant-changed', {
         detail: variantData,
         bubbles: false
@@ -246,7 +205,7 @@
       // update DOM text/visibility; selectVariant() is guarded by dataset reads
       // that are stable across calls. No double-flash risk.
       this.dispatchEvent(new CustomEvent('version-tabs-changed', {
-        detail: variantData,
+        detail: { tag: variantData.tag },
         bubbles: true
       }));
     }

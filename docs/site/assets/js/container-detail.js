@@ -65,28 +65,7 @@
       // Pull command update handled by <variant-action-bar> via phase-b-variant-changed (PR1)
 
       // Phase B: dispatch event for vanilla custom-element trust strip + Security Scan section
-      var variantData = {
-        tag: tag,
-        attestation_url: el.dataset.attestationUrl || '',
-        attestation_id: el.dataset.attestationId || '',
-        trivy_summary: null,
-        // Each dispatch starts absent, becomes parsed only after JSON.parse(), or
-        // unreadable on parse failure. Rebuilding it here prevents stale state.
-        trivy_summary_state: 'absent',
-        multi_arch_platforms: []
-      };
-      try {
-        if (Object.prototype.hasOwnProperty.call(el.dataset, 'trivySummary')) {
-          variantData.trivy_summary = JSON.parse(el.dataset.trivySummary);
-          variantData.trivy_summary_state = 'parsed';
-        }
-      } catch {
-        variantData.trivy_summary = null;
-        variantData.trivy_summary_state = 'unreadable';
-      }
-      try {
-        if (el.dataset.multiArchPlatforms) variantData.multi_arch_platforms = JSON.parse(el.dataset.multiArchPlatforms);
-      } catch (e) { /* swallow */ }
+      var variantData = buildPhaseBVariantPayload(el.dataset);
       document.dispatchEvent(new CustomEvent('phase-b-variant-changed', { detail: variantData }));
 
       // Phase B: postgres variants comparison table follows selected variant's version.
