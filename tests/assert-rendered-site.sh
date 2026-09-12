@@ -35,6 +35,18 @@ fail() {
   exit 1
 }
 
+classify_absent_grep_status() {
+  local status=$1
+  local searched=$2
+  local claim=$3
+
+  case ${status} in
+    0) fail "${claim}: ${searched}" ;;
+    1) ;;
+    *) fail "could not search ${searched} for ${claim}; grep exited ${status}" ;;
+  esac
+}
+
 assert_token_absent() {
   local file=$1
   local pattern=$2
@@ -42,13 +54,42 @@ assert_token_absent() {
   local status
 
   if grep -E -- "${pattern}" "${file}" >/dev/null; then
-    fail "${claim}: ${file}"
+    classify_absent_grep_status 0 "${file}" "${claim}"
   else
     status=$?
-    if [[ ${status} -ne 1 ]]; then
-      fail "could not search ${file} for ${claim}; grep exited ${status}"
-    fi
+    classify_absent_grep_status "${status}" "${file}" "${claim}"
   fi
+}
+
+assert_text_absent() {
+  local text=$1
+  local pattern=$2
+  local claim=$3
+  local status
+
+  if grep -Fq -- "${pattern}" <<<"${text}"; then
+    classify_absent_grep_status 0 'extracted text' "${claim}"
+  else
+    status=$?
+    classify_absent_grep_status "${status}" 'extracted text' "${claim}"
+  fi
+}
+
+assert_text_present() {
+  local text=$1
+  local pattern=$2
+  local claim=$3
+  local status
+
+  if grep -Fq -- "${pattern}" <<<"${text}"; then
+    return
+  else
+    status=$?
+  fi
+  if [[ ${status} -eq 1 ]]; then
+    fail "${claim}"
+  fi
+  fail "could not search extracted text for ${claim}; grep exited ${status}"
 }
 
 [[ -f "${PAGE}" && -s "${PAGE}" ]] || fail 'verify-images/index.html must be a non-empty regular file'
@@ -56,17 +97,17 @@ assert_token_absent() {
 for panel in view-reference view-walkthrough; do
   panel_text=$(python3 "${EXTRACTOR}" text --within "${panel}" "${PAGE}") \
     || fail "could not extract text from ${panel}"
-  grep -Fq -- "${REQUIRED_SENTENCE}" <<<"${panel_text}" \
-    || fail "${panel} extracted text is missing the required verification sentence"
+  assert_text_present "${panel_text}" "${REQUIRED_SENTENCE}" \
+    "${panel} extracted text is missing the required verification sentence"
 done
 
 extracted_text=$(python3 "${EXTRACTOR}" text "${PAGE}") \
   || fail 'could not extract text from the whole page'
 
-grep -Fq -- "${REJECTED_VISIBLE_PHRASE}" <<<"${extracted_text}" \
-  && fail "extracted text contains rejected wording: ${REJECTED_VISIBLE_PHRASE}"
-grep -Fq -- "${REJECTED_SHORT_PHRASE}" <<<"${extracted_text}" \
-  && fail "extracted text contains rejected wording: ${REJECTED_SHORT_PHRASE}"
+assert_text_absent "${extracted_text}" "${REJECTED_VISIBLE_PHRASE}" \
+  "extracted text contains rejected wording: ${REJECTED_VISIBLE_PHRASE}"
+assert_text_absent "${extracted_text}" "${REJECTED_SHORT_PHRASE}" \
+  "extracted text contains rejected wording: ${REJECTED_SHORT_PHRASE}"
 
 jsonld_scripts=$(python3 "${EXTRACTOR}" jsonld "${PAGE}") \
   || fail 'could not extract JSON-LD scripts'
@@ -99,7 +140,16 @@ for index, script in enumerate(scripts, start=1):
     except (json.JSONDecodeError, ValueError) as error:
         print(f"JSON-LD parse error in script {index}: {error}", file=sys.stderr)
         sys.exit(3)
-    if isinstance(value, dict) and value.get("@type") == "FAQPage":
+    if not isinstance(value, dict):
+        print(f"jsonld-root-shape:{index}")
+        sys.exit(0)
+    if "@graph" in value:
+        print(f"jsonld-graph-shape:{index}")
+        sys.exit(0)
+    if not isinstance(value.get("@type"), str):
+        print(f"jsonld-type-shape:{index}")
+        sys.exit(0)
+    if value["@type"] == "FAQPage":
         faq_pages.append(value)
 
 if len(faq_pages) != 1:
@@ -117,21 +167,44 @@ if not isinstance(entities, list):
     sys.exit(0)
 
 question_name = "Why does the dashboard show Trivy scan results are advisory?"
-questions = [
-    entity for entity in entities
-    if isinstance(entity, dict)
-    and entity.get("@type") == "Question"
-    and entity.get("name") == question_name
-]
+questions = []
+for entity in entities:
+    if not isinstance(entity, dict):
+        continue
+    if "@type" in entity and not isinstance(entity["@type"], str):
+        print("faq-question-type-shape")
+        sys.exit(0)
+    if "acceptedAnswer" in entity:
+        entity_answer = entity["acceptedAnswer"]
+        if not isinstance(entity_answer, dict):
+            print("faq-accepted-answer-shape")
+            sys.exit(0)
+        if "@type" in entity_answer and not isinstance(entity_answer["@type"], str):
+            print("faq-answer-type-shape")
+            sys.exit(0)
+        if "text" in entity_answer and not isinstance(entity_answer["text"], str):
+            print("faq-answer-text-shape")
+            sys.exit(0)
+    if entity.get("@type") == "Question" and entity.get("name") == question_name:
+        questions.append(entity)
 if len(questions) != 1:
     print(f"faq-question-count:{len(questions)}")
     sys.exit(0)
 
 answer = questions[0].get("acceptedAnswer")
-if not isinstance(answer, dict) or answer.get("@type") != "Answer":
+if not isinstance(answer, dict):
+    print("faq-accepted-answer-shape")
+    sys.exit(0)
+if not isinstance(answer.get("@type"), str):
+    print("faq-answer-type-shape")
+    sys.exit(0)
+if answer["@type"] != "Answer":
     print("faq-answer-type")
     sys.exit(0)
-if not isinstance(answer.get("text"), str) or sentence not in answer["text"]:
+if not isinstance(answer.get("text"), str):
+    print("faq-answer-text-shape")
+    sys.exit(0)
+if sentence not in answer["text"]:
     print("faq-answer-text")
     sys.exit(0)
 
@@ -162,10 +235,17 @@ fi
 case ${faq_result} in
   ok) ;;
   faq-page-count:*) fail "expected exactly one application/ld+json FAQPage object; found ${faq_result#*:}" ;;
+  jsonld-root-shape:*) fail "JSON-LD script ${faq_result#*:} has a root shape this check does not inspect" ;;
+  jsonld-graph-shape:*) fail "JSON-LD script ${faq_result#*:} has an @graph shape this check does not inspect" ;;
+  jsonld-type-shape:*) fail "JSON-LD script ${faq_result#*:} has an @type shape this check does not inspect" ;;
   faq-context) fail 'the JSON-LD FAQPage object must have @context https://schema.org' ;;
   faq-main-entity) fail 'the JSON-LD FAQPage object must have a mainEntity list' ;;
+  faq-question-type-shape) fail 'a FAQ Question has an @type shape this check does not inspect' ;;
   faq-question-count:*) fail "expected exactly one FAQ Question named 'Why does the dashboard show Trivy scan results are advisory?'; found ${faq_result#*:}" ;;
+  faq-accepted-answer-shape) fail 'a FAQ acceptedAnswer has a shape this check does not inspect' ;;
+  faq-answer-type-shape) fail 'a FAQ acceptedAnswer has an @type shape this check does not inspect' ;;
   faq-answer-type) fail 'the target FAQ Question acceptedAnswer must have @type Answer' ;;
+  faq-answer-text-shape) fail 'a FAQ acceptedAnswer.text has a shape this check does not inspect' ;;
   faq-answer-text) fail 'the target FAQ Question acceptedAnswer.text is missing the required verification sentence' ;;
   faq-other-answer-count:*) fail "${faq_result#*:} other FAQ answer(s) contain the required verification sentence" ;;
   *) fail "could not inspect JSON-LD FAQ content: ${faq_result}" ;;

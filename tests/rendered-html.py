@@ -6,6 +6,7 @@ style, template, and noscript elements. It collapses runs of whitespace to one
 space and concatenates text nodes in document order without adding separators
 between elements. It models neither CSS nor runtime JavaScript, so it still
 reads text in an element hidden by a stylesheet or by script.
+The count command likewise counts elements only outside those skipped subtrees.
 """
 
 import json
@@ -99,6 +100,11 @@ class JsonLdParser(HTMLParser):
         if self.in_jsonld_script:
             self.current_script.append(data)
 
+    def close(self):
+        super().close()
+        if self.in_jsonld_script:
+            raise ValueError("unterminated application/ld+json script element")
+
 
 class SelectorCountParser(HTMLParser):
     """Count elements whose id or class token matches a requested value."""
@@ -108,17 +114,28 @@ class SelectorCountParser(HTMLParser):
         self.selector_kind = selector_kind
         self.value = value
         self.count = 0
+        self.hidden_depth = 0
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
         attribute = "id" if self.selector_kind == "id" else "class"
         reject_duplicate_attribute(attrs, attribute, tag)
         attributes = {name.lower(): value for name, value in attrs}
-        if self.selector_kind == "id":
+        if not self.hidden_depth and tag not in HIDDEN_ELEMENTS and self.selector_kind == "id":
             if attributes.get("id") == self.value:
                 self.count += 1
-        elif self.value in (attributes.get("class") or "").split():
+        elif (
+            not self.hidden_depth
+            and tag not in HIDDEN_ELEMENTS
+            and self.value in (attributes.get("class") or "").split()
+        ):
             self.count += 1
+        if tag in HIDDEN_ELEMENTS:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag.lower() in HIDDEN_ELEMENTS and self.hidden_depth:
+            self.hidden_depth -= 1
 
 
 def reject_duplicate_attribute(attrs, attribute, tag):
