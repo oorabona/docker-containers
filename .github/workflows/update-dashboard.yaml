@@ -669,6 +669,9 @@ jobs:
             echo "✅ No unwanted Docker/script files found"
           fi
 
+      - name: Assert rendered verification wording
+        run: ./tests/assert-rendered-site.sh ./_site
+
       - name: Remove stale pages artifact
         # On rerun, the build job re-executes (deploy depends on it) and
         # uploads a second github-pages artifact. deploy-pages then fails

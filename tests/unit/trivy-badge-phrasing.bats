@@ -90,8 +90,9 @@ NODE
 }
 
 # These source-level guards prove only the pinned source text: a sentence moved
-# into a Liquid or HTML comment still satisfies them. Asserting the rendered
-# phrasing needs a Jekyll build in CI, which is #1766.
+# into a Liquid or HTML comment still satisfies them.
+# tests/assert-rendered-site.sh asserts the phrasing against a rendered site
+# directory; these guards certify source text only.
 @test "verification surfaces carry the total-findings sentence" {
     assert_verification_total_findings_sentence "$PROJECT_ROOT/docs/site/verify-images.md"
     assert_verification_total_findings_sentence "$PROJECT_ROOT/docs/site/_includes/components/verify-walkthrough.html"
