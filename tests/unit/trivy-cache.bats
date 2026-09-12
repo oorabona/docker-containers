@@ -396,24 +396,94 @@ unresolvable-host|could not resolve host: api.github.com
 FAILURES
 }
 
-@test "a malformed successful response is unavailable without a refetch" {
-    unset TRIVY_CACHE_FILE
-    GH_COUNTER_FILE="$BATS_TEST_TMPDIR/malformed-success-calls"
-    export GH_COUNTER_FILE
-    : > "$GH_COUNTER_FILE"
+@test "a fresh malformed summary map is unavailable without a refetch through get_trivy_summary" {
+    local calls="$BATS_TEST_TMPDIR/malformed-summary-map-calls"
+    local malformed_category='container-malformed-linux/amd64'
+    local absent_category='container-absent-linux/amd64'
+    : > "$calls"
 
-    gh() {
-        local _n
-        _n=$(cat "${GH_COUNTER_FILE}" 2>/dev/null || echo 0)
-        printf '%s\n' $(( _n + 1 )) > "${GH_COUNTER_FILE}"
-        printf '%s\n' '{"not":"a paginated alert array"}'
-    }
-    export -f gh
-    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
+    run bash -c '
+        source "$1/helpers/trivy-utils.sh"
+        calls="$2"
+        malformed_category="$3"
+        requested_category="$4"
+        log_warning() { :; }
+        gh() {
+            printf "x\\n" >> "$calls"
+            printf "[{\\\"rule\\\":{\\\"id\\\":\\\"CVE-malformed\\\",\\\"severity\\\":\\\"warning\\\",\\\"security_severity_level\\\":\\\"high\\\",\\\"description\\\":{\\\"not\\\":\\\"a string\\\"}},\\\"most_recent_instance\\\":{\\\"category\\\":\\\"%s\\\",\\\"location\\\":{\\\"path\\\":\\\"usr/lib/bad.so\\\"}}}]\\n" "$malformed_category"
+        }
+        get_trivy_summary "$requested_category"
+    ' _ "$PROJECT_ROOT" "$calls" "$malformed_category" "$absent_category"
 
-    _fetch_trivy_alerts_once
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$calls")" -eq 1 ]
+    run jq -e '.display_source == "unavailable" and .counts == null and .code_scanning == null' <<<"$output"
+    [ "$status" -eq 0 ]
+}
 
-    [[ "$(cat "$GH_COUNTER_FILE")" -eq 1 ]]
-    [[ "$_TRIVY_FETCH_OUTCOME" == "unavailable" ]]
-    [[ "$_TRIVY_SUMMARY_MAP" == "{}" ]]
+@test "a well-formed summary map remains an ok Code Scanning observation through get_trivy_summary" {
+    local calls="$BATS_TEST_TMPDIR/well-formed-summary-map-calls"
+    local category='container-well-formed-linux/amd64'
+    : > "$calls"
+
+    run bash -c '
+        source "$1/helpers/trivy-utils.sh"
+        calls="$2"
+        category="$3"
+        gh() {
+            printf "x\\n" >> "$calls"
+            printf "[{\\\"rule\\\":{\\\"id\\\":\\\"CVE-well-formed\\\",\\\"severity\\\":\\\"warning\\\",\\\"security_severity_level\\\":\\\"high\\\",\\\"description\\\":\\\"A well-formed finding\\\"},\\\"most_recent_instance\\\":{\\\"category\\\":\\\"%s\\\",\\\"location\\\":{\\\"path\\\":\\\"usr/lib/good.so\\\"}}}]\\n" "$category"
+        }
+        get_trivy_summary "$category"
+    ' _ "$PROJECT_ROOT" "$calls" "$category"
+
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$calls")" -eq 1 ]
+    run jq -e '.display_source == "code-scanning" and .counts.high == 1 and .top_advisories[0].title == "A well-formed finding"' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "a malformed summary map has the same unavailable verdict on both sides of the cache" {
+    local cache_file="$BATS_TEST_TMPDIR/malformed-summary-map-cache.json"
+    local calls="$BATS_TEST_TMPDIR/malformed-summary-map-cache-calls"
+    local malformed_category='container-malformed-cache-linux/amd64'
+    local absent_category='container-absent-cache-linux/amd64'
+    : > "$calls"
+
+    run bash -c '
+        source "$1/helpers/trivy-utils.sh"
+        cache_file="$2"
+        calls="$3"
+        malformed_category="$4"
+        requested_category="$5"
+        TRIVY_CACHE_FILE="$cache_file"
+        log_warning() { :; }
+        gh() {
+            printf "x\\n" >> "$calls"
+            printf "[{\\\"rule\\\":{\\\"id\\\":\\\"CVE-malformed\\\",\\\"severity\\\":\\\"warning\\\",\\\"security_severity_level\\\":\\\"high\\\",\\\"description\\\":{\\\"not\\\":\\\"a string\\\"}},\\\"most_recent_instance\\\":{\\\"category\\\":\\\"%s\\\",\\\"location\\\":{\\\"path\\\":\\\"usr/lib/bad.so\\\"}}}]\\n" "$malformed_category"
+        }
+        get_trivy_summary "$requested_category"
+    ' _ "$PROJECT_ROOT" "$cache_file" "$calls" "$malformed_category" "$absent_category"
+
+    [ "$status" -eq 0 ]
+    run jq -e '.display_source == "unavailable" and .counts == null' <<<"$output"
+    [ "$status" -eq 0 ]
+    run jq -e '.outcome == "unavailable" and .fetched_at == null and .summary_map == {}' "$cache_file"
+    [ "$status" -eq 0 ]
+
+    run bash -c '
+        source "$1/helpers/trivy-utils.sh"
+        cache_file="$2"
+        calls="$3"
+        requested_category="$4"
+        TRIVY_CACHE_FILE="$cache_file"
+        log_warning() { :; }
+        gh() { printf "unexpected cache refetch\\n" >&2; return 1; }
+        get_trivy_summary "$requested_category"
+    ' _ "$PROJECT_ROOT" "$cache_file" "$calls" "$absent_category"
+
+    [ "$status" -eq 0 ]
+    run jq -e '.display_source == "unavailable" and .counts == null' <<<"$output"
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$calls")" -eq 1 ]
 }

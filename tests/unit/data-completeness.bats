@@ -119,32 +119,46 @@ EOF
     [[ "$output" == *"trivy_summary"* ]]
 }
 
-@test "verify-dashboard-data: unavailable Trivy is a gap but Code Scanning without last_scan is complete" {
+@test "the canonical unavailable Trivy summary satisfies the evidence validator" {
+    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
+
+    run jq -e "$(trivy_summary_jq)"'trivy_summary_valid' <<<"$_TRIVY_EMPTY"
+    [ "$status" -eq 0 ]
+}
+
+@test "verify-dashboard-data: canonical unavailable Trivy summary is a gap" {
+    tmpfile=$(mktemp --suffix=.yml)
+    source "$PROJECT_ROOT/helpers/trivy-utils.sh"
+    printf '%s\n' \
+'- name: evidence-state' \
+'  versions:' \
+'    - version: "2.0"' \
+'      variants:' \
+'        - name: unavailable' \
+'          tag: 2.0-unavailable' \
+'          is_default: true' \
+'          attestation_url: "https://example.com/att/unavailable"' \
+'          multi_arch_platforms: [linux/amd64]' \
+'          sbom_summary:' \
+'            total_packages: 10' \
+"          trivy_summary: $_TRIVY_EMPTY" > "$tmpfile"
+    run "$VERIFY_SCRIPT" "$tmpfile"
+    rm -f "$tmpfile"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Missing trivy_summary for evidence-state variant 2.0-unavailable"* ]]
+}
+
+@test "verify-dashboard-data: Code Scanning without last_scan is complete" {
     tmpfile=$(mktemp --suffix=.yml)
     cat > "$tmpfile" <<'EOF'
 - name: evidence-state
   versions:
     - version: "2.0"
       variants:
-        - name: unavailable
-          tag: 2.0-unavailable
-          is_default: true
-          attestation_url: "https://example.com/att/unavailable"
-          multi_arch_platforms: [linux/amd64]
-          sbom_summary:
-            total_packages: 10
-          trivy_summary:
-            display_source: "unavailable"
-            last_scan: null
-            counts:
-              critical: 0
-              high: 0
-              medium: 0
-              low: 0
-              info: 0
         - name: code-scanning
           tag: 2.0-code-scanning
-          is_default: false
+          is_default: true
           attestation_url: "https://example.com/att/code-scanning"
           multi_arch_platforms: [linux/amd64]
           sbom_summary:
@@ -170,25 +184,11 @@ EOF
                 low: 0
                 info: 0
               top_advisories: []
-        - name: malformed
-          tag: 2.0-malformed
-          is_default: false
-          attestation_url: "https://example.com/att/malformed"
-          multi_arch_platforms: [linux/amd64]
-          sbom_summary:
-            total_packages: 10
-          trivy_summary:
-            display_source: "bogus"
-            counts:
-              critical: 0
-              high: "2"
 EOF
     run "$VERIFY_SCRIPT" "$tmpfile"
     rm -f "$tmpfile"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Missing trivy_summary for evidence-state variant 2.0-unavailable"* ]]
     ! [[ "$output" == *"Missing trivy_summary for evidence-state variant 2.0-code-scanning"* ]]
-    [[ "$output" == *"Missing trivy_summary for evidence-state variant 2.0-malformed"* ]]
 }
 
 @test "verify-dashboard-data: malformed Trivy evidence is a gap in every schema path" {

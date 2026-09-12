@@ -352,10 +352,17 @@ _fetch_trivy_alerts_once() {
             else error("expected one or more paginated JSON arrays")
             end
         ' 2>/dev/null); then
-            if [[ -n "$fetched_at" ]]; then
+            if [[ -n "$fetched_at" ]] && jq -e --arg fetched_at "$fetched_at" "$(trivy_summary_jq)"'
+                [.[] | {fetched_at: $fetched_at} + . | trivy_code_scanning_channel] | all
+            ' <<<"$summary_map" >/dev/null 2>&1; then
                 _TRIVY_SUMMARY_MAP="$summary_map"
                 _TRIVY_FETCH_OUTCOME="ok"
                 _TRIVY_FETCHED_AT="$fetched_at"
+            elif [[ -n "$fetched_at" ]]; then
+                log_warning "Trivy Code Scanning summary map failed the evidence contract and could not be trusted — observation unavailable" || true
+                _TRIVY_SUMMARY_MAP="{}"
+                _TRIVY_FETCH_OUTCOME="unavailable"
+                _TRIVY_FETCHED_AT=""
             else
                 if [[ "${DASHBOARD_DEBUG:-}" == "1" ]]; then
                     echo "[debug] trivy Code Scanning fetch timestamp failed; observation unavailable" >&2 || true
