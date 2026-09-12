@@ -696,7 +696,7 @@
           {%- if sec_variant.trivy_summary and sec_variant.trivy_summary.display_source -%}
           <div id="security-scan" class="security-scan-card">
             <header class="security-scan-card-header">
-              <p class="eyebrow">Security scan results</p>
+              <p class="eyebrow">Security evidence</p>
               {%- if sec_variant.trivy_summary.display_source == "code-scanning" -%}
               <h3 data-scan="heading">Trivy · Code Scanning fetched {{ sec_variant.trivy_summary.as_of | date: "%Y-%m-%d" }}</h3>
               {%- elsif sec_variant.trivy_summary.display_source == "scan-record" -%}
@@ -772,7 +772,7 @@
                 </ul>
               </div>
 
-              <p class="full-report">→ Full report via <code>gh api</code> — see <a href="{{ '/verify-images/' | relative_url }}#trivy">Verify Images</a>.</p>
+              <p class="full-report">→ See <a href="{{ '/verify-images/' | relative_url }}#trivy">verification steps</a>.</p>
               {%- endif -%}
             </security-scan>
             <footer class="security-scan-card-footer">

@@ -53,12 +53,15 @@
 
       {%- if default_variant.trivy_summary and default_variant.trivy_summary.display_source -%}
         {%- comment -%}
-          Compact card label tracks the active severity bucket: emit the count
-          of the most severe non-zero level so the number on the badge always
-          matches the badge colour. Full context (label + scan date + advisory
-          caveat) is duplicated into both `title` (hover) and `aria-label`
-          (screen reader / touch focus); the badge link itself targets the
-          detail-page security section so touch users land on the full surface.
+          Compact card badge displays the total across all five severity buckets.
+          Its state is critical when any critical finding exists, else high when
+          any high finding exists, else neutral advisory for any medium, low, or
+          info finding, else clean at zero. `display_source: unavailable` is
+          separate: it renders no evidence with the unknown state. Full context
+          (label + scan date + advisory caveat) is duplicated into both `title`
+          (hover) and `aria-label` (screen reader / touch focus); the badge link
+          itself targets the detail-page security section so touch users land on
+          the full surface.
         {%- endcomment -%}
         {%- assign trivy_source = default_variant.trivy_summary.display_source -%}
         {%- if trivy_source == "unavailable" -%}

@@ -156,10 +156,10 @@
       if (reportHref) {
         const fullReport = document.createElement('p');
         fullReport.className = 'full-report';
-        fullReport.appendChild(document.createTextNode('→ Full report via gh api — see '));
+        fullReport.appendChild(document.createTextNode('→ See '));
         const link = document.createElement('a');
         link.href = reportHref;
-        link.textContent = 'Verify Images';
+        link.textContent = 'verification steps';
         fullReport.appendChild(link);
         fullReport.appendChild(document.createTextNode('.'));
         this.appendChild(fullReport);

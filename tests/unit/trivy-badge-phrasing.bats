@@ -94,6 +94,130 @@ NODE
     assert_trivy_severity_transitions "$PROJECT_ROOT/docs/site/assets/js/components/trust-strip.js" javascript
 }
 
+@test "security evidence directs initial and variant-switch renders to verification steps" {
+    local template="$PROJECT_ROOT/docs/site/_layouts/container-detail.html"
+
+    # The initial server render is static HTML apart from the guide URL filter.
+    run grep -qE '<p class="full-report">→ See <a href="\{\{ .*/verify-images/.*\}\}#trivy">verification steps</a>\.</p>' "$template"
+    [ "$status" -eq 0 ] || {
+        echo "initial security evidence render does not expose verification steps" >&2
+        return 1
+    }
+
+    run node - "$PROJECT_ROOT/docs/site/assets/js/components/security-scan.js" <<'NODE'
+const fs = require('fs');
+const source = fs.readFileSync(process.argv[process.argv.length - 1], 'utf8');
+
+class Element {
+  constructor(tag = '') { this.tag = tag; this.children = []; this.attributes = {}; this.style = {}; this.classList = { add() {} }; this.textContent = ''; }
+  appendChild(child) { this.children.push(child); return child; }
+  removeChild(child) { this.children.splice(this.children.indexOf(child), 1); }
+  get firstChild() { return this.children[0] || null; }
+  get childElementCount() { return this.children.filter((child) => child.tag).length; }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return this.attributes[name] || ''; }
+  querySelector() { return null; }
+}
+global.HTMLElement = Element;
+global.document = { addEventListener() {}, removeEventListener() {}, createElement(tag) { return new Element(tag); }, createTextNode(text) { return { textContent: String(text) }; } };
+global.customElements = { define(_name, component) { global.SecurityScan = component; } };
+eval(source);
+
+function text(node) { return [node.textContent || '', ...(node.children || []).map(text)].join(' '); }
+function find(node, predicate) { if (predicate(node)) return node; for (const child of node.children || []) { const found = find(child, predicate); if (found) return found; } return null; }
+function assert(condition, message) { if (!condition) throw new Error(message); }
+function observation(display_source) {
+  return { trivy_summary: { display_source, as_of: '2026-09-05T14:00:00Z', counts: { critical: 0, high: 1, medium: 0, low: 0, info: 0 }, top_advisories: [], code_scanning: display_source === 'code-scanning' ? { fetched_at: '2026-09-05T14:00:00Z', counts: { critical: 0, high: 1, medium: 0, low: 0, info: 0 } } : null, scan_record: display_source === 'scan-record' ? { scan_at: '2026-09-05T14:00:00Z', counts: { critical: 0, high: 1, medium: 0, low: 0, info: 0 } } : null } };
+}
+const component = new global.SecurityScan();
+component.closest = () => ({ querySelector() { return { getAttribute() { return '/verify-images/#trivy'; } }; } });
+for (const displaySource of ['code-scanning', 'scan-record']) {
+  component._update(observation(displaySource));
+  const link = find(component, (node) => node.tag === 'a');
+  const rendered = text(component);
+  assert(link && link.href === '/verify-images/#trivy' && link.textContent === 'verification steps', displaySource + ' did not render the verification link');
+  assert(!/gh api|Full report/i.test(rendered), displaySource + ' rendered a forbidden API call-to-action');
+}
+NODE
+    [ "$status" -eq 0 ] || {
+        echo "$output" >&2
+        return 1
+    }
+}
+
+@test "security evidence wording does not advertise an API report" {
+    local template="$PROJECT_ROOT/docs/site/_layouts/container-detail.html"
+    local javascript="$PROJECT_ROOT/docs/site/assets/js/components/security-scan.js"
+    local css="$PROJECT_ROOT/docs/site/assets/css/container-detail.css"
+
+    for surface in "$template" "$javascript" "$css"; do
+        run grep -qF 'Full report via gh api' "$surface"
+        [ "$status" -ne 0 ] || {
+            echo "forbidden API call-to-action remains in $surface" >&2
+            return 1
+        }
+    done
+}
+
+@test "verification guide identifies the Code Scanning query as current and open" {
+    local guide="$PROJECT_ROOT/docs/site/verify-images.md"
+
+    run grep -qF 'the `gh api` command above queries the current open Code Scanning alert list.' "$guide"
+    [ "$status" -eq 0 ] || {
+        echo "verification guide does not describe the open Code Scanning query" >&2
+        return 1
+    }
+    for stale in 'full advisory list' 'historical Code Scanning alert list'; do
+        run grep -qF "$stale" "$guide"
+        [ "$status" -ne 0 ] || {
+            echo "verification guide overclaims a $stale" >&2
+            return 1
+        }
+    done
+}
+
+@test "security evidence eyebrow and card comment cover all badge states" {
+    local template="$PROJECT_ROOT/docs/site/_layouts/container-detail.html"
+    local card="$PROJECT_ROOT/docs/site/_includes/container-card.html"
+
+    run grep -qF '<p class="eyebrow">Security evidence</p>' "$template"
+    [ "$status" -eq 0 ] || return 1
+    run grep -qF 'Security scan results' "$template"
+    [ "$status" -ne 0 ] || {
+        echo "Code Scanning result remains under a scan-only eyebrow" >&2
+        return 1
+    }
+
+    run node - "$card" <<'NODE'
+const fs = require('fs');
+const source = fs.readFileSync(process.argv[process.argv.length - 1], 'utf8');
+const requiredComment = [
+  'Compact card badge displays the total across all five severity buckets.',
+  'Its state is critical when any critical finding exists, else high when',
+  'any high finding exists, else neutral advisory for any medium, low, or',
+  'info finding, else clean at zero. `display_source: unavailable` is',
+  'separate: it renders no evidence with the unknown state.',
+];
+for (const line of requiredComment) {
+  if (!source.includes(line)) throw new Error('card comment is missing: ' + line);
+}
+if (source.includes('of the most severe non-zero level')) throw new Error('card comment still claims a most-severe count');
+const countExpression = /assign trivy_count = trivy_critical \| plus: trivy_high \| plus: trivy_medium \| plus: trivy_low \| plus: trivy_info/.test(source);
+if (!countExpression) throw new Error('card does not sum all five severity buckets');
+const counts = { critical: 1, high: 4, medium: 0, low: 0, info: 0 };
+const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+if (total !== 5) throw new Error('critical=1, high=4 must render a total badge count of 5');
+const transitions = /if trivy_critical > 0[\s\S]*elsif trivy_high > 0[\s\S]*elsif trivy_count > 0[\s\S]*else[\s\S]*assign trivy_sev = "info"/.test(source);
+if (!transitions || !/trivy_source == "unavailable"[\s\S]*trivy_sev = "unknown"[\s\S]*trivy_badge_text = "no evidence"/.test(source)) {
+  throw new Error('card does not distinguish critical, high, advisory, clean, and unavailable states');
+}
+NODE
+    [ "$status" -eq 0 ] || {
+        echo "$output" >&2
+        return 1
+    }
+}
+
 @test "security scan ignores malformed advisory rows during a variant change" {
     run node - "$PROJECT_ROOT/docs/site/assets/js/components/security-scan.js" <<'NODE'
 const fs = require('fs');

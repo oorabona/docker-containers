@@ -64,7 +64,7 @@ If the badge says **recorded scan** rather than **Code Scanning**, its source is
 
 ### Per-severity breakdown
 
-Each container's detail page surfaces all scanned severities (CRITICAL → INFO). CRITICAL gets the strongest visual emphasis (red ring); HIGH gets a warning emphasis. MEDIUM, LOW, and INFO render as advisory context with neutral styling. The resolver reads `.rule.security_severity_level`; `UNKNOWN`, a missing value, and any other unclassified value fall into the **INFO** column. All findings, including non-blocking ones, are uploaded to GitHub Code Scanning under category `container-<name>-<tag>-<platform>`; query the full advisory list via the `gh api` command above.
+Each container's detail page surfaces all scanned severities (CRITICAL → INFO). CRITICAL gets the strongest visual emphasis (red ring); HIGH gets a warning emphasis. MEDIUM, LOW, and INFO render as advisory context with neutral styling. The resolver reads `.rule.security_severity_level`; `UNKNOWN`, a missing value, and any other unclassified value fall into the **INFO** column. All findings, including non-blocking ones, are uploaded to GitHub Code Scanning under category `container-<name>-<tag>-<platform>`; the `gh api` command above queries the current open Code Scanning alert list.
 
 The scan policy runs all severities (`UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL`) in advisory mode — full scan chosen for transparency over alert-list cleanliness. `continue-on-error: true` is permanent policy — no severity level blocks the build. The severity parameter lives in `.github/actions/build-container/action.yaml` (`vulnerability_severity` input, default `UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL`) and can be narrowed per-call if alert volume becomes operationally noisy.
 
