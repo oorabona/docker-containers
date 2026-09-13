@@ -37,6 +37,14 @@ jobs:
           python3 --version
           ./tests/rendered-html-skipped-subtree.sh
 
+      - name: Exercise phase B variant payload builder
+        run: |
+          node --version
+          ./tests/phase-b-variant-payload.sh
+
+      - name: Exercise variant selection model
+        run: ./tests/variant-selection-model.sh
+
       - name: Install jq
         timeout-minutes: 5
         run: |

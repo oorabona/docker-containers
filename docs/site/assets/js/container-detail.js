@@ -5,11 +5,20 @@
     // Pull command / registry toggle removed PR1 — handled by <variant-action-bar> component.
 
     // Variant selection
-    // Tracks the last fully-processed variant tag to make selectVariant() idempotent.
+    // Tracks the most recently requested variant tag, assigned before its update runs;
+    // a repeated request for the same tag returns immediately.
     // Guards the init race where container-detail.js (line ~854) and version-tabs.js
     // _dispatchInitialVariant() both trigger selectVariant() for the same default
     // variant on page load.
     var _lastSelectedTag = null;
+    function readOptionalArray(raw, attributeName) {
+      var result = readVariantSelectionArray(raw);
+      if (result.state === 'unreadable') {
+        console.warn('Ignoring unusable ' + attributeName + ' attribute');
+      }
+      return result;
+    }
+
     function selectVariant(el) {
       if (!el) return;
       var _tag = el.dataset.tag || el.dataset.variantTag || '';
@@ -45,16 +54,19 @@
       if (baseImgEl) baseImgEl.textContent = (baseImage && baseImage !== 'unknown') ? baseImage : '---';
 
       // Update lineage build_args for selected variant (empty array clears them)
-      var buildArgsAttr = el.dataset.buildArgs;
-      var buildArgs = buildArgsAttr ? JSON.parse(buildArgsAttr) : [];
+      // Unreadable data-dep-* preserves rendered state, data-variant-deps falls back to the build-argument intersection, and data-build-args only loses that intersection.
+      var buildArgs = readOptionalArray(el.dataset.buildArgs, 'data-build-args').array;
       updateLineageBuildArgs(buildArgs);
 
       // Update dep health section for selected variant
       var argNames = buildArgs.map(function(a) { return a.name; });
-      var variantDepsList = null;
-      try {
-        if (el.dataset.variantDeps) variantDepsList = JSON.parse(el.dataset.variantDeps);
-      } catch (e) { /* swallow — fall back to argNames intersection */ }
+      var variantDepsAttr = el.dataset.variantDeps;
+      var variantDepsResult = typeof variantDepsAttr === 'undefined'
+        ? null
+        : readOptionalArray(variantDepsAttr, 'data-variant-deps');
+      var variantDepsList = !variantDepsResult || variantDepsResult.state === 'unreadable'
+        ? null
+        : variantDepsResult.array;
       updateDepHealth(argNames, variantDepsList);
 
       // Update SBOM sections for selected variant
@@ -65,28 +77,7 @@
       // Pull command update handled by <variant-action-bar> via phase-b-variant-changed (PR1)
 
       // Phase B: dispatch event for vanilla custom-element trust strip + Security Scan section
-      var variantData = {
-        tag: tag,
-        attestation_url: el.dataset.attestationUrl || '',
-        attestation_id: el.dataset.attestationId || '',
-        trivy_summary: null,
-        // Each dispatch starts absent, becomes parsed only after JSON.parse(), or
-        // unreadable on parse failure. Rebuilding it here prevents stale state.
-        trivy_summary_state: 'absent',
-        multi_arch_platforms: []
-      };
-      try {
-        if (Object.prototype.hasOwnProperty.call(el.dataset, 'trivySummary')) {
-          variantData.trivy_summary = JSON.parse(el.dataset.trivySummary);
-          variantData.trivy_summary_state = 'parsed';
-        }
-      } catch {
-        variantData.trivy_summary = null;
-        variantData.trivy_summary_state = 'unreadable';
-      }
-      try {
-        if (el.dataset.multiArchPlatforms) variantData.multi_arch_platforms = JSON.parse(el.dataset.multiArchPlatforms);
-      } catch (e) { /* swallow */ }
+      var variantData = buildPhaseBVariantPayload(el.dataset);
       document.dispatchEvent(new CustomEvent('phase-b-variant-changed', { detail: variantData }));
 
       // Phase B: postgres variants comparison table follows selected variant's version.
@@ -161,15 +152,14 @@
       if (_depCache) return _depCache;
       var section = document.querySelector('.dep-health-section');
       if (!section) return null;
-      try {
-        _depCache = {
-          section: section,
-          updates: JSON.parse(section.dataset.depUpdates || '[]'),
-          allDeps: JSON.parse(section.dataset.depAll || '[]')
-        };
-      } catch (e) {
-        _depCache = null;
-      }
+      var updates = readOptionalArray(section.dataset.depUpdates, 'data-dep-updates');
+      var allDeps = readOptionalArray(section.dataset.depAll, 'data-dep-all');
+      if (updates.state === 'unreadable' || allDeps.state === 'unreadable') return null;
+      _depCache = {
+        section: section,
+        updates: updates.array,
+        allDeps: allDeps.array
+      };
       return _depCache;
     }
 
@@ -326,21 +316,20 @@
       if (!data || data.updates.length === 0) return 0;
 
       // Prefer data-variant-deps (authoritative per-flavor list) over build-args
-      var variantDepsList = null;
-      try {
-        var vdAttr = variantEl.dataset.variantDeps;
-        if (vdAttr !== undefined) variantDepsList = JSON.parse(vdAttr);
-      } catch (e) { variantDepsList = null; }
+      var vdAttr = variantEl.dataset.variantDeps;
+      var variantDepsResult = typeof vdAttr === 'undefined'
+        ? null
+        : readOptionalArray(vdAttr, 'data-variant-deps');
+      var variantDepsList = !variantDepsResult || variantDepsResult.state === 'unreadable'
+        ? null
+        : variantDepsResult.array;
 
       var nameSet = {};
       if (variantDepsList !== null) {
         variantDepsList.forEach(function(n) { nameSet[n] = true; });
       } else {
-        var buildArgsAttr = variantEl.dataset.buildArgs;
-        if (!buildArgsAttr) return 0;
-        try {
-          JSON.parse(buildArgsAttr).forEach(function(a) { nameSet[a.name] = true; });
-        } catch (e) { return 0; }
+        var buildArgs = readOptionalArray(variantEl.dataset.buildArgs, 'data-build-args').array;
+        buildArgs.forEach(function(a) { nameSet[a.name] = true; });
       }
 
       return data.updates.filter(function(u) { return nameSet[u.name]; }).length;
