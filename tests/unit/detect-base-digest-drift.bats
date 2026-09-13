@@ -3947,22 +3947,21 @@ EOF
     [[ "$notice" == *"coverage incomplete"* ]]
 }
 
-@test "invalid lineage warning escapes a bidirectional override in its base ref" {
+@test "invalid lineage warning escapes a bidirectional override in its tag" {
     local lineage_dir="$TEST_TEMP_DIR/invalid-lineage-bidi"
     local stderr_log="$TEST_TEMP_DIR/invalid-lineage-bidi.stderr"
-    local bidi_ref=$'ghcr.io/oorabona/library/alpine:latest\u202e'
-    local digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    local bidi_tag=$'bidi\u202e'
     mkdir -p "$lineage_dir"
-    jq -cn --arg ref "$bidi_ref" --arg digest "$digest" \
-        '{lineage_schema_version:2, container:"foo", tag:"bidi", base_image_ref:$ref, base_image_digest:$digest}' \
+    jq -cn --arg tag "$bidi_tag" \
+        '{lineage_schema_version:2, container:"foo", tag:$tag, base_image_ref:"alpine:3.21", base_image_digest:"malformed"}' \
         > "$lineage_dir/bidi.json"
 
     local result
     result=$(PROBE_CMD="/bin/false" bash "$DETECTOR_SCRIPT" "$lineage_dir" 2>"$stderr_log")
 
-    [ "$(jq -r '.[0].variants[0].error_reason' <<< "$result")" = "invalid_external_base_image_ref" ]
-    grep -Fx '::warning::Rejected lineage record bidi.json for foo:bidi: invalid_external_base_image_ref' "$stderr_log"
-    ! grep -Fq "$bidi_ref" "$stderr_log"
+    [ "$(jq -r '.[0].variants[0].error_reason' <<< "$result")" = "malformed_recorded_digest" ]
+    grep -Fx '::warning::Rejected lineage record bidi.json for foo:bidi: malformed_recorded_digest' "$stderr_log"
+    ! grep -Fq "$bidi_tag" "$stderr_log"
 }
 
 @test "valid lineage emits no rejected-record warning" {
