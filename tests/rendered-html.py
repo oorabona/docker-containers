@@ -13,8 +13,9 @@ inside a skipped subtree is not read and cannot fail a run. Crossing closes and
 unterminated skipped subtrees remain parse failures.
 A skipped subtree closes only at its matching closing tag. Orphan closing tags
 cannot end one.
-The self-closing flag is ignored on an HTML element and honoured inside svg and
-math, as a browser does.
+The self-closing flag is ignored unless this parser's lexical svg or math stack
+is non-empty. This is not HTML namespace-aware tree construction: it models
+neither integration points, breakout tags, nor browser error recovery.
 """
 
 import json
@@ -29,6 +30,7 @@ VOID_ELEMENTS = {
     "meta", "param", "source", "track", "wbr",
 }
 FOREIGN_CONTENT_ELEMENTS = {"svg", "math"}
+NO_MATCH_STATUS = 3
 
 
 class ForeignContentParser(HTMLParser):
@@ -341,13 +343,13 @@ def main(argv):
         if within_id is not None:
             if parser.match_count == 0:
                 print(f"rendered-html.py: no element has id={within_id!r}", file=sys.stderr)
-                return 1
+                return NO_MATCH_STATUS
             if parser.match_count > 1:
                 print(
                     f"rendered-html.py: more than one element has id={within_id!r}",
                     file=sys.stderr,
                 )
-                return 1
+                return NO_MATCH_STATUS
         print(" ".join("".join(parser.text_parts).split()))
     elif command == "jsonld":
         print(json.dumps(parser.scripts))
@@ -355,16 +357,16 @@ def main(argv):
         selector = f"{argv[3]} {argv[4]!r}"
         if len(parser.matches) == 0:
             print(f"rendered-html.py: no element matches {selector}", file=sys.stderr)
-            return 1
+            return NO_MATCH_STATUS
         if len(parser.matches) > 1:
             print(f"rendered-html.py: more than one element matches {selector}", file=sys.stderr)
-            return 1
+            return NO_MATCH_STATUS
         if parser.matches[0] is None:
             print(
                 f"rendered-html.py: element matching {selector} has no {argv[2]} attribute",
                 file=sys.stderr,
             )
-            return 1
+            return NO_MATCH_STATUS
         print(parser.matches[0])
     else:
         print(parser.count)

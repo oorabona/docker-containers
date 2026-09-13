@@ -34,33 +34,55 @@ assert_output() {
   echo "PASS: ${name} (output: ${output})"
 }
 
-assert_failure() {
+assert_failure_status() {
   local name=$1
-  shift
+  local expected_status=$2
+  shift 2
   local output
+  local status
 
   if output=$(python3 "${EXTRACTOR}" "$@" 2>&1); then
+    status=0
+  else
+    status=$?
+  fi
+  if (( status == 0 )); then
     echo "FAIL: ${name} unexpectedly succeeded: ${output}" >&2
     exit 1
   fi
-  echo "PASS: ${name} (failure: ${output})"
+  if (( status != expected_status )); then
+    echo "FAIL: ${name} exited ${status}; expected ${expected_status}: ${output}" >&2
+    exit 1
+  fi
+  echo "PASS: ${name} (status: ${status}; failure: ${output})"
 }
 
-assert_failure_containing() {
+assert_failure_status_containing() {
   local name=$1
-  local expected=$2
-  shift 2
+  local expected_status=$2
+  local expected=$3
+  shift 3
   local output
+  local status
 
   if output=$(python3 "${EXTRACTOR}" "$@" 2>&1); then
+    status=0
+  else
+    status=$?
+  fi
+  if (( status == 0 )); then
     echo "FAIL: ${name} unexpectedly succeeded: ${output}" >&2
+    exit 1
+  fi
+  if (( status != expected_status )); then
+    echo "FAIL: ${name} exited ${status}; expected ${expected_status}: ${output}" >&2
     exit 1
   fi
   if [[ ${output} != *"${expected}"* ]]; then
     echo "FAIL: ${name} failure was ${output@Q}; expected substring ${expected@Q}" >&2
     exit 1
   fi
-  echo "PASS: ${name} (failure: ${output})"
+  echo "PASS: ${name} (status: ${status}; failure: ${output})"
 }
 
 assert_skipped_boundary_failure() {
@@ -68,10 +90,10 @@ assert_skipped_boundary_failure() {
   local fixture=$2
   local expected_failure=$3
 
-  assert_failure_containing "${name}: text" "${expected_failure}" text "${fixture}"
-  assert_failure_containing "${name}: text --within" "${expected_failure}" text --within y "${fixture}"
-  assert_failure_containing "${name}: count" "${expected_failure}" count --class x "${fixture}"
-  assert_failure_containing "${name}: attribute" "${expected_failure}" attribute data-tag --class x "${fixture}"
+  assert_failure_status_containing "${name}: text" 1 "${expected_failure}" text "${fixture}"
+  assert_failure_status_containing "${name}: text --within" 1 "${expected_failure}" text --within y "${fixture}"
+  assert_failure_status_containing "${name}: count" 1 "${expected_failure}" count --class x "${fixture}"
+  assert_failure_status_containing "${name}: attribute" 1 "${expected_failure}" attribute data-tag --class x "${fixture}"
 }
 
 write_fixture control.html '<div id="y" class="selected" data-tag="outside">control</div>'
@@ -81,10 +103,10 @@ write_fixture attr-hidden-duplicate.html '<div class="selected" data-tag="outsid
 assert_output 'attribute ignores duplicate class in template' 'outside' attribute data-tag --class selected "${FIXTURES_DIR}/attr-hidden-duplicate.html"
 
 write_fixture attr-target-duplicate.html '<div class="selected" data-tag="one" data-tag="two"></div>'
-assert_failure 'attribute rejects duplicate requested attribute on match' attribute data-tag --class selected "${FIXTURES_DIR}/attr-target-duplicate.html"
+assert_failure_status 'attribute rejects duplicate requested attribute on match' 1 attribute data-tag --class selected "${FIXTURES_DIR}/attr-target-duplicate.html"
 
 write_fixture attr-selector-duplicate.html '<div class="selected" class="selected" data-tag="outside"></div>'
-assert_failure 'attribute rejects duplicate selector attribute on match' attribute data-tag --class selected "${FIXTURES_DIR}/attr-selector-duplicate.html"
+assert_failure_status 'attribute rejects duplicate selector attribute on match' 1 attribute data-tag --class selected "${FIXTURES_DIR}/attr-selector-duplicate.html"
 
 write_fixture count-hidden-duplicate.html '<div class="x"></div><template><span class="x" class="x"></span></template>'
 assert_output 'count ignores duplicate class in template' '1' count --class x "${FIXTURES_DIR}/count-hidden-duplicate.html"
@@ -115,9 +137,38 @@ for tag in template script style noscript; do
   write_fixture "self-closing-${tag}.html" "<${tag}/><a id=\"hidden\" class=\"hidden\" data-tag=\"hidden\">hidden</a></${tag}>"
   assert_output "self-closing ${tag} hides id" '0' count --id hidden "${fixture}"
   assert_output "self-closing ${tag} hides class" '0' count --class hidden "${fixture}"
-  assert_failure "self-closing ${tag} hides attribute" attribute data-tag --id hidden "${fixture}"
-  assert_failure "self-closing ${tag} hides text --within" text --within hidden "${fixture}"
+  assert_failure_status "self-closing ${tag} hides attribute" 3 attribute data-tag --id hidden "${fixture}"
+  assert_failure_status "self-closing ${tag} hides text --within" 3 text --within hidden "${fixture}"
 done
+
+write_fixture no-within-match.html '<div id="other">outside</div>'
+assert_failure_status 'text --within missing id has no-match status' 3 text --within target "${FIXTURES_DIR}/no-within-match.html"
+
+write_fixture multiple-within-matches.html '<div id="target">first</div><div id="target">second</div>'
+assert_failure_status 'text --within duplicate id has no-match status' 3 text --within target "${FIXTURES_DIR}/multiple-within-matches.html"
+
+write_fixture no-attribute-match.html '<div class="other" data-tag="outside"></div>'
+assert_failure_status 'attribute missing selector has no-match status' 3 attribute data-tag --class selected "${FIXTURES_DIR}/no-attribute-match.html"
+
+write_fixture multiple-attribute-matches.html '<div class="selected" data-tag="first"></div><div class="selected" data-tag="second"></div>'
+assert_failure_status 'attribute duplicate selector has no-match status' 3 attribute data-tag --class selected "${FIXTURES_DIR}/multiple-attribute-matches.html"
+
+write_fixture missing-attribute.html '<div class="selected"></div>'
+assert_failure_status 'attribute missing requested name has no-match status' 3 attribute data-tag --class selected "${FIXTURES_DIR}/missing-attribute.html"
+
+write_fixture unreadable.html '<div id="target" class="selected" data-tag="outside">content</div>'
+chmod 000 "${FIXTURES_DIR}/unreadable.html"
+for command in \
+  'text' \
+  'text --within target' \
+  'jsonld' \
+  'count --class selected' \
+  'attribute data-tag --class selected'; do
+  read -r -a args <<< "${command}"
+  assert_failure_status "unreadable file fails: ${command}" 1 "${args[@]}" "${FIXTURES_DIR}/unreadable.html"
+done
+
+assert_failure_status 'invalid invocation has usage status' 2 text --within "${FIXTURES_DIR}/control.html"
 
 write_fixture self-closing-div.html '<div id="target">before<div/>middle</div>outside</div>'
 assert_output 'self-closing div remains open in HTML' 'beforemiddleoutside' text --within target "${FIXTURES_DIR}/self-closing-div.html"
