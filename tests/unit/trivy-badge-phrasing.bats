@@ -248,15 +248,19 @@ NODE
     run node - "$card" <<'NODE'
 const fs = require('fs');
 const source = fs.readFileSync(process.argv[process.argv.length - 1], 'utf8');
+const normalizedSource = source.replace(/\s+/g, ' ');
 const requiredComment = [
+  // This complete count-and-buckets sentence is intentionally terminal-punctuation-pinned:
+  // its period separates the independent state-behaviour claim that follows.
   'Compact card badge displays the total across all five severity buckets.',
   'Its state is critical when any critical finding exists, else high when',
   'any high finding exists, else neutral advisory for any medium, low, or',
   'info finding, else clean at zero. `display_source: unavailable` is',
-  'separate: it renders no evidence with the unknown state.',
+  'separate: it renders no evidence with the unknown state',
+  'every other present source is shown as not recorded',
 ];
 for (const line of requiredComment) {
-  if (!source.includes(line)) throw new Error('card comment is missing: ' + line);
+  if (!normalizedSource.includes(line)) throw new Error('card comment is missing: ' + line);
 }
 if (source.includes('of the most severe non-zero level')) throw new Error('card comment still claims a most-severe count');
 const countExpression = /assign trivy_count = trivy_critical \| plus: trivy_high \| plus: trivy_medium \| plus: trivy_low \| plus: trivy_info/.test(source);
