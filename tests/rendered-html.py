@@ -14,15 +14,18 @@ also outside this extractor's model.
 
 Exit status 0 means a valid query. Status 1 means the HTML file could not be
 read or parsed, or html5lib is unavailable. Status 2 means an unsupported
-command or arity. Status 3 means the query result is absent, ambiguous, or
-missing the requested attribute. Status 3 groups those three query outcomes so
-callers can distinguish a query result from a read failure without parsing a
-message.
+command or arity. Status 3 applies when text --within or attribute cannot
+resolve exactly one target, or when the resolved target lacks the requested
+attribute. A count of zero and an empty jsonld array are valid status-0
+results. The attribute command matches the requested name case-insensitively by
+lowercasing it before lookup, so attributes whose DOM spelling carries
+uppercase, such as SVG viewBox and preserveAspectRatio, cannot be retrieved.
 """
 
 import json
 import sys
 from pathlib import Path
+from xml.etree.ElementTree import Comment, ProcessingInstruction
 
 try:
     import html5lib
@@ -39,15 +42,24 @@ def is_hidden_element(element):
     return element.tag in HIDDEN_ELEMENTS
 
 
+def is_comment_or_processing_instruction(element):
+    """Return whether an etree node has text that is not document content."""
+    return element.tag is Comment or element.tag is ProcessingInstruction
+
+
 def visible_text(element):
     """Yield text and tails in document order, excluding hidden HTML subtrees."""
+    if is_comment_or_processing_instruction(element):
+        if element.tail:
+            yield element.tail
+        return
     if is_hidden_element(element):
         return
     if element.text:
         yield element.text
     for child in element:
         yield from visible_text(child)
-        if child.tail:
+        if not is_comment_or_processing_instruction(child) and child.tail:
             yield child.tail
 
 
@@ -97,9 +109,12 @@ def usage():
         "exit status 0: valid query\n"
         "exit status 1: HTML file cannot be read or parsed, or html5lib is unavailable\n"
         "exit status 2: unsupported command or arity\n"
-        "exit status 3: query result is absent, ambiguous, or missing the requested attribute; "
-        "this groups those three query outcomes so callers can distinguish a query result from "
-        "a read failure without parsing a message.",
+        "exit status 3: text --within or attribute cannot resolve exactly one target, or the "
+        "resolved target lacks the requested attribute; a count of zero and an empty jsonld "
+        "array are valid status-0 results.\n"
+        "attribute matches the requested name case-insensitively by lowercasing it before lookup, "
+        "so attributes whose DOM spelling carries uppercase, such as SVG viewBox and "
+        "preserveAspectRatio, cannot be retrieved.",
         file=sys.stderr,
     )
 

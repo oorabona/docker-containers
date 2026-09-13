@@ -66,6 +66,21 @@ assert_output 'template text control is hidden' '' text "${FIXTURES_DIR}/templat
 write_fixture visible-text-control.html '<div id="view-reference">TEXT</div>'
 assert_output 'plain text control is visible within its id' 'TEXT' text --within view-reference "${FIXTURES_DIR}/visible-text-control.html"
 
+write_fixture comment-tail.html '<p><!--x-->SENTENCE</p>'
+assert_output 'comment body is excluded and tail is retained' 'SENTENCE' text "${FIXTURES_DIR}/comment-tail.html"
+
+write_fixture comment-within.html '<div id="view-reference"><!--SENTENCE--></div>'
+assert_output 'comment body is excluded within its id' '' text --within view-reference "${FIXTURES_DIR}/comment-within.html"
+
+write_fixture comment-only.html '<p><!--SENTENCE--></p>'
+assert_output 'comment body is excluded from text' '' text "${FIXTURES_DIR}/comment-only.html"
+
+write_fixture comment-script-control.html '<script>SENTENCE</script>'
+assert_output 'script body control is hidden' '' text "${FIXTURES_DIR}/comment-script-control.html"
+
+write_fixture comment-visible-control.html '<div id="view-reference">SENTENCE</div>'
+assert_output 'plain text control remains visible within its id' 'SENTENCE' text --within view-reference "${FIXTURES_DIR}/comment-visible-control.html"
+
 write_fixture attr-hidden-duplicate.html '<div class="selected" data-tag="outside"></div><template><span class="a" class="b"></span></template>'
 assert_output 'attribute ignores duplicate class in template' 'outside' attribute data-tag --class selected "${FIXTURES_DIR}/attr-hidden-duplicate.html"
 
