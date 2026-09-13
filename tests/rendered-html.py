@@ -11,6 +11,13 @@ separators between elements.
 This reports what the document contains, not what CSS paints: display,
 visibility, hidden, and aria-hidden are not consulted. Runtime JavaScript is
 also outside this extractor's model.
+
+Exit status 0 means a valid query. Status 1 means the HTML file could not be
+read or parsed, or html5lib is unavailable. Status 2 means an unsupported
+command or arity. Status 3 means the query result is absent, ambiguous, or
+missing the requested attribute. Status 3 groups those three query outcomes so
+callers can distinguish a query result from a read failure without parsing a
+message.
 """
 
 import json
@@ -86,7 +93,13 @@ def usage():
         "text reads text outside comments and HTML script, style, template, and noscript "
         "contents; it collapses whitespace and concatenates document-order text nodes without "
         "element separators. It reports document contents rather than CSS-painted output, so "
-        "display, visibility, hidden, and aria-hidden are not consulted.",
+        "display, visibility, hidden, and aria-hidden are not consulted.\n"
+        "exit status 0: valid query\n"
+        "exit status 1: HTML file cannot be read or parsed, or html5lib is unavailable\n"
+        "exit status 2: unsupported command or arity\n"
+        "exit status 3: query result is absent, ambiguous, or missing the requested attribute; "
+        "this groups those three query outcomes so callers can distinguish a query result from "
+        "a read failure without parsing a message.",
         file=sys.stderr,
     )
 
