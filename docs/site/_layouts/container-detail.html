@@ -346,7 +346,8 @@
               {%- for _prov_var in _prov_version.variants -%}
                 {%- assign prov_empty_count = 0 -%}
                 {%- unless _prov_var.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-                {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source and _prov_var.trivy_summary.display_source != "code-scanning" and _prov_var.trivy_summary.display_source != "scan-record" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
+                {%- comment -%} unavailable is recorded absence and counts toward an empty section, while an unrecognized source is something to disclose and must not suppress the section that discloses it. {%- endcomment -%}
+                {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source == "unavailable" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
                 {%- unless _prov_var.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
                 {%- unless _prov_var.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
                 {%- unless _prov_var.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
@@ -481,7 +482,7 @@
             {%- for _prov_var in page.variants -%}
               {%- assign prov_empty_count = 0 -%}
               {%- unless _prov_var.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-              {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source and _prov_var.trivy_summary.display_source != "code-scanning" and _prov_var.trivy_summary.display_source != "scan-record" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
+              {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source == "unavailable" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
               {%- unless _prov_var.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
               {%- unless _prov_var.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
               {%- unless _prov_var.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
@@ -611,7 +612,7 @@
             {%- assign prov_variant = page -%}
             {%- assign prov_empty_count = 0 -%}
             {%- unless prov_variant.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-            {%- if prov_variant.trivy_summary and prov_variant.trivy_summary.display_source and prov_variant.trivy_summary.display_source != "code-scanning" and prov_variant.trivy_summary.display_source != "scan-record" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
+            {%- if prov_variant.trivy_summary and prov_variant.trivy_summary.display_source == "unavailable" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
             {%- unless prov_variant.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
             {%- unless prov_variant.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
             {%- unless prov_variant.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
