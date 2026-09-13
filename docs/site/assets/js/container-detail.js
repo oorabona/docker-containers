@@ -10,6 +10,14 @@
     // _dispatchInitialVariant() both trigger selectVariant() for the same default
     // variant on page load.
     var _lastSelectedTag = null;
+    function readOptionalArray(raw, attributeName) {
+      var result = readVariantSelectionArray(raw);
+      if (result.state === 'unreadable') {
+        console.warn('Ignoring unusable ' + attributeName + ' attribute');
+      }
+      return result.array;
+    }
+
     function selectVariant(el) {
       if (!el) return;
       var _tag = el.dataset.tag || el.dataset.variantTag || '';
@@ -45,16 +53,15 @@
       if (baseImgEl) baseImgEl.textContent = (baseImage && baseImage !== 'unknown') ? baseImage : '---';
 
       // Update lineage build_args for selected variant (empty array clears them)
-      var buildArgsAttr = el.dataset.buildArgs;
-      var buildArgs = buildArgsAttr ? JSON.parse(buildArgsAttr) : [];
+      var buildArgs = readOptionalArray(el.dataset.buildArgs, 'data-build-args');
       updateLineageBuildArgs(buildArgs);
 
       // Update dep health section for selected variant
       var argNames = buildArgs.map(function(a) { return a.name; });
-      var variantDepsList = null;
-      try {
-        if (el.dataset.variantDeps) variantDepsList = JSON.parse(el.dataset.variantDeps);
-      } catch (e) { /* swallow — fall back to argNames intersection */ }
+      var variantDepsAttr = el.dataset.variantDeps;
+      var variantDepsList = typeof variantDepsAttr === 'undefined'
+        ? null
+        : readOptionalArray(variantDepsAttr, 'data-variant-deps');
       updateDepHealth(argNames, variantDepsList);
 
       // Update SBOM sections for selected variant
@@ -140,15 +147,11 @@
       if (_depCache) return _depCache;
       var section = document.querySelector('.dep-health-section');
       if (!section) return null;
-      try {
-        _depCache = {
-          section: section,
-          updates: JSON.parse(section.dataset.depUpdates || '[]'),
-          allDeps: JSON.parse(section.dataset.depAll || '[]')
-        };
-      } catch (e) {
-        _depCache = null;
-      }
+      _depCache = {
+        section: section,
+        updates: readOptionalArray(section.dataset.depUpdates, 'data-dep-updates'),
+        allDeps: readOptionalArray(section.dataset.depAll, 'data-dep-all')
+      };
       return _depCache;
     }
 
@@ -305,21 +308,17 @@
       if (!data || data.updates.length === 0) return 0;
 
       // Prefer data-variant-deps (authoritative per-flavor list) over build-args
-      var variantDepsList = null;
-      try {
-        var vdAttr = variantEl.dataset.variantDeps;
-        if (vdAttr !== undefined) variantDepsList = JSON.parse(vdAttr);
-      } catch (e) { variantDepsList = null; }
+      var vdAttr = variantEl.dataset.variantDeps;
+      var variantDepsList = typeof vdAttr === 'undefined'
+        ? null
+        : readOptionalArray(vdAttr, 'data-variant-deps');
 
       var nameSet = {};
       if (variantDepsList !== null) {
         variantDepsList.forEach(function(n) { nameSet[n] = true; });
       } else {
-        var buildArgsAttr = variantEl.dataset.buildArgs;
-        if (!buildArgsAttr) return 0;
-        try {
-          JSON.parse(buildArgsAttr).forEach(function(a) { nameSet[a.name] = true; });
-        } catch (e) { return 0; }
+        var buildArgs = readOptionalArray(variantEl.dataset.buildArgs, 'data-build-args');
+        buildArgs.forEach(function(a) { nameSet[a.name] = true; });
       }
 
       return data.updates.filter(function(u) { return nameSet[u.name]; }).length;

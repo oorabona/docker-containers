@@ -19,9 +19,11 @@
         if (tab) this._activateTab(tab);
       };
       this._keydownHandler = (e) => this._handleKeydown(e);
+      this._versionTabsHandler = (e) => this._onVersionTabsChanged(e);
 
       this.addEventListener('click', this._clickHandler);
       this.addEventListener('keydown', this._keydownHandler);
+      document.addEventListener('version-tabs-changed', this._versionTabsHandler);
       this._normaliseTabState();
 
       // Fix #1: dispatch phase-b-variant-changed for the initial active tab so
@@ -35,6 +37,7 @@
     disconnectedCallback() {
       if (this._clickHandler) this.removeEventListener('click', this._clickHandler);
       if (this._keydownHandler) this.removeEventListener('keydown', this._keydownHandler);
+      if (this._versionTabsHandler) document.removeEventListener('version-tabs-changed', this._versionTabsHandler);
       this._initialized = false;
     }
 
@@ -59,14 +62,14 @@
 
       // Also dispatch a component-scoped event for container-detail.js to intercept
       this.dispatchEvent(new CustomEvent('version-tabs-changed', {
-        detail: { tag: variantData.tag },
+        detail: { tag: variantData.tag, source: 'version-tabs' },
         bubbles: true
       }));
     }
 
-    // This host, rather than each nested tablist, owns the selected tab. The
-    // hidden data carriers outside <version-tabs> have no role="tab" and are
-    // deliberately not part of this state.
+    // This host exclusively owns and normalises tab ARIA state. External
+    // selections reach it through _onVersionTabsChanged; hidden data carriers
+    // outside <version-tabs> have no role="tab" and are not part of this state.
     _normaliseTabState(selectedTab) {
       var tabs = Array.from(this.querySelectorAll('[role="tab"]'));
       if (tabs.length === 0) return null;
@@ -83,6 +86,16 @@
         tab.tabIndex = active ? 0 : -1;
       });
       return selected;
+    }
+
+    _onVersionTabsChanged(e) {
+      if (e.detail && e.detail.source === 'version-tabs') { return; }
+      var tag = e.detail && e.detail.tag;
+      if (!tag) { return; }
+      var tab = Array.from(this.querySelectorAll('[role="tab"]')).find(function (candidate) {
+        return candidate.dataset.tag === tag;
+      });
+      if (tab) { this._normaliseTabState(tab); }
     }
 
     /* ------------------------------------------------------------------ */
@@ -205,7 +218,7 @@
       // update DOM text/visibility; selectVariant() is guarded by dataset reads
       // that are stable across calls. No double-flash risk.
       this.dispatchEvent(new CustomEvent('version-tabs-changed', {
-        detail: { tag: variantData.tag },
+        detail: { tag: variantData.tag, source: 'version-tabs' },
         bubbles: true
       }));
     }
