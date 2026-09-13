@@ -24,6 +24,14 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install html5lib
+        timeout-minutes: 5
+        run: |
+          python3 -c 'import html5lib; assert html5lib.__version__ == "1.1"' >/dev/null 2>&1 || {
+            python3 -m pip install html5lib==1.1
+          }
+          python3 -c 'import html5lib; assert html5lib.__version__ == "1.1"'
+
       - name: Exercise rendered HTML skipped-subtree extractor
         run: |
           python3 --version
