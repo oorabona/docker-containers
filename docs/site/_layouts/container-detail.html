@@ -209,6 +209,11 @@
                   {%- assign trivy_badge_text = trivy_count | append: " findings" -%}
                   {%- capture trivy_full_label -%}{{ trivy_count }} finding(s) from the recorded scan · scanned {{ trivy_date }} · advisory mode (does not block builds){%- endcapture -%}
                 {%- endif -%}
+            {%- elsif trivy_source -%}
+              {%- assign trivy_visible = true -%}
+              {%- assign trivy_sev = "not-recorded" -%}
+              {%- assign trivy_badge_text = "not recorded" -%}
+              {%- assign trivy_full_label = "Security evidence is not recorded for this image" -%}
             {%- endif -%}
             {%- if trivy_visible -%}
               <a class="trust-badge trust-badge--trivy"
@@ -341,6 +346,7 @@
               {%- for _prov_var in _prov_version.variants -%}
                 {%- assign prov_empty_count = 0 -%}
                 {%- unless _prov_var.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+                {%- comment -%} unavailable is recorded absence and counts toward an empty section, while an unrecognized source is something to disclose and must not suppress the section that discloses it. {%- endcomment -%}
                 {%- if _prov_var.trivy_summary and _prov_var.trivy_summary.display_source == "unavailable" -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endif -%}
                 {%- unless _prov_var.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
                 {%- unless _prov_var.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
@@ -422,6 +428,8 @@
                 <dd>Recorded scan {{ _prov_var.trivy_summary.as_of | date: "%Y-%m-%d %H:%M UTC" }}</dd>
                 {%- elsif _prov_var.trivy_summary.display_source == "unavailable" -%}
                 <dd class="evidence-empty">evidence unavailable</dd>
+                {%- else -%}
+                <dd class="evidence-empty">evidence not recorded</dd>
                 {%- endif -%}
               </div>
               {%- else -%}
@@ -555,6 +563,8 @@
                 <dd>Recorded scan {{ _prov_var.trivy_summary.as_of | date: "%Y-%m-%d %H:%M UTC" }}</dd>
                 {%- elsif _prov_var.trivy_summary.display_source == "unavailable" -%}
                 <dd class="evidence-empty">evidence unavailable</dd>
+                {%- else -%}
+                <dd class="evidence-empty">evidence not recorded</dd>
                 {%- endif -%}
               </div>
               {%- else -%}
@@ -685,6 +695,8 @@
                 <dd>Recorded scan {{ prov_variant.trivy_summary.as_of | date: "%Y-%m-%d %H:%M UTC" }}</dd>
                 {%- elsif prov_variant.trivy_summary.display_source == "unavailable" -%}
                 <dd class="evidence-empty">evidence unavailable</dd>
+                {%- else -%}
+                <dd class="evidence-empty">evidence not recorded</dd>
                 {%- endif -%}
               </div>
               {%- else -%}

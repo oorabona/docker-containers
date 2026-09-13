@@ -1,0 +1,19 @@
+- name: fixture-dashboard-invalid-security-evidence
+  current_version: bogus-dashboard-alpine
+  current_version_confirmed: false
+  has_variants: true
+  versions:
+    - tag: bogus-dashboard
+      base_tag: bogus-dashboard
+      variants:
+        - name: alpine
+          tag: bogus-dashboard-alpine
+          trivy_summary:
+            display_source: bogus
+            as_of: "2026-09-10"
+            counts:
+              critical: 9
+              high: 8
+              medium: 7
+              low: 6
+              info: 5

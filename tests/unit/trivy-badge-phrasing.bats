@@ -151,6 +151,52 @@ NODE
     assert_trivy_severity_transitions "$PROJECT_ROOT/docs/site/assets/js/components/trust-strip.js" javascript
 }
 
+@test "every Trivy badge severity emitted by a renderer has a stylesheet rule" {
+    run node - \
+        "$PROJECT_ROOT/docs/site/_includes/container-card.html" \
+        "$PROJECT_ROOT/docs/site/_layouts/container-detail.html" \
+        "$PROJECT_ROOT/docs/site/assets/js/components/trust-strip.js" \
+        "$PROJECT_ROOT/docs/site/assets/css/theme.css" <<'NODE'
+const fs = require('fs');
+const [cardFile, detailFile, javascriptFile, cssFile] = process.argv.slice(-4);
+const liquidFiles = [cardFile, detailFile];
+const renderedSeverities = new Set();
+
+for (const file of liquidFiles) {
+  const source = fs.readFileSync(file, 'utf8');
+  for (const match of source.matchAll(/assign trivy_sev = "([^"]+)"/g)) renderedSeverities.add(match[1]);
+  for (const match of source.matchAll(/data-severity="([^"{]+)"/g)) renderedSeverities.add(match[1]);
+}
+
+const javascript = fs.readFileSync(javascriptFile, 'utf8');
+for (const match of javascript.matchAll(/(?:sev =|setAttribute\('data-severity',) '([^']+)'/g)) renderedSeverities.add(match[1]);
+
+const css = fs.readFileSync(cssFile, 'utf8');
+const styledSeverities = new Set();
+for (const match of css.matchAll(/\.trust-badge--trivy\[data-severity="([^"]+)"\]/g)) styledSeverities.add(match[1]);
+
+const cleanSeverities = [
+  ...liquidFiles.map((file) => {
+    const source = fs.readFileSync(file, 'utf8');
+    const match = source.match(/elsif trivy_count > 0[\s\S]*?assign trivy_sev = "advisory"[\s\S]*?else[\s\S]*?assign trivy_sev = "([^"]+)"/);
+    return match && match[1];
+  }),
+  (javascript.match(/else if \(total > 0\) \{\s*sev = 'advisory';\s*\} else \{\s*sev = '([^']+)';/) || [])[1],
+];
+if (cleanSeverities.every(Boolean) && new Set(cleanSeverities).size === 1
+  && /\.trust-badge--trivy\s*\{[\s\S]*?--color-trust-trivy-clean-bg/.test(css)) {
+  styledSeverities.add(cleanSeverities[0]);
+}
+
+const missing = [...renderedSeverities].filter((severity) => !styledSeverities.has(severity));
+if (missing.length) throw new Error('unstyled Trivy badge severity: ' + missing.join(', '));
+NODE
+    [ "$status" -eq 0 ] || {
+        echo "$output" >&2
+        return 1
+    }
+}
+
 @test "security evidence directs initial and variant-switch renders to verification steps" {
     local template="$PROJECT_ROOT/docs/site/_layouts/container-detail.html"
 
@@ -248,15 +294,19 @@ NODE
     run node - "$card" <<'NODE'
 const fs = require('fs');
 const source = fs.readFileSync(process.argv[process.argv.length - 1], 'utf8');
+const normalizedSource = source.replace(/\s+/g, ' ');
 const requiredComment = [
+  // This complete count-and-buckets sentence is intentionally terminal-punctuation-pinned:
+  // its period separates the independent state-behaviour claim that follows.
   'Compact card badge displays the total across all five severity buckets.',
   'Its state is critical when any critical finding exists, else high when',
   'any high finding exists, else neutral advisory for any medium, low, or',
   'info finding, else clean at zero. `display_source: unavailable` is',
-  'separate: it renders no evidence with the unknown state.',
+  'separate: it renders no evidence with the unknown state',
+  'every other present source is shown as not recorded',
 ];
 for (const line of requiredComment) {
-  if (!source.includes(line)) throw new Error('card comment is missing: ' + line);
+  if (!normalizedSource.includes(line)) throw new Error('card comment is missing: ' + line);
 }
 if (source.includes('of the most severe non-zero level')) throw new Error('card comment still claims a most-severe count');
 const countExpression = /assign trivy_count = trivy_critical \| plus: trivy_high \| plus: trivy_medium \| plus: trivy_low \| plus: trivy_info/.test(source);

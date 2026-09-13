@@ -495,14 +495,21 @@ else
   pass "Security footer makes no claim that a scan exists"
 fi
 
-# 18. An unknown display_source must reset and hide the Trivy badge, matching
-# security-scan.js's unreadable-state marker so variant switches cannot leak data.
-trust_unknown_hides=$(grep -A5 -F "} else if (source === 'scan-record') {" "${TRUST_STRIP_JS}" 2>/dev/null \
-  | grep -F "el.style.display = 'none';" || true)
-if [[ -n "${trust_unknown_hides}" ]]; then
-  pass "Trust-strip hides the Trivy badge for an unknown display_source"
+# 18. An unknown but present display_source is visible and explicitly says it
+# is not recorded; it must not fall through to an old numeric badge value.
+trust_not_recorded_branch=$(sed -n "/if (source !== 'code-scanning' && source !== 'scan-record') {/,/return;/p" "${TRUST_STRIP_JS}" 2>/dev/null || true)
+trust_liquid_presence=$(sed -n '/const hasLiquidDisplaySource = summary/,/;/p' "${TRUST_STRIP_JS}" 2>/dev/null || true)
+if [[ "${trust_not_recorded_branch}" == *"el.setAttribute('data-severity', 'not-recorded');"* ]] \
+  && [[ "${trust_not_recorded_branch}" == *"el.textContent = '🛡 not recorded';"* ]] \
+  && [[ "${trust_not_recorded_branch}" == *"el.style.display = '';"* ]] \
+  && ! grep -qE '\b(total|counts|critical|high)\b' <<<"${trust_not_recorded_branch}" \
+  && [[ "${trust_liquid_presence}" == *'summary.display_source !== undefined'* ]] \
+  && [[ "${trust_liquid_presence}" == *'summary.display_source !== null'* ]] \
+  && [[ "${trust_liquid_presence}" == *'summary.display_source !== false'* ]] \
+  && grep -qF 'if (!hasLiquidDisplaySource) {' "${TRUST_STRIP_JS}"; then
+  pass "Trust-strip shows a non-numeric not-recorded badge for an unknown display_source"
 else
-  fail "Trust-strip unknown display_source path does not hide the Trivy badge"
+  fail "Trust-strip unknown display_source path is not a visible, non-numeric not-recorded badge"
 fi
 
 # 19. Lower-only findings are advisory, not clean.

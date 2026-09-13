@@ -218,4 +218,54 @@ assert_page fixture-no-security-evidence no-evidence-alpine absent '' '' '' '' '
 assert_page fixture-selected-security-evidence selected-evidence-alpine evidenced 2026-09-12 0 0 0 0 0 pending selected-evidence-sibling
 assert_page fixture-contract-invalid-security-evidence bogus-source-alpine not-recorded '' '' '' '' '' '' attested ''
 
+DASHBOARD_PAGE="${SITE_DIR}/index.html"
+PAGE=${DASHBOARD_PAGE}
+[[ -f "${DASHBOARD_PAGE}" && -s "${DASHBOARD_PAGE}" ]] || fail 'container fixture dashboard must be a non-empty regular file'
+
+dashboard_card_count=$(python3 "${EXTRACTOR}" count --class container-card "${DASHBOARD_PAGE}") \
+  || fail 'could not count dashboard container cards'
+[[ ${dashboard_card_count} -eq 1 ]] \
+  || fail "expected exactly one dashboard container card; found ${dashboard_card_count}"
+
+dashboard_trivy_state=$(python3 "${EXTRACTOR}" attribute data-severity --class trust-badge--trivy "${DASHBOARD_PAGE}") \
+  || fail 'could not read dashboard Trivy badge state'
+[[ ${dashboard_trivy_state} == not-recorded ]] \
+  || fail "dashboard Trivy badge is not marked not-recorded; found ${dashboard_trivy_state}"
+
+dashboard_trivy_label=$(python3 "${EXTRACTOR}" attribute aria-label --class trust-badge--trivy "${DASHBOARD_PAGE}") \
+  || fail 'could not read dashboard Trivy badge wording'
+[[ ${dashboard_trivy_label} == 'Security evidence is not recorded for this image' ]] \
+  || fail "dashboard Trivy badge does not say security evidence is not recorded; found ${dashboard_trivy_label}"
+
+dashboard_text=$(python3 "${EXTRACTOR}" text "${DASHBOARD_PAGE}") \
+  || fail 'could not extract dashboard text'
+if grep -Eq '🛡[[:space:]]*[0-9]' <<<"${dashboard_text}"; then
+  classify_grep_status 0 'dashboard Trivy badge renders a severity count for an unrecognized evidence source' absent
+else
+  classify_grep_status $? 'could not check dashboard Trivy badge for a severity count' absent
+fi
+
+PAGE="${SITE_DIR}/container/fixture-contract-invalid-security-evidence/index.html"
+selected_provenance_tag=$(python3 "${EXTRACTOR}" attribute data-variant-tag --class provenance "${PAGE}") \
+  || fail 'could not read selected invalid-source provenance tag'
+[[ ${selected_provenance_tag} == bogus-source-alpine ]] \
+  || fail "selected invalid-source provenance does not name bogus-source-alpine; found ${selected_provenance_tag}"
+
+selected_provenance_text=$(python3 "${EXTRACTOR}" text "${PAGE}") \
+  || fail 'could not extract selected invalid-source provenance text'
+
+set +e
+selected_trivy_terms=$(grep -oF -- 'Trivy evidence' <<<"${selected_provenance_text}")
+grep_status=$?
+set -e
+classify_grep_status "${grep_status}" 'could not find Trivy evidence in selected invalid-source provenance section'
+selected_trivy_term_count=$(printf '%s\n' "${selected_trivy_terms}" | wc -l)
+[[ ${selected_trivy_term_count} -eq 1 ]] \
+  || fail "expected exactly one Trivy evidence term in selected invalid-source provenance section; found ${selected_trivy_term_count}"
+if grep -Eq 'Trivy evidence[[:space:]]*evidence not recorded' <<<"${selected_provenance_text}"; then
+  :
+else
+  classify_grep_status $? 'selected invalid-source provenance term has no explicit not-recorded value'
+fi
+
 echo 'PASS: container page fixture assertions'

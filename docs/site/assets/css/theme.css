@@ -229,7 +229,9 @@
   border-color: var(--color-text-muted);
 }
 .trust-badge--trivy[data-severity="advisory"],
-.trust-badge--trivy[data-severity="advisory"]:hover {
+.trust-badge--trivy[data-severity="not-recorded"],
+.trust-badge--trivy[data-severity="advisory"]:hover,
+.trust-badge--trivy[data-severity="not-recorded"]:hover {
   background: var(--color-surface-raised);
   border-color: var(--color-border-subtle);
   color: var(--color-text-muted);

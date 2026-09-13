@@ -67,7 +67,13 @@
     _updateTrivy(summary) {
       const el = this.querySelector('[data-trust="trivy"]');
       if (!el) return;
-      if (!summary || !summary.display_source) {
+      // Liquid's `{% if %}` treats only nil and false as absent; JavaScript
+      // must keep empty strings and zero present rather than using !display_source.
+      const hasLiquidDisplaySource = summary
+        && summary.display_source !== undefined
+        && summary.display_source !== null
+        && summary.display_source !== false;
+      if (!hasLiquidDisplaySource) {
         // WCAG 4.1.2: anchor with display:none must be removed from the AT tree.
         el.textContent = '';
         el.style.display = 'none';
@@ -79,6 +85,16 @@
         const fullLabel = 'No security evidence available — Code Scanning could not be read and no usable scan record was found';
         el.setAttribute('data-severity', 'unknown');
         el.textContent = '🛡 no evidence';
+        el.title = fullLabel;
+        el.setAttribute('aria-label', fullLabel);
+        el.style.display = '';
+        el.removeAttribute('aria-hidden');
+        return;
+      }
+      if (source !== 'code-scanning' && source !== 'scan-record') {
+        const fullLabel = 'Security evidence is not recorded for this image';
+        el.setAttribute('data-severity', 'not-recorded');
+        el.textContent = '🛡 not recorded';
         el.title = fullLabel;
         el.setAttribute('aria-label', fullLabel);
         el.style.display = '';
@@ -108,11 +124,6 @@
       } else if (source === 'scan-record') {
         badgeText = total + ' findings';
         fullLabel = total + ' finding(s) from the recorded scan · scanned ' + date + ' · advisory mode (does not block builds)';
-      } else {
-        el.textContent = '';
-        el.style.display = 'none';
-        el.setAttribute('aria-hidden', 'true');
-        return;
       }
       el.textContent = '🛡 ' + badgeText;
       el.title = fullLabel;

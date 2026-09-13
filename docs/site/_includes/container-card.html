@@ -57,7 +57,8 @@
           Its state is critical when any critical finding exists, else high when
           any high finding exists, else neutral advisory for any medium, low, or
           info finding, else clean at zero. `display_source: unavailable` is
-          separate: it renders no evidence with the unknown state. Full context
+          separate: it renders no evidence with the unknown state; every other
+          present source is shown as not recorded. Full context
           (label + scan date + advisory caveat) is duplicated into both `title`
           (hover) and `aria-label` (screen reader / touch focus); the badge link
           itself targets the detail-page security section so touch users land on
@@ -68,7 +69,7 @@
           {%- assign trivy_sev = "unknown" -%}
           {%- assign trivy_badge_text = "no evidence" -%}
           {%- assign trivy_full_label = "No security evidence available — Code Scanning could not be read and no usable scan record was found" -%}
-        {%- else -%}
+        {%- elsif trivy_source == "code-scanning" or trivy_source == "scan-record" -%}
           {%- assign trivy_critical = default_variant.trivy_summary.counts.critical | plus: 0 -%}
           {%- assign trivy_high     = default_variant.trivy_summary.counts.high     | plus: 0 -%}
           {%- assign trivy_medium   = default_variant.trivy_summary.counts.medium   | plus: 0 -%}
@@ -92,6 +93,10 @@
             {%- assign trivy_badge_text = trivy_count | append: " findings" -%}
             {%- capture trivy_full_label -%}{{ trivy_count }} finding(s) from the recorded scan · scanned {{ trivy_date }} · advisory mode (does not block builds){%- endcapture -%}
           {%- endif -%}
+        {%- else -%}
+          {%- assign trivy_sev = "not-recorded" -%}
+          {%- assign trivy_badge_text = "not recorded" -%}
+          {%- assign trivy_full_label = "Security evidence is not recorded for this image" -%}
         {%- endif -%}
         <a class="trust-badge trust-badge--trivy"
            data-trust="trivy"
