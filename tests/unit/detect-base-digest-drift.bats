@@ -618,8 +618,9 @@ EOF
     [ "$legacy_flag" = "true" ]
 }
 
-@test "v2 unresolved base_image_digest is an explicit lineage error" {
+@test "v2 unresolved base_image_digest warns with its file and decoder reason" {
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local stderr_log="$TEST_TEMP_DIR/v2-unresolved.stderr"
     mkdir -p "$lineage_dir"
     cat > "$lineage_dir/foo-1.0-alpine.json" <<'EOF'
 {
@@ -632,12 +633,13 @@ EOF
 EOF
 
     result=$(PROBE_CMD="/bin/false" \
-        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log")
 
     status_val=$(printf '%s' "$result" | \
         jq -r '.[0].variants[0].status')
     [ "$status_val" = "error" ]
     [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "malformed_recorded_digest" ]
+    grep -Fx '::warning::Rejected lineage record foo-1.0-alpine.json for foo:1.0-alpine: malformed_recorded_digest' "$stderr_log"
 }
 
 @test "modern record missing its digest is error, not legacy" {
@@ -3929,18 +3931,56 @@ EOF
 
 @test "invalid lineage keeps the helper reason and fails the coverage gate" {
     local lineage_dir="$TEST_TEMP_DIR/invalid-lineage"
+    local stderr_log="$TEST_TEMP_DIR/invalid-lineage.stderr"
     mkdir -p "$lineage_dir"
     jq -cn '{container:"foo", tag:"invalid", base_image_kind:"future_marker"}' > "$lineage_dir/foo.json"
 
     local result rc=0 notice
-    result=$(bash "$DETECTOR_SCRIPT" "$lineage_dir")
+    result=$(bash "$DETECTOR_SCRIPT" "$lineage_dir" 2>"$stderr_log")
     [ "$(jq -r '.[0].variants[0].status' <<< "$result")" = "error" ]
     [ "$(jq -r '.[0].variants[0].error_reason' <<< "$result")" = "unrecognised_base_image_kind" ]
+    grep -Fx '::warning::Rejected lineage record foo.json for foo:invalid: unrecognised_base_image_kind' "$stderr_log"
 
     _load_drift_consumer
     notice=$(emit_drift_notice "$result") || rc=$?
     [ "$rc" -eq 1 ]
     [[ "$notice" == *"coverage incomplete"* ]]
+}
+
+@test "invalid lineage warning escapes a bidirectional override in its base ref" {
+    local lineage_dir="$TEST_TEMP_DIR/invalid-lineage-bidi"
+    local stderr_log="$TEST_TEMP_DIR/invalid-lineage-bidi.stderr"
+    local bidi_ref=$'ghcr.io/oorabona/library/alpine:latest\u202e'
+    local digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    mkdir -p "$lineage_dir"
+    jq -cn --arg ref "$bidi_ref" --arg digest "$digest" \
+        '{lineage_schema_version:2, container:"foo", tag:"bidi", base_image_ref:$ref, base_image_digest:$digest}' \
+        > "$lineage_dir/bidi.json"
+
+    local result
+    result=$(PROBE_CMD="/bin/false" bash "$DETECTOR_SCRIPT" "$lineage_dir" 2>"$stderr_log")
+
+    [ "$(jq -r '.[0].variants[0].error_reason' <<< "$result")" = "invalid_external_base_image_ref" ]
+    grep -Fx '::warning::Rejected lineage record bidi.json for foo:bidi: invalid_external_base_image_ref' "$stderr_log"
+    ! grep -Fq "$bidi_ref" "$stderr_log"
+}
+
+@test "valid lineage emits no rejected-record warning" {
+    local lineage_dir="$TEST_TEMP_DIR/valid-lineage-no-warning"
+    local stderr_log="$TEST_TEMP_DIR/valid-lineage-no-warning.stderr"
+    local digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    local probe_stub
+    mkdir -p "$lineage_dir"
+    jq -cn --arg digest "$digest" \
+        '{lineage_schema_version:2, container:"foo", tag:"valid", base_image_ref:"alpine:3.21", base_image_digest:$digest}' \
+        > "$lineage_dir/valid.json"
+    probe_stub=$(_make_digest_probe_stub "$digest")
+
+    local result
+    result=$(PROBE_CMD="$probe_stub" bash "$DETECTOR_SCRIPT" "$lineage_dir" 2>"$stderr_log")
+
+    [ "$(jq -r '.[0].variants[0].status' <<< "$result")" = "unchanged" ]
+    ! grep -q '^::warning::Rejected lineage record ' "$stderr_log"
 }
 
 @test "marker carrying an external field is invalid instead of suppressing comparison" {
