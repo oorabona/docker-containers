@@ -67,7 +67,13 @@
     _updateTrivy(summary) {
       const el = this.querySelector('[data-trust="trivy"]');
       if (!el) return;
-      if (!summary || !summary.display_source) {
+      // Liquid's `{% if %}` treats only nil and false as absent; JavaScript
+      // must keep empty strings and zero present rather than using !display_source.
+      const hasLiquidDisplaySource = summary
+        && summary.display_source !== undefined
+        && summary.display_source !== null
+        && summary.display_source !== false;
+      if (!hasLiquidDisplaySource) {
         // WCAG 4.1.2: anchor with display:none must be removed from the AT tree.
         el.textContent = '';
         el.style.display = 'none';

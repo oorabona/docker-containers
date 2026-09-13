@@ -151,6 +151,52 @@ NODE
     assert_trivy_severity_transitions "$PROJECT_ROOT/docs/site/assets/js/components/trust-strip.js" javascript
 }
 
+@test "every Trivy badge severity emitted by a renderer has a stylesheet rule" {
+    run node - \
+        "$PROJECT_ROOT/docs/site/_includes/container-card.html" \
+        "$PROJECT_ROOT/docs/site/_layouts/container-detail.html" \
+        "$PROJECT_ROOT/docs/site/assets/js/components/trust-strip.js" \
+        "$PROJECT_ROOT/docs/site/assets/css/theme.css" <<'NODE'
+const fs = require('fs');
+const [cardFile, detailFile, javascriptFile, cssFile] = process.argv.slice(-4);
+const liquidFiles = [cardFile, detailFile];
+const renderedSeverities = new Set();
+
+for (const file of liquidFiles) {
+  const source = fs.readFileSync(file, 'utf8');
+  for (const match of source.matchAll(/assign trivy_sev = "([^"]+)"/g)) renderedSeverities.add(match[1]);
+  for (const match of source.matchAll(/data-severity="([^"{]+)"/g)) renderedSeverities.add(match[1]);
+}
+
+const javascript = fs.readFileSync(javascriptFile, 'utf8');
+for (const match of javascript.matchAll(/(?:sev =|setAttribute\('data-severity',) '([^']+)'/g)) renderedSeverities.add(match[1]);
+
+const css = fs.readFileSync(cssFile, 'utf8');
+const styledSeverities = new Set();
+for (const match of css.matchAll(/\.trust-badge--trivy\[data-severity="([^"]+)"\]/g)) styledSeverities.add(match[1]);
+
+const cleanSeverities = [
+  ...liquidFiles.map((file) => {
+    const source = fs.readFileSync(file, 'utf8');
+    const match = source.match(/elsif trivy_count > 0[\s\S]*?assign trivy_sev = "advisory"[\s\S]*?else[\s\S]*?assign trivy_sev = "([^"]+)"/);
+    return match && match[1];
+  }),
+  (javascript.match(/else if \(total > 0\) \{\s*sev = 'advisory';\s*\} else \{\s*sev = '([^']+)';/) || [])[1],
+];
+if (cleanSeverities.every(Boolean) && new Set(cleanSeverities).size === 1
+  && /\.trust-badge--trivy\s*\{[\s\S]*?--color-trust-trivy-clean-bg/.test(css)) {
+  styledSeverities.add(cleanSeverities[0]);
+}
+
+const missing = [...renderedSeverities].filter((severity) => !styledSeverities.has(severity));
+if (missing.length) throw new Error('unstyled Trivy badge severity: ' + missing.join(', '));
+NODE
+    [ "$status" -eq 0 ] || {
+        echo "$output" >&2
+        return 1
+    }
+}
+
 @test "security evidence directs initial and variant-switch renders to verification steps" {
     local template="$PROJECT_ROOT/docs/site/_layouts/container-detail.html"
 
