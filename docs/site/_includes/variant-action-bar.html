@@ -23,16 +23,7 @@
                 attestation_url, attestation_id, trivy_summary, multi_arch_platforms }
 {%- endcomment -%}
 
-{%- assign _vab_variants = "" -%}
-{%- if page.versions -%}
-  {%- for _vab_ver in page.versions -%}
-    {%- for _vab_v in _vab_ver.variants -%}
-      {%- assign _vab_variants = _vab_variants | append: _vab_v.tag | append: "||" -%}
-    {%- endfor -%}
-  {%- endfor -%}
-{%- endif -%}
-
-{%- comment -%} Determine unique versions for version pills {%- endcomment -%}
+{%- comment -%} Emit one version pill for each page.versions entry {%- endcomment -%}
 {%- comment -%}
   Build a literal JSON array via capture, with per-field jsonify on each
   value. A chained append-then-jsonify pipeline encodes the whole

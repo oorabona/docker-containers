@@ -26,7 +26,9 @@ printf '%s\n' '[
   {"name":"empty string is absent","operation":"read","input":"","expected":{"array":[],"state":"absent"}},
   {"name":"array JSON is parsed","operation":"read","input":"[1,2]","expected":{"array":[1,2],"state":"parsed"}},
   {"name":"object JSON is unreadable","operation":"read","input":"{\"a\":1}","expected":{"array":[],"state":"unreadable"}},
-  {"name":"malformed JSON is unreadable","operation":"read","input":"[not json","expected":{"array":[],"state":"unreadable"}}
+  {"name":"malformed JSON is unreadable","operation":"read","input":"[not json","expected":{"array":[],"state":"unreadable"}},
+  {"name":"unreadable and absent remain distinct","operation":"read-states","expected":{"unreadable":{"array":[],"state":"unreadable"},"absent":{"array":[],"state":"absent"}}},
+  {"name":"empty array JSON is parsed","operation":"read","input":"[]","expected":{"array":[],"state":"parsed"}}
 ]' > "${INPUTS}"
 
 node - "${HELPER}" "${INPUTS}" <<'NODE'
@@ -52,6 +54,9 @@ for (const test of inputs) {
   if (test.operation === 'parse-undefined') output = parse(undefined);
   if (test.operation === 'read') output = read(test.input);
   if (test.operation === 'read-undefined') output = read(undefined);
+  if (test.operation === 'read-states') {
+    output = { unreadable: read('[not json'), absent: read(undefined) };
+  }
   if (JSON.stringify(output) === JSON.stringify(test.expected)) {
     console.log('PASS: ' + test.name + ' (output: ' + JSON.stringify(output) + ')');
   } else {

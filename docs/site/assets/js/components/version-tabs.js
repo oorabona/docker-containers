@@ -67,9 +67,9 @@
       }));
     }
 
-    // This host exclusively owns and normalises tab ARIA state. External
-    // selections reach it through _onVersionTabsChanged; hidden data carriers
-    // outside <version-tabs> have no role="tab" and are not part of this state.
+    // This host exclusively owns and normalises tab ARIA state. An external
+    // selection reaches it only when a tab under this host carries that tag;
+    // a selection naming a hidden data carrier leaves tab state unchanged.
     _normaliseTabState(selectedTab) {
       var tabs = Array.from(this.querySelectorAll('[role="tab"]'));
       if (tabs.length === 0) return null;
