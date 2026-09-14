@@ -806,6 +806,10 @@ for lineage_file in "${lineage_files[@]}"; do
     if [[ "$classification_kind" == "Invalid" ]]; then
         # The shared base-identity helper owns invalid-record reasons. Preserve
         # its reason verbatim rather than maintaining a second taxonomy here.
+        # This dispatch consumes every decoder rejection and continues, so only
+        # accepted classes reach later specialised warning branches: no duplicate
+        # warning is emitted for a rejected record.
+        gha_warning 'Rejected lineage record %s for %s:%s: %s' "$basename_file" "$container" "$variant_tag" "$error_reason" >&2
         base_image_ref=$(jq -r '.base_image_ref // empty' "$lineage_file")
         recorded_digest=$(jq -r '.base_image_digest // empty' "$lineage_file")
         safe_ref=$(_sanitize_for_json "$base_image_ref")
