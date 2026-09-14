@@ -327,6 +327,59 @@ EOF
     [ "$compile_index" -eq $((recheck_index + 1)) ]
 }
 
+@test "select canonical-index read cannot distinguish an absent tag from an unreadable registry without GHCR login" {
+    local install_index login_index read_index login_if login_username login_password dockerhub_username dockerhub_token
+
+    run yq -r '.jobs.select.steps | to_entries[] | select(.value.name == "Install skopeo for canonical index read") | .key' \
+        "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+    [ "$status" -eq 0 ]
+    install_index="$output"
+
+    run yq -r '.jobs.select.steps | to_entries[] | select(.value.uses == "./.github/actions/docker-login") | .key' \
+        "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+    [ "$status" -eq 0 ]
+    login_index="$output"
+    [ -n "$login_index" ]
+
+    run yq -r '.jobs.select.steps | to_entries[] | select(.value.name == "Read pre-test canonical index") | .key' \
+        "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+    [ "$status" -eq 0 ]
+    read_index="$output"
+
+    [ "$install_index" -lt "$login_index" ]
+    [ "$login_index" -lt "$read_index" ]
+
+    run yq -r '.jobs.select.steps[] | select(.uses == "./.github/actions/docker-login") | .if' \
+        "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+    [ "$status" -eq 0 ]
+    login_if="$output"
+    [ "$login_if" = "steps.select.outputs.selected == 'true'" ]
+
+    run yq -r '.jobs.select.steps[] | select(.uses == "./.github/actions/docker-login") | .with.ghcr_username' \
+        "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+    [ "$status" -eq 0 ]
+    login_username="$output"
+    [ "$login_username" = '${{ github.actor }}' ]
+
+    run yq -r '.jobs.select.steps[] | select(.uses == "./.github/actions/docker-login") | .with.ghcr_password' \
+        "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+    [ "$status" -eq 0 ]
+    login_password="$output"
+    [ "$login_password" = '${{ secrets.GITHUB_TOKEN }}' ]
+
+    run yq -r '.jobs.select.steps[] | select(.uses == "./.github/actions/docker-login") | .with | has("dockerhub_username")' \
+        "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+    [ "$status" -eq 0 ]
+    dockerhub_username="$output"
+    [ "$dockerhub_username" = false ]
+
+    run yq -r '.jobs.select.steps[] | select(.uses == "./.github/actions/docker-login") | .with | has("dockerhub_token")' \
+        "$PROJECT_ROOT/.github/workflows/rotation.yaml"
+    [ "$status" -eq 0 ]
+    dockerhub_token="$output"
+    [ "$dockerhub_token" = false ]
+}
+
 @test "rotation test-job push comments do not claim a post-build push" {
     local comment
 
