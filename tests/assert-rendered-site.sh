@@ -263,7 +263,102 @@ for rendered_page in "${SITE_DIR}/index.html" "${PAGE}"; do
   assert_token_absent "${rendered_page}" '\{\{|\{%' 'rendered page contains raw Liquid syntax'
 done
 
+# #1566 removed the dashboard registry controls. The extractor constructs the
+# rendered HTML5 tree, so this measures the server-rendered control directly.
+DASHBOARD_PAGE="${SITE_DIR}/index.html"
+[[ -f "${DASHBOARD_PAGE}" ]] || fail 'required rendered dashboard page is missing: index.html'
+
+# The card include is not reached by the container-page fixture: it needs a
+# direct guard so confirmed GHCR evidence cannot be hidden by absent mirror
+# metadata. Unconfirmed cards retain their explicit unavailable branch.
+CARD_TEMPLATE="$(dirname "$0")/../docs/site/_includes/container-card.html"
+expected_confirmed_card_condition='{% if include.current_version_confirmed == true and include.ghcr_image %}'
+grep -Fqx "    ${expected_confirmed_card_condition}" "${CARD_TEMPLATE}" \
+  || fail 'confirmed cards must render their GHCR pull command without Docker Hub metadata'
+grep -Fqx '    {% elsif include.current_version_confirmed != true %}' "${CARD_TEMPLATE}" \
+  || fail 'unconfirmed cards must retain their explicit unavailable branch'
+grep -Fq '<p>Publication information is unavailable; no pull reference is shown.</p>' "${CARD_TEMPLATE}" \
+  || fail 'unconfirmed cards must retain the unavailable publication message'
+
+registry_button_count=$(python3 "${EXTRACTOR}" count --class registry-btn "${DASHBOARD_PAGE}") \
+  || fail "could not count elements whose class list contains \"registry-btn\" in ${DASHBOARD_PAGE}"
+[[ ${registry_button_count} -eq 0 ]] \
+  || fail "${DASHBOARD_PAGE} must not contain elements whose class list contains \"registry-btn\"; found ${registry_button_count}"
+
+dashboard_text=$(python3 "${EXTRACTOR}" text "${DASHBOARD_PAGE}") \
+  || fail 'could not extract rendered dashboard text'
+assert_text_present "${dashboard_text}" \
+  'published to GHCR' \
+  'rendered dashboard hero does not name GHCR as the publication registry'
+assert_text_present "${dashboard_text}" \
+  'Docker Hub mirrored on a best-effort basis.' \
+  'rendered dashboard hero is missing the qualified Docker Hub mirror claim'
+assert_text_absent "${dashboard_text}" \
+  'published to GHCR and Docker Hub' \
+  'rendered dashboard hero still makes an unqualified Docker Hub publication claim'
+
+DASHBOARD_JS="${SITE_DIR}/assets/js/dashboard.js"
+[[ -f ${DASHBOARD_JS} ]] || fail 'rendered dashboard.js is missing'
+node - "${DASHBOARD_JS}" <<'NODE' || fail 'persisted Docker Hub preference did not resolve to a GHCR pull command'
+const fs = require('fs');
+const dashboardPath = process.argv[2];
+const pullInput = {
+  value: '',
+  addEventListener: function () {},
+  select: function () {}
+};
+const pullSection = {
+  dataset: { ghcrBase: 'ghcr.io/oorabona/confirmed-image', defaultTag: 'confirmed-tag' }
+};
+const card = {
+  dataset: { container: 'confirmed-image' },
+  querySelector: function (selector) {
+    return selector === '.pull-section' ? pullSection : null;
+  },
+  querySelectorAll: function () { return []; },
+  classList: { contains: function () { return false; } }
+};
+
+global.localStorage = {
+  getItem: function (key) { return key === 'preferredRegistry' ? 'dockerhub' : null; },
+  setItem: function () {}
+};
+global.document = {
+  addEventListener: function (event, listener) {
+    if (event === 'DOMContentLoaded') listener();
+  },
+  getElementById: function (id) {
+    return id === 'pull-confirmed-image' ? pullInput : null;
+  },
+  querySelector: function () { return null; },
+  querySelectorAll: function (selector) {
+    if (selector === '.registry-btn[data-registry]' || selector === '.registry-btn') return [];
+    if (selector === '.container-card') return [card];
+    if (selector === 'input[id^="pull-"]') return [pullInput];
+    return [];
+  }
+};
+
+eval(fs.readFileSync(dashboardPath, 'utf8'));
+const expected = 'docker pull ghcr.io/oorabona/confirmed-image:confirmed-tag';
+if (pullInput.value !== expected || pullInput.value.includes('undefined')) {
+  throw new Error('expected ' + expected + ', got ' + pullInput.value);
+}
+console.log('PASS: persisted dockerhub preference resolved to GHCR');
+NODE
+
+echo 'PASS: dashboard registry controls are absent'
+
 if [[ ${WITH_CONTAINERS} == true ]]; then
+  # docs/site/_data/containers.yml is generated and gitignored, so the required
+  # check's dataless build renders no cards. Keep this positive control with the
+  # data-backed assertions rather than letting it fail on every pull request.
+  postgres_pull_command=$(python3 "${EXTRACTOR}" attribute value --id pull-postgres "${DASHBOARD_PAGE}") \
+    || fail "could not read the value of #pull-postgres in ${DASHBOARD_PAGE}"
+  expected_postgres_pull_command_pattern='^docker pull ghcr\.io/oorabona/postgres:[^[:space:]]+$'
+  [[ ${postgres_pull_command} =~ ${expected_postgres_pull_command_pattern} ]] \
+    || fail "${DASHBOARD_PAGE} #pull-postgres must name ghcr.io/oorabona/postgres with a non-empty tag; found \"${postgres_pull_command}\""
+
   postgres_page="${SITE_DIR}/container/postgres/index.html"
   sslh_page="${SITE_DIR}/container/sslh/index.html"
   [[ -f ${postgres_page} ]] || fail 'container/postgres/index.html must exist with --with-containers'

@@ -145,13 +145,13 @@
     {% endif %}
 
     <!-- Pull command -->
-    {% if include.current_version_confirmed == true and include.ghcr_image and include.dockerhub_image %}
+    {% if include.current_version_confirmed == true and include.ghcr_image %}
     <section>
       <h4>Pull command</h4>
       <div class="pull-section"
            data-ghcr-base="ghcr.io/{{ include.github_username }}/{{ include.name }}"
-           data-dockerhub-base="docker.io/{{ include.dockerhub_username }}/{{ include.name }}"
            data-default-tag="{% if include.versions[0].variants[0] %}{{ include.versions[0].variants[0].tag }}{% elsif include.variants[0] %}{{ include.variants[0].tag }}{% else %}{{ include.current_version }}{% endif %}">
+        <!-- #1566: Restore the Docker Hub base only when the mirror step records per tag whether the image reached Docker Hub. -->
         <div class="pull-input-group">
           <input type="text"
                  class="pull-input"

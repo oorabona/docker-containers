@@ -82,7 +82,7 @@
         <span class="dashboard-hero-accent">built and signed every day.</span>
       </h1>
       <p class="dashboard-hero-subtitle">
-        A curated fleet of Docker container images published to GHCR and Docker Hub, each built with automated upstream version monitoring, signed SBOM attestation via Sigstore, and an advisory Trivy CVE scan. Every detail page surfaces the build commit, manifest digest, and verifiable attestation so operators can audit provenance without leaving the dashboard.
+        A curated fleet of Docker container images published to GHCR, with Docker Hub mirrored on a best-effort basis. Each image is built with automated upstream version monitoring, signed SBOM attestation via Sigstore, and an advisory Trivy CVE scan. Every detail page surfaces the build commit, manifest digest, and verifiable attestation so operators can audit provenance without leaving the dashboard.
       </p>
       <p class="dashboard-hero-cta">
         <a href="{{ '/about/' | relative_url }}" class="dashboard-hero-cta-link">Want to learn more? → About</a>
@@ -91,20 +91,6 @@
 
     <!-- Controls Bar -->
     <div class="controls-bar glass">
-      <div class="controls-group" role="group" aria-labelledby="registry-label">
-        <span class="controls-label" id="registry-label">Registry</span>
-        <div class="registry-toggle" role="radiogroup" aria-label="Select container registry">
-          <button class="registry-btn active" data-registry="ghcr"
-                  role="radio" aria-checked="true" aria-label="GitHub Container Registry">
-            <i class="ti ti-package" aria-hidden="true"></i> GHCR
-          </button>
-          <button class="registry-btn" data-registry="dockerhub"
-                  role="radio" aria-checked="false" aria-label="Docker Hub">
-            <i class="ti ti-brand-docker" aria-hidden="true"></i> Docker Hub
-          </button>
-        </div>
-      </div>
-
       <div class="search-container">
         <i class="ti ti-search search-icon" aria-hidden="true"></i>
         <input type="search" class="search-input" id="search-input"
