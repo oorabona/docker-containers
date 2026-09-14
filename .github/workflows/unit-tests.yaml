@@ -27,10 +27,29 @@ jobs:
       - name: Install html5lib
         timeout-minutes: 5
         run: |
-          python3 -c 'import html5lib; assert html5lib.__version__ == "1.1"' >/dev/null 2>&1 || {
-            python3 -m pip install html5lib==1.1
-          }
-          python3 -c 'import html5lib; assert html5lib.__version__ == "1.1"'
+          set -euo pipefail
+          rendered_html_venv="$RUNNER_TEMP/rendered-html-venv"
+          requirement_file="tests/requirements-rendered-html.txt"
+
+          if ! python3 -m venv "$rendered_html_venv"; then
+            echo "::error::html5lib installation failed: could not create isolated virtual environment at $rendered_html_venv"
+            exit 1
+          fi
+
+          timeout --kill-after=5s 60s "$rendered_html_venv/bin/python" -m pip install \
+            --disable-pip-version-check --retries 2 --timeout 15 --no-deps --only-binary=:all: \
+            --force-reinstall --require-hashes -r "$requirement_file" || status=$?
+          if [[ -n ${status:-} ]]; then
+            if [[ $status -eq 124 || $status -eq 137 ]]; then
+              echo "::error::html5lib installation timed out after 60 seconds while fetching or installing the rendered-HTML requirements from PyPI"
+            else
+              echo "::error::html5lib installation could not fetch or install the rendered-HTML requirements from PyPI (pip exited $status); see pip output above"
+            fi
+            exit "$status"
+          fi
+
+          "$rendered_html_venv/bin/python" -c 'import html5lib; assert html5lib.__version__ == "1.1"'
+          echo "$rendered_html_venv/bin" >> "$GITHUB_PATH"
 
       - name: Exercise rendered HTML skipped-subtree extractor
         run: |
