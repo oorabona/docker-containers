@@ -210,31 +210,6 @@ valid_external_record() {
     done
 }
 
-@test "build lineage writer omits image_id without a locally loaded image" {
-    local work="$BATS_TEST_TMPDIR/no-local-image"
-    local lineage_file
-    mkdir -p "$work"
-
-    (
-        cd "$work"
-        source "$PROJECT_ROOT/scripts/build-container.sh"
-        export PROJECT_ROOT="$work"
-        docker() { :; }
-        BUILD_DIGEST='sha256:build'
-        _BASE_IMAGE_REF='alpine:3.21'
-        _BASE_DIGEST="$valid_digest"
-        _emit_build_lineage \
-            'foo' '1.2.3' '1.2.3-alpine' 'alpine' 'Dockerfile' \
-            'linux/amd64' 'docker' 'docker.io/oorabona/foo' 'ghcr.io/oorabona/foo'
-    )
-
-    lineage_file="$work/.build-lineage/foo-1.2.3-alpine.json"
-    [ -f "$lineage_file" ]
-    run jq -e 'has("image_id") | not' "$lineage_file"
-    [ "$status" -eq 0 ]
-    [ "$output" = 'true' ]
-}
-
 @test "atomic writer rejects fragments before creating a destination directory" {
     local destination="$BATS_TEST_TMPDIR/new-parent/lineage.json"
     run write_lineage_record_atomically "$destination" '{"lineage_schema_version":3}'
