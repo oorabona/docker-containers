@@ -147,16 +147,28 @@ lineage_schema_decision_file() {
 #
 # Older documents may be structurally useful to readers. A v3 writer is
 # stricter: it cannot publish a base-identity fragment without variant and
-# build attribution.
+# build attribution. Build-completion fields are supplied by the writer;
+# publication enrichment may add oci_subject_digest later.
+#
+# An empty flavor means no flavor applies (as emitted for a single-variant
+# container). It is a required string key, not a substitute for a missing value.
+# oci_subject_digest is derived after publication, so it may be absent at build
+# completion. Consumers already treat its absence as not available; when added,
+# it must be a real SHA-256 digest.
 lineage_complete_record_valid() {
     local record="$1"
     lineage_schema_decision "$record" >/dev/null || return 1
     jq -es '
       length == 1 and (.[0] |
       .lineage_schema_version == 3 and
-      ([.container, .version, .tag, .flavor, .dockerfile, .platform, .runtime,
-        .image_id, .build_digest, .oci_subject_digest, .built_at]
+      # Build-completion fields: flavor is required but may be empty.
+      (.flavor | type == "string") and
+      ([.container, .version, .tag, .dockerfile, .platform, .runtime,
+        .image_id, .build_digest, .built_at]
        | all(type == "string" and length > 0)) and
+      # Publication enrichment: optional at write time, validated when present.
+      ((has("oci_subject_digest") | not) or
+       (.oci_subject_digest | type == "string" and test("^sha256:[a-f0-9]{64}\\z"))) and
       (.duration_seconds | type == "number" or type == "null") and
       (.github_actions | type == "boolean") and
       (.images | type == "object") and

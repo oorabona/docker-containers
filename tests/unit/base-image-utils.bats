@@ -14,7 +14,7 @@ valid_external_record() {
         lineage_schema_version: 3, container: "foo", version: "1.2.3",
         tag: "1.2.3-alpine", flavor: "alpine", dockerfile: "Dockerfile",
         platform: "linux/amd64", runtime: "docker", image_id: "sha256:image",
-        build_digest: "sha256:build", oci_subject_digest: "sha256:subject",
+        build_digest: "sha256:build", oci_subject_digest: $digest,
         base_image_ref: "alpine:3.21", base_image_digest: $digest,
         built_at: "2026-09-01T00:00:00Z", duration_seconds: 1,
         github_actions: false,
@@ -131,6 +131,56 @@ valid_external_record() {
     [ "$(jq -r '.class' <<< "$(lineage_schema_decision "$fragment")")" = "External" ]
     run lineage_complete_record_valid "$fragment"
     [ "$status" -ne 0 ]
+}
+
+@test "complete record validation permits an empty flavor but requires its key" {
+    local empty_flavor missing_flavor
+    empty_flavor=$(valid_external_record | jq '.flavor = ""')
+    missing_flavor=$(valid_external_record | jq 'del(.flavor)')
+
+    run lineage_complete_record_valid "$empty_flavor"
+    [ "$status" -eq 0 ]
+
+    run lineage_complete_record_valid "$missing_flavor"
+    [ "$status" -ne 0 ]
+}
+
+@test "complete record validation permits an absent publication subject digest" {
+    local record
+    record=$(valid_external_record | jq 'del(.oci_subject_digest)')
+
+    run lineage_complete_record_valid "$record"
+    [ "$status" -eq 0 ]
+}
+
+@test "complete record validation rejects empty and malformed publication subject digests" {
+    local digest record
+    for digest in \
+        '' \
+        'sha256:zzz' \
+        "${valid_digest#sha256:}" \
+        "${valid_digest}"$'\n'; do
+        record=$(valid_external_record | jq --arg digest "$digest" '.oci_subject_digest = $digest')
+        run lineage_complete_record_valid "$record"
+        [ "$status" -ne 0 ]
+    done
+}
+
+@test "complete record validation accepts a well-formed publication subject digest" {
+    local record
+    record=$(valid_external_record | jq --arg digest "$valid_digest" '.oci_subject_digest = $digest')
+
+    run lineage_complete_record_valid "$record"
+    [ "$status" -eq 0 ]
+}
+
+@test "complete record validation keeps other build-completion fields non-empty" {
+    local field record
+    for field in container build_digest; do
+        record=$(valid_external_record | jq --arg field "$field" '.[$field] = ""')
+        run lineage_complete_record_valid "$record"
+        [ "$status" -ne 0 ]
+    done
 }
 
 @test "atomic writer rejects fragments before creating a destination directory" {
