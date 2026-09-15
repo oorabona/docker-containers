@@ -32,6 +32,9 @@ teardown() {
     unset MULTIPLATFORM_SUPPORTED
     unset BUILD_PLATFORM
     unset GITHUB_ACTIONS
+    unset DOCKER
+    unset LINEAGE_RUNTIME_CALLS
+    unset LINEAGE_DOCKER_CALLS
 }
 
 assert_single_variant_result() {
@@ -44,6 +47,133 @@ assert_single_variant_result() {
     jq -e --arg tag "$expected_tag" --arg status "$expected_status" \
         '. == [{"name":"default","tag":$tag,"flavor":"","status":$status}]' \
         <<< "$result_lines" >/dev/null
+}
+
+setup_lineage_writer() {
+    source_build_script
+    export PROJECT_ROOT="$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR"
+}
+
+stub_lineage_image_lookup() {
+    local mode="$1"
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    export LINEAGE_RUNTIME_CALLS="$TEST_TEMP_DIR/lineage-runtime-calls"
+    export LINEAGE_DOCKER_CALLS="$TEST_TEMP_DIR/docker-calls"
+    : > "$LINEAGE_RUNTIME_CALLS"
+    : > "$LINEAGE_DOCKER_CALLS"
+
+    cat > "$TEST_TEMP_DIR/bin/lineage-runtime" <<EOF
+#!/usr/bin/env bash
+printf '%s %s\\n' "\$(basename "\$0")" "\$*" >> "\$LINEAGE_RUNTIME_CALLS"
+case "$mode" in
+    success)
+        printf '%s\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        ;;
+    failure)
+        exit 17
+        ;;
+    empty)
+        ;;
+    malformed)
+        printf '%s\\n' 'sha256:not-an-image-id'
+        ;;
+esac
+EOF
+    cat > "$TEST_TEMP_DIR/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+printf 'docker %s\n' "$*" >> "$LINEAGE_DOCKER_CALLS"
+printf '%s\n' 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/lineage-runtime" "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export DOCKER="$TEST_TEMP_DIR/bin/lineage-runtime"
+}
+
+emit_test_lineage() {
+    local tag="$1"
+
+    _emit_build_lineage "lineage-container" "1.2.3" "$tag" "" "Dockerfile" \
+        "linux/amd64" "test" "docker.io/example/lineage-container" \
+        "ghcr.io/example/lineage-container"
+}
+
+# =============================================================================
+# _emit_build_lineage image ID observation tests
+# =============================================================================
+
+@test "_emit_build_lineage uses the overridden runtime for its image-id lookup" {
+    stub_lineage_image_lookup success
+    setup_lineage_writer
+
+    run emit_test_lineage "1.2.3"
+
+    [ "$status" -eq 0 ]
+    [ "$(<"$LINEAGE_RUNTIME_CALLS")" = "lineage-runtime images --no-trunc -q docker.io/example/lineage-container:1.2.3" ]
+    [ ! -s "$LINEAGE_DOCKER_CALLS" ]
+}
+
+@test "_emit_build_lineage records a successfully observed local image id from the overridden runtime without a warning" {
+    stub_lineage_image_lookup success
+    setup_lineage_writer
+
+    run emit_test_lineage "1.2.3"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"::warning::"* ]]
+    jq -e '.image_id == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+        "$TEST_TEMP_DIR/.build-lineage/lineage-container-1.2.3.json" >/dev/null
+}
+
+@test "_emit_build_lineage warns and omits image_id when its always-load lookup fails" {
+    stub_lineage_image_lookup failure
+    setup_lineage_writer
+
+    run emit_test_lineage "1.2.3"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::warning::Could not observe image id for container 'lineage-container' tag '1.2.3': lookup failed; omitting image_id from build lineage"* ]]
+    [ "$(printf '%s\\n' "$output" | grep -c '^::warning::')" -eq 1 ]
+    jq -e 'has("image_id") | not' "$TEST_TEMP_DIR/.build-lineage/lineage-container-1.2.3.json" >/dev/null
+}
+
+@test "_emit_build_lineage warns and omits image_id when its always-load lookup returns empty, not push-only" {
+    stub_lineage_image_lookup empty
+    setup_lineage_writer
+
+    run emit_test_lineage "1.2.3"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::warning::Could not observe image id for container 'lineage-container' tag '1.2.3': lookup returned no image id; omitting image_id from build lineage"* ]]
+    [ "$(printf '%s\\n' "$output" | grep -c '^::warning::')" -eq 1 ]
+    jq -e 'has("image_id") | not' "$TEST_TEMP_DIR/.build-lineage/lineage-container-1.2.3.json" >/dev/null
+}
+
+@test "_emit_build_lineage warns and omits a malformed image id" {
+    stub_lineage_image_lookup malformed
+    setup_lineage_writer
+
+    run emit_test_lineage "1.2.3"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::warning::Observed malformed image id 'sha256:not-an-image-id' for container 'lineage-container' tag '1.2.3'; omitting image_id from build lineage"* ]]
+    [ "$(printf '%s\\n' "$output" | grep -c '^::warning::')" -eq 1 ]
+    jq -e 'has("image_id") | not' "$TEST_TEMP_DIR/.build-lineage/lineage-container-1.2.3.json" >/dev/null
+}
+
+@test "_emit_build_lineage escapes a %0A tag so its warning cannot inject a second workflow command" {
+    local tag="release%0A::error::injected"
+
+    stub_lineage_image_lookup failure
+    setup_lineage_writer
+
+    run emit_test_lineage "$tag"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"release%250A::error::injected"* ]]
+    [ "$(printf '%s\\n' "$output" | grep -c '^::warning::')" -eq 1 ]
+    ! printf '%s\\n' "$output" | grep -q '^::error::'
 }
 
 @test "sourcing build-container preserves an enabled errexit" {

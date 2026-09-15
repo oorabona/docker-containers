@@ -7,13 +7,14 @@ setup() {
 }
 
 valid_digest='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+valid_image_id='sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 
 valid_external_record() {
-    jq -cn --arg digest "$valid_digest" '
+    jq -cn --arg digest "$valid_digest" --arg image_id "$valid_image_id" '
       {
         lineage_schema_version: 3, container: "foo", version: "1.2.3",
         tag: "1.2.3-alpine", flavor: "alpine", dockerfile: "Dockerfile",
-        platform: "linux/amd64", runtime: "docker", image_id: "sha256:image",
+        platform: "linux/amd64", runtime: "docker", image_id: $image_id,
         build_digest: "sha256:build", oci_subject_digest: $digest,
         base_image_ref: "alpine:3.21", base_image_digest: $digest,
         built_at: "2026-09-01T00:00:00Z", duration_seconds: 1,
@@ -153,6 +154,32 @@ valid_external_record() {
     [ "$status" -eq 0 ]
 }
 
+@test "complete record validation permits an absent locally loaded image ID" {
+    local record
+    record=$(valid_external_record | jq 'del(.image_id)')
+
+    run lineage_complete_record_valid "$record"
+    [ "$status" -eq 0 ]
+}
+
+@test "complete record validation rejects placeholder and malformed image IDs" {
+    local image_id record
+    for image_id in \
+        'unknown' \
+        '' \
+        "${valid_image_id#sha256:}" \
+        "${valid_image_id}"$'\n'; do
+        record=$(valid_external_record | jq --arg image_id "$image_id" '.image_id = $image_id')
+        run lineage_complete_record_valid "$record"
+        [ "$status" -ne 0 ]
+    done
+}
+
+@test "complete record validation accepts a well-formed image ID" {
+    run lineage_complete_record_valid "$(valid_external_record)"
+    [ "$status" -eq 0 ]
+}
+
 @test "complete record validation rejects empty and malformed publication subject digests" {
     local digest record
     for digest in \
@@ -181,6 +208,31 @@ valid_external_record() {
         run lineage_complete_record_valid "$record"
         [ "$status" -ne 0 ]
     done
+}
+
+@test "build lineage writer omits image_id without a locally loaded image" {
+    local work="$BATS_TEST_TMPDIR/no-local-image"
+    local lineage_file
+    mkdir -p "$work"
+
+    (
+        cd "$work"
+        source "$PROJECT_ROOT/scripts/build-container.sh"
+        export PROJECT_ROOT="$work"
+        docker() { :; }
+        BUILD_DIGEST='sha256:build'
+        _BASE_IMAGE_REF='alpine:3.21'
+        _BASE_DIGEST="$valid_digest"
+        _emit_build_lineage \
+            'foo' '1.2.3' '1.2.3-alpine' 'alpine' 'Dockerfile' \
+            'linux/amd64' 'docker' 'docker.io/oorabona/foo' 'ghcr.io/oorabona/foo'
+    )
+
+    lineage_file="$work/.build-lineage/foo-1.2.3-alpine.json"
+    [ -f "$lineage_file" ]
+    run jq -e 'has("image_id") | not' "$lineage_file"
+    [ "$status" -eq 0 ]
+    [ "$output" = 'true' ]
 }
 
 @test "atomic writer rejects fragments before creating a destination directory" {

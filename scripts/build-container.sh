@@ -322,7 +322,22 @@ _emit_build_lineage() {
     local build_ts
     build_ts=$(date -Iseconds)
     local image_id
-    image_id=$(docker images --no-trunc -q "$dockerhub_image:$tag" 2>/dev/null | head -1 || true)
+
+    # Every caller reaches this writer after a local build or buildx --load, so
+    # an absent image ID is a failed observation, not the legitimate
+    # no-local-image state a push-only writer can record.
+    if ! image_id=$($DOCKER images --no-trunc -q "$dockerhub_image:$tag" 2>/dev/null); then
+        printf '::warning::Could not observe image id for container '\''%s'\'' tag '\''%s'\'': lookup failed; omitting image_id from build lineage\n' \
+            "$(_escape_gha_command "$container")" "$(_escape_gha_command "$tag")" >&2
+        image_id=""
+    elif [[ -z "$image_id" ]]; then
+        printf '::warning::Could not observe image id for container '\''%s'\'' tag '\''%s'\'': lookup returned no image id; omitting image_id from build lineage\n' \
+            "$(_escape_gha_command "$container")" "$(_escape_gha_command "$tag")" >&2
+    elif [[ ! "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+        printf '::warning::Observed malformed image id '\''%s'\'' for container '\''%s'\'' tag '\''%s'\''; omitting image_id from build lineage\n' \
+            "$(_escape_gha_command "$image_id")" "$(_escape_gha_command "$container")" "$(_escape_gha_command "$tag")" >&2
+        image_id=""
+    fi
 
     # Use shared build-args-utils.sh function (already sourced at top)
     local build_args_data
@@ -338,7 +353,7 @@ _emit_build_lineage() {
         --arg     dockerfile       "$dockerfile" \
         --arg     platform         "$platforms" \
         --arg     runtime          "$runtime_info" \
-        --arg     image_id         "${image_id:-unknown}" \
+        --arg     image_id         "$image_id" \
         --arg     build_digest     "${BUILD_DIGEST:-unknown}" \
         --arg     oci_subject_digest "${OCI_SUBJECT_DIGEST:-}" \
         --arg     base_image_ref   "${_BASE_IMAGE_REF:-unknown}" \
@@ -371,7 +386,8 @@ _emit_build_lineage() {
             ghcr:      $ghcr_image
           },
           build_args: $build_args
-        }' > "$lineage_file"
+        }
+        | if $image_id == "" then del(.image_id) else . end' > "$lineage_file"
 
     # Conditionally merge extensions_build_seconds when the caller actually
     # measured it. The field's PRESENCE (not its value) is the signal that
