@@ -391,3 +391,106 @@ EOF
         [[ "$output" != *'post-build push'* ]]
     done
 }
+
+@test "read-only build-container callers never export the registry cache" {
+    local workflow callers_in_workflow job step_index
+    local job_permission_type job_packages workflow_permission_type workflow_packages packages
+    local cache_export cache_tag scope callers=0 failures=0
+    local -a workflows
+
+    shopt -s nullglob
+    workflows=("$PROJECT_ROOT"/.github/workflows/*.yaml "$PROJECT_ROOT"/.github/workflows/*.yml)
+    shopt -u nullglob
+    [ "${#workflows[@]}" -gt 0 ]
+
+    for workflow in "${workflows[@]}"; do
+        run yq -r '
+          .jobs | to_entries[]
+          | .key as $job
+          | .value.steps | to_entries[]?
+          | select(.value.uses == "./.github/actions/build-container")
+          | [$job, .key] | @tsv
+        ' "$workflow"
+        [ "$status" -eq 0 ]
+        callers_in_workflow="$output"
+        [[ -n "$callers_in_workflow" ]] || continue
+
+        while IFS=$'\t' read -r job step_index; do
+            [[ -n "$job" && -n "$step_index" ]] || continue
+            callers=$((callers + 1))
+
+            run env JOB_NAME="$job" yq -r '
+              . as $workflow
+              | .jobs | to_entries[]
+              | select(.key == strenv(JOB_NAME))
+              | .value as $job
+              | [
+                  ($job.permissions | type),
+                  ($job.permissions.packages | tostring),
+                  ($workflow.permissions | type),
+                  ($workflow.permissions.packages | tostring)
+                ] | @tsv
+            ' "$workflow"
+            [ "$status" -eq 0 ]
+            IFS=$'\t' read -r job_permission_type job_packages workflow_permission_type workflow_packages <<< "$output"
+
+            if [ "$job_permission_type" = '!!map' ]; then
+                packages="$job_packages"
+            elif [ "$workflow_permission_type" = '!!map' ]; then
+                packages="$workflow_packages"
+            else
+                packages=unknown
+            fi
+            [ "$packages" = null ] && packages=none
+
+            cache_export=unset
+            cache_tag='!!null'
+            for scope in step job workflow; do
+                case "$scope" in
+                    step)
+                        run env JOB_NAME="$job" STEP_INDEX="$step_index" yq -r '
+                          .jobs | to_entries[]
+                          | select(.key == strenv(JOB_NAME))
+                          | .value.steps[(strenv(STEP_INDEX) | tonumber)].env
+                          | to_entries[]?
+                          | select(.key == "BUILD_CACHE_EXPORT")
+                          | [(.value | tostring), (.value | tag)] | @tsv
+                        ' "$workflow"
+                        ;;
+                    job)
+                        run env JOB_NAME="$job" yq -r '
+                          .jobs | to_entries[]
+                          | select(.key == strenv(JOB_NAME))
+                          | .value.env
+                          | to_entries[]?
+                          | select(.key == "BUILD_CACHE_EXPORT")
+                          | [(.value | tostring), (.value | tag)] | @tsv
+                        ' "$workflow"
+                        ;;
+                    workflow)
+                        run yq -r '
+                          .env
+                          | to_entries[]?
+                          | select(.key == "BUILD_CACHE_EXPORT")
+                          | [(.value | tostring), (.value | tag)] | @tsv
+                        ' "$workflow"
+                        ;;
+                esac
+                [ "$status" -eq 0 ]
+                if [[ -n "$output" ]]; then
+                    IFS=$'\t' read -r cache_export cache_tag <<< "$output"
+                    break
+                fi
+            done
+
+            if [[ "$packages" != write && ( "$cache_export" != false || ( "$cache_tag" != '!!str' && "$cache_tag" != '!!bool' ) ) ]]; then
+                printf '%s %s packages=%s BUILD_CACHE_EXPORT=%s tag=%s\n' \
+                    "$(basename "$workflow")" "$job" "$packages" "$cache_export" "$cache_tag" >&2
+                failures=$((failures + 1))
+            fi
+        done <<< "$callers_in_workflow"
+    done
+
+    [ "$callers" -gt 0 ]
+    [ "$failures" -eq 0 ]
+}
