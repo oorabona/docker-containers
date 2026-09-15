@@ -6,6 +6,16 @@
     var currentSearch = '';
     var currentStatus = 'all';
 
+    // Registry availability is defined by the controls this page rendered.
+    // A stored preference may outlive a removed registry option.
+    function resolveOfferedRegistry(registry) {
+      var registryButtons = document.querySelectorAll('.registry-btn[data-registry]');
+      for (var i = 0; i < registryButtons.length; i++) {
+        if (registryButtons[i].dataset.registry === registry) return registry;
+      }
+      return 'ghcr';
+    }
+
     // Announce status changes to screen readers through the aria-live region
     function announceStatus(message) {
       var liveRegion = document.getElementById('status-live');
@@ -17,6 +27,7 @@
     // Set global registry for all containers
     function setGlobalRegistry(registry, save) {
       if (save === undefined) save = true;
+      registry = resolveOfferedRegistry(registry);
       currentRegistry = registry;
       if (save) {
         localStorage.setItem('preferredRegistry', registry);
@@ -34,11 +45,10 @@
         var pullSection = card.querySelector('.pull-section');
         if (pullSection) {
           var ghcrBase = pullSection.dataset.ghcrBase;
-          var dockerhubBase = pullSection.dataset.dockerhubBase;
           var defaultTag = pullSection.dataset.defaultTag;
           var selectedVariant = card.querySelector('.variant-tag.selected');
           var tag = selectedVariant ? selectedVariant.dataset.tag : defaultTag;
-          var baseUrl = registry === 'ghcr' ? ghcrBase : dockerhubBase;
+          var baseUrl = ghcrBase;
           var imageUrl = baseUrl + ':' + tag;
           var containerName = card.dataset.container;
           var input = document.getElementById('pull-' + containerName);
@@ -49,7 +59,7 @@
       });
 
       if (save) {
-        announceStatus('Registry switched to ' + (registry === 'ghcr' ? 'GitHub Container Registry' : 'Docker Hub'));
+        announceStatus('Registry switched to GitHub Container Registry');
       }
     }
 
@@ -212,8 +222,7 @@
 
       var pullSection = card.querySelector('.pull-section');
       var ghcrBase = pullSection ? pullSection.dataset.ghcrBase : '';
-      var dockerhubBase = pullSection ? pullSection.dataset.dockerhubBase : '';
-      var baseUrl = currentRegistry === 'ghcr' ? ghcrBase : dockerhubBase;
+      var baseUrl = ghcrBase;
       var imageUrl = baseUrl + ':' + tag;
 
       var containerName = card.dataset.container;

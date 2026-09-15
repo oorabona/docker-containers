@@ -138,7 +138,7 @@
     data-flavors="{{ _vab_fla_arr | strip | escape }}"
     data-variants="{{ _vab_variants_json | strip | escape }}"
     data-image-base="ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}"
-    data-image-base-dockerhub="{{ page.dockerhub_username | default: page.github_username | escape }}/{{ page.name | escape }}"
+    {% comment %} #1566: Restore the Docker Hub base only when the mirror step records per tag whether the image reached Docker Hub. {% endcomment %}
     data-registries='{{ _vab_registries | escape }}'
   ></variant-action-bar>
 
