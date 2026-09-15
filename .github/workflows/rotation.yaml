@@ -123,6 +123,13 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y skopeo
 
+      - name: Log in to GitHub Container Registry
+        if: steps.select.outputs.selected == 'true'
+        uses: ./.github/actions/docker-login
+        with:
+          ghcr_username: ${{ github.actor }}
+          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Read pre-test canonical index
         id: baseline
         if: steps.select.outputs.selected == 'true'
