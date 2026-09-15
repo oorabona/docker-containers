@@ -354,6 +354,8 @@ jobs:
       packages: read
     env:
       ROTATION_CANDIDATE_REF: ${{ format('{0}:{1}:{2}=ghcr.io/{3}/ext-{0}-staging@{4}', needs.select.outputs.extension, needs.select.outputs.major, needs.select.outputs.version, github.repository_owner, needs.freeze-digests.outputs.amd64_digest) }}
+      # This job holds packages: read, so it reads the registry cache and never exports it.
+      BUILD_CACHE_EXPORT: 'false'
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -420,6 +422,8 @@ jobs:
       packages: read
     env:
       ROTATION_CANDIDATE_REF: ${{ format('{0}:{1}:{2}=ghcr.io/{3}/ext-{0}-staging@{4}', needs.select.outputs.extension, needs.select.outputs.major, needs.select.outputs.version, github.repository_owner, needs.freeze-digests.outputs.arm64_digest) }}
+      # This job holds packages: read, so it reads the registry cache and never exports it.
+      BUILD_CACHE_EXPORT: 'false'
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -391,3 +391,177 @@ EOF
         [[ "$output" != *'post-build push'* ]]
     done
 }
+
+# Checks declared permissions and static env values only; it does not model fork pull-request token downgrades or values written to $GITHUB_ENV by earlier steps.
+# Exact false is the accepted policy value, although the script also skips export for other non-true strings.
+_uncached_export_violations() {
+    local workflows_dir=$1 workflow callers_in_workflow job step_index
+    local job_has_permissions job_permission_type job_permission_value job_packages
+    local workflow_has_permissions workflow_permission_type workflow_permission_value workflow_packages
+    local permission_type permission_value permission_packages packages
+    local cache_export cache_tag cache_fields scope callers=0
+
+    [ -d "$workflows_dir" ] || return 1
+
+    while IFS= read -r -d '' workflow; do
+        callers_in_workflow=$(yq -r '
+          .jobs | to_entries[]
+          | .key as $job
+          | .value.steps | to_entries[]?
+          | select(.value.uses == "./.github/actions/build-container")
+          | [$job, .key] | @tsv
+        ' "$workflow") || return 1
+        [[ -n "$callers_in_workflow" ]] || continue
+
+        while IFS=$'\t' read -r job step_index; do
+            [[ -n "$job" && -n "$step_index" ]] || continue
+            callers=$((callers + 1))
+
+            cache_fields=$(env JOB_NAME="$job" yq -r '
+              . as $workflow
+              | .jobs | to_entries[]
+              | select(.key == strenv(JOB_NAME))
+              | .value as $job
+              | [
+                  ($job | has("permissions")),
+                  ($job.permissions | type),
+                  (($job.permissions | select(type == "!!str") | tostring) // "null"),
+                  (($job.permissions | select(type == "!!map") | .packages | tostring) // "null"),
+                  ($workflow | has("permissions")),
+                  ($workflow.permissions | type),
+                  (($workflow.permissions | select(type == "!!str") | tostring) // "null"),
+                  (($workflow.permissions | select(type == "!!map") | .packages | tostring) // "null")
+                ] | @tsv
+            ' "$workflow") || return 1
+            IFS=$'\t' read -r job_has_permissions job_permission_type job_permission_value job_packages \
+                workflow_has_permissions workflow_permission_type workflow_permission_value workflow_packages <<< "$cache_fields"
+
+            if [ "$job_has_permissions" = true ]; then
+                permission_type="$job_permission_type"
+                permission_value="$job_permission_value"
+                permission_packages="$job_packages"
+            elif [ "$workflow_has_permissions" = true ]; then
+                permission_type="$workflow_permission_type"
+                permission_value="$workflow_permission_value"
+                permission_packages="$workflow_packages"
+            else
+                permission_type='!!null'
+                permission_value=null
+                permission_packages=null
+            fi
+
+            case "$permission_type:$permission_value" in
+                '!!map:'*) packages="$permission_packages" ;;
+                '!!str:write-all') packages=write ;;
+                '!!str:read-all') packages=read ;;
+                *) packages=unknown ;;
+            esac
+            [ "$packages" = null ] && packages=none
+
+            cache_export=unset
+            cache_tag='!!null'
+            for scope in step job workflow; do
+                case "$scope" in
+                    step)
+                        cache_fields=$(env JOB_NAME="$job" STEP_INDEX="$step_index" yq -r '
+                          .jobs | to_entries[]
+                          | select(.key == strenv(JOB_NAME))
+                          | .value.steps[(strenv(STEP_INDEX) | tonumber)].env
+                          | to_entries[]?
+                          | select(.key == "BUILD_CACHE_EXPORT")
+                          | [(.value | tostring), (.value | tag)] | @tsv
+                        ' "$workflow") || return 1
+                        ;;
+                    job)
+                        cache_fields=$(env JOB_NAME="$job" yq -r '
+                          .jobs | to_entries[]
+                          | select(.key == strenv(JOB_NAME))
+                          | .value.env
+                          | to_entries[]?
+                          | select(.key == "BUILD_CACHE_EXPORT")
+                          | [(.value | tostring), (.value | tag)] | @tsv
+                        ' "$workflow") || return 1
+                        ;;
+                    workflow)
+                        cache_fields=$(yq -r '
+                          .env
+                          | to_entries[]?
+                          | select(.key == "BUILD_CACHE_EXPORT")
+                          | [(.value | tostring), (.value | tag)] | @tsv
+                        ' "$workflow") || return 1
+                        ;;
+                esac
+                if [[ -n "$cache_fields" ]]; then
+                    IFS=$'\t' read -r cache_export cache_tag <<< "$cache_fields"
+                    break
+                fi
+            done
+
+            if [[ "$packages" != write && ( "$cache_export" != false || ( "$cache_tag" != '!!str' && "$cache_tag" != '!!bool' ) ) ]]; then
+                printf '%s %s packages=%s BUILD_CACHE_EXPORT=%s tag=%s\n' \
+                    "$(basename "$workflow")" "$job" "$packages" "$cache_export" "$cache_tag"
+            fi
+        done <<< "$callers_in_workflow"
+    done < <(find "$workflows_dir" -type f \( -name '*.yaml' -o -name '*.yml' \) -print0)
+
+    [ "$callers" -gt 0 ]
+}
+
+@test "read-only build-container callers never export the registry cache" {
+    run _uncached_export_violations "$PROJECT_ROOT/.github/workflows"
+
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "cache-export guard resolves declared permission forms" {
+    local case_spec case_name workflow_permissions job_permissions job_env step_env expected
+    local case_dir workflow
+    local -a cases=(
+        'job-write-all||permissions: write-all|||ok'
+        'workflow-write-all|permissions: write-all||||ok'
+        'job-read-all-overrides-workflow|permissions: {packages: write}|permissions: read-all|||workflow.yaml build packages=read BUILD_CACHE_EXPORT=unset tag=!!null'
+        "job-read-all-false||permissions: read-all|env: {BUILD_CACHE_EXPORT: 'false'}||ok"
+        'job-empty-map||permissions: {}|||workflow.yaml build packages=none BUILD_CACHE_EXPORT=unset tag=!!null'
+        'job-map-without-packages|permissions: {packages: write}|permissions: {contents: read}|||workflow.yaml build packages=none BUILD_CACHE_EXPORT=unset tag=!!null'
+        'job-packages-write||permissions: {packages: write}|||ok'
+        'job-expression||permissions: "${{ inputs.perm }}"|||workflow.yaml build packages=unknown BUILD_CACHE_EXPORT=unset tag=!!null'
+        'neither|||||workflow.yaml build packages=unknown BUILD_CACHE_EXPORT=unset tag=!!null'
+        'job-packages-read-step-false||permissions: {packages: read}||env: {BUILD_CACHE_EXPORT: false}|ok'
+    )
+
+    for case_spec in "${cases[@]}"; do
+        IFS='|' read -r case_name workflow_permissions job_permissions job_env step_env expected <<< "$case_spec"
+        case_dir="$BATS_TEST_TMPDIR/$case_name"
+        mkdir -p "$case_dir"
+        workflow="$case_dir/workflow.yaml"
+        printf '%s\n' \
+            "$workflow_permissions" \
+            'jobs:' \
+            '  build:' \
+            "    $job_permissions" \
+            "    $job_env" \
+            '    steps:' \
+            '      - uses: ./.github/actions/build-container' \
+            "        $step_env" > "$workflow"
+
+        run _uncached_export_violations "$case_dir"
+        [ "$status" -eq 0 ]
+        if [ "$expected" = ok ]; then
+            [ -z "$output" ]
+        else
+            [ "$output" = "$expected" ]
+        fi
+    done
+
+    case_dir="$BATS_TEST_TMPDIR/no-build-container"
+    mkdir -p "$case_dir"
+    printf '%s\n' \
+        'jobs:' \
+        '  lint:' \
+        '    steps:' \
+        '      - run: true' > "$case_dir/workflow.yaml"
+    run _uncached_export_violations "$case_dir"
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+}
