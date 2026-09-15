@@ -164,8 +164,13 @@ lineage_complete_record_valid() {
       # Build-completion fields: flavor is required but may be empty.
       (.flavor | type == "string") and
       ([.container, .version, .tag, .dockerfile, .platform, .runtime,
-        .image_id, .build_digest, .built_at]
+        .build_digest, .built_at]
        | all(type == "string" and length > 0)) and
+      # image_id is read from a locally loaded image, so a build that pushes
+      # without loading has none at build completion. It may be absent then;
+      # when present, it must be a real SHA-256 container image ID.
+      ((has("image_id") | not) or
+       (.image_id | type == "string" and test("^sha256:[a-f0-9]{64}\\z"))) and
       # Publication enrichment: optional at write time, validated when present.
       ((has("oci_subject_digest") | not) or
        (.oci_subject_digest | type == "string" and test("^sha256:[a-f0-9]{64}\\z"))) and
