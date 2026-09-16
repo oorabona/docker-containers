@@ -118,5 +118,37 @@ registry-trust policy separately.
 
 The complete-record validator applies the stricter v3 writer envelope before
 the atomic writer creates a parent directory, and the writer installs the file
-at exactly its requested pathname. Future emitters must adopt those helpers to
-receive that behavior; no production writer does so in this slice.
+at exactly its requested pathname.
+
+The bake path is the first production writer to adopt those helpers, and it
+describes the base the container DECLARES for that cell in its `config.yaml`:
+the flavour's `distros.<flavor>.base_image` when it declares one, otherwise the
+top-level `base_image`, substituted with the arguments the build receives. It
+adds a fifth identity, `not_evaluated`, for a cell whose declaration yields no
+base identity at all, distinct from `no_external_base`, which states that the
+image has no external base.
+
+A declaration is not proof of what a multi-stage build consumed. For `sslh` and
+`terraform` the declared value is the stage a binary is copied from rather than
+the image the container runs on (#1655), so their drift is watched against the
+declared image. No source available today yields the base a multi-stage build
+actually consumed without interpreting its Dockerfile, and an earlier attempt to
+interpret one was abandoned: every correction to that model exposed the next form
+it misread.
+
+An external declaration's index digest is read once per run, before any image is
+built, so the record names the index that reference pointed at when the run was
+planned. A build resolves its own base, so a tag that moves during a run leaves
+the record naming the earlier index; the next scan then reports drift, which
+costs a rebuild rather than hiding one. Pinning the build to the recorded index
+was implemented and withdrawn: it could not hold that promise across the two
+architecture jobs (#1823) or for dependency-closure targets (#1824).
+
+A record exists for exactly the planned cells the build metadata confirms, with
+the digest that metadata reports, and a record the validator refuses fails the
+build instead of being written or skipped.
+
+Because a `not_evaluated` or `unresolved_external_base` record is a true
+statement rather than a failure, the drift scan reports it as `not_evaluable`
+and counts it beside the evaluated records. Only a malformed record or a
+registry lookup that did not conclude fails the scan.
