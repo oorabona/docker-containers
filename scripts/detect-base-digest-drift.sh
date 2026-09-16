@@ -845,18 +845,27 @@ for lineage_file in "${lineage_files[@]}"; do
         _container_variants["$container"]+="${variant_json}"$'\n'
         continue
     fi
-    if [[ "$classification_kind" == "Unresolved" ]]; then
-        base_image_ref=$(jq -r '.base_image_ref // empty' "$lineage_file")
-        recorded_digest=$(jq -r '.base_image_digest // empty' "$lineage_file")
-        safe_ref=$(_sanitize_for_json "$base_image_ref")
-        safe_recorded=$(_sanitize_for_json "$recorded_digest")
+    # A structurally valid marker can honestly say that this build never
+    # observed a base identity. This is a completed scan outcome, distinct
+    # from a corrupt lineage record or an inconclusive registry probe.
+    if [[ "$classification_kind" == "NotEvaluated" ]]; then
         variant_json=$(jq -cn \
             --arg variant_tag "$variant_tag" \
-            --arg base_ref "$safe_ref" \
-            --arg recorded_digest "$safe_recorded" \
-            --arg status "error" \
-            --arg error_reason "unresolved_external_base" \
-            '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status, error_reason: $error_reason}')
+            --arg status "not_evaluable" \
+            --arg reason "not_evaluated" \
+            '{variant_tag: $variant_tag, status: $status, reason: $reason}')
+        _container_variants["$container"]+="${variant_json}"$'\n'
+        continue
+    fi
+    # A declared but unresolved external base is also valid lineage. Its
+    # marker intentionally has no probeable reference or digest, so report it
+    # separately instead of making an error record that fails the whole scan.
+    if [[ "$classification_kind" == "Unresolved" ]]; then
+        variant_json=$(jq -cn \
+            --arg variant_tag "$variant_tag" \
+            --arg status "not_evaluable" \
+            --arg reason "unresolved_external_base" \
+            '{variant_tag: $variant_tag, status: $status, reason: $reason}')
         _container_variants["$container"]+="${variant_json}"$'\n'
         continue
     fi

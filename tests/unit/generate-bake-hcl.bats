@@ -604,6 +604,543 @@ YAML
 # ---------------------------------------------------------------------------
 # --cells mode emits a JSON array (MG8)
 # ---------------------------------------------------------------------------
+_declared_base_identity_fixture() {
+    local fixture_root="$1"
+    mkdir -p "$fixture_root"
+    cp -a "${PROJECT_ROOT}/scripts" "${PROJECT_ROOT}/helpers" "${PROJECT_ROOT}/make" "$fixture_root"
+
+    local container
+    for container in top per none empty unresolved consumer supplier library scratch \
+        default_colon present_colon dash_missing dash_present \
+        empty_default several plain_tagless digest_only; do
+        mkdir -p "$fixture_root/$container"
+        printf '%s\n' 'FROM scratch' > "$fixture_root/$container/Dockerfile"
+        cat > "$fixture_root/$container/variants.yaml" <<'YAML'
+versions:
+  - tag: "1"
+YAML
+    done
+
+    cat > "$fixture_root/top/config.yaml" <<'YAML'
+base_image: registry.example/top:${VERSION}
+YAML
+    cat > "$fixture_root/per/config.yaml" <<'YAML'
+base_image: registry.example/top:1
+build_args:
+  PER_BASE: registry.example/per:2
+distros:
+  linux:
+    base_image: ${PER_BASE:-registry.example/fallback:3}
+YAML
+    sed -i 's/tag: "1"/tag: "1"\n    variants:\n      - name: linux\n        flavor: linux/' "$fixture_root/per/variants.yaml"
+    printf '%s\n' '{}' > "$fixture_root/none/config.yaml"
+    printf '%s\n' 'base_image: ""' > "$fixture_root/empty/config.yaml"
+    cat > "$fixture_root/unresolved/config.yaml" <<'YAML'
+base_image: registry.example/unresolved:${MISSING}
+YAML
+    cat > "$fixture_root/consumer/config.yaml" <<'YAML'
+base_image: ${REMOTE_CR}/supplier:${VERSION}
+YAML
+    cat > "$fixture_root/supplier/config.yaml" <<'YAML'
+base_image: registry.example/supplier:1
+YAML
+    cat > "$fixture_root/library/config.yaml" <<'YAML'
+base_image: ghcr.io/oorabona/library/supplier:1
+YAML
+    cat > "$fixture_root/default_colon/config.yaml" <<'YAML'
+base_image: ${MISSING:-alpine:3.21}
+YAML
+    cat > "$fixture_root/present_colon/config.yaml" <<'YAML'
+base_image: ${PRESENT:-fallback:1}
+build_args:
+  PRESENT: registry.example/present:2
+YAML
+    cat > "$fixture_root/dash_missing/config.yaml" <<'YAML'
+base_image: ${MISSING-busybox:1.36}
+YAML
+    cat > "$fixture_root/dash_present/config.yaml" <<'YAML'
+base_image: ${PRESENT-fallback:1}
+build_args:
+  PRESENT: registry.example/dash-present:2
+YAML
+    cat > "$fixture_root/empty_default/config.yaml" <<'YAML'
+base_image: ${EMPTY:-}
+YAML
+    cat > "$fixture_root/several/config.yaml" <<'YAML'
+base_image: registry.example/${ONE:-one}:${TWO-two}
+build_args:
+  ONE: actual
+YAML
+    cat > "$fixture_root/plain_tagless/config.yaml" <<'YAML'
+base_image: ${PLAIN}
+build_args:
+  PLAIN: alpine
+YAML
+    printf '%s\n' 'base_image: alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+        > "$fixture_root/digest_only/config.yaml"
+    printf '%s\n' 'base_image: scratch' > "$fixture_root/scratch/config.yaml"
+}
+
+_fixture_cells() {
+    local fixture_root="$1"
+    run env GITHUB_REPOSITORY_OWNER=oorabona \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='top per consumer supplier library scratch default_colon present_colon dash_missing dash_present several plain_tagless' \
+        bash "$fixture_root/scripts/generate-bake-hcl.sh" --cells \
+        top per consumer supplier library scratch default_colon present_colon dash_missing dash_present several plain_tagless
+}
+
+@test "--cells top-level declared base becomes substituted external identity" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    _fixture_cells "$fixture_root"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[] | select(.container == "top") | .base_identity.kind' <<< "$output")" = "external" ]
+    [ "$(jq -r '.[] | select(.container == "top") | .base_identity.ref' <<< "$output")" = "registry.example/top:1" ]
+}
+
+@test "--cells per-distro declared base wins over top-level base" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    _fixture_cells "$fixture_root"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[] | select(.container == "per") | .base_identity.ref' <<< "$output")" = "registry.example/per:2" ]
+}
+
+@test "--cells refuses a missing declared base with onboarding guidance" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    run env GITHUB_REPOSITORY_OWNER=oorabona \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='none' \
+        bash "$fixture_root/scripts/generate-bake-hcl.sh" --cells none
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'bake cell none (flavor default) has no declared base'* ]]
+    [[ "$output" == *'declare base_image (or distros.<flavor>.base_image) or scratch'* ]]
+}
+
+@test "--cells refuses an empty declared base" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    run env GITHUB_REPOSITORY_OWNER=oorabona \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='empty' \
+        bash "$fixture_root/scripts/generate-bake-hcl.sh" --cells empty
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'bake cell empty (flavor default) has no declared base'* ]]
+}
+
+@test "--cells refuses an unresolved declared base" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    run env GITHUB_REPOSITORY_OWNER=oorabona \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='unresolved' \
+        bash "$fixture_root/scripts/generate-bake-hcl.sh" --cells unresolved
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'bake cell unresolved (flavor default) has an unresolved declared base'* ]]
+}
+
+@test "--cells substitutes declared default expressions from args or their defaults" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    _fixture_cells "$fixture_root"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[] | select(.container == "default_colon") | .base_identity.ref' <<< "$output")" = "alpine:3.21" ]
+    [ "$(jq -r '.[] | select(.container == "present_colon") | .base_identity.ref' <<< "$output")" = "registry.example/present:2" ]
+    [ "$(jq -r '.[] | select(.container == "dash_missing") | .base_identity.ref' <<< "$output")" = "busybox:1.36" ]
+    [ "$(jq -r '.[] | select(.container == "dash_present") | .base_identity.ref' <<< "$output")" = "registry.example/dash-present:2" ]
+    [ "$(jq -r '.[] | select(.container == "several") | .base_identity.ref' <<< "$output")" = "registry.example/actual:two" ]
+    [ "$(jq -r '.[] | select(.container == "plain_tagless") | .base_identity.kind' <<< "$output")" = "external" ]
+    [ "$(jq -r '.[] | select(.container == "plain_tagless") | .base_identity.ref' <<< "$output")" = 'alpine:latest' ]
+}
+
+@test "declared-base substitution distinguishes unset from empty defaults" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/empty-declared-base"
+    mkdir -p "$fixture_root/app"
+    printf '%s\n' 'base_image: ${EMPTY:-alpine:3.21}' > "$fixture_root/app/config.yaml"
+
+    run bash -c '
+        source "$1/scripts/generate-bake-hcl.sh"
+        PROJECT_ROOT="$2"
+        _depgraph_valid_containers() { printf ""; }
+        _depgraph_is_internal_ref() { return 0; }
+        _declared_base_identity app "" "{\"EMPTY\":\"\"}"
+    ' _ "$PROJECT_ROOT" "$fixture_root"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.ref' <<< "$output")" = 'alpine:3.21' ]
+
+    printf '%s\n' 'base_image: ${EMPTY-alpine:3.21}' > "$fixture_root/app/config.yaml"
+    run bash -c '
+        source "$1/scripts/generate-bake-hcl.sh"
+        PROJECT_ROOT="$2"
+        _depgraph_valid_containers() { printf ""; }
+        _depgraph_is_internal_ref() { return 0; }
+        _declared_base_identity app "" "{\"EMPTY\":\"\"}"
+    ' _ "$PROJECT_ROOT" "$fixture_root"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.kind' <<< "$output")" = unresolved ]
+}
+
+@test "--cells maps scratch to no_external_base" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    _fixture_cells "$fixture_root"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[] | select(.container == "scratch") | .base_identity.kind' <<< "$output")" = "no_external_base" ]
+}
+
+@test "--cells rejects a digest-only external declaration at plan time" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    run env GITHUB_REPOSITORY_OWNER=oorabona \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='digest_only' \
+        bash "$fixture_root/scripts/generate-bake-hcl.sh" --cells digest_only
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'bake cell digest_only (flavor default) declares unsupported external base reference'* ]]
+    [[ "$output" == *'digest-only is not'* ]]
+}
+
+@test "--cells classifies sibling targets but not library namespace lookalikes" {
+    local fixture_root supplier
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    _fixture_cells "$fixture_root"
+    [ "$status" -eq 0 ]
+    supplier=$(jq -c '.[] | select(.container == "consumer") | .base_identity.supplier' <<< "$output")
+    [ "$(jq -r '.[] | select(.container == "consumer") | .base_identity.kind' <<< "$output")" = "sibling_target" ]
+    [ "$supplier" = '{"container":"supplier","version":"1","flavor":"","textual_ref":"ghcr.io/oorabona/supplier:1","bake_target_id":"supplier_1"}' ]
+    [ "$(jq -r '.[] | select(.container == "library") | .base_identity.kind' <<< "$output")" = "external" ]
+}
+
+@test "--cells fails when declared-base owner resolution fails" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    run bash -c 'cd "$1" && env -u GITHUB_REPOSITORY_OWNER \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="top per none unresolved consumer supplier library" \
+        bash "$1/scripts/generate-bake-hcl.sh" --cells top' _ "$fixture_root"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::could not resolve project owner while classifying declared base reference registry.example/top:1 for top"* ]]
+}
+
+@test "--cells fleet identities are constructor-valid with writer platform enrichment" {
+    local cells descriptor checked
+    source "${PROJECT_ROOT}/helpers/base-image-utils.sh"
+    run --separate-stderr env REMOTE_CR=ghcr.io/oorabona GITHUB_REPOSITORY_OWNER=oorabona \
+        bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells \
+        github-runner web-shell wordpress debian vector jekyll ansible sslh \
+        openvpn php openresty terraform postgres tor
+    [ "$status" -eq 0 ]
+    cells="$output"
+    [ "$(jq 'length' <<< "$cells")" -eq 24 ]
+
+    descriptor=$(jq -cn \
+        --arg digest 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+        '{digest:$digest,mediaType:"application/vnd.oci.image.index.v1+json"}')
+    checked=$(while IFS= read -r identity; do
+        case "$(jq -r '.kind' <<< "$identity")" in
+            external)
+                lineage_base_fields_from_external_identity_with_index_descriptor \
+                    "$identity" "$descriptor" >/dev/null
+                ;;
+            sibling_target)
+                identity=$(jq '.supplier.platform = "linux/amd64"' <<< "$identity")
+                lineage_base_fields_from_marker_identity "$identity" >/dev/null
+                ;;
+            *)
+                lineage_base_fields_from_marker_identity "$identity" >/dev/null
+                ;;
+        esac || exit 1
+        printf '.'
+    done < <(jq -c '.[].base_identity' <<< "$cells"))
+    [ "${#checked}" -eq 24 ]
+}
+
+# Resolve the FROM references BuildKit receives for one generated bake target.
+# Only stages reachable from the selected target are returned: a multi-stage
+# source can contain unrelated stages, and COPY --from can make an earlier
+# stage reachable without making it the selected target itself.
+_bake_target_reachable_froms() {
+    local bake_document=$1 target_id=$2 target content dockerfile context args
+    # Reuse the production substitution contract for BuildKit arguments.
+    source "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh"
+    target=$(jq -ce --arg target_id "$target_id" '.target[$target_id]' "$bake_document") || return 1
+    content=$(jq -er '."dockerfile-inline" // empty' <<< "$target")
+    if [[ -z "$content" ]]; then
+        dockerfile=$(jq -er '.dockerfile // "Dockerfile"' <<< "$target") || return 1
+        context=$(jq -er '.context | strings | select(length > 0)' <<< "$target") || return 1
+        content=$(<"$PROJECT_ROOT/$context/$dockerfile") || return 1
+    fi
+    # HCL escapes literal Docker $ as $$; Docker receives the original text.
+    content=${content//\$\$/\$}
+    args=$(jq -ce '.args // {}' <<< "$target") || return 1
+
+    # Dockerfile ARG defaults before the first FROM are global. Target args
+    # supplied by bake take precedence, including intentionally empty values.
+    local line arg_name arg_default
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*FROM[[:space:]] ]] && break
+        [[ "$line" =~ ^[[:space:]]*ARG[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)(=(.*))?[[:space:]]*$ ]] || continue
+        arg_name="${BASH_REMATCH[1]}"
+        arg_default="${BASH_REMATCH[3]:-}"
+        arg_default="${arg_default%\"}"
+        arg_default="${arg_default#\"}"
+        args=$(jq -c --arg name "$arg_name" --arg value "$arg_default" \
+            'if has($name) then . else . + {($name):$value} end' <<< "$args") || return 1
+    done <<< "$content"
+
+    local -a stage_names=() stage_froms=() stage_deps=()
+    local stage=-1 from rest ref resolved_ref alias dep selected substitution_pass
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*FROM[[:space:]]+(.+)$ ]]; then
+            rest="${BASH_REMATCH[1]}"
+            rest="${rest%%[[:space:]]#*}"
+            while [[ "$rest" == --* ]]; do rest="${rest#* }"; done
+            ref="${rest%%[[:space:]]*}"
+            # A default word can contain another expansion. Iterate the
+            # production single-pass resolver until Docker's nested expansion
+            # is concrete, bounded so an unresolved self-reference cannot loop.
+            for (( substitution_pass=0; substitution_pass<8; substitution_pass++ )); do
+                resolved_ref=$(_substitute_declared_base_ref "$ref" "$args") || return 1
+                [[ "$resolved_ref" == "$ref" ]] && break
+                ref="$resolved_ref"
+            done
+            alias=""
+            if [[ "$rest" =~ [[:space:]][Aa][Ss][[:space:]]+([A-Za-z0-9_.-]+)[[:space:]]*$ ]]; then
+                alias="${BASH_REMATCH[1]}"
+            fi
+            ((stage++))
+            stage_names[$stage]="${alias:-$stage}"
+            stage_froms[$stage]="$ref"
+            stage_deps[$stage]=""
+        elif (( stage >= 0 )) && [[ "$line" =~ ^[[:space:]]*(COPY|ADD)[[:space:]].*--from=([^[:space:]]+) ]]; then
+            dep="${BASH_REMATCH[2]}"
+            stage_deps[$stage]+=" ${dep#\"}"
+            stage_deps[$stage]="${stage_deps[$stage]%\"}"
+        fi
+    done <<< "$content"
+    (( stage >= 0 )) || return 1
+
+    selected=$(jq -r '.target // empty' <<< "$target")
+    if [[ -z "$selected" ]]; then
+        selected="${stage_names[$stage]}"
+    fi
+    local -A stage_index=() visited=() emitted=()
+    local i
+    for i in "${!stage_names[@]}"; do stage_index["${stage_names[$i]}"]=$i; done
+    _visit_bake_stage() {
+        local stage_name=$1 stage_i source dependency
+        stage_i="${stage_index[$stage_name]:-}"
+        [[ -n "$stage_i" && -z "${visited[$stage_i]:-}" ]] || return 0
+        visited[$stage_i]=1
+        source="${stage_froms[$stage_i]}"
+        if [[ -n "${stage_index[$source]:-}" ]]; then
+            _visit_bake_stage "$source"
+        elif [[ -n "$source" && -z "${emitted[$source]:-}" ]]; then
+            emitted[$source]=1
+            printf '%s\n' "$source"
+        fi
+        for dependency in ${stage_deps[$stage_i]}; do
+            [[ -n "${stage_index[$dependency]:-}" ]] && _visit_bake_stage "$dependency"
+        done
+    }
+    _visit_bake_stage "$selected"
+}
+
+@test "--cells fleet base identities are reachable resolved bake FROM references" {
+    local cells bake cell target_id identity kind ref supplier froms contexts
+    run --separate-stderr env REMOTE_CR=ghcr.io/oorabona GITHUB_REPOSITORY_OWNER=oorabona \
+        bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells \
+        github-runner web-shell wordpress debian vector jekyll ansible sslh \
+        openvpn php openresty terraform postgres tor
+    [ "$status" -eq 0 ]
+    cells="$output"
+    [ "$(jq 'length' <<< "$cells")" -eq 24 ]
+    [ "$(jq '[.[] | select(.base_identity.kind == "unresolved")] | length' <<< "$cells")" -eq 0 ]
+
+    bake="$TEST_TEMP_DIR/fleet-bake.json"
+    run --separate-stderr env REMOTE_CR=ghcr.io/oorabona GITHUB_REPOSITORY_OWNER=oorabona \
+        bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" \
+        github-runner web-shell wordpress debian vector jekyll ansible sslh \
+        openvpn php openresty terraform postgres tor
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" > "$bake"
+
+    while IFS= read -r cell; do
+        target_id=$(jq -er '.target_id' <<< "$cell") || false
+        identity=$(jq -ce '.base_identity' <<< "$cell") || false
+        kind=$(jq -r '.kind' <<< "$identity") || false
+        froms=$(_bake_target_reachable_froms "$bake" "$target_id") || false
+        contexts=$(jq -ce --arg target_id "$target_id" '.target[$target_id].contexts // {}' "$bake") || false
+        case "$kind" in
+            external)
+                ref=$(jq -er '.ref' <<< "$identity") || false
+                if ! grep -qxF -- "$ref" <<< "$froms"; then
+                    printf 'target %s external identity %s is absent from reachable FROMs:\n%s\n' \
+                        "$target_id" "$ref" "$froms" >&2
+                    false
+                fi
+                ! jq -e --arg ref "$ref" 'has($ref)' <<< "$contexts" >/dev/null
+                ;;
+            sibling_target)
+                supplier=$(jq -ce '.supplier' <<< "$identity") || false
+                ref=$(jq -er '.textual_ref' <<< "$supplier") || false
+                if ! grep -qxF -- "$ref" <<< "$froms"; then
+                    printf 'target %s sibling identity %s is absent from reachable FROMs:\n%s\n' \
+                        "$target_id" "$ref" "$froms" >&2
+                    false
+                fi
+                [ "$(jq -r --arg ref "$ref" '.[$ref] // empty' <<< "$contexts")" = "target:$(jq -r '.bake_target_id' <<< "$supplier")" ]
+                ;;
+            no_external_base)
+                ;;
+            *)
+                printf 'target %s has unsupported base identity kind %s\n' "$target_id" "$kind" >&2
+                false
+                ;;
+        esac
+    done < <(jq -c '.[]' <<< "$cells")
+}
+
+_make_bake_document_digest_fixture() {
+    local fixture_root="$1"
+    mkdir -p "$fixture_root"
+    cp -a "${PROJECT_ROOT}/scripts" "${PROJECT_ROOT}/helpers" "$fixture_root"
+
+    cat > "$fixture_root/make" <<'MAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+    list) printf '%s\n' plain flavored supplier consumer template retained ;;
+    *) printf 'unsupported fixture make command: %s\n' "${1:-}" >&2; exit 2 ;;
+esac
+MAKE
+    chmod +x "$fixture_root/make"
+
+    local container
+    for container in plain flavored supplier consumer template retained; do
+        mkdir -p "$fixture_root/$container"
+    done
+
+    cat > "$fixture_root/plain/variants.yaml" <<'YAML'
+versions:
+  - tag: "1"
+YAML
+    cat > "$fixture_root/plain/config.yaml" <<'YAML'
+base_image: "alpine:3.20"
+YAML
+    printf '%s\n' 'FROM alpine:3.20' > "$fixture_root/plain/Dockerfile"
+
+    cat > "$fixture_root/flavored/variants.yaml" <<'YAML'
+versions:
+  - tag: "1"
+    variants:
+      - name: blue
+        suffix: "-blue"
+        flavor: blue
+        default: true
+YAML
+    cat > "$fixture_root/flavored/config.yaml" <<'YAML'
+distros:
+  blue:
+    base_image: "busybox:1.36"
+YAML
+    printf '%s\n' 'FROM busybox:1.36' > "$fixture_root/flavored/Dockerfile.blue"
+
+    cat > "$fixture_root/supplier/variants.yaml" <<'YAML'
+versions:
+  - tag: "1"
+YAML
+    cat > "$fixture_root/supplier/config.yaml" <<'YAML'
+base_image: "alpine:3.20"
+YAML
+    printf '%s\n' 'FROM alpine:3.20' > "$fixture_root/supplier/Dockerfile"
+
+    cat > "$fixture_root/consumer/variants.yaml" <<'YAML'
+versions:
+  - tag: "1"
+YAML
+    cat > "$fixture_root/consumer/config.yaml" <<'YAML'
+base_image: "${REMOTE_CR}/supplier:${VERSION}"
+YAML
+    cat > "$fixture_root/consumer/Dockerfile" <<'DOCKERFILE'
+ARG REMOTE_CR
+ARG VERSION
+FROM ${REMOTE_CR}/supplier:${VERSION}
+DOCKERFILE
+
+    cat > "$fixture_root/template/variants.yaml" <<'YAML'
+versions:
+  - tag: "1"
+YAML
+    cat > "$fixture_root/template/config.yaml" <<'YAML'
+base_image: "alpine:3.20"
+YAML
+    printf '%s\n' '@@BASE_IMAGE@@' > "$fixture_root/template/Dockerfile"
+    cat > "$fixture_root/template/generate-dockerfile.sh" <<'GENERATOR'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' 'FROM alpine:3.20'
+GENERATOR
+    chmod +x "$fixture_root/template/generate-dockerfile.sh"
+
+    cat > "$fixture_root/retained/variants.yaml" <<'YAML'
+build:
+  version_retention: 2
+versions:
+  - tag: "2"
+  - tag: "1"
+YAML
+    cat > "$fixture_root/retained/config.yaml" <<'YAML'
+base_image: "busybox:1.36"
+YAML
+    printf '%s\n' 'FROM busybox:1.36' > "$fixture_root/retained/Dockerfile"
+}
+
+@test "generated purpose-built bake fixture matches its pinned digest" {
+    local fixture_root bake expected_digest observed_digest byte_length
+    fixture_root="${TEST_TEMP_DIR}/bake-document-digest-fixture"
+    _make_bake_document_digest_fixture "$fixture_root"
+    bake="${TEST_TEMP_DIR}/bake-document.json"
+
+    run env REMOTE_CR=registry.example/fleet GITHUB_REPOSITORY_OWNER=fixture-owner \
+        BAKE_CACHE_EXPORT=false \
+        bash "$fixture_root/scripts/generate-bake-hcl.sh" --all-retained \
+        plain flavored consumer template retained
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" > "$bake"
+
+    # Locks the generated bake document for the purpose-built fixture above.
+    # Inputs pinned here are REMOTE_CR, GITHUB_REPOSITORY_OWNER, BAKE_CACHE_EXPORT,
+    # fixture metadata and generator code. To re-pin an intended change, regenerate,
+    # read the observed digest below, and replace this constant in the same commit.
+    expected_digest='8604714f47ffdda4807c4a3d91e1dbedb6eda07398009cf746ef65edeb034a19'
+    observed_digest=$(sha256sum "$bake" | awk '{print $1}')
+    byte_length=$(wc -c < "$bake")
+    if [[ "$observed_digest" != "$expected_digest" ]]; then
+        printf 'generated fixture bake digest mismatch: expected=%s observed=%s bytes=%s\n' \
+            "$expected_digest" "$observed_digest" "$byte_length" >&2
+        false
+    fi
+}
+
 @test "--cells mode emits a JSON array" {
     _run_generator --cells debian
     [ "$status" -eq 0 ]
@@ -613,19 +1150,21 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# --cells objects have the 5 required fields (MG8)
+# --cells objects retain their existing fields and carry lineage planning data.
 # ---------------------------------------------------------------------------
-@test "--cells objects have container/tag/flavor/is_default/intermediate_ref" {
+@test "--cells objects have container/tag/flavor/is_default/intermediate_ref and lineage planning fields" {
     _run_generator --cells debian
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq 'length')" -gt 0 ]
 
-    # Every element must have all 5 fields
+    # Every element must have all existing and lineage planning fields.
     local missing
     missing=$(echo "$output" | jq '[
         .[] | select(
             (has("container") and has("tag") and has("flavor")
-             and has("is_default") and has("intermediate_ref")) | not
+             and has("is_default") and has("intermediate_ref")
+             and (.version | type == "string") and (.dockerfile | type == "string")
+             and (.build_args | type == "object") and (.base_identity | type == "object")) | not
         )
     ] | length')
     [ "$missing" -eq 0 ]

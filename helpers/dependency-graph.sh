@@ -11,8 +11,8 @@
 # External upstream refs (library/*, hashicorp/*, mcr.microsoft.com/*) are
 # NOT project-internal deps — they're external base images outside this repo.
 #
-# Sources: lineage files in .build-lineage/<container>-*.json; falls back to
-# parsing config.yaml build_args values if no lineage exists for a container.
+# Sources: lineage files in .build-lineage/<container>-*.json and declared
+# reference-bearing fields in config.yaml.  The two sources are always unioned.
 #
 # Public API:
 #   _depgraph_get_deps <container>             — direct deps (space-sep)
@@ -207,7 +207,7 @@ _depgraph_is_internal_ref() {
 #
 # Outputs space-separated direct project-internal dependencies.
 # Reads all non-sidecar lineage files for the container.
-# Falls back to config.yaml build_args when no lineage files exist.
+# Always unions declared config.yaml references with lineage-derived suppliers.
 # ---------------------------------------------------------------------------
 _depgraph_get_deps() {
     local container="$1"
@@ -302,37 +302,85 @@ _depgraph_get_deps() {
         fi
     fi
 
-    local found_any=false
-    local _saw_nonauthoritative=false
     for lineage_file in "${lineage_files[@]}"; do
         [[ -f "$lineage_file" ]] || continue
         local basename_file
         basename_file="$(basename "$lineage_file")"
-        # Skip sidecar files BEFORE marking found_any; a container with only sidecars
-        # must fall through to the config.yaml fallback path.
+        # Sidecars are not lineage records and never contribute dependencies.
         if is_lineage_sidecar "$basename_file"; then continue; fi
+
+        # A restored CI cache can contain one partial lineage artifact.  Warn and
+        # ignore that entry so declared config references still plan dependencies;
+        # unlike an unresolvable owner, corrupt cached input is not a reason to
+        # fail the entire graph closed.
+        local lineage_record _record_rc=0
+        lineage_record=$(jq -ce 'if type == "object" then . else error("not object") end' "$lineage_file") || _record_rc=$?
+        if [[ $_record_rc -ne 0 ]]; then
+            printf '::warning::_depgraph_get_deps: ignoring corrupt lineage %s\n' \
+                "$(_escape_gha_command "$basename_file")" >&2
+            continue
+        fi
+
+        # v3 sibling records are authoritative only for the container they
+        # name, and only for a current concrete cell.  Legacy records predate
+        # the tag field, so retain their established tolerance below.
+        local _record_container _record_tag _is_v3_sibling
+        _record_container=$(jq -r '.container // empty' <<< "$lineage_record")
+        _record_tag=$(jq -r '.tag // empty' <<< "$lineage_record")
+        _is_v3_sibling=$(jq -r '.lineage_schema_version == 3 and .base_image_kind == "sibling_target"' \
+            <<< "$lineage_record")
+        if [[ "$_is_v3_sibling" == "true" ]]; then
+            if [[ "$_record_container" != "$container" ]]; then
+                printf '::warning::_depgraph_get_deps: skipping sibling lineage %s (container %s does not match %s)\n' \
+                    "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$_record_container")" "$(_escape_gha_command "$container")" >&2
+                continue
+            fi
+            if [[ -z "$_record_tag" ]]; then
+                printf '::warning::_depgraph_get_deps: skipping sibling lineage %s (missing tag)\n' \
+                    "$(_escape_gha_command "$basename_file")" >&2
+                continue
+            fi
+        fi
 
         # Active-tag filter: skip lineage files whose tag is not in the active
         # build matrix (stale files from retired variants).  The only bypass is
         # __TEST_NO_FILTER__ (test mode); in production _active_tags_for_filter
         # is always non-empty here (fail-closed above guarantees it).
         if [[ "$_active_tags_for_filter" != "__TEST_NO_FILTER__" && -n "$_active_tags_for_filter" ]]; then
-            local _file_tag
-            _file_tag=$(jq -r '.tag // empty' "$lineage_file" 2>/dev/null || true)
-            if [[ -n "$_file_tag" ]] && ! grep -qxF -- "$_file_tag" <<<"$_active_tags_for_filter"; then
+            if [[ -n "$_record_tag" ]] && ! grep -qxF -- "$_record_tag" <<<"$_active_tags_for_filter"; then
                 printf '::notice::_depgraph_get_deps: skipping stale lineage %s (tag %s not in active matrix)\n' \
-                    "$(_escape_gha_command "$(basename "$lineage_file")")" "$(_escape_gha_command "$_file_tag")" >&2
+                    "$(_escape_gha_command "$(basename "$lineage_file")")" "$(_escape_gha_command "$_record_tag")" >&2
                 continue
             fi
         fi
 
-        local base_ref
-        base_ref=$(jq -r '.base_image_ref // empty' "$lineage_file" 2>/dev/null || true)
+        # v3 sibling targets have no base_image_ref: their internal supplier is
+        # named structurally in base_image_sibling.  Do not trust that object on
+        # another record kind or a different schema version.
+        local sibling_parent
+        sibling_parent=$(jq -er '
+            if .lineage_schema_version == 3 and
+               .base_image_kind == "sibling_target" and
+               (.base_image_sibling | type == "object") and
+               ([.base_image_sibling.container, .base_image_sibling.version,
+                 .base_image_sibling.platform, .base_image_sibling.textual_ref,
+                 .base_image_sibling.bake_target_id] | all(type == "string" and length > 0)) and
+               (.base_image_sibling.flavor | type == "string")
+            then .base_image_sibling.container
+            else empty
+            end
+        ' <<< "$lineage_record" 2>/dev/null) || sibling_parent=""
+        if [[ -n "$sibling_parent" && " $valid_containers " == *" $sibling_parent "* && "$sibling_parent" != "$container" ]]; then
+            if [[ " $deps " != *" $sibling_parent "* ]]; then
+                deps="$deps $sibling_parent"
+            fi
+        fi
 
-        # A lineage entry is authoritative (may suppress config.yaml fallback) only
-        # when its base_image_ref is present AND fully resolved.  An empty ref, or
-        # one carrying an unresolved ${...} placeholder (other than the trusted
-        # ${REMOTE_CR}/ prefix), is non-informative and must not set found_any.
+        local base_ref
+        base_ref=$(jq -r '.base_image_ref // empty' <<< "$lineage_record")
+
+        # An empty ref, or one carrying an unresolved ${...} placeholder (other
+        # than the trusted ${REMOTE_CR}/ prefix), has no classifiable ref.
         # SC2016 disabled: single-quote assignments store literal ${ strings intentionally
         # shellcheck disable=SC2016
         local _dollar_brace='${'
@@ -341,16 +389,8 @@ _depgraph_get_deps() {
         if [[ -z "$base_ref" ]] || \
            { [[ "$base_ref" == *"${_dollar_brace}"* ]] && \
              [[ "$base_ref" != "${_remote_cr_prefix}"* ]]; }; then
-            # Non-authoritative placeholder — lineage is INCOMPLETE for this container.
-            # Record that we saw a non-authoritative entry so the config.yaml fallback
-            # fires as a union even if another variant produced an authoritative entry
-            # (conservative: may over-include a dep, never under-include).
-            _saw_nonauthoritative=true
             continue
         fi
-
-        # Mark that at least one authoritative lineage entry exists
-        found_any=true
 
         local parent _iref_rc
         parent=$(_depgraph_is_internal_ref "$base_ref" "$valid_containers")
@@ -368,44 +408,56 @@ _depgraph_get_deps() {
         fi
     done
 
-    # Fallback: parse config.yaml build_args AND base_image if no lineage exists OR
-    # if any active lineage entry was a non-authoritative placeholder.
-    #
-    # The non-authoritative case: in a mixed active-variant set, one variant may have
-    # a fully resolved external ref (setting found_any=true) while a different variant
-    # carries a placeholder for an INTERNAL parent (e.g. ghcr.io/<owner>/debian:${TAG}).
-    # Because found_any is true, the old guard "[[ found_any == false ]]" skipped
-    # config.yaml — dropping the internal dep and misclassifying the consumer as a leaf.
-    # Fix: union config.yaml whenever _saw_nonauthoritative=true, regardless of found_any.
-    # The dedup loop below ensures no dep appears twice.
-    #
-    # Both fields can carry internal refs:
-    #   build_args: key-value pairs injected into docker build --build-arg
-    #   base_image: direct base image for Dockerfile FROM (e.g. wordpress, web-shell, github-runner)
-    # The same four-prefix recognition applies to both fields.
-    if [[ "$found_any" == "false" || "$_saw_nonauthoritative" == "true" ]]; then
-        local config_file="${PROJECT_ROOT}/${container}/config.yaml"
-        if [[ -f "$config_file" ]]; then
-            # Extract all string values from build_args AND base_image that look like internal refs
-            local build_args_refs
-            build_args_refs=$(grep -oE '(ghcr\.io/[^/]+/[^:/ ]+|hub\.docker\.io/[^/]+/[^:/ ]+|docker\.io/[^/]+/[^:/ ]+|\$\{REMOTE_CR\}/[^:/ ]+)' \
-                "$config_file" 2>/dev/null || true)
-            while IFS= read -r ref; do
-                [[ -n "$ref" ]] || continue
-                local parent _iref_rc
-                parent=$(_depgraph_is_internal_ref "$ref" "$valid_containers")
-                _iref_rc=$?
-                if [[ $_iref_rc -eq 2 ]]; then
-                    printf '::error::Owner resolution failed; cannot classify '"'"'%s'"'"' — aborting dep scan\n' "$(_escape_gha_command "$ref")" >&2
-                    return 2
-                fi
-                [[ -n "$parent" ]] || continue
-                [[ "$parent" == "$container" ]] && continue
-                if [[ " $deps " != *" $parent "* ]]; then
-                    deps="$deps $parent"
-                fi
-            done <<< "$build_args_refs"
+    # Always union config.yaml's reference-bearing fields: .base_image,
+    # .build_args.* and .distros.*.base_image.  Add a new field here when it
+    # becomes a dependency reference; base_image_cache is cache configuration.
+    local config_file="${PROJECT_ROOT}/${container}/config.yaml"
+    if [[ -f "$config_file" ]]; then
+        local config_refs config_status
+        # shellcheck disable=SC2016
+        local _config_remote_cr_prefix='${REMOTE_CR}/'
+        # shellcheck disable=SC2016
+        local _config_dollar_brace='${'
+        if config_refs=$(yq -r '(.base_image? | select(tag == "!!str")), ((.build_args? // {}) | .[]? | select(tag == "!!str")), ((.distros? // {}) | .[]? | .base_image? | select(tag == "!!str"))' \
+            "$config_file" 2>/dev/null); then
+            config_status=0
+        else
+            config_status=$?
         fi
+        if (( config_status != 0 )); then
+            printf '::error::_depgraph_get_deps: could not read config %s\n' \
+                "$(_escape_gha_command "$config_file")" >&2
+            return 2
+        fi
+        while IFS= read -r ref; do
+            [[ -n "$ref" ]] || continue
+            # The field set also holds ordinary versions and external bases.
+            # Preserve the old candidate filter so unrelated strings do not
+            # trigger owner resolution; owner-shaped refs remain fail-closed.
+            if [[ "$ref" != ghcr.io/*/* && "$ref" != hub.docker.io/*/* && \
+                  "$ref" != docker.io/*/* && "$ref" != "${_config_remote_cr_prefix}"* ]]; then
+                continue
+            fi
+            # A config declaration still identifies its supplier when only its
+            # tag is substituted later.  Classify that repository identity;
+            # lineage placeholders deliberately retain their stricter handling.
+            local ref_for_classification="$ref"
+            if [[ "$ref_for_classification" == *":${_config_dollar_brace}"* ]]; then
+                ref_for_classification="${ref_for_classification%%:*}"
+            fi
+            local parent _iref_rc
+            parent=$(_depgraph_is_internal_ref "$ref_for_classification" "$valid_containers")
+            _iref_rc=$?
+            if [[ $_iref_rc -eq 2 ]]; then
+                printf '::error::Owner resolution failed; cannot classify '"'"'%s'"'"' — aborting dep scan\n' "$(_escape_gha_command "$ref")" >&2
+                return 2
+            fi
+            [[ -n "$parent" ]] || continue
+            [[ "$parent" == "$container" ]] && continue
+            if [[ " $deps " != *" $parent "* ]]; then
+                deps="$deps $parent"
+            fi
+        done <<< "$config_refs"
     fi
 
     printf '%s' "${deps# }"

@@ -48,6 +48,28 @@ valid_external_record() {
     [ "$status" -ne 0 ]
 }
 
+@test "not_evaluated marker is accepted only without ref or supplier" {
+    [ "$(lineage_base_fields_from_marker_identity '{"kind":"not_evaluated"}')" = '{"base_image_kind":"not_evaluated"}' ]
+
+    run lineage_base_fields_from_marker_identity '{"kind":"not_evaluated","ref":"alpine:3.21"}'
+    [ "$status" -ne 0 ]
+    run lineage_base_fields_from_marker_identity \
+        '{"kind":"not_evaluated","supplier":{"container":"foo"}}'
+    [ "$status" -ne 0 ]
+}
+
+@test "schema decision distinguishes not_evaluated from no_external_base" {
+    local not_evaluated no_external
+    not_evaluated=$(lineage_schema_decision \
+        '{"lineage_schema_version":3,"base_image_kind":"not_evaluated"}')
+    no_external=$(lineage_schema_decision \
+        '{"lineage_schema_version":3,"base_image_kind":"no_external_base"}')
+
+    [ "$(jq -r '.class' <<< "$not_evaluated")" = "NotEvaluated" ]
+    [ "$(jq -r '.schema' <<< "$not_evaluated")" = "3" ]
+    [ "$(jq -r '.class' <<< "$no_external")" = "NoExternal" ]
+}
+
 @test "schema decision rejects malformed and unsupported schema versions" {
     local record
     for record in \

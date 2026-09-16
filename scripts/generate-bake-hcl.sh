@@ -57,6 +57,8 @@ readonly _BAKE_REMOTE_CR="${REMOTE_CR:-ghcr.io/oorabona}"
 source "${PROJECT_ROOT}/helpers/variant-utils.sh"
 # shellcheck source=../helpers/container-scopes.sh
 source "${PROJECT_ROOT}/helpers/container-scopes.sh"
+# shellcheck source=../helpers/base-image-utils.sh
+source "${PROJECT_ROOT}/helpers/base-image-utils.sh"
 
 # Force config-only dep resolution (no ./make list-builds fan-out needed).
 # The generator runs before any build lineage exists.
@@ -617,6 +619,184 @@ _config_build_args() {
     done <<< "$keys"
 
     printf '%s' "$raw"
+}
+
+# ---------------------------------------------------------------------------
+# Return the repository-relative Dockerfile source for a cells-mode build.
+# A flavor-specific path that is generated from the container's Dockerfile is
+# reported as that source template.  This deliberately does not materialize a
+# template or inspect a FROM line.
+# ---------------------------------------------------------------------------
+_cell_dockerfile_source() {
+    local container="$1" matrix_dockerfile="$2" flavor="$3" build_flavor="$4"
+    local dockerfile
+    dockerfile=$(_resolve_dockerfile "$container" "$matrix_dockerfile" "$flavor" "$build_flavor")
+    if [[ -f "${PROJECT_ROOT}/${container}/${dockerfile}" ]]; then
+        printf '%s' "$dockerfile"
+    else
+        printf '%s' 'Dockerfile'
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Substitute a declared config.yaml base reference from a cell's build args.
+# This is intentionally a single pass: nested expansions remain unresolved.
+# Match Docker parameter expansion: `:-` uses its default for unset or empty
+# arguments, while `-` uses it only when the argument is unset.
+# ---------------------------------------------------------------------------
+_substitute_declared_base_ref() {
+    local declared_ref="$1" args_json="$2"
+    jq -ern --arg ref "$declared_ref" --argjson args "$args_json" '
+      $ref
+      | gsub("\\$\\{(?<name>[A-Za-z_][A-Za-z0-9_]*)(?<operator>:-|-)(?<default>[^{}]*)\\}";
+          . as $capture
+          | if $capture.operator == ":-" then
+              if ($args | has($capture.name)) and ($args[$capture.name] != "")
+              then $args[$capture.name] else $capture.default end
+            else
+              if $args | has($capture.name) then $args[$capture.name] else $capture.default end
+            end)
+      | gsub("\\$\\{(?<name>[A-Za-z_][A-Za-z0-9_]*)\\}";
+          . as $capture
+          | if $args | has($capture.name) then $args[$capture.name] else "${\($capture.name)}" end)
+      | gsub("\\$(?<name>[A-Za-z_][A-Za-z0-9_]*)";
+          . as $capture
+          | if $args | has($capture.name) then $args[$capture.name] else "$\($capture.name)" end)
+    '
+}
+
+_declared_base_ref_has_tag() {
+    local ref="$1"
+    [[ "${ref##*/}" == *:* ]]
+}
+
+# Project container image names are a single path component below the owner.
+# Keep registry namespaces such as ghcr.io/<owner>/library/<image> external,
+# even when a namespace happens to share a container name.
+_declared_base_ref_has_nested_image_path() {
+    local ref="$1"
+    [[ "$ref" =~ ^(ghcr\.io|hub\.docker\.io|docker\.io)/[^/]+/[^/]+/ ]]
+}
+
+# ---------------------------------------------------------------------------
+# Return the lineage supplier object for the selected bake target of an
+# internal container.  --cells is architecture-independent, so platform is
+# deliberately absent; the lineage writer adds it for its per-platform record.
+# ---------------------------------------------------------------------------
+_declared_base_supplier() {
+    local supplier_container="$1" textual_ref="$2"
+    local supplier_target_id="${_EC_first_target_per_container[$supplier_container]:-}"
+    [[ -n "$supplier_target_id" ]] || {
+        printf 'ERROR: no selected bake target for declared base supplier %s\n' "$supplier_container" >&2
+        return 1
+    }
+
+    local matrix="${_EC_all_matrix_json[$supplier_container]:-}" cell i ncells
+    [[ -n "$matrix" ]] || return 1
+    ncells=$(jq 'length' <<< "$matrix") || return 1
+    for (( i=0; i<ncells; i++ )); do
+        cell=$(jq -ce ".[$i]" <<< "$matrix" 2>/dev/null) || return 1
+        _decode_build_matrix_cell "$cell" || return 1
+        [[ "$_EC_cell_os" != "windows" ]] || continue
+        if [[ "${_EC_scope_active[$supplier_container]:-false}" == "true" ]] && \
+                ! _cell_passes_scope "$supplier_container" "$cell"; then
+            continue
+        fi
+
+        local candidate_target_id
+        if [[ -z "$_EC_cell_variant" ]]; then
+            candidate_target_id="$(_target_id "${supplier_container}_${_EC_cell_tag}")"
+        else
+            candidate_target_id="$(_target_id "${supplier_container}_${_EC_cell_version}_${_EC_cell_variant}")"
+        fi
+        [[ "$candidate_target_id" == "$supplier_target_id" ]] || continue
+
+        local supplier_version base_sfx
+        base_sfx=$(base_suffix "${PROJECT_ROOT}/${supplier_container}" 2>/dev/null || true)
+        supplier_version="${_EC_cell_version}${base_sfx}"
+        jq -cn \
+            --arg container "$supplier_container" \
+            --arg version "$supplier_version" \
+            --arg flavor "$_EC_cell_flavor" \
+            --arg textual_ref "$textual_ref" \
+            --arg bake_target_id "$supplier_target_id" \
+            '{container:$container, version:$version, flavor:$flavor,
+              textual_ref:$textual_ref, bake_target_id:$bake_target_id}'
+        return 0
+    done
+
+    printf 'ERROR: selected bake target %s for declared base supplier %s was not found\n' \
+        "$supplier_target_id" "$supplier_container" >&2
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Return a cell's declared config.yaml base identity.  This function reads only
+# config.yaml for the declaration; its build_args input is computed by the
+# caller using the canonical per-cell calculation.
+# ---------------------------------------------------------------------------
+_declared_base_identity() {
+    local container="$1" flavor="$2" args_json="$3"
+    local config="${PROJECT_ROOT}/${container}/config.yaml" declared_ref
+    [[ -f "$config" ]] || { jq -cn '{kind:"not_evaluated"}'; return 0; }
+
+    if ! declared_ref=$(base_flavor="$flavor" yq -er \
+            '(.distros // {})[strenv(base_flavor)].base_image // .base_image // ""' \
+            "$config" 2>/dev/null); then
+        printf 'ERROR: could not read declared base image from %s\n' "$config" >&2
+        return 1
+    fi
+    [[ -n "$declared_ref" ]] || { jq -cn '{kind:"not_evaluated"}'; return 0; }
+
+    local substituted_ref
+    substituted_ref=$(_substitute_declared_base_ref "$declared_ref" "$args_json") || return 1
+    if [[ -z "$substituted_ref" || "$substituted_ref" == *'$'* ]]; then
+        jq -cn --arg ref "$declared_ref" '{kind:"unresolved",ref:$ref}'
+        return 0
+    fi
+    if [[ "$substituted_ref" == "scratch" ]]; then
+        jq -cn '{kind:"no_external_base"}'
+        return 0
+    fi
+    # Docker defaults every concrete tagless image reference to latest. A bare
+    # reference means Docker Hub; declarations that mean this repository's
+    # mirror must include ${REMOTE_CR}/library/ explicitly.
+    if ! _declared_base_ref_has_tag "$substituted_ref"; then
+        substituted_ref="${substituted_ref}:latest"
+    fi
+
+    local valid_containers internal_container rc
+    valid_containers=$(_depgraph_valid_containers) || {
+        printf 'ERROR: could not enumerate containers while classifying declared base for %s\n' "$container" >&2
+        return 1
+    }
+    if internal_container=$(_depgraph_is_internal_ref "$substituted_ref" "$valid_containers"); then
+        :
+    else
+        rc=$?
+        if [[ "$rc" -eq 2 ]]; then
+            gha_error 'could not resolve project owner while classifying declared base reference %s for %s' \
+                "$substituted_ref" "$container" >&2
+        fi
+        return "$rc"
+    fi
+
+    if _declared_base_ref_has_nested_image_path "$substituted_ref"; then
+        internal_container=""
+    fi
+
+    if [[ -n "$internal_container" ]]; then
+        local supplier
+        supplier=$(_declared_base_supplier "$internal_container" "$substituted_ref") || return 1
+        jq -cn --argjson supplier "$supplier" '{kind:"sibling_target",supplier:$supplier}'
+    else
+        if ! _is_fleet_external_ref "$substituted_ref"; then
+            gha_error 'bake cell %s (flavor %s) declares unsupported external base reference %s; declare a tagged image reference (tag@sha256 is supported, digest-only is not)' \
+                "$container" "${flavor:-default}" "$substituted_ref" >&2
+            return 1
+        fi
+        jq -cn --arg ref "$substituted_ref" '{kind:"external",ref:$ref}'
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1567,7 +1747,8 @@ _build_bake_json() {
 # ---------------------------------------------------------------------------
 # --cells mode: emit a compact JSON array — one object per linux build cell.
 # Same cell set as the bake mode (same closure + matrix + os==windows skip).
-# No Dockerfile work; no build_args computation.
+# Cells mode computes the canonical per-cell build args for declared-base
+# substitution, but does not materialize templates or interpret FROM lines.
 #
 # Output per element:
 #   {
@@ -1575,7 +1756,11 @@ _build_bake_json() {
 #     "tag":             "<tag>",
 #     "flavor":          "<flavor>",          -- "" when not set
 #     "is_default":      true|false,
-#     "intermediate_ref": "<concrete-registry>/<container>:<tag>"
+#     "intermediate_ref": "<concrete-registry>/<container>:<tag>",
+#     "version":         "<matrix version plus base suffix>",
+#     "dockerfile":      "<repository-relative source Dockerfile>",
+#     "build_args":      { ... },
+#     "base_identity":   { ... }
 #   }
 #
 # intermediate_ref is a concrete registry ref (no ${REMOTE_CR} token) — the
@@ -1619,7 +1804,8 @@ _emit_cells_json() {
     # #595: include target_id (byte-identical to the bake target key) so that
     #        bake-buildresult.sh can correlate --metadata-file keys to cells.
     _on_cell_plain() {
-        local _c="$1" _tag="$2" _flavor="$3" _is_default="$4" _iref="$5" _is_latest="${6:-false}" _variant="${7:-}" _tid="${8:-}"
+        local _c="$1" _tag="$2" _flavor="$3" _is_default="$4" _iref="$5" _is_latest="${6:-false}" _variant="${7:-}" _tid="${8:-}" _version="${9:-}" _dockerfile="${10:-}" _build_args="${11:-}" _base_identity="${12:-}"
+        [[ -n "$_build_args" && -n "$_base_identity" ]] || return 1
         local _obj
         _obj=$(jq -cn \
             --arg container    "$_c" \
@@ -1630,7 +1816,11 @@ _emit_cells_json() {
             --argjson is_latest_version "$( [ "$_is_latest"  = "true" ] && echo 'true' || echo 'false')" \
             --arg intermediate_ref "$_iref" \
             --arg target_id    "$_tid" \
-            '{container: $container, tag: $tag, flavor: $flavor, variant: $variant, is_default: $is_default, is_latest_version: $is_latest_version, intermediate_ref: $intermediate_ref, target_id: $target_id}')
+            --arg version      "$_version" \
+            --arg dockerfile   "$_dockerfile" \
+            --argjson build_args "$_build_args" \
+            --argjson base_identity "$_base_identity" \
+            '{container: $container, tag: $tag, flavor: $flavor, variant: $variant, is_default: $is_default, is_latest_version: $is_latest_version, intermediate_ref: $intermediate_ref, target_id: $target_id, version: $version, dockerfile: $dockerfile, build_args: $build_args, base_identity: $base_identity}')
         cells_json=$(jq -cn --argjson arr "$cells_json" --argjson obj "$_obj" '$arr + [$obj]')
     }
 
@@ -1643,6 +1833,11 @@ _emit_cells_json() {
         fi
 
         local matrix="${_EC_all_matrix_json[$c]}"
+        local config_args
+        if ! config_args=$(_config_build_args "$c"); then
+            printf 'ERROR: _config_build_args failed for %q\n' "$c" >&2
+            return 1
+        fi
         local ncells
         ncells=$(jq 'length' <<< "$matrix")
         local i
@@ -1672,9 +1867,41 @@ _emit_cells_json() {
             fi
 
             local intermediate_ref="${_BAKE_REMOTE_CR}/${c}:${_EC_cell_tag}"
+            local cell_dockerfile abs_dockerfile args_json base_identity base_sfx cell_version
+            cell_dockerfile=$(_cell_dockerfile_source "$c" "$_EC_cell_dockerfile" \
+                "$_EC_cell_flavor" "$_EC_cell_build_flavor")
+            abs_dockerfile="${PROJECT_ROOT}/${c}/${cell_dockerfile}"
+            if ! args_json=$(_compute_cell_build_args "$c" "$_EC_cell_version" \
+                    "$_EC_cell_flavor" "$_EC_cell_build_flavor" "$config_args" \
+                    "$abs_dockerfile" 0); then
+                printf 'ERROR: _compute_cell_build_args failed for %q version=%q\n' \
+                    "$c" "$_EC_cell_version" >&2
+                return 1
+            fi
+            if ! base_identity=$(_declared_base_identity "$c" "$_EC_cell_flavor" "$args_json"); then
+                printf 'ERROR: could not determine declared base identity for %q\n' "$c" >&2
+                return 1
+            fi
+            local base_identity_kind
+            base_identity_kind=$(jq -er '.kind' <<< "$base_identity") || return 1
+            case "$base_identity_kind" in
+                not_evaluated)
+                    gha_error 'bake cell %s (flavor %s) has no declared base; declare base_image (or distros.<flavor>.base_image) or scratch before it can be bake-managed' \
+                        "$c" "${_EC_cell_flavor:-default}" >&2
+                    return 1
+                    ;;
+                unresolved)
+                    gha_error 'bake cell %s (flavor %s) has an unresolved declared base; declare a concrete base_image or scratch before it can be bake-managed' \
+                        "$c" "${_EC_cell_flavor:-default}" >&2
+                    return 1
+                    ;;
+            esac
+            base_sfx=$(base_suffix "${PROJECT_ROOT}/${c}" 2>/dev/null || true)
+            cell_version="${_EC_cell_version}${base_sfx}"
             _on_cell_plain "$c" "$_EC_cell_tag" "$_EC_cell_flavor" \
                 "$_EC_cell_is_default" "$intermediate_ref" "$_EC_cell_is_latest_version" \
-                "$_EC_cell_variant" "$cell_tid"
+                "$_EC_cell_variant" "$cell_tid" "$cell_version" "$cell_dockerfile" \
+                "$args_json" "$base_identity"
         done
     done
 

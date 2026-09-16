@@ -70,7 +70,7 @@ Daily cron (via `upstream-monitor.yaml`) compares each container/variant's `base
 
 ### Key design choices
 
-**Status enum** (`drift` / `unchanged` / `error` / `legacy` / `no_external_base` / `sibling_target`): probe failures are not collapsed to drift to avoid false-positive rebuilds. `legacy` handles pre-#530 lineage without `base_image_digest`; `no_external_base` means the stage has no external base to compare against, so there is nothing to act on. `sibling_target` means the base is another target built in the same invocation, so there is no registry comparison to make and the record is complete. `upstream-monitor.yaml` validates records against this same set.
+**Status enum** (`drift` / `unchanged` / `error` / `legacy` / `no_external_base` / `sibling_target` / `not_evaluable`): probe failures are not collapsed to drift to avoid false-positive rebuilds. `legacy` handles pre-#530 lineage without `base_image_digest`; `no_external_base` means the stage has no external base to compare against, so there is nothing to act on. `sibling_target` means the base is another target built in the same invocation, so there is no registry comparison to make and the record is complete. `not_evaluable` records are structurally valid lineage whose external base was declared unresolvable or never observed; they are reported separately and do not fail the scan. `upstream-monitor.yaml` validates records against this same set.
 
 **Per-container grouping**: output is `[{container, variants[]}]` rather than one record per variant. This enables one PR per container (not one per variant), reducing PR noise.
 
@@ -100,23 +100,25 @@ If container A's base is container B (also project-produced), and both drift, tw
 
 ## #1523 — Lineage schema v3 base identity
 
-This branch defines the schema-v3 writer contract; it does not change the
-current emitters, which still write `lineage_schema_version: 2`. A future
-adopter will describe its selected runnable stage with one of four explicit
-base identities: `no_external_base` for `scratch`,
-`unresolved_external_base` when its reference cannot be resolved,
-`sibling_target` with the exact supplying cell for a target built in the same
-invocation, or an external base.
+The bake path is the production schema-v3 lineage writer. A record has one of
+five base identities: external, `sibling_target`, `no_external_base`,
+`unresolved_external_base`, or `not_evaluated`. The plan may emit only the
+first three: a cell with no usable declaration, an unresolved declaration, or
+an external reference outside the writer's grammar fails planning rather than
+becoming a monitoring exclusion. A newly bake-managed container must declare
+`base_image` (or a flavour-specific base) or `scratch`.
 
-An external base records its textual `base_image_ref` and the immutable
-image-index `base_image_digest`; writers obtain that digest from an inspected
-OCI image-index or manifest-list descriptor, not from a digest-shaped string.
-Marker identities intentionally carry neither external field. The identity
-decision preserves supported older records and rejects malformed or unsupported
-schema versions. It is structural validation only: a network reader must apply
-registry-trust policy separately.
+The identity is the base the container declares in `config.yaml`, not a selected
+runnable Dockerfile stage: the flavour's `distros.<flavor>.base_image` takes
+precedence, otherwise the top-level `base_image`, after substitution with the
+cell's build arguments. Consequently `sslh` and `terraform` are watched
+against their declared source stage rather than their runtime image (#1655).
 
-The complete-record validator applies the stricter v3 writer envelope before
-the atomic writer creates a parent directory, and the writer installs the file
-at exactly its requested pathname. Future emitters must adopt those helpers to
-receive that behavior; no production writer does so in this slice.
+For an external identity, the plan snapshots the OCI image-index or manifest-list
+descriptor before either architecture builds. A BAKE LINEAGE record is written
+from the successful amd64 build using that descriptor's digest and the published
+image's build metadata; it is admitted to the durable cache only when the
+`bake-merge` job succeeds. Admission follows that job's overall result, so a
+merge where some cells publish and others fail admits nothing (#1829). The digest
+is a run snapshot, not a pin for either build (#1823) or dependency-closure target
+(#1824).
