@@ -13,9 +13,9 @@ lineage_base_fields_from_marker_identity() {
     kind=$(jq -er 'if type == "object" and (.kind | type) == "string" then .kind else empty end' \
         <<< "$base_identity") || return 1
     case "$kind" in
-        no_external_base)
+        no_external_base|not_evaluated)
             jq -e '(has("ref") | not) and (has("supplier") | not)' >/dev/null <<< "$base_identity" || return 1
-            jq -cn '{base_image_kind:"no_external_base"}'
+            jq -cn --arg kind "$kind" '{base_image_kind:$kind}'
             ;;
         unresolved)
             jq -e '(.ref | type) == "string" and (.ref | length) > 0 and (has("supplier") | not)' \
@@ -81,9 +81,9 @@ lineage_schema_decision() {
       def external_fields: has("base_image_ref") or has("base_image_digest");
       def marker($schema):
         if (.base_image_kind | type) != "string" then bad("invalid_base_image_kind")
-        elif .base_image_kind == "no_external_base" or .base_image_kind == "unresolved_external_base" then
+        elif .base_image_kind == "no_external_base" or .base_image_kind == "not_evaluated" or .base_image_kind == "unresolved_external_base" then
           if external_fields or has("base_image_sibling") then bad("marker_carries_external_base_fields")
-          else {class:(if .base_image_kind == "no_external_base" then "NoExternal" else "Unresolved" end),schema:$schema} end
+          else {class:(if .base_image_kind == "no_external_base" then "NoExternal" elif .base_image_kind == "not_evaluated" then "NotEvaluated" else "Unresolved" end),schema:$schema} end
         elif .base_image_kind == "sibling_target" then
           if external_fields then bad("marker_carries_external_base_fields")
           elif supplier_valid then {class:"Sibling",schema:$schema,supplier:.base_image_sibling}

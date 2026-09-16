@@ -604,6 +604,223 @@ YAML
 # ---------------------------------------------------------------------------
 # --cells mode emits a JSON array (MG8)
 # ---------------------------------------------------------------------------
+_declared_base_identity_fixture() {
+    local fixture_root="$1"
+    mkdir -p "$fixture_root"
+    cp -a "${PROJECT_ROOT}/scripts" "${PROJECT_ROOT}/helpers" "${PROJECT_ROOT}/make" "$fixture_root"
+
+    local container
+    for container in top per none unresolved consumer supplier library \
+        default_colon present_colon dash_missing dash_present empty_default several plain_tagless; do
+        mkdir -p "$fixture_root/$container"
+        printf '%s\n' 'FROM scratch' > "$fixture_root/$container/Dockerfile"
+        cat > "$fixture_root/$container/variants.yaml" <<'YAML'
+versions:
+  - tag: "1"
+YAML
+    done
+
+    cat > "$fixture_root/top/config.yaml" <<'YAML'
+base_image: registry.example/top:${VERSION}
+YAML
+    cat > "$fixture_root/per/config.yaml" <<'YAML'
+base_image: registry.example/top:1
+build_args:
+  PER_BASE: registry.example/per:2
+distros:
+  linux:
+    base_image: ${PER_BASE:-registry.example/fallback:3}
+YAML
+    sed -i 's/tag: "1"/tag: "1"\n    variants:\n      - name: linux\n        flavor: linux/' "$fixture_root/per/variants.yaml"
+    printf '%s\n' '{}' > "$fixture_root/none/config.yaml"
+    cat > "$fixture_root/unresolved/config.yaml" <<'YAML'
+base_image: registry.example/unresolved:${MISSING}
+YAML
+    cat > "$fixture_root/consumer/config.yaml" <<'YAML'
+base_image: ${REMOTE_CR}/supplier:${VERSION}
+YAML
+    cat > "$fixture_root/supplier/config.yaml" <<'YAML'
+base_image: registry.example/supplier:1
+YAML
+    cat > "$fixture_root/library/config.yaml" <<'YAML'
+base_image: ghcr.io/oorabona/library/supplier:1
+YAML
+    cat > "$fixture_root/default_colon/config.yaml" <<'YAML'
+base_image: ${MISSING:-alpine:3.21}
+YAML
+    cat > "$fixture_root/present_colon/config.yaml" <<'YAML'
+base_image: ${PRESENT:-fallback:1}
+build_args:
+  PRESENT: registry.example/present:2
+YAML
+    cat > "$fixture_root/dash_missing/config.yaml" <<'YAML'
+base_image: ${MISSING-busybox:1.36}
+YAML
+    cat > "$fixture_root/dash_present/config.yaml" <<'YAML'
+base_image: ${PRESENT-fallback:1}
+build_args:
+  PRESENT: registry.example/dash-present:2
+YAML
+    cat > "$fixture_root/empty_default/config.yaml" <<'YAML'
+base_image: ${EMPTY:-}
+YAML
+    cat > "$fixture_root/several/config.yaml" <<'YAML'
+base_image: registry.example/${ONE:-one}:${TWO-two}
+build_args:
+  ONE: actual
+YAML
+    cat > "$fixture_root/plain_tagless/config.yaml" <<'YAML'
+base_image: ${PLAIN}
+build_args:
+  PLAIN: alpine
+YAML
+}
+
+_fixture_cells() {
+    local fixture_root="$1"
+    run env GITHUB_REPOSITORY_OWNER=oorabona \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='top per none unresolved consumer supplier library default_colon present_colon dash_missing dash_present empty_default several plain_tagless' \
+        bash "$fixture_root/scripts/generate-bake-hcl.sh" --cells \
+        top per none unresolved consumer supplier library \
+        default_colon present_colon dash_missing dash_present empty_default several plain_tagless
+}
+
+@test "--cells top-level declared base becomes substituted external identity" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    _fixture_cells "$fixture_root"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[] | select(.container == "top") | .base_identity.kind' <<< "$output")" = "external" ]
+    [ "$(jq -r '.[] | select(.container == "top") | .base_identity.ref' <<< "$output")" = "registry.example/top:1" ]
+}
+
+@test "--cells per-distro declared base wins over top-level base" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    _fixture_cells "$fixture_root"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[] | select(.container == "per") | .base_identity.ref' <<< "$output")" = "registry.example/per:2" ]
+}
+
+@test "--cells reports not_evaluated when no declared base applies" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    _fixture_cells "$fixture_root"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[] | select(.container == "none") | .base_identity.kind' <<< "$output")" = "not_evaluated" ]
+}
+
+@test "--cells keeps unresolved declared variables as unresolved identities" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    _fixture_cells "$fixture_root"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[] | select(.container == "unresolved") | .base_identity.kind' <<< "$output")" = "unresolved" ]
+    [ "$(jq -r '.[] | select(.container == "unresolved") | .base_identity.ref' <<< "$output")" = 'registry.example/unresolved:${MISSING}' ]
+}
+
+@test "--cells substitutes declared default expressions from args or their defaults" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    _fixture_cells "$fixture_root"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.[] | select(.container == "default_colon") | .base_identity.ref' <<< "$output")" = "alpine:3.21" ]
+    [ "$(jq -r '.[] | select(.container == "present_colon") | .base_identity.ref' <<< "$output")" = "registry.example/present:2" ]
+    [ "$(jq -r '.[] | select(.container == "dash_missing") | .base_identity.ref' <<< "$output")" = "busybox:1.36" ]
+    [ "$(jq -r '.[] | select(.container == "dash_present") | .base_identity.ref' <<< "$output")" = "registry.example/dash-present:2" ]
+    [ "$(jq -r '.[] | select(.container == "several") | .base_identity.ref' <<< "$output")" = "registry.example/actual:two" ]
+    [ "$(jq -r '.[] | select(.container == "empty_default") | .base_identity.kind' <<< "$output")" = "unresolved" ]
+    [ "$(jq -r '.[] | select(.container == "empty_default") | .base_identity.ref' <<< "$output")" = '${EMPTY:-}' ]
+    [ "$(jq -r '.[] | select(.container == "plain_tagless") | .base_identity.kind' <<< "$output")" = "unresolved" ]
+    [ "$(jq -r '.[] | select(.container == "plain_tagless") | .base_identity.ref' <<< "$output")" = '${PLAIN}' ]
+}
+
+@test "--cells classifies sibling targets but not library namespace lookalikes" {
+    local fixture_root supplier
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    _fixture_cells "$fixture_root"
+    [ "$status" -eq 0 ]
+    supplier=$(jq -c '.[] | select(.container == "consumer") | .base_identity.supplier' <<< "$output")
+    [ "$(jq -r '.[] | select(.container == "consumer") | .base_identity.kind' <<< "$output")" = "sibling_target" ]
+    [ "$supplier" = '{"container":"supplier","version":"1","flavor":"","textual_ref":"ghcr.io/oorabona/supplier:1","bake_target_id":"supplier_1"}' ]
+    [ "$(jq -r '.[] | select(.container == "library") | .base_identity.kind' <<< "$output")" = "external" ]
+}
+
+@test "--cells fails when declared-base owner resolution fails" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    run bash -c 'cd "$1" && env -u GITHUB_REPOSITORY_OWNER \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="top per none unresolved consumer supplier library" \
+        bash "$1/scripts/generate-bake-hcl.sh" --cells top' _ "$fixture_root"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::could not resolve project owner while classifying declared base reference registry.example/top:1 for top"* ]]
+}
+
+@test "--cells fleet identities are constructor-valid with writer platform enrichment" {
+    local cells descriptor checked
+    source "${PROJECT_ROOT}/helpers/base-image-utils.sh"
+    run --separate-stderr env REMOTE_CR=ghcr.io/oorabona GITHUB_REPOSITORY_OWNER=oorabona \
+        bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells \
+        github-runner web-shell wordpress debian vector jekyll ansible sslh \
+        openvpn php openresty terraform postgres tor
+    [ "$status" -eq 0 ]
+    cells="$output"
+    [ "$(jq 'length' <<< "$cells")" -eq 24 ]
+
+    descriptor=$(jq -cn \
+        --arg digest 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+        '{digest:$digest,mediaType:"application/vnd.oci.image.index.v1+json"}')
+    checked=$(while IFS= read -r identity; do
+        case "$(jq -r '.kind' <<< "$identity")" in
+            external)
+                lineage_base_fields_from_external_identity_with_index_descriptor \
+                    "$identity" "$descriptor" >/dev/null
+                ;;
+            sibling_target)
+                identity=$(jq '.supplier.platform = "linux/amd64"' <<< "$identity")
+                lineage_base_fields_from_marker_identity "$identity" >/dev/null
+                ;;
+            *)
+                lineage_base_fields_from_marker_identity "$identity" >/dev/null
+                ;;
+        esac || exit 1
+        printf '.'
+    done < <(jq -c '.[].base_identity' <<< "$cells"))
+    [ "${#checked}" -eq 24 ]
+}
+
+@test "--cells additions leave the fleet bake document byte-identical to be35f761" {
+    local baseline_root current_bake baseline_bake
+    baseline_root=$(mktemp -d)
+    git archive be35f761 | tar -x -C "$baseline_root"
+    current_bake="${TEST_TEMP_DIR}/current-bake.json"
+    baseline_bake="${TEST_TEMP_DIR}/baseline-bake.json"
+
+    run env REMOTE_CR=ghcr.io/oorabona GITHUB_REPOSITORY_OWNER=oorabona \
+        bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" > "$current_bake"
+    [ "$status" -eq 0 ]
+    run env REMOTE_CR=ghcr.io/oorabona GITHUB_REPOSITORY_OWNER=oorabona \
+        bash "$baseline_root/scripts/generate-bake-hcl.sh" > "$baseline_bake"
+    [ "$status" -eq 0 ]
+    run diff -u "$baseline_bake" "$current_bake"
+    rm -rf "$baseline_root"
+    [ "$status" -eq 0 ]
+}
+
 @test "--cells mode emits a JSON array" {
     _run_generator --cells debian
     [ "$status" -eq 0 ]
@@ -613,19 +830,21 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# --cells objects have the 5 required fields (MG8)
+# --cells objects retain their existing fields and carry lineage planning data.
 # ---------------------------------------------------------------------------
-@test "--cells objects have container/tag/flavor/is_default/intermediate_ref" {
+@test "--cells objects have container/tag/flavor/is_default/intermediate_ref and lineage planning fields" {
     _run_generator --cells debian
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq 'length')" -gt 0 ]
 
-    # Every element must have all 5 fields
+    # Every element must have all existing and lineage planning fields.
     local missing
     missing=$(echo "$output" | jq '[
         .[] | select(
             (has("container") and has("tag") and has("flavor")
-             and has("is_default") and has("intermediate_ref")) | not
+             and has("is_default") and has("intermediate_ref")
+             and (.version | type == "string") and (.dockerfile | type == "string")
+             and (.build_args | type == "object") and (.base_identity | type == "object")) | not
         )
     ] | length')
     [ "$missing" -eq 0 ]
