@@ -1865,8 +1865,8 @@ jobs:
   #                                           best-effort DockerHub mirror
   # ---------------------------------------------------------------------------
 
-  bake-build-amd64:
-    name: Bake build (amd64)
+  bake-plan:
+    name: Plan bake lineage
     needs: [detect-containers, build-extensions, merge-extension-manifests, sync-base-images]
     if: |
       always() &&
@@ -1876,6 +1876,147 @@ jobs:
       (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
       (needs.merge-extension-manifests.result == 'success' || needs.merge-extension-manifests.result == 'skipped') &&
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
+    runs-on: ubuntu-latest
+    # Nine distinct external refs today: two 30-second attempts plus ten seconds
+    # of backoff each, with room for generation and artifact upload.
+    timeout-minutes: 15
+    env:
+      CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
+      # Resolver contract: only extensions published successfully by this run.
+      FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
+    permissions:
+      contents: read
+      packages: read
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install yq
+        timeout-minutes: 5
+        uses: ./.github/actions/retry-run
+        with:
+          run: |
+            sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+            echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+            sudo chmod +x /usr/local/bin/yq
+          max-attempts: '3'
+          timeout: '60s'
+
+      - name: Log in to container registries
+        uses: ./.github/actions/docker-login
+        timeout-minutes: 5
+        with:
+          ghcr_username: ${{ github.actor }}
+          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve bake container names
+        id: bake-containers
+        env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
+        run: |
+          set -euo pipefail
+          containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          retained_containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[] | select(.is_latest_version != true) | .container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          _filtered=""
+          for _c in $retained_containers; do
+            if [[ "$(yq -r '.build.always_all_versions // false' "./${_c}/variants.yaml" 2>/dev/null)" != "true" ]]; then
+              _filtered="${_filtered:+$_filtered }$_c"
+            fi
+          done
+          retained_containers="$_filtered"
+          echo "containers=${containers}" >> "$GITHUB_OUTPUT"
+          echo "retained_containers=${retained_containers}" >> "$GITHUB_OUTPUT"
+          echo "::notice::bake containers (lineage plan): ${containers}"
+          echo "::notice::bake retained-eligible containers (lineage plan): ${retained_containers:-<none>}"
+
+      - name: Download extension lineage (postgres final-image bake)
+        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          name: ext-lineage-${{ github.run_id }}
+          path: .build-lineage/
+        continue-on-error: true
+
+      - name: Compute bake lineage plan
+        env:
+          BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
+          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
+          REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/generate-bake-hcl.sh
+          scope_args=()
+          [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
+          [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
+          [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          [[ -n "${CONTAINER_SCOPES:-}" ]] && scope_args+=(--container-scopes "${CONTAINER_SCOPES}")
+          final_args=()
+          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
+            final_args=(--include-final-build)
+          fi
+          # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context).
+          # shellcheck disable=SC2086
+          cells_json=$(./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" ${BAKE_CONTAINERS})
+          if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
+            # shellcheck disable=SC2086
+            retained_cells=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
+            cells_json=$(jq -s '(.[0] + .[1]) | unique_by([.container, (.tag // ""), (.flavor // "")])' <<< "$cells_json"$'\n'"$retained_cells")
+          fi
+          jq -e 'type == "array"' <<< "$cells_json" > bake-plan.json
+
+      - name: Inspect planned external base indexes
+        env:
+          IS_PR: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          source helpers/retry.sh
+          printf '{}' > bake-base-descriptors.json
+          if [[ "${DRY_RUN:-false}" == "true" || "$IS_PR" == "true" ]]; then
+            echo "::notice::Bake lineage plan skips external base inspection for dry runs and pull requests"
+            exit 0
+          fi
+          mapfile -t refs < <(jq -r '[.[] | select(.base_identity.kind == "external") | .base_identity.ref] | unique[]' bake-plan.json)
+          for ref in "${refs[@]}"; do
+            if ! descriptor=$(retry_with_backoff 2 10 timeout -k 5 30 docker buildx imagetools inspect --format '{{json .Manifest}}' -- "$ref" 2>/dev/null); then
+              echo "::notice::Could not inspect planned external base index ${ref}; lineage will record it as unresolved"
+              continue
+            fi
+            if ! jq -e 'type == "object"' <<< "$descriptor" >/dev/null 2>&1; then
+              echo "::notice::Planned external base index ${ref} returned no usable descriptor; lineage will record it as unresolved"
+              continue
+            fi
+            jq --arg ref "$ref" --argjson descriptor "$descriptor" '. + {($ref): $descriptor}' \
+              bake-base-descriptors.json > bake-base-descriptors.json.tmp
+            mv bake-base-descriptors.json.tmp bake-base-descriptors.json
+          done
+
+      - name: Upload bake lineage plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: bake-plan-${{ github.run_id }}
+          path: |
+            bake-plan.json
+            bake-base-descriptors.json
+          if-no-files-found: error
+          retention-days: 1
+
+  bake-build-amd64:
+    name: Bake build (amd64)
+    needs: [detect-containers, build-extensions, merge-extension-manifests, sync-base-images, bake-plan]
+    if: |
+      always() &&
+      inputs.rebuild != 'sync' &&
+      fromJson(needs.detect-containers.outputs.bake_builds || '[]') != null &&
+      toJson(fromJson(needs.detect-containers.outputs.bake_builds || '[]')) != '[]' &&
+      (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
+      (needs.merge-extension-manifests.result == 'success' || needs.merge-extension-manifests.result == 'skipped') &&
+      (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped') &&
+      needs.bake-plan.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -1996,6 +2137,12 @@ jobs:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
         continue-on-error: true
+
+      - name: Download bake lineage plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          name: bake-plan-${{ github.run_id }}
+          path: .bake-plan/
 
       - name: Install skopeo (extension final-build self-heal fallback)
         if: needs.detect-containers.outputs.bake_final_builds != '[]'
@@ -2172,8 +2319,161 @@ jobs:
           retention-days: 1
           overwrite: true
 
+      # Write complete lineage before publishing SBOM material. A refused record
+      # fails this job, while bake-attest deliberately still runs after an amd64
+      # failure; suppressing that attestation is outside this change.
+      - name: Write bake lineage records (amd64)
+        id: write-bake-lineage
+        if: steps.bake-build.outcome == 'success' && github.event_name != 'pull_request' && env.DRY_RUN != 'true'
+        env:
+          BAKE_PLAN_FILE: .bake-plan/bake-plan.json
+          BAKE_BASE_DESCRIPTORS_FILE: .bake-plan/bake-base-descriptors.json
+          BAKE_METADATA_FILE: ${{ runner.temp }}/bake-metadata-amd64.json
+          REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+        run: |
+          set -uo pipefail
+          source helpers/base-image-utils.sh
+
+          for input_file in "$BAKE_PLAN_FILE" "$BAKE_BASE_DESCRIPTORS_FILE" "$BAKE_METADATA_FILE"; do
+            if [[ ! -r "$input_file" ]]; then
+              echo "::error::Could not read bake lineage input file: ${input_file}"
+              exit 1
+            fi
+          done
+          if ! jq -e 'type == "array"' "$BAKE_PLAN_FILE" >/dev/null 2>&1; then
+            echo "::error::Bake lineage plan is not a JSON array: ${BAKE_PLAN_FILE}"
+            exit 1
+          fi
+          for input_file in "$BAKE_BASE_DESCRIPTORS_FILE" "$BAKE_METADATA_FILE"; do
+            if ! jq -e 'type == "object"' "$input_file" >/dev/null 2>&1; then
+              echo "::error::Bake lineage input is not a JSON object: ${input_file}"
+              exit 1
+            fi
+          done
+
+          failures=0
+          ncells=$(jq -r 'length' "$BAKE_PLAN_FILE")
+          for (( i=0; i<ncells; i++ )); do
+            cell=$(jq -ce ".[$i]" "$BAKE_PLAN_FILE" 2>/dev/null) || {
+              echo "::error::Could not read bake lineage plan cell ${i}"
+              failures=1
+              continue
+            }
+            container=$(jq -r '.container // "<missing-container>"' <<< "$cell")
+            tag=$(jq -r '.tag // "<missing-tag>"' <<< "$cell")
+            cell_name="${container}:${tag}"
+
+            if ! target_id=$(jq -er '.target_id | strings | select(length > 0)' <<< "$cell"); then
+              echo "::error::Bake lineage ${cell_name}: missing target_id"
+              failures=1
+              continue
+            fi
+            if ! build_digest=$(jq -er --arg target_id "$target_id" \
+                '.[$target_id]["containerimage.digest"] | strings | select(test("^sha256:[a-f0-9]{64}$"))' \
+                "$BAKE_METADATA_FILE"); then
+              echo "::error::Bake lineage ${cell_name}: missing or malformed metadata digest for ${target_id}"
+              failures=1
+              continue
+            fi
+            if ! base_identity=$(jq -ce '.base_identity | select(type == "object")' <<< "$cell"); then
+              echo "::error::Bake lineage ${cell_name}: missing base identity"
+              failures=1
+              continue
+            fi
+            if ! base_kind=$(jq -er '.kind | strings' <<< "$base_identity"); then
+              echo "::error::Bake lineage ${cell_name}: malformed base identity"
+              failures=1
+              continue
+            fi
+
+            base_fields=""
+            case "$base_kind" in
+              external)
+                if ! base_ref=$(jq -er '.ref | strings | select(length > 0)' <<< "$base_identity"); then
+                  echo "::error::Bake lineage ${cell_name}: external base identity has no reference"
+                  failures=1
+                  continue
+                fi
+                descriptor=$(jq -c --arg ref "$base_ref" '.[$ref] // empty' "$BAKE_BASE_DESCRIPTORS_FILE")
+                if ! base_fields=$(lineage_base_fields_from_external_identity_with_index_descriptor "$base_identity" "$descriptor"); then
+                  unresolved_identity=$(jq -cn --arg ref "$base_ref" '{kind:"unresolved",ref:$ref}')
+                  if ! base_fields=$(lineage_base_fields_from_marker_identity "$unresolved_identity"); then
+                    echo "::error::Bake lineage ${cell_name}: could not represent unresolved external base"
+                    failures=1
+                    continue
+                  fi
+                fi
+                ;;
+              sibling_target)
+                base_identity=$(jq -ce '.supplier.platform = "linux/amd64"' <<< "$base_identity") || {
+                  echo "::error::Bake lineage ${cell_name}: malformed sibling base identity"
+                  failures=1
+                  continue
+                }
+                ;&
+              unresolved|not_evaluated|no_external_base)
+                if ! base_fields=$(lineage_base_fields_from_marker_identity "$base_identity"); then
+                  echo "::error::Bake lineage ${cell_name}: rejected ${base_kind} base identity"
+                  failures=1
+                  continue
+                fi
+                ;;
+              *)
+                echo "::error::Bake lineage ${cell_name}: unsupported base identity kind ${base_kind}"
+                failures=1
+                continue
+                ;;
+            esac
+
+            if ! version=$(jq -er '.version | strings | select(length > 0)' <<< "$cell") || \
+               ! flavor=$(jq -er '.flavor | strings' <<< "$cell") || \
+               ! dockerfile=$(jq -er '.dockerfile | strings | select(length > 0)' <<< "$cell") || \
+               ! build_args=$(jq -ce '.build_args | select(type == "object")' <<< "$cell") || \
+               ! is_default=$(jq -er '.is_default | booleans' <<< "$cell") || \
+               ! is_latest_version=$(jq -er '.is_latest_version | booleans' <<< "$cell"); then
+              echo "::error::Bake lineage ${cell_name}: malformed planned build fields"
+              failures=1
+              continue
+            fi
+            image_id=$(jq -r --arg target_id "$target_id" \
+              '.[$target_id]["containerimage.config.digest"] // "" | if type == "string" and test("^sha256:[a-f0-9]{64}$") then . else "" end' \
+              "$BAKE_METADATA_FILE")
+            built_at=$(date -Iseconds)
+            if ! record=$(jq -cn \
+              --arg container "$container" \
+              --arg tag "$tag" \
+              --arg version "$version" \
+              --arg flavor "$flavor" \
+              --arg dockerfile "$dockerfile" \
+              --arg build_digest "$build_digest" \
+              --arg built_at "$built_at" \
+              --arg ghcr "${REMOTE_CR}/${container}:${tag}" \
+              --arg dockerhub "docker.io/oorabona/${container}:${tag}" \
+              --arg image_id "$image_id" \
+              --argjson is_default "$is_default" \
+              --argjson is_latest_version "$is_latest_version" \
+              --argjson build_args "$build_args" \
+              --argjson base_fields "$base_fields" \
+              '{lineage_schema_version: 3, container:$container, tag:$tag, flavor:$flavor,
+                version:$version, dockerfile:$dockerfile, build_args:$build_args,
+                platform:"linux/amd64", build_digest:$build_digest, built_at:$built_at,
+                images:{ghcr:$ghcr, dockerhub:$dockerhub}, is_default:$is_default,
+                is_latest_version:$is_latest_version, runtime:"GitHub Actions (registry cache)",
+                github_actions:true, duration_seconds:null} + $base_fields
+                | if $image_id == "" then . else . + {image_id:$image_id} end'); then
+              echo "::error::Bake lineage ${cell_name}: could not assemble record"
+              failures=1
+              continue
+            fi
+            if ! write_lineage_record_atomically ".build-lineage/${container}-${tag}.json" "$record"; then
+              echo "::error::Bake lineage ${cell_name}: record failed validation or could not be written"
+              failures=1
+            fi
+          done
+          (( failures == 0 ))
+
       # Trivy scanning is handled by the dedicated bake-trivy job (FIX 5).
-      # amd64-only: SBOM generation + attestation + lineage emission.
+      # amd64-only: SBOM generation and attestation.
       # v1 behaviour: on pull_request the bake job is BUILD-ONLY (compile validation);
       # nothing is pushed to the registry so SBOM generation and attestation are
       # skipped — scanning stale or absent refs would produce misleading results.
@@ -2187,47 +2487,21 @@ jobs:
         with:
           syft-version: v1.51.0
 
-      - name: Generate SBOM and emit lineage (bake amd64)
+      - name: Generate SBOM (bake amd64)
         id: bake-sbom
         if: steps.install-syft-bake.outcome == 'success' && github.event_name != 'pull_request' && env.DRY_RUN != 'true'
         env:
-          BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
-          BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
-          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
+          BAKE_PLAN_FILE: .bake-plan/bake-plan.json
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
-          GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          source ./helpers/logging.sh
           source ./helpers/retry.sh
           source ./helpers/sbom-utils.sh
-          chmod +x scripts/generate-bake-hcl.sh
-
-          scope_args=()
-          [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
-          [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
-          [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
-          [[ -n "${CONTAINER_SCOPES:-}" ]] && scope_args+=(--container-scopes "${CONTAINER_SCOPES}")
-          final_args=()
-          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
-            final_args=(--include-final-build)
+          if [[ ! -r "$BAKE_PLAN_FILE" ]] || ! jq -e 'type == "array"' "$BAKE_PLAN_FILE" >/dev/null 2>&1; then
+            echo "::error::Could not read bake lineage plan: ${BAKE_PLAN_FILE}"
+            exit 1
           fi
-
-          # shellcheck disable=SC2086
-          cells_json=$(./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" ${BAKE_CONTAINERS})
-          # Also SBOM retained cells in the explicit, enumerated retained-bake
-          # rollout set, including admitted chained containers but excluding
-          # containers pinned to their latest version (bake_latest_only), else
-          # bake-attest (which matrices over all bake_builds incl. retained) finds
-          # no SBOM and silently skips attestation for retained images. Merge +
-          # dedupe by version-keyed cell identity (unique_by reorders, harmless —
-          # the SBOM loop is per-cell independent).
-          if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
-            # shellcheck disable=SC2086
-            retained_cells=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
-            cells_json=$(jq -s '(.[0] + .[1]) | unique_by([.container, (.tag // ""), (.flavor // "")])' <<< "$cells_json"$'\n'"$retained_cells")
-          fi
-          ncells=$(jq 'length' <<< "$cells_json")
+          ncells=$(jq -r 'length' "$BAKE_PLAN_FILE")
           mkdir -p .build-lineage
 
           # Attest manifest: [{subject_name, subject_digest, sbom_path}] written for the
@@ -2236,16 +2510,13 @@ jobs:
           printf '[]' > "$attest_manifest"
 
           for (( i=0; i<ncells; i++ )); do
-            cell=$(jq -c ".[$i]" <<< "$cells_json")
+            cell=$(jq -c ".[$i]" "$BAKE_PLAN_FILE")
             container=$(jq -r '.container'       <<< "$cell")
             tag=$(jq -r '.tag'                   <<< "$cell")
-            flavor=$(jq -r '.flavor // ""'       <<< "$cell")
-            is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
-            is_latest=$(jq -r 'if has("is_latest_version") then (if .is_latest_version then "true" else "false" end) else "true" end' <<< "$cell")
             iref=$(jq -r '.intermediate_ref'     <<< "$cell")
             image_ref="${iref//\$\{REMOTE_CR\}/${REMOTE_CR}}-amd64"
 
-            echo "::group::SBOM + lineage for ${container}:${tag} (amd64)"
+            echo "::group::SBOM for ${container}:${tag} (amd64)"
 
             # SBOM
             sbom_file=".build-lineage/${container}-${tag}.sbom.json"
@@ -2269,32 +2540,6 @@ jobs:
                 '. + [{subject_name:$sn, subject_digest:$sd, sbom_path:$sp}]' \
                 "$attest_manifest" > "${attest_manifest}.tmp" && mv "${attest_manifest}.tmp" "$attest_manifest" || true
             fi
-
-            # Emit schema-v2 lineage JSON
-            lineage_file=".build-lineage/${container}-${tag}.json"
-            built_at="$(date -Iseconds)"
-            ghcr_image="${REMOTE_CR}/${container}:${tag}"
-            jq -cn \
-              --arg container "$container" \
-              --arg version   "$tag" \
-              --arg tag       "$tag" \
-              --arg flavor    "$flavor" \
-              --arg platform  "linux/amd64" \
-              --arg build_digest "$digest" \
-              --arg base_image_ref "" \
-              --arg ghcr      "$ghcr_image" \
-              --arg dockerhub "docker.io/oorabona/${container}:${tag}" \
-              --arg built_at  "$built_at" \
-              --arg is_default "$is_default" \
-              --arg is_latest  "$is_latest" \
-              '{container:$container, version:$version, tag:$tag, flavor:$flavor,
-                platform:$platform, build_digest:$build_digest,
-                base_image_ref:$base_image_ref,
-                images:{ghcr:$ghcr, dockerhub:$dockerhub},
-                built_at:$built_at,
-                is_default:($is_default == "true"),
-                is_latest_version:($is_latest == "true")}' \
-              > "$lineage_file" || true
 
             echo "::endgroup::"
           done
@@ -2330,7 +2575,7 @@ jobs:
 
       - name: Upload build lineage (bake amd64)
         id: upload_build_lineage_bake_amd64
-        if: steps.bake-sbom.outcome == 'success' && github.event_name != 'pull_request'
+        if: steps.write-bake-lineage.outcome == 'success' && github.event_name != 'pull_request'
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
