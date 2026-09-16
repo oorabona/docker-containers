@@ -1583,6 +1583,55 @@ EOF
     [ "$output" = "" ]
 }
 
+@test "depgraph: sibling lineage requires matching container and active non-empty tag" {
+    printf '%s' '{"lineage_schema_version":3,"container":"other","tag":"active","base_image_kind":"sibling_target","base_image_sibling":{"container":"php","version":"8.4","platform":"linux/amd64","textual_ref":"target:php","bake_target_id":"php-8.4","flavor":"fpm"}}' > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-wrong-container.json"
+    printf '%s' '{"lineage_schema_version":3,"container":"web-shell","base_image_kind":"sibling_target","base_image_sibling":{"container":"php","version":"8.4","platform":"linux/amd64","textual_ref":"target:php","bake_target_id":"php-8.4","flavor":"fpm"}}' > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-missing-tag.json"
+    printf '%s' '{"lineage_schema_version":3,"container":"web-shell","tag":"retired","base_image_kind":"sibling_target","base_image_sibling":{"container":"php","version":"8.4","platform":"linux/amd64","textual_ref":"target:php","bake_target_id":"php-8.4","flavor":"fpm"}}' > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-stale-tag.json"
+    local isolated_dir="$TEST_TEMP_DIR/sibling-lineage-ownership"
+    mkdir -p "$isolated_dir/web-shell"
+    printf 'name: web-shell\n' > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell php'
+        _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell='active'
+        _DEPGRAPH_OWNER_OVERRIDE='oorabona'
+        export PROJECT_ROOT _DEPGRAPH_CONTAINERS_OVERRIDE _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell _DEPGRAPH_OWNER_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        deps=\$(_depgraph_get_deps web-shell)
+        printf 'deps=%s\\n' "\$deps"
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'skipping sibling lineage web-shell-wrong-container.json (container other does not match web-shell)'* ]]
+    [[ "$output" == *'skipping sibling lineage web-shell-missing-tag.json (missing tag)'* ]]
+    [[ "$output" == *'skipping stale lineage web-shell-stale-tag.json (tag retired not in active matrix)'* ]]
+    [[ "$output" == *'deps='* ]]
+    [[ "$output" != *'deps=php'* ]]
+}
+
+@test "depgraph: legacy lineage without a tag remains tolerated" {
+    printf '%s' '{"container":"web-shell","base_image_ref":"ghcr.io/oorabona/php:latest","base_image_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}' > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-legacy-no-tag.json"
+    local isolated_dir="$TEST_TEMP_DIR/legacy-lineage-no-tag"
+    mkdir -p "$isolated_dir/web-shell"
+    printf 'name: web-shell\n' > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell php'
+        _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell='active'
+        _DEPGRAPH_OWNER_OVERRIDE='oorabona'
+        export PROJECT_ROOT _DEPGRAPH_CONTAINERS_OVERRIDE _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell _DEPGRAPH_OWNER_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps web-shell
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "php" ]
+}
+
 @test "depgraph: corrupt lineage warns while config references still return" {
     printf '{"lineage_schema_version":3,"base_image_kind":' > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-truncated.json"
     local isolated_dir="$TEST_TEMP_DIR/corrupt_lineage"

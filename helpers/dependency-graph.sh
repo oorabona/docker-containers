@@ -321,16 +321,35 @@ _depgraph_get_deps() {
             continue
         fi
 
+        # v3 sibling records are authoritative only for the container they
+        # name, and only for a current concrete cell.  Legacy records predate
+        # the tag field, so retain their established tolerance below.
+        local _record_container _record_tag _is_v3_sibling
+        _record_container=$(jq -r '.container // empty' <<< "$lineage_record")
+        _record_tag=$(jq -r '.tag // empty' <<< "$lineage_record")
+        _is_v3_sibling=$(jq -r '.lineage_schema_version == 3 and .base_image_kind == "sibling_target"' \
+            <<< "$lineage_record")
+        if [[ "$_is_v3_sibling" == "true" ]]; then
+            if [[ "$_record_container" != "$container" ]]; then
+                printf '::warning::_depgraph_get_deps: skipping sibling lineage %s (container %s does not match %s)\n' \
+                    "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$_record_container")" "$(_escape_gha_command "$container")" >&2
+                continue
+            fi
+            if [[ -z "$_record_tag" ]]; then
+                printf '::warning::_depgraph_get_deps: skipping sibling lineage %s (missing tag)\n' \
+                    "$(_escape_gha_command "$basename_file")" >&2
+                continue
+            fi
+        fi
+
         # Active-tag filter: skip lineage files whose tag is not in the active
         # build matrix (stale files from retired variants).  The only bypass is
         # __TEST_NO_FILTER__ (test mode); in production _active_tags_for_filter
         # is always non-empty here (fail-closed above guarantees it).
         if [[ "$_active_tags_for_filter" != "__TEST_NO_FILTER__" && -n "$_active_tags_for_filter" ]]; then
-            local _file_tag
-            _file_tag=$(jq -r '.tag // empty' <<< "$lineage_record")
-            if [[ -n "$_file_tag" ]] && ! grep -qxF -- "$_file_tag" <<<"$_active_tags_for_filter"; then
+            if [[ -n "$_record_tag" ]] && ! grep -qxF -- "$_record_tag" <<<"$_active_tags_for_filter"; then
                 printf '::notice::_depgraph_get_deps: skipping stale lineage %s (tag %s not in active matrix)\n' \
-                    "$(_escape_gha_command "$(basename "$lineage_file")")" "$(_escape_gha_command "$_file_tag")" >&2
+                    "$(_escape_gha_command "$(basename "$lineage_file")")" "$(_escape_gha_command "$_record_tag")" >&2
                 continue
             fi
         fi

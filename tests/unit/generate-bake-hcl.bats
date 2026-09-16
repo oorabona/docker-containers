@@ -610,9 +610,9 @@ _declared_base_identity_fixture() {
     cp -a "${PROJECT_ROOT}/scripts" "${PROJECT_ROOT}/helpers" "${PROJECT_ROOT}/make" "$fixture_root"
 
     local container
-    for container in top per none unresolved consumer supplier library scratch \
+    for container in top per none empty unresolved consumer supplier library scratch \
         default_colon present_colon dash_missing dash_present \
-        empty_default several plain_tagless; do
+        empty_default several plain_tagless digest_only; do
         mkdir -p "$fixture_root/$container"
         printf '%s\n' 'FROM scratch' > "$fixture_root/$container/Dockerfile"
         cat > "$fixture_root/$container/variants.yaml" <<'YAML'
@@ -634,6 +634,7 @@ distros:
 YAML
     sed -i 's/tag: "1"/tag: "1"\n    variants:\n      - name: linux\n        flavor: linux/' "$fixture_root/per/variants.yaml"
     printf '%s\n' '{}' > "$fixture_root/none/config.yaml"
+    printf '%s\n' 'base_image: ""' > "$fixture_root/empty/config.yaml"
     cat > "$fixture_root/unresolved/config.yaml" <<'YAML'
 base_image: registry.example/unresolved:${MISSING}
 YAML
@@ -675,16 +676,17 @@ base_image: ${PLAIN}
 build_args:
   PLAIN: alpine
 YAML
+    printf '%s\n' 'base_image: alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+        > "$fixture_root/digest_only/config.yaml"
     printf '%s\n' 'base_image: scratch' > "$fixture_root/scratch/config.yaml"
 }
 
 _fixture_cells() {
     local fixture_root="$1"
     run env GITHUB_REPOSITORY_OWNER=oorabona \
-        _DEPGRAPH_CONTAINERS_OVERRIDE='top per none unresolved consumer supplier library scratch default_colon present_colon dash_missing dash_present empty_default several plain_tagless' \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='top per consumer supplier library scratch default_colon present_colon dash_missing dash_present several plain_tagless' \
         bash "$fixture_root/scripts/generate-bake-hcl.sh" --cells \
-        top per none unresolved consumer supplier library \
-        scratch default_colon present_colon dash_missing dash_present empty_default several plain_tagless
+        top per consumer supplier library scratch default_colon present_colon dash_missing dash_present several plain_tagless
 }
 
 @test "--cells top-level declared base becomes substituted external identity" {
@@ -708,25 +710,41 @@ _fixture_cells() {
     [ "$(jq -r '.[] | select(.container == "per") | .base_identity.ref' <<< "$output")" = "registry.example/per:2" ]
 }
 
-@test "--cells reports not_evaluated when no declared base applies" {
+@test "--cells refuses a missing declared base with onboarding guidance" {
     local fixture_root
     fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
     _declared_base_identity_fixture "$fixture_root"
 
-    _fixture_cells "$fixture_root"
-    [ "$status" -eq 0 ]
-    [ "$(jq -r '.[] | select(.container == "none") | .base_identity.kind' <<< "$output")" = "not_evaluated" ]
+    run env GITHUB_REPOSITORY_OWNER=oorabona \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='none' \
+        bash "$fixture_root/scripts/generate-bake-hcl.sh" --cells none
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'bake cell none (flavor default) has no declared base'* ]]
+    [[ "$output" == *'declare base_image (or distros.<flavor>.base_image) or scratch'* ]]
 }
 
-@test "--cells keeps unresolved declared variables as unresolved identities" {
+@test "--cells refuses an empty declared base" {
     local fixture_root
     fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
     _declared_base_identity_fixture "$fixture_root"
 
-    _fixture_cells "$fixture_root"
-    [ "$status" -eq 0 ]
-    [ "$(jq -r '.[] | select(.container == "unresolved") | .base_identity.kind' <<< "$output")" = "unresolved" ]
-    [ "$(jq -r '.[] | select(.container == "unresolved") | .base_identity.ref' <<< "$output")" = 'registry.example/unresolved:${MISSING}' ]
+    run env GITHUB_REPOSITORY_OWNER=oorabona \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='empty' \
+        bash "$fixture_root/scripts/generate-bake-hcl.sh" --cells empty
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'bake cell empty (flavor default) has no declared base'* ]]
+}
+
+@test "--cells refuses an unresolved declared base" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    run env GITHUB_REPOSITORY_OWNER=oorabona \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='unresolved' \
+        bash "$fixture_root/scripts/generate-bake-hcl.sh" --cells unresolved
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'bake cell unresolved (flavor default) has an unresolved declared base'* ]]
 }
 
 @test "--cells substitutes declared default expressions from args or their defaults" {
@@ -741,8 +759,6 @@ _fixture_cells() {
     [ "$(jq -r '.[] | select(.container == "dash_missing") | .base_identity.ref' <<< "$output")" = "busybox:1.36" ]
     [ "$(jq -r '.[] | select(.container == "dash_present") | .base_identity.ref' <<< "$output")" = "registry.example/dash-present:2" ]
     [ "$(jq -r '.[] | select(.container == "several") | .base_identity.ref' <<< "$output")" = "registry.example/actual:two" ]
-    [ "$(jq -r '.[] | select(.container == "empty_default") | .base_identity.kind' <<< "$output")" = "unresolved" ]
-    [ "$(jq -r '.[] | select(.container == "empty_default") | .base_identity.ref' <<< "$output")" = '${EMPTY:-}' ]
     [ "$(jq -r '.[] | select(.container == "plain_tagless") | .base_identity.kind' <<< "$output")" = "external" ]
     [ "$(jq -r '.[] | select(.container == "plain_tagless") | .base_identity.ref' <<< "$output")" = 'alpine:latest' ]
 }
@@ -783,6 +799,19 @@ _fixture_cells() {
     _fixture_cells "$fixture_root"
     [ "$status" -eq 0 ]
     [ "$(jq -r '.[] | select(.container == "scratch") | .base_identity.kind' <<< "$output")" = "no_external_base" ]
+}
+
+@test "--cells rejects a digest-only external declaration at plan time" {
+    local fixture_root
+    fixture_root="${TEST_TEMP_DIR}/declared-base-identity"
+    _declared_base_identity_fixture "$fixture_root"
+
+    run env GITHUB_REPOSITORY_OWNER=oorabona \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='digest_only' \
+        bash "$fixture_root/scripts/generate-bake-hcl.sh" --cells digest_only
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'bake cell digest_only (flavor default) declares unsupported external base reference'* ]]
+    [[ "$output" == *'digest-only is not'* ]]
 }
 
 @test "--cells classifies sibling targets but not library namespace lookalikes" {
@@ -978,6 +1007,12 @@ _bake_target_reachable_froms() {
                     false
                 fi
                 [ "$(jq -r --arg ref "$ref" '.[$ref] // empty' <<< "$contexts")" = "target:$(jq -r '.bake_target_id' <<< "$supplier")" ]
+                ;;
+            no_external_base)
+                ;;
+            *)
+                printf 'target %s has unsupported base identity kind %s\n' "$target_id" "$kind" >&2
+                false
                 ;;
         esac
     done < <(jq -c '.[]' <<< "$cells")

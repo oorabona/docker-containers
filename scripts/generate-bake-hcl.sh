@@ -57,6 +57,8 @@ readonly _BAKE_REMOTE_CR="${REMOTE_CR:-ghcr.io/oorabona}"
 source "${PROJECT_ROOT}/helpers/variant-utils.sh"
 # shellcheck source=../helpers/container-scopes.sh
 source "${PROJECT_ROOT}/helpers/container-scopes.sh"
+# shellcheck source=../helpers/base-image-utils.sh
+source "${PROJECT_ROOT}/helpers/base-image-utils.sh"
 
 # Force config-only dep resolution (no ./make list-builds fan-out needed).
 # The generator runs before any build lineage exists.
@@ -788,6 +790,11 @@ _declared_base_identity() {
         supplier=$(_declared_base_supplier "$internal_container" "$substituted_ref") || return 1
         jq -cn --argjson supplier "$supplier" '{kind:"sibling_target",supplier:$supplier}'
     else
+        if ! _is_fleet_external_ref "$substituted_ref"; then
+            gha_error 'bake cell %s (flavor %s) declares unsupported external base reference %s; declare a tagged image reference (tag@sha256 is supported, digest-only is not)' \
+                "$container" "${flavor:-default}" "$substituted_ref" >&2
+            return 1
+        fi
         jq -cn --arg ref "$substituted_ref" '{kind:"external",ref:$ref}'
     fi
 }
@@ -1875,6 +1882,20 @@ _emit_cells_json() {
                 printf 'ERROR: could not determine declared base identity for %q\n' "$c" >&2
                 return 1
             fi
+            local base_identity_kind
+            base_identity_kind=$(jq -er '.kind' <<< "$base_identity") || return 1
+            case "$base_identity_kind" in
+                not_evaluated)
+                    gha_error 'bake cell %s (flavor %s) has no declared base; declare base_image (or distros.<flavor>.base_image) or scratch before it can be bake-managed' \
+                        "$c" "${_EC_cell_flavor:-default}" >&2
+                    return 1
+                    ;;
+                unresolved)
+                    gha_error 'bake cell %s (flavor %s) has an unresolved declared base; declare a concrete base_image or scratch before it can be bake-managed' \
+                        "$c" "${_EC_cell_flavor:-default}" >&2
+                    return 1
+                    ;;
+            esac
             base_sfx=$(base_suffix "${PROJECT_ROOT}/${c}" 2>/dev/null || true)
             cell_version="${_EC_cell_version}${base_sfx}"
             _on_cell_plain "$c" "$_EC_cell_tag" "$_EC_cell_flavor" \

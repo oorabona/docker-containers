@@ -274,11 +274,15 @@ record_path() {
     [ "$(yq -r '.jobs."bake-plan".permissions.packages' "$WORKFLOW")" = read ]
     [ "$(yq -r '.jobs."bake-build-amd64".needs | join(",")' "$WORKFLOW")" = 'detect-containers,build-extensions,merge-extension-manifests,sync-base-images,bake-plan' ]
     [[ "$(yq -r '.jobs."bake-build-amd64".if' "$WORKFLOW")" == *'needs.bake-plan.result == '\''success'\'''* ]]
-    [ "$(yq -r '.jobs."bake-build-arm64".needs | join(",")' "$WORKFLOW")" = 'detect-containers,build-extensions,merge-extension-manifests,sync-base-images' ]
+    [ "$(yq -r '.jobs."bake-build-arm64".needs | join(",")' "$WORKFLOW")" = 'detect-containers,build-extensions,merge-extension-manifests,sync-base-images,bake-plan' ]
+    [[ "$(yq -r '.jobs."bake-build-arm64".if' "$WORKFLOW")" == *'needs.bake-plan.result == '\''success'\'''* ]]
     [ "$(yq -r '.jobs."bake-build-amd64".steps[] | select(.id == "write-bake-lineage") | has("continue-on-error")' "$WORKFLOW")" = false ]
     [ "$(yq -r '.jobs."bake-build-amd64".steps[] | select(.id == "bake-sbom") | ."continue-on-error"' "$WORKFLOW")" = true ]
     [[ "$(yq -r '.jobs."bake-build-amd64".steps[] | select(.id == "upload_build_lineage_bake_amd64") | .if' "$WORKFLOW")" == *'steps.write-bake-lineage.outcome == '\''success'\'''* ]]
     inspect_body=$(yq -r '.jobs."bake-plan".steps[] | select(.name == "Inspect planned external base indexes") | .run' "$WORKFLOW")
     [[ "$inspect_body" == *'retry_with_backoff 2 10 timeout -k 5 30'* && "$inspect_body" == *'DRY_RUN:-false'* && "$inspect_body" == *'IS_PR'* ]]
     [ "$(yq -r '.jobs."bake-plan".steps[] | select(.name == "Upload bake lineage plan") | .with.name' "$WORKFLOW")" = 'bake-plan-${{ github.run_id }}' ]
+    [ "$(yq -r '.jobs."cache-lineage".steps[] | select(.id == "merge") | .env.BAKE_MERGE_RESULT' "$WORKFLOW")" = '${{ needs.bake-merge.result }}' ]
+    cache_merge_body=$(yq -r '.jobs."cache-lineage".steps[] | select(.id == "merge") | .run' "$WORKFLOW")
+    [[ "$cache_merge_body" == *'build-lineage-bake-'* && "$cache_merge_body" == *'BAKE_MERGE_RESULT" != "success"'* ]]
 }

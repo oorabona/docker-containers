@@ -2611,7 +2611,7 @@ jobs:
 
   bake-build-arm64:
     name: Bake build (arm64)
-    needs: [detect-containers, build-extensions, merge-extension-manifests, sync-base-images]
+    needs: [detect-containers, build-extensions, merge-extension-manifests, sync-base-images, bake-plan]
     if: |
       always() &&
       inputs.rebuild != 'sync' &&
@@ -2619,7 +2619,8 @@ jobs:
       toJson(fromJson(needs.detect-containers.outputs.bake_builds || '[]')) != '[]' &&
       (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
       (needs.merge-extension-manifests.result == 'success' || needs.merge-extension-manifests.result == 'skipped') &&
-      (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
+      (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped') &&
+      needs.bake-plan.result == 'success'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     env:
@@ -4350,13 +4351,29 @@ jobs:
 
       - name: Merge lineage files
         id: merge
+        env:
+          BAKE_MERGE_RESULT: ${{ needs.bake-merge.result }}
         run: |
           mkdir -p .build-lineage
           if [ -d ".build-lineage-artifacts" ]; then
-            find .build-lineage-artifacts -name '*.json' -exec cp {} .build-lineage/ \;
+            while IFS= read -r -d '' lineage_file; do
+              case "$lineage_file" in
+                .build-lineage-artifacts/build-lineage-bake-*/*)
+                  if [[ "$BAKE_MERGE_RESULT" != "success" ]]; then
+                    echo "::notice::Skipping bake lineage because bake-merge result is ${BAKE_MERGE_RESULT}"
+                    continue
+                  fi
+                  ;;
+              esac
+              cp "$lineage_file" .build-lineage/
+            done < <(find .build-lineage-artifacts -name '*.json' -print0)
             count=$(find .build-lineage -name '*.json' | wc -l)
             echo "Consolidated $count lineage files"
-            echo "has_files=true" >> "$GITHUB_OUTPUT"
+            if [[ "$count" -gt 0 ]]; then
+              echo "has_files=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "has_files=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "No lineage artifacts found"
             echo "has_files=false" >> "$GITHUB_OUTPUT"

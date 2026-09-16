@@ -100,55 +100,22 @@ If container A's base is container B (also project-produced), and both drift, tw
 
 ## #1523 — Lineage schema v3 base identity
 
-This branch defines the schema-v3 writer contract; it does not change the
-current emitters, which still write `lineage_schema_version: 2`. A future
-adopter will describe its selected runnable stage with one of four explicit
-base identities: `no_external_base` for `scratch`,
-`unresolved_external_base` when its reference cannot be resolved,
-`sibling_target` with the exact supplying cell for a target built in the same
-invocation, or an external base.
+The bake path is the production schema-v3 lineage writer. A record has one of
+five base identities: external, `sibling_target`, `no_external_base`,
+`unresolved_external_base`, or `not_evaluated`. The plan may emit only the
+first three: a cell with no usable declaration, an unresolved declaration, or
+an external reference outside the writer's grammar fails planning rather than
+becoming a monitoring exclusion. A newly bake-managed container must declare
+`base_image` (or a flavour-specific base) or `scratch`.
 
-An external base records its textual `base_image_ref` and the immutable
-image-index `base_image_digest`; writers obtain that digest from an inspected
-OCI image-index or manifest-list descriptor, not from a digest-shaped string.
-Marker identities intentionally carry neither external field. The identity
-decision preserves supported older records and rejects malformed or unsupported
-schema versions. It is structural validation only: a network reader must apply
-registry-trust policy separately.
+The identity is the base the container declares in `config.yaml`, not a selected
+runnable Dockerfile stage: the flavour's `distros.<flavor>.base_image` takes
+precedence, otherwise the top-level `base_image`, after substitution with the
+cell's build arguments. Consequently `sslh` and `terraform` are watched
+against their declared source stage rather than their runtime image (#1655).
 
-The complete-record validator applies the stricter v3 writer envelope before
-the atomic writer creates a parent directory, and the writer installs the file
-at exactly its requested pathname.
-
-The bake path is the first production writer to adopt those helpers, and it
-describes the base the container DECLARES for that cell in its `config.yaml`:
-the flavour's `distros.<flavor>.base_image` when it declares one, otherwise the
-top-level `base_image`, substituted with the arguments the build receives. It
-adds a fifth identity, `not_evaluated`, for a cell whose declaration yields no
-base identity at all, distinct from `no_external_base`, which states that the
-image has no external base.
-
-A declaration is not proof of what a multi-stage build consumed. For `sslh` and
-`terraform` the declared value is the stage a binary is copied from rather than
-the image the container runs on (#1655), so their drift is watched against the
-declared image. No source available today yields the base a multi-stage build
-actually consumed without interpreting its Dockerfile, and an earlier attempt to
-interpret one was abandoned: every correction to that model exposed the next form
-it misread.
-
-An external declaration's index digest is read once per run, before any image is
-built, so the record names the index that reference pointed at when the run was
-planned. A build resolves its own base, so a tag that moves during a run leaves
-the record naming the earlier index; the next scan then reports drift, which
-costs a rebuild rather than hiding one. Pinning the build to the recorded index
-was implemented and withdrawn: it could not hold that promise across the two
-architecture jobs (#1823) or for dependency-closure targets (#1824).
-
-A record exists for exactly the planned cells the build metadata confirms, with
-the digest that metadata reports, and a record the validator refuses fails the
-build instead of being written or skipped.
-
-Because a `not_evaluated` or `unresolved_external_base` record is a true
-statement rather than a failure, the drift scan reports it as `not_evaluable`
-and counts it beside the evaluated records. Only a malformed record or a
-registry lookup that did not conclude fails the scan.
+For an external identity, the plan snapshots the OCI image-index or manifest-list
+descriptor before either architecture builds. The record uses that descriptor's
+digest and build metadata for the image this run published; it is written only
+after the canonical bake manifest succeeds. The digest is a run snapshot, not
+a pin for either build (#1823) or dependency-closure target (#1824).
