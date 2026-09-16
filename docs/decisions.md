@@ -115,7 +115,10 @@ cell's build arguments. Consequently `sslh` and `terraform` are watched
 against their declared source stage rather than their runtime image (#1655).
 
 For an external identity, the plan snapshots the OCI image-index or manifest-list
-descriptor before either architecture builds. The record uses that descriptor's
-digest and build metadata for the image this run published; it is written only
-after the canonical bake manifest succeeds. The digest is a run snapshot, not
-a pin for either build (#1823) or dependency-closure target (#1824).
+descriptor before either architecture builds. A BAKE LINEAGE record is written
+from the successful amd64 build using that descriptor's digest and the published
+image's build metadata; it is admitted to the durable cache only when the
+`bake-merge` job succeeds. Admission follows that job's overall result, so a
+merge where some cells publish and others fail admits nothing (#1829). The digest
+is a run snapshot, not a pin for either build (#1823) or dependency-closure target
+(#1824).

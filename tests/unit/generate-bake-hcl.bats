@@ -1018,22 +1018,127 @@ _bake_target_reachable_froms() {
     done < <(jq -c '.[]' <<< "$cells")
 }
 
-@test "--cells additions leave the fleet bake document byte-identical to be35f761" {
-    local baseline_root current_bake baseline_bake
-    baseline_root=$(mktemp -d)
-    git archive be35f761 | tar -x -C "$baseline_root"
-    current_bake="${TEST_TEMP_DIR}/current-bake.json"
-    baseline_bake="${TEST_TEMP_DIR}/baseline-bake.json"
+_make_bake_document_digest_fixture() {
+    local fixture_root="$1"
+    mkdir -p "$fixture_root"
+    cp -a "${PROJECT_ROOT}/scripts" "${PROJECT_ROOT}/helpers" "$fixture_root"
 
-    run env REMOTE_CR=ghcr.io/oorabona GITHUB_REPOSITORY_OWNER=oorabona \
-        bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" > "$current_bake"
+    cat > "$fixture_root/make" <<'MAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+    list) printf '%s\n' plain flavored supplier consumer template retained ;;
+    *) printf 'unsupported fixture make command: %s\n' "${1:-}" >&2; exit 2 ;;
+esac
+MAKE
+    chmod +x "$fixture_root/make"
+
+    local container
+    for container in plain flavored supplier consumer template retained; do
+        mkdir -p "$fixture_root/$container"
+    done
+
+    cat > "$fixture_root/plain/variants.yaml" <<'YAML'
+versions:
+  - tag: "1"
+YAML
+    cat > "$fixture_root/plain/config.yaml" <<'YAML'
+base_image: "alpine:3.20"
+YAML
+    printf '%s\n' 'FROM alpine:3.20' > "$fixture_root/plain/Dockerfile"
+
+    cat > "$fixture_root/flavored/variants.yaml" <<'YAML'
+versions:
+  - tag: "1"
+    variants:
+      - name: blue
+        suffix: "-blue"
+        flavor: blue
+        default: true
+YAML
+    cat > "$fixture_root/flavored/config.yaml" <<'YAML'
+distros:
+  blue:
+    base_image: "busybox:1.36"
+YAML
+    printf '%s\n' 'FROM busybox:1.36' > "$fixture_root/flavored/Dockerfile.blue"
+
+    cat > "$fixture_root/supplier/variants.yaml" <<'YAML'
+versions:
+  - tag: "1"
+YAML
+    cat > "$fixture_root/supplier/config.yaml" <<'YAML'
+base_image: "alpine:3.20"
+YAML
+    printf '%s\n' 'FROM alpine:3.20' > "$fixture_root/supplier/Dockerfile"
+
+    cat > "$fixture_root/consumer/variants.yaml" <<'YAML'
+versions:
+  - tag: "1"
+YAML
+    cat > "$fixture_root/consumer/config.yaml" <<'YAML'
+base_image: "${REMOTE_CR}/supplier:${VERSION}"
+YAML
+    cat > "$fixture_root/consumer/Dockerfile" <<'DOCKERFILE'
+ARG REMOTE_CR
+ARG VERSION
+FROM ${REMOTE_CR}/supplier:${VERSION}
+DOCKERFILE
+
+    cat > "$fixture_root/template/variants.yaml" <<'YAML'
+versions:
+  - tag: "1"
+YAML
+    cat > "$fixture_root/template/config.yaml" <<'YAML'
+base_image: "alpine:3.20"
+YAML
+    printf '%s\n' '@@BASE_IMAGE@@' > "$fixture_root/template/Dockerfile"
+    cat > "$fixture_root/template/generate-dockerfile.sh" <<'GENERATOR'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' 'FROM alpine:3.20'
+GENERATOR
+    chmod +x "$fixture_root/template/generate-dockerfile.sh"
+
+    cat > "$fixture_root/retained/variants.yaml" <<'YAML'
+build:
+  version_retention: 2
+versions:
+  - tag: "2"
+  - tag: "1"
+YAML
+    cat > "$fixture_root/retained/config.yaml" <<'YAML'
+base_image: "busybox:1.36"
+YAML
+    printf '%s\n' 'FROM busybox:1.36' > "$fixture_root/retained/Dockerfile"
+}
+
+@test "generated purpose-built bake fixture matches its pinned digest" {
+    local fixture_root bake expected_digest observed_digest byte_length
+    fixture_root="${TEST_TEMP_DIR}/bake-document-digest-fixture"
+    _make_bake_document_digest_fixture "$fixture_root"
+    bake="${TEST_TEMP_DIR}/bake-document.json"
+
+    run env REMOTE_CR=registry.example/fleet GITHUB_REPOSITORY_OWNER=fixture-owner \
+        BAKE_CACHE_EXPORT=false \
+        bash "$fixture_root/scripts/generate-bake-hcl.sh" --all-retained \
+        plain flavored consumer template retained
     [ "$status" -eq 0 ]
-    run env REMOTE_CR=ghcr.io/oorabona GITHUB_REPOSITORY_OWNER=oorabona \
-        bash "$baseline_root/scripts/generate-bake-hcl.sh" > "$baseline_bake"
-    [ "$status" -eq 0 ]
-    run diff -u "$baseline_bake" "$current_bake"
-    rm -rf "$baseline_root"
-    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" > "$bake"
+
+    # Locks the generated bake document for the purpose-built fixture above.
+    # Inputs pinned here are REMOTE_CR, GITHUB_REPOSITORY_OWNER, BAKE_CACHE_EXPORT,
+    # fixture metadata and generator code. To re-pin an intended change, regenerate,
+    # read the observed digest below, and replace this constant in the same commit.
+    expected_digest='8604714f47ffdda4807c4a3d91e1dbedb6eda07398009cf746ef65edeb034a19'
+    observed_digest=$(sha256sum "$bake" | awk '{print $1}')
+    byte_length=$(wc -c < "$bake")
+    if [[ "$observed_digest" != "$expected_digest" ]]; then
+        printf 'generated fixture bake digest mismatch: expected=%s observed=%s bytes=%s\n' \
+            "$expected_digest" "$observed_digest" "$byte_length" >&2
+        false
+    fi
 }
 
 @test "--cells mode emits a JSON array" {
