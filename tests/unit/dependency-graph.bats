@@ -185,7 +185,12 @@ _write_lineage() {
 # ---------------------------------------------------------------------------
 @test "depgraph: library/php is external, NOT matched to internal php container" {
     _write_lineage "wordpress" "latest" "library/php:8.4-fpm-alpine"
+    local isolated_dir="$TEST_TEMP_DIR/external_namespace"
+    mkdir -p "$isolated_dir"
     run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        PROJECT_ROOT='${isolated_dir}'
+        export _DEPGRAPH_OWNER_OVERRIDE PROJECT_ROOT
         source '${HELPERS_DIR}/dependency-graph.sh'
         _depgraph_get_deps wordpress
     "
@@ -461,9 +466,12 @@ _write_lineage() {
 @test "depgraph: ghcr.io with other-owner → NOT an internal dep (owner mismatch)" {
     export _DEPGRAPH_OWNER_OVERRIDE=oorabona
     _write_lineage "wordpress" "latest" "ghcr.io/other-owner/php:latest"
+    local isolated_dir="$TEST_TEMP_DIR/other_owner_ghcr"
+    mkdir -p "$isolated_dir"
     run bash -c "
         _DEPGRAPH_OWNER_OVERRIDE=oorabona
-        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='${isolated_dir}'
+        export _DEPGRAPH_OWNER_OVERRIDE PROJECT_ROOT
         source '${HELPERS_DIR}/dependency-graph.sh'
         _depgraph_get_deps wordpress
     "
@@ -487,9 +495,12 @@ _write_lineage() {
 @test "depgraph: hub.docker.io with other-owner → NOT an internal dep (owner mismatch)" {
     export _DEPGRAPH_OWNER_OVERRIDE=oorabona
     _write_lineage "wordpress" "latest" "hub.docker.io/other-owner/php:latest"
+    local isolated_dir="$TEST_TEMP_DIR/other_owner_hub"
+    mkdir -p "$isolated_dir"
     run bash -c "
         _DEPGRAPH_OWNER_OVERRIDE=oorabona
-        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='${isolated_dir}'
+        export _DEPGRAPH_OWNER_OVERRIDE PROJECT_ROOT
         source '${HELPERS_DIR}/dependency-graph.sh'
         _depgraph_get_deps wordpress
     "
@@ -515,9 +526,12 @@ _write_lineage() {
 @test "depgraph: docker.io with other-owner → NOT an internal dep (owner mismatch)" {
     export _DEPGRAPH_OWNER_OVERRIDE=oorabona
     _write_lineage "wordpress" "latest" "docker.io/other-owner/php:latest"
+    local isolated_dir="$TEST_TEMP_DIR/other_owner_docker"
+    mkdir -p "$isolated_dir"
     run bash -c "
         _DEPGRAPH_OWNER_OVERRIDE=oorabona
-        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='${isolated_dir}'
+        export _DEPGRAPH_OWNER_OVERRIDE PROJECT_ROOT
         source '${HELPERS_DIR}/dependency-graph.sh'
         _depgraph_get_deps wordpress
     "
@@ -564,9 +578,12 @@ _write_lineage() {
 
 @test "depgraph: library/php is external even with owner override set" {
     _write_lineage "wordpress" "latest" "library/php:8.4-fpm-alpine"
+    local isolated_dir="$TEST_TEMP_DIR/external_namespace_owner"
+    mkdir -p "$isolated_dir"
     run bash -c "
         _DEPGRAPH_OWNER_OVERRIDE=oorabona
-        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='${isolated_dir}'
+        export _DEPGRAPH_OWNER_OVERRIDE PROJECT_ROOT
         source '${HELPERS_DIR}/dependency-graph.sh'
         _depgraph_get_deps wordpress
     "
@@ -633,30 +650,25 @@ _write_lineage() {
 }
 
 # ---------------------------------------------------------------------------
-# Gate r13 — Defect B regression: found_any set after sidecar filter
+# Gate r13 — Defect B regression: sidecars must not suppress config references
 #
 # A container that has ONLY sidecar lineage files (e.g. *.sbom.json,
-# *.changelog.json) must fall through to the config.yaml fallback path.
-# The old code set found_any=true BEFORE filtering out sidecars, so a
-# container with only sidecars returned empty deps and skipped config.yaml.
+# *.changelog.json) must still derive dependencies from config.yaml.
 #
 # Mutation guard:
-#   MG-B: moving found_any=true back BEFORE is_lineage_sidecar →
-#         this test fails (sidecar-only container returns empty deps
-#         instead of falling back to config.yaml)
+#   Processing a sidecar as a lineage record must not replace the declared edge.
 # ---------------------------------------------------------------------------
 
 @test "depgraph: sidecar-only lineage falls through to config.yaml fallback (Defect B regression)" {
     # Write ONLY sidecar files for containerA — no real lineage JSON.
-    # The absence of a real lineage file (after sidecar filtering) must cause
-    # found_any to remain false, triggering the config.yaml fallback path.
+    # These sidecars must not interfere with the declared config dependency.
     printf '{"container":"containerA","tag":"1.0","base_image_ref":"ghcr.io/oorabona/php:latest"}' \
         > "${_DEPGRAPH_LINEAGE_DIR}/containerA-1.0.sbom.json"
     printf '{"container":"containerA","tag":"1.0"}' \
         > "${_DEPGRAPH_LINEAGE_DIR}/containerA-1.0.changelog.json"
 
     # Place a config.yaml in the real PROJECT_ROOT/containerA/ that declares
-    # an internal base_image_cache ref.  This file is cleaned up below.
+    # an internal base_image ref.  This file is cleaned up below.
     # Note: dependency-graph.sh sources helpers via PROJECT_ROOT so the real
     # PROJECT_ROOT must be used; only the lineage dir is overridden via
     # _DEPGRAPH_LINEAGE_DIR (set in setup()).
@@ -671,7 +683,7 @@ _write_lineage() {
     if [[ -f "$cfg_file" ]]; then
         prev_cfg=$(< "$cfg_file")
     fi
-    printf 'base_image_cache:\n  - image: ghcr.io/oorabona/php:8.4-fpm-alpine\n' \
+    printf 'base_image: "ghcr.io/oorabona/php:8.4-fpm-alpine"\n' \
         > "$cfg_file"
 
     run bash -c "
@@ -691,14 +703,13 @@ _write_lineage() {
         fi
     fi
 
-    # config.yaml fallback must have fired: dep=php detected from config.yaml ref
+    # The config reference supplies php despite the sidecars.
     [ "$status" -eq 0 ]
     [ "$output" = "php" ]
 }
 
 @test "depgraph: sidecar-only + no config.yaml → empty deps (correct fallback behaviour)" {
-    # Sidecar-only, no config.yaml: sidecar filter leaves found_any=false but no
-    # config.yaml exists for this container, so deps remain empty.
+    # Sidecar-only with no config.yaml supplies no dependencies.
     # Uses containerC which has no config.yaml in the real project tree.
     printf '{"container":"containerC","tag":"1.0","base_image_ref":"ghcr.io/oorabona/php:latest"}' \
         > "${_DEPGRAPH_LINEAGE_DIR}/containerC-1.0.sbom.json"
@@ -773,7 +784,7 @@ _write_lineage() {
     # Owner resolution fails there too — must propagate rc non-zero.
     local isolated_dir="$TEST_TEMP_DIR/isolated_fallback_r21"
     mkdir -p "$isolated_dir/containerFallback"
-    printf 'base_image_cache:\n  - image: ghcr.io/someowner/php:8.4-fpm-alpine\n' \
+    printf 'base_image: "ghcr.io/someowner/php:8.4-fpm-alpine"\n' \
         > "$isolated_dir/containerFallback/config.yaml"
     run bash -c "
         unset _DEPGRAPH_OWNER_OVERRIDE
@@ -1075,8 +1086,7 @@ EOF
 @test "depgraph: stale-only lineage (no active tags match) → empty deps (Defect N)" {
     # Write one lineage file with a retired tag only.
     # Active override contains a different tag → the lineage file is stale.
-    # No active lineage → found_any stays false → config.yaml fallback runs,
-    # but containerB has no config.yaml → empty deps.
+    # No active lineage and no config.yaml references leaves the set empty.
     _write_lineage "containerB" "1.0-old" "ghcr.io/oorabona/php:latest"
 
     run bash -c "
@@ -1243,24 +1253,13 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Defect P regression lock: placeholder base_image_ref must NOT suppress
-# the config.yaml fallback (PR #559 regression)
+# Defect P regression lock: a placeholder base_image_ref has no classifiable
+# lineage edge, while config.yaml may still declare the supplier.
 #
 # When a container's ONLY active lineage file has a placeholder
 # base_image_ref (e.g. "ghcr.io/oorabona/debian:${DEBIAN_TAG}"), the file
-# is non-authoritative: it carries no resolved dep.  found_any must NOT be
-# set for such files; the config.yaml fallback must still fire.
-#
-# Without the fix, found_any=true is set before inspecting base_image_ref,
-# so the fallback is suppressed and _depgraph_get_deps returns empty — the
-# container is misclassified as a leaf and auto-merged without
-# cascade:waiting-for-<dep> protection.
-#
-# Mutation guards:
-#   reverting found_any=true to before the placeholder check →
-#           test 1 (the bug) returns "" instead of "debian" (FAIL).
-#   treating ${REMOTE_CR}/... as a placeholder →
-#           test 2 (REMOTE_CR authoritative) returns "" instead of "debian" (FAIL).
+# is non-authoritative: it carries no resolved dep.  The always-unioned
+# config declaration must still supply the dependency.
 # ---------------------------------------------------------------------------
 
 @test "depgraph: Defect P — placeholder base_image_ref falls through to config.yaml fallback" {
@@ -1291,16 +1290,15 @@ EOF
         source '${HELPERS_DIR}/dependency-graph.sh' 2>/dev/null
         _depgraph_get_deps web-shell 2>/dev/null
     "
-    # Without the fix: returns "" (placeholder suppresses fallback → misclassified leaf)
-    # With the fix: returns "debian" (fallback fires because placeholder is non-authoritative)
+    # The config declaration provides debian while the lineage ref is unresolved.
     [ "$status" -eq 0 ]
     [ "$output" = "debian" ]
 }
 
 @test "depgraph: Defect P — \${REMOTE_CR}/debian:trixie is authoritative (no fallback needed)" {
     # A lineage file with ${REMOTE_CR}/debian:trixie IS authoritative — REMOTE_CR is
-    # a CI-resolved trusted prefix, not a placeholder.  found_any must be set; the
-    # config.yaml fallback must NOT be consulted (verify no double-dep or misbehaviour).
+    # a CI-resolved trusted prefix, not a placeholder.  Config is also unioned,
+    # and deduplication keeps the dependency singular.
     local isolated_dir="$TEST_TEMP_DIR/defectp_remotecr"
     mkdir -p "$isolated_dir/web-shell"
 
@@ -1330,16 +1328,15 @@ EOF
     [ "$output" = "debian" ]
 }
 
-@test "depgraph: Defect P — resolved external ref is still a leaf (no fallback)" {
-    # A lineage file with a resolved external ref (library/alpine:3.21) is
-    # authoritative — it tells us the base is external, so found_any=true and
-    # config.yaml fallback must NOT run.  Result: empty deps (leaf).
+@test "depgraph: resolved external lineage still unions config references" {
+    # A lineage file may record an external base for one variant while config.yaml
+    # declares the project-internal base of another variant.
     local isolated_dir="$TEST_TEMP_DIR/defectp_extleaf"
     mkdir -p "$isolated_dir/containerA"
 
     _write_lineage "containerA" "1.0" "library/alpine:3.21"
 
-    # config.yaml has an internal ref — must NOT fire because lineage is authoritative
+    # The declared project-internal reference must still be included.
     printf 'base_image: "ghcr.io/testowner/debian:trixie"\n' \
         > "$isolated_dir/containerA/config.yaml"
 
@@ -1355,8 +1352,7 @@ EOF
         _depgraph_get_deps containerA 2>/dev/null
     "
     [ "$status" -eq 0 ]
-    # External resolved ref → leaf → empty deps; config.yaml NOT consulted
-    [ "$output" = "" ]
+    [ "$output" = "debian" ]
 }
 
 @test "depgraph: Defect P — placeholder + resolved-internal in same container → dep captured once" {
@@ -1391,7 +1387,7 @@ EOF
         echo \"\$deps\" | tr ' ' '\n' | grep -c '^debian$'
     "
     [ "$status" -eq 0 ]
-    # debian must appear exactly once (dedup; fallback NOT consulted)
+    # debian must appear exactly once after the lineage/config union
     [ "$output" = "1" ]
 }
 
@@ -1399,40 +1395,20 @@ EOF
 # Defect R regression lock: mixed resolved-external + placeholder-internal
 # in the same active variant set must not drop the internal dep.
 #
-# Scenario: container has TWO active lineage files —
-#   • one with a RESOLVED EXTERNAL ref (e.g. library/alpine:3.21)  → authoritative,
-#     sets found_any=true, contributes no internal dep (correct leaf for this variant)
-#   • one with a PLACEHOLDER INTERNAL ref (e.g. ghcr.io/<owner>/debian:${TAG}) →
-#     non-authoritative, sets _saw_nonauthoritative=true
-#
-# Before the fix: found_any=true suppressed the config.yaml fallback → internal
-# dep dropped → container classified as a cascade LEAF → auto-merged without
-# cascade:waiting-for-debian, rebuilding against a stale project-internal base.
-#
-# After the fix: _saw_nonauthoritative=true forces the config.yaml fallback to
-# run as a UNION with any lineage-derived deps → debian recovered.
-#
-# Mutation guards:
-#   reverting _saw_nonauthoritative flag + restoring "found_any==false" guard →
-#           test 1 (mixed external+placeholder) returns "" instead of "debian" (FAIL).
-#   removing dedup in config.yaml union path →
-#           test 2 (mixed, same parent) returns count>1 instead of "1" (FAIL).
-#   making _saw_nonauthoritative suppress found_any check →
-#           test 3 (all-authoritative no-regression) leaks config.yaml dep (FAIL).
+# Config declarations are always unioned with all active lineage variants, so
+# neither a resolved external variant nor an unresolved sibling can hide a dep.
 # ---------------------------------------------------------------------------
 
 @test "depgraph: Defect R — resolved-external + placeholder-internal → internal dep recovered via config.yaml" {
-    # This was RED before the _saw_nonauthoritative fix; GREEN after.
-    #
     # Container web-shell has two active lineage variants:
-    #   alpine variant  → resolved external base (library/alpine:3.21): authoritative, sets found_any=true
+    #   alpine variant  → resolved external base (library/alpine:3.21)
     #   debian variant  → placeholder internal base (ghcr.io/testowner/debian:${DEBIAN_TAG}): non-authoritative
     #
     # config.yaml declares the real resolved internal ref → fallback must recover it.
     local isolated_dir="$TEST_TEMP_DIR/defectr_mixed_ext_placeholder"
     mkdir -p "$isolated_dir/web-shell"
 
-    # Authoritative external lineage (sets found_any=true, no internal dep)
+    # External lineage contributes no internal dependency itself.
     _write_lineage "web-shell" "1.7.7-alpine" "library/alpine:3.21"
 
     # Non-authoritative placeholder lineage (internal dep hidden behind unresolved var)
@@ -1459,8 +1435,7 @@ EOF
         _depgraph_get_deps web-shell 2>/dev/null
     "
     [ "$status" -eq 0 ]
-    # Before fix: "" — found_any=true suppressed config.yaml fallback, internal dep dropped
-    # After fix:  "debian" — _saw_nonauthoritative unions config.yaml, internal dep recovered
+    # The declared config dependency is retained.
     [ "$output" = "debian" ]
 }
 
@@ -1469,8 +1444,7 @@ EOF
     #   variant A: resolved internal  (ghcr.io/testowner/debian:trixie) — authoritative
     #   variant B: placeholder internal (ghcr.io/testowner/debian:${DEBIAN_TAG}) — non-authoritative
     #
-    # _saw_nonauthoritative fires → config.yaml consulted as union.
-    # config.yaml also carries the same debian ref.
+    # config.yaml also carries the same debian ref, and union deduplicates it.
     # Dedup must ensure debian appears EXACTLY ONCE.
     local isolated_dir="$TEST_TEMP_DIR/defectr_mixed_internal_placeholder"
     mkdir -p "$isolated_dir/web-shell"
@@ -1507,46 +1481,161 @@ EOF
     [ "$output" = "1" ]
 }
 
-@test "depgraph: Defect R — no regression: all-authoritative no-placeholder → config.yaml NOT consulted for extra deps" {
-    # Container has two active lineage variants, BOTH fully resolved — no placeholder.
-    # One is an authoritative external (library/alpine:3.21) and one is an authoritative
-    # internal (ghcr.io/testowner/debian:trixie).
-    #
-    # _saw_nonauthoritative must remain false → config.yaml fallback must NOT run.
-    # A config.yaml entry that is NOT present in lineage (e.g. php) must NOT leak in.
+@test "depgraph: config references union with authoritative external lineage" {
+    # A resolved external record is authoritative for its variant, but it cannot
+    # suppress references declared by config.yaml for other variants.
     local isolated_dir="$TEST_TEMP_DIR/defectr_allauth_noregression"
     mkdir -p "$isolated_dir/web-shell"
 
     # Authoritative external
     _write_lineage "web-shell" "1.7.7-alpine" "library/alpine:3.21"
 
-    # Authoritative internal (resolved, no ${...} placeholder)
-    printf '{"container":"web-shell","tag":"1.7.7-debian","base_image_ref":"ghcr.io/testowner/debian:trixie","base_image_digest":"sha256:%064d"}' 0 \
-        > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-1.7.7-debian.json"
-
-    # config.yaml has BOTH debian (already in lineage) AND php (NOT in lineage).
-    # After the fix, config.yaml must NOT be consulted → php must NOT appear.
-    printf 'base_image: "ghcr.io/testowner/debian:trixie"\nbuild_args:\n  PHP_IMAGE: "ghcr.io/testowner/php:8.4"\n' \
+    # config.yaml declares the missing internal sibling of the external variant.
+    printf 'base_image: "ghcr.io/testowner/debian:trixie"\n' \
         > "$isolated_dir/web-shell/config.yaml"
 
     run bash -c "
         _DEPGRAPH_OWNER_OVERRIDE=testowner
         export _DEPGRAPH_OWNER_OVERRIDE
         PROJECT_ROOT='${isolated_dir}'
-        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell debian php'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell debian'
         export _DEPGRAPH_CONTAINERS_OVERRIDE
         _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
         export _DEPGRAPH_LINEAGE_DIR
-        _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell='1.7.7-alpine
-1.7.7-debian'
+        _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell='1.7.7-alpine'
         export _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell
         source '${HELPERS_DIR}/dependency-graph.sh' 2>/dev/null
         deps=\$(_depgraph_get_deps web-shell 2>/dev/null)
         echo \"\$deps\" | tr ' ' '\n' | sort
     "
     [ "$status" -eq 0 ]
-    # Only debian from lineage; php from config.yaml must NOT appear
+    # The config-declared dep is retained despite the authoritative external record.
     [ "$output" = "debian" ]
+}
+
+@test "depgraph: complete sibling_target lineage returns its supplier" {
+    printf '%s' '{"lineage_schema_version":3,"container":"web-shell","tag":"1.7.7","base_image_kind":"sibling_target","base_image_sibling":{"container":"php","version":"8.4","platform":"linux/amd64","textual_ref":"target:php","bake_target_id":"php-8.4","flavor":"fpm"}}' \
+        > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-1.7.7.json"
+    local isolated_dir="$TEST_TEMP_DIR/sibling_target"
+    mkdir -p "$isolated_dir/web-shell"
+    printf 'name: web-shell\n' > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell php'
+        export PROJECT_ROOT _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps web-shell
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "php" ]
+}
+
+@test "depgraph: malformed or inapplicable sibling suppliers add no edge" {
+    printf '%s' '{"lineage_schema_version":3,"container":"web-shell","tag":"missing","base_image_kind":"sibling_target","base_image_sibling":{"container":"php","version":"8.4","platform":"linux/amd64","textual_ref":"target:php","bake_target_id":"php-8.4"}}' > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-missing.json"
+    printf '%s' '{"lineage_schema_version":3,"container":"web-shell","tag":"wrong-kind","base_image_kind":"no_external_base","base_image_sibling":{"container":"php","version":"8.4","platform":"linux/amd64","textual_ref":"target:php","bake_target_id":"php-8.4","flavor":"fpm"}}' > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-wrong-kind.json"
+    printf '%s' '{"lineage_schema_version":3,"container":"web-shell","tag":"self","base_image_kind":"sibling_target","base_image_sibling":{"container":"web-shell","version":"1","platform":"linux/amd64","textual_ref":"target:web-shell","bake_target_id":"web-shell","flavor":"base"}}' > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-self.json"
+    printf '%s' '{"lineage_schema_version":3,"container":"web-shell","tag":"unknown","base_image_kind":"sibling_target","base_image_sibling":{"container":"not-a-container","version":"1","platform":"linux/amd64","textual_ref":"target:not-a-container","bake_target_id":"not-a-container","flavor":"base"}}' > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-unknown.json"
+    local isolated_dir="$TEST_TEMP_DIR/invalid_sibling_target"
+    mkdir -p "$isolated_dir/web-shell"
+    printf 'name: web-shell\n' > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell php'
+        export PROJECT_ROOT _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps web-shell
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "" ]
+}
+
+@test "depgraph: corrupt lineage warns while config references still return" {
+    printf '{"lineage_schema_version":3,"base_image_kind":' > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-truncated.json"
+    local isolated_dir="$TEST_TEMP_DIR/corrupt_lineage"
+    mkdir -p "$isolated_dir/web-shell"
+    printf 'base_image: "ghcr.io/testowner/debian:trixie"\n' > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=testowner
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell debian'
+        export _DEPGRAPH_OWNER_OVERRIDE PROJECT_ROOT _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        deps=\$(_depgraph_get_deps web-shell)
+        rc=\$?
+        printf 'rc=%s deps=%s\\n' "\$rc" "\$deps"
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::warning::_depgraph_get_deps: ignoring corrupt lineage web-shell-truncated.json"* ]]
+    [[ "$output" == *"rc=0 deps=debian"* ]]
+}
+
+@test "depgraph: config references ignore comments and base_image_cache" {
+    local isolated_dir="$TEST_TEMP_DIR/comment_only_config"
+    mkdir -p "$isolated_dir/web-shell"
+    printf '# formerly ghcr.io/testowner/php:8.4\nbase_image_cache:\n  - source: ghcr.io/testowner/php\n' > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=testowner
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell php'
+        export _DEPGRAPH_OWNER_OVERRIDE PROJECT_ROOT _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps web-shell
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "" ]
+}
+
+@test "depgraph: config reference-bearing fields return dependencies" {
+    local isolated_dir="$TEST_TEMP_DIR/declared_config_fields"
+    mkdir -p "$isolated_dir/web-shell"
+    printf 'base_image: "ghcr.io/testowner/debian:${DEBIAN_TAG}"\nbuild_args:\n  PHP_IMAGE: "ghcr.io/testowner/php:8.4"\ndistros:\n  test:\n    base_image: "ghcr.io/testowner/containerA:1"\n' > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=testowner
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell debian php containerA'
+        export _DEPGRAPH_OWNER_OVERRIDE PROJECT_ROOT _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps web-shell | tr ' ' '\\n' | sort
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = $'containerA\ndebian\nphp' ]
+}
+
+@test "depgraph: config owner resolution failure returns no partial dependencies" {
+    local isolated_dir="$TEST_TEMP_DIR/config_owner_failure_no_partial"
+    mkdir -p "$isolated_dir/web-shell"
+    # The trusted REMOTE_CR edge is found first, then the owner-dependent ref
+    # fails.  The function must return rc=2 without printing that partial edge.
+    printf 'base_image: "${REMOTE_CR}/debian:trixie"\nbuild_args:\n  PHP_IMAGE: "ghcr.io/testowner/php:8.4"\n' > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE GITHUB_REPOSITORY_OWNER
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell debian php'
+        export PROJECT_ROOT _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps web-shell
+    "
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"::error::Owner resolution failed"* ]]
+    [[ "$output" != *"debian"* ]]
 }
 
 # ---------------------------------------------------------------------------
