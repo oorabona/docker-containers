@@ -45,7 +45,8 @@ distros:
   debian:
     # Already GHCR, so the GHCR base-cache mirror is not used.
     use_base_cache: false
-    base_image: "ghcr.io/oorabona/debian:${DEBIAN_TAG}"
+    # The generator builds FROM independently; the fleet bake test keeps this declaration aligned.
+    base_image: "ghcr.io/oorabona/debian:trixie"
     pkg_manager: apt
     install_cmd: "apt-get update && apt-get install -y --no-install-recommends"
     cleanup_cmd: "rm -rf /var/lib/apt/lists/*"
@@ -62,7 +63,8 @@ distros:
       ssh: [openssh-server]
 
   alpine:
-    base_image: "${ALPINE_BASE:-alpine:3.21}"
+    # The generator builds FROM independently; the fleet bake test keeps this declaration aligned.
+    base_image: "${REMOTE_CR}/library/alpine:3.21"
     pkg_manager: apk
     install_cmd: "apk add --no-cache"
     cleanup_cmd: ""
@@ -80,7 +82,8 @@ distros:
       ssh: [openssh-server]
 
   ubuntu:
-    base_image: "${UBUNTU_BASE:-ubuntu:noble}"
+    # The generator builds FROM independently; the fleet bake test keeps this declaration aligned.
+    base_image: "${REMOTE_CR}/library/ubuntu:noble"
     pkg_manager: apt
     install_cmd: "apt-get update && apt-get install -y --no-install-recommends"
     cleanup_cmd: "rm -rf /var/lib/apt/lists/*"
@@ -98,7 +101,8 @@ distros:
       ssh: [openssh-server]
 
   rocky:
-    base_image: "${ROCKY_BASE:-rockylinux:9}"
+    # The generator builds FROM independently; the fleet bake test keeps this declaration aligned.
+    base_image: "${REMOTE_CR}/library/rockylinux:9"
     pkg_manager: dnf
     install_cmd: "dnf install -y --setopt=install_weak_deps=False --allowerasing"
     cleanup_cmd: "dnf clean all"

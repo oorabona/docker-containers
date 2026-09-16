@@ -29,13 +29,15 @@ digest() {
 
 cell() {
     local container=$1 tag=$2 target_id=$3 base_identity=$4
+    local build_args=${5:-'{"NPROC":"${NPROC}"}'}
     jq -cn \
         --arg container "$container" \
         --arg tag "$tag" \
         --arg target_id "$target_id" \
         --argjson base_identity "$base_identity" \
+        --argjson build_args "$build_args" \
         '{container:$container, tag:$tag, target_id:$target_id, version:$tag,
-          flavor:"", dockerfile:"Dockerfile", build_args:{NPROC:"${NPROC}"},
+          flavor:"", dockerfile:"Dockerfile", build_args:$build_args,
           is_default:true, is_latest_version:true, base_identity:$base_identity}'
 }
 
@@ -48,6 +50,15 @@ write_inputs() {
 
 run_writer() {
     run env \
+        BAKE_PLAN_FILE="$PLAN" \
+        BAKE_BASE_DESCRIPTORS_FILE="$DESCRIPTORS" \
+        BAKE_METADATA_FILE="$METADATA" \
+        REMOTE_CR="ghcr.io/example" \
+        bash -c 'cd "$1" && bash -c "$2"' _ "$TEST_TEMP_DIR" "$STEP_BODY"
+}
+
+run_writer_without_nproc() {
+    run env -u NPROC \
         BAKE_PLAN_FILE="$PLAN" \
         BAKE_BASE_DESCRIPTORS_FILE="$DESCRIPTORS" \
         BAKE_METADATA_FILE="$METADATA" \
@@ -75,7 +86,59 @@ record_path() {
     lineage_complete_record_valid "$record"
     [ "$(jq -r '.lineage_schema_version' <<< "$record")" = 3 ]
     [ "$(jq -r '.base_image_digest' <<< "$record")" = "$base_digest" ]
-    [ "$(jq -r '.build_args.NPROC' <<< "$record")" = '${NPROC}' ]
+}
+
+@test "bake NPROC reference records its declared default when writer environment unsets NPROC" {
+    local build_digest base_identity plan metadata descriptors
+    build_digest=$(digest a)
+    base_identity='{"kind":"external","ref":"docker.io/library/alpine:3.21"}'
+    plan="[$(cell app 1.0 app_1 "$base_identity")]"
+    metadata=$(jq -cn --arg digest "$build_digest" '{app_1:{"containerimage.digest":$digest}}')
+    descriptors=$(jq -cn --arg digest "$(digest b)" '{"docker.io/library/alpine:3.21":{digest:$digest,mediaType:"application/vnd.oci.image.index.v1+json"}}')
+    write_inputs "$plan" "$descriptors" "$metadata"
+
+    run_writer_without_nproc
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.build_args.NPROC' "$(record_path app 1.0)")" = 1 ]
+
+    NPROC= run_writer
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.build_args.NPROC' "$(record_path app 1.0)")" = 1 ]
+}
+
+@test "writer resolves a bake NPROC reference from its environment" {
+    local build_digest base_identity plan metadata descriptors
+    build_digest=$(digest a)
+    base_identity='{"kind":"external","ref":"docker.io/library/alpine:3.21"}'
+    plan="[$(cell app 1.0 app_1 "$base_identity")]"
+    metadata=$(jq -cn --arg digest "$build_digest" '{app_1:{"containerimage.digest":$digest}}')
+    descriptors=$(jq -cn --arg digest "$(digest b)" '{"docker.io/library/alpine:3.21":{digest:$digest,mediaType:"application/vnd.oci.image.index.v1+json"}}')
+    write_inputs "$plan" "$descriptors" "$metadata"
+
+    NPROC=8 run_writer
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.build_args.NPROC' "$(record_path app 1.0)")" = 8 ]
+}
+
+@test "writer leaves embedded and unrelated bake variable references unchanged" {
+    local build_digest base_identity plan metadata descriptors no_nproc_args number_args embedded_args other_args
+    build_digest=$(digest a)
+    base_identity='{"kind":"external","ref":"docker.io/library/alpine:3.21"}'
+    no_nproc_args='{}'
+    number_args='{"NPROC":4}'
+    embedded_args='{"NPROC":"prefix-${NPROC}-suffix"}'
+    other_args='{"OTHER":"${OTHER}"}'
+    plan="[$(cell no-nproc 1 no_nproc_1 "$base_identity" "$no_nproc_args"),$(cell number 1 number_1 "$base_identity" "$number_args"),$(cell embedded 1 embedded_1 "$base_identity" "$embedded_args"),$(cell other 1 other_1 "$base_identity" "$other_args") ]"
+    metadata=$(jq -cn --arg digest "$build_digest" '{no_nproc_1:{"containerimage.digest":$digest},number_1:{"containerimage.digest":$digest},embedded_1:{"containerimage.digest":$digest},other_1:{"containerimage.digest":$digest}}')
+    descriptors=$(jq -cn --arg digest "$(digest b)" '{"docker.io/library/alpine:3.21":{digest:$digest,mediaType:"application/vnd.oci.image.index.v1+json"}}')
+    write_inputs "$plan" "$descriptors" "$metadata"
+
+    run_writer_without_nproc
+    [ "$status" -eq 0 ]
+    [ "$(jq -c '.build_args' "$(record_path no-nproc 1)")" = '{}' ]
+    [ "$(jq -r '.build_args.NPROC' "$(record_path number 1)")" = 4 ]
+    [ "$(jq -r '.build_args.NPROC' "$(record_path embedded 1)")" = 'prefix-${NPROC}-suffix' ]
+    [ "$(jq -r '.build_args.OTHER' "$(record_path other 1)")" = '${OTHER}' ]
 }
 
 @test "sibling, unresolved, and not_evaluated cells write their markers" {
@@ -100,7 +163,7 @@ record_path() {
     [ "$(jq 'has("base_image_ref") or has("base_image_digest")' "$(record_path pending 1)")" = false ]
 }
 
-@test "missing and single-manifest external descriptors become unresolved" {
+@test "missing and single-manifest external descriptors fail the writer" {
     local build_digest base_identity plan metadata descriptors
     build_digest=$(digest a)
     base_identity='{"kind":"external","ref":"docker.io/library/alpine:3.21"}'
@@ -110,9 +173,36 @@ record_path() {
     write_inputs "$plan" "$descriptors" "$metadata"
 
     run_writer
-    [ "$status" -eq 0 ]
-    [ "$(jq -r '.base_image_kind' "$(record_path missing 1)")" = unresolved_external_base ]
-    [ "$(jq -r '.base_image_kind' "$(record_path single 1)")" = unresolved_external_base ]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *'missing:1'* && "$output" == *'single:1'* ]]
+    [ ! -e "$(record_path missing 1)" ]
+    [ ! -e "$(record_path single 1)" ]
+}
+
+@test "bake-plan rejects failed and non-index concrete external probes" {
+    local probe_step bin_dir plan
+    probe_step=$(yq -r '.jobs."bake-plan".steps[] | select(.name == "Inspect planned external base indexes") | .run' "$WORKFLOW")
+    [ -n "$probe_step" ]
+    bin_dir="$TEST_TEMP_DIR/bin"
+    mkdir -p "$bin_dir"
+    printf '%s\n' '#!/bin/sh' 'case "$MOCK_DOCKER_MODE" in' \
+        '  fail) exit 1 ;;' \
+        '  single) printf "%s\\n" "{\\\"digest\\\":\\\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\\",\\\"mediaType\\\":\\\"application/vnd.oci.image.manifest.v1+json\\\"}" ;;' \
+        'esac' > "$bin_dir/docker"
+    printf '%s\n' '#!/bin/sh' 'exit 0' > "$bin_dir/sleep"
+    chmod +x "$bin_dir/docker" "$bin_dir/sleep"
+    plan='[{"base_identity":{"kind":"external","ref":"docker.io/library/alpine:3.21"}}]'
+    printf '%s\n' "$plan" > "$TEST_TEMP_DIR/bake-plan.json"
+
+    run env PATH="$bin_dir:$PATH" MOCK_DOCKER_MODE=fail DRY_RUN=false IS_PR=false \
+        bash -c 'cd "$1" && bash -c "$2"' _ "$TEST_TEMP_DIR" "$probe_step"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *'Could not inspect planned external base index docker.io/library/alpine:3.21'* ]]
+
+    run env PATH="$bin_dir:$PATH" MOCK_DOCKER_MODE=single DRY_RUN=false IS_PR=false \
+        bash -c 'cd "$1" && bash -c "$2"' _ "$TEST_TEMP_DIR" "$probe_step"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *'returned no usable index descriptor'* ]]
 }
 
 @test "missing, malformed, short, nonhex, and uppercase metadata digests fail named cells but write valid cells" {

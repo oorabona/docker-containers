@@ -394,13 +394,22 @@ _depgraph_get_deps() {
     # becomes a dependency reference; base_image_cache is cache configuration.
     local config_file="${PROJECT_ROOT}/${container}/config.yaml"
     if [[ -f "$config_file" ]]; then
-        local config_refs
+        local config_refs config_status
         # shellcheck disable=SC2016
         local _config_remote_cr_prefix='${REMOTE_CR}/'
         # shellcheck disable=SC2016
         local _config_dollar_brace='${'
-        config_refs=$(yq -r '(.base_image? | select(tag == "!!str")), ((.build_args? // {}) | .[]? | select(tag == "!!str")), ((.distros? // {}) | .[]? | .base_image? | select(tag == "!!str"))' \
-            "$config_file" 2>/dev/null) || config_refs=""
+        if config_refs=$(yq -r '(.base_image? | select(tag == "!!str")), ((.build_args? // {}) | .[]? | select(tag == "!!str")), ((.distros? // {}) | .[]? | .base_image? | select(tag == "!!str"))' \
+            "$config_file" 2>/dev/null); then
+            config_status=0
+        else
+            config_status=$?
+        fi
+        if (( config_status != 0 )); then
+            printf '::error::_depgraph_get_deps: could not read config %s\n' \
+                "$(_escape_gha_command "$config_file")" >&2
+            return 2
+        fi
         while IFS= read -r ref; do
             [[ -n "$ref" ]] || continue
             # The field set also holds ordinary versions and external bases.

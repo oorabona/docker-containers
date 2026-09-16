@@ -639,7 +639,8 @@ _cell_dockerfile_source() {
 # ---------------------------------------------------------------------------
 # Substitute a declared config.yaml base reference from a cell's build args.
 # This is intentionally a single pass: nested expansions remain unresolved.
-# A present argument wins over a default even when its value is empty.
+# Match Docker parameter expansion: `:-` uses its default for unset or empty
+# arguments, while `-` uses it only when the argument is unset.
 # ---------------------------------------------------------------------------
 _substitute_declared_base_ref() {
     local declared_ref="$1" args_json="$2"
@@ -647,7 +648,12 @@ _substitute_declared_base_ref() {
       $ref
       | gsub("\\$\\{(?<name>[A-Za-z_][A-Za-z0-9_]*)(?<operator>:-|-)(?<default>[^{}]*)\\}";
           . as $capture
-          | if $args | has($capture.name) then $args[$capture.name] else $capture.default end)
+          | if $capture.operator == ":-" then
+              if ($args | has($capture.name)) and ($args[$capture.name] != "")
+              then $args[$capture.name] else $capture.default end
+            else
+              if $args | has($capture.name) then $args[$capture.name] else $capture.default end
+            end)
       | gsub("\\$\\{(?<name>[A-Za-z_][A-Za-z0-9_]*)\\}";
           . as $capture
           | if $args | has($capture.name) then $args[$capture.name] else "${\($capture.name)}" end)
@@ -655,11 +661,6 @@ _substitute_declared_base_ref() {
           . as $capture
           | if $args | has($capture.name) then $args[$capture.name] else "$\($capture.name)" end)
     '
-}
-
-_declared_base_ref_has_default_expression() {
-    local ref="$1"
-    [[ "$ref" =~ \$\{[A-Za-z_][A-Za-z0-9_]*(:-|-) ]]
 }
 
 _declared_base_ref_has_tag() {
@@ -751,17 +752,15 @@ _declared_base_identity() {
         jq -cn --arg ref "$declared_ref" '{kind:"unresolved",ref:$ref}'
         return 0
     fi
-    # Preserve ordinary $NAME and ${NAME} handling: an untagged expansion is
-    # unresolved.  A default expression is different: Docker gives its
-    # tagless selected value the implicit latest tag, so make that concrete
-    # before passing it to the lineage writer's explicit-reference contract.
+    if [[ "$substituted_ref" == "scratch" ]]; then
+        jq -cn '{kind:"no_external_base"}'
+        return 0
+    fi
+    # Docker defaults every concrete tagless image reference to latest. A bare
+    # reference means Docker Hub; declarations that mean this repository's
+    # mirror must include ${REMOTE_CR}/library/ explicitly.
     if ! _declared_base_ref_has_tag "$substituted_ref"; then
-        if _declared_base_ref_has_default_expression "$declared_ref"; then
-            substituted_ref="${substituted_ref}:latest"
-        else
-            jq -cn --arg ref "$declared_ref" '{kind:"unresolved",ref:$ref}'
-            return 0
-        fi
+        substituted_ref="${substituted_ref}:latest"
     fi
 
     local valid_containers internal_container rc

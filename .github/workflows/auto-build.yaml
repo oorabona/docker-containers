@@ -1877,9 +1877,9 @@ jobs:
       (needs.merge-extension-manifests.result == 'success' || needs.merge-extension-manifests.result == 'skipped') &&
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
     runs-on: ubuntu-latest
-    # Nine distinct external refs today: two 30-second attempts plus ten seconds
-    # of backoff each, with room for generation and artifact upload.
-    timeout-minutes: 15
+    # Nine refs: two 35-second attempts plus ten seconds backoff are about
+    # 12 minutes; 20 leaves room for setup, plan generation, and upload.
+    timeout-minutes: 20
     env:
       CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
       # Resolver contract: only extensions published successfully by this run.
@@ -1983,12 +1983,14 @@ jobs:
           mapfile -t refs < <(jq -r '[.[] | select(.base_identity.kind == "external") | .base_identity.ref] | unique[]' bake-plan.json)
           for ref in "${refs[@]}"; do
             if ! descriptor=$(retry_with_backoff 2 10 timeout -k 5 30 docker buildx imagetools inspect --format '{{json .Manifest}}' -- "$ref" 2>/dev/null); then
-              echo "::notice::Could not inspect planned external base index ${ref}; lineage will record it as unresolved"
-              continue
+              # The build pulls this base too, so an outage already blocks it;
+              # do not publish a concrete identity with unknowable lineage.
+              echo "::error::Could not inspect planned external base index ${ref}"
+              exit 1
             fi
-            if ! jq -e 'type == "object"' <<< "$descriptor" >/dev/null 2>&1; then
-              echo "::notice::Planned external base index ${ref} returned no usable descriptor; lineage will record it as unresolved"
-              continue
+            if ! jq -e 'type == "object" and (.mediaType | strings | test("(image\\.index|manifest\\.list)"))' <<< "$descriptor" >/dev/null 2>&1; then
+              echo "::error::Planned external base index ${ref} returned no usable index descriptor"
+              exit 1
             fi
             jq --arg ref "$ref" --argjson descriptor "$descriptor" '. + {($ref): $descriptor}' \
               bake-base-descriptors.json > bake-base-descriptors.json.tmp
@@ -2396,12 +2398,9 @@ jobs:
                 fi
                 descriptor=$(jq -c --arg ref "$base_ref" '.[$ref] // empty' "$BAKE_BASE_DESCRIPTORS_FILE")
                 if ! base_fields=$(lineage_base_fields_from_external_identity_with_index_descriptor "$base_identity" "$descriptor"); then
-                  unresolved_identity=$(jq -cn --arg ref "$base_ref" '{kind:"unresolved",ref:$ref}')
-                  if ! base_fields=$(lineage_base_fields_from_marker_identity "$unresolved_identity"); then
-                    echo "::error::Bake lineage ${cell_name}: could not represent unresolved external base"
-                    failures=1
-                    continue
-                  fi
+                  echo "::error::Bake lineage ${cell_name}: external base has no valid index descriptor"
+                  failures=1
+                  continue
                 fi
                 ;;
               sibling_target)
@@ -2435,6 +2434,10 @@ jobs:
               failures=1
               continue
             fi
+            # The plan deliberately keeps Bake's ${NPROC} reference; the record
+            # keeps the effective value the build received.
+            build_args=$(jq -ce --arg nproc "${NPROC:-1}" \
+              'if .NPROC == "${NPROC}" then .NPROC = $nproc else . end' <<< "$build_args")
             image_id=$(jq -r --arg target_id "$target_id" \
               '.[$target_id]["containerimage.config.digest"] // "" | if type == "string" and test("^sha256:[a-f0-9]{64}$") then . else "" end' \
               "$BAKE_METADATA_FILE")

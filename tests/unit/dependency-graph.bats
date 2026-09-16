@@ -31,6 +31,34 @@ teardown() {
     teardown_temp_dir
 }
 
+@test "depgraph: malformed config.yaml fails instead of dropping declared dependencies" {
+    local fixture_root
+    fixture_root="$TEST_TEMP_DIR/malformed-config"
+    mkdir -p "$fixture_root/app"
+    printf '%s\n' 'base_image: [' > "$fixture_root/app/config.yaml"
+
+    run env PROJECT_ROOT="$fixture_root" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='app base' \
+        _DEPGRAPH_LINEAGE_DIR="$TEST_TEMP_DIR/lineage" \
+        bash -c 'source "$1/helpers/dependency-graph.sh"; _depgraph_get_deps app' _ "$PROJECT_ROOT"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"$fixture_root/app/config.yaml"* ]]
+}
+
+@test "depgraph: empty build_args map is an empty successful selection" {
+    local fixture_root
+    fixture_root="$TEST_TEMP_DIR/empty-build-args"
+    mkdir -p "$fixture_root/app"
+    printf '%s\n' 'build_args: {}' > "$fixture_root/app/config.yaml"
+
+    run env PROJECT_ROOT="$fixture_root" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='app base' \
+        _DEPGRAPH_LINEAGE_DIR="$TEST_TEMP_DIR/lineage" \
+        bash -c 'source "$1/helpers/dependency-graph.sh"; _depgraph_get_deps app' _ "$PROJECT_ROOT"
+    [ "$status" -eq 0 ]
+    [ "$output" = '' ]
+}
+
 # ---------------------------------------------------------------------------
 # Helper: write a lineage JSON file
 # ---------------------------------------------------------------------------

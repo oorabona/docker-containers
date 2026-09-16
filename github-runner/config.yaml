@@ -48,7 +48,8 @@ base_image_cache:
 # Each distro declares its base image, package manager, user setup, and package groups
 distros:
   ubuntu-2404:
-    base_image: "${UBUNTU_2404_BASE:-ubuntu:24.04}"
+    # The generator builds FROM independently; the fleet bake test keeps this declaration aligned.
+    base_image: "${REMOTE_CR}/library/ubuntu:24.04"
     base_image_arg: UBUNTU_2404_BASE
     pkg_manager: apt
     install_cmd: "apt-get update && apt-get install -y --no-install-recommends"
