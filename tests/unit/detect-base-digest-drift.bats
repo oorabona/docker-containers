@@ -53,7 +53,7 @@ teardown() {
     teardown_temp_dir
 }
 
-@test "upstream monitor accepts every status emitted by the detector" {
+@test "upstream monitor accepts every detector status and keeps not_evaluable out of evaluation" {
     local detector_statuses validator_statuses evaluated_statuses status statuses_rc
     local -a missing_validator_statuses=() missing_evaluated_statuses=()
 
@@ -71,8 +71,9 @@ teardown() {
     [ -n "$detector_statuses" ]
 
     # Extract both workflow lists rather than copying either here. The
-    # validator accepts every emitted status, while the evaluated list must
-    # accept every non-error emitted status for scoped consumption.
+    # validator accepts every emitted status. The evaluated list deliberately
+    # excludes not_evaluable, which is valid lineage but did not yield a base
+    # identity that a scoped comparison can evaluate.
     validator_statuses=$(awk '
         /validate_drift_result\(\)/ {
             in_validator = 1
@@ -131,7 +132,7 @@ teardown() {
         if ! grep -Fxq "$status" <<< "$validator_statuses"; then
             missing_validator_statuses+=("$status")
         fi
-        if [[ "$status" != "error" ]] && ! grep -Fxq "$status" <<< "$evaluated_statuses"; then
+        if [[ "$status" != "error" && "$status" != "not_evaluable" ]] && ! grep -Fxq "$status" <<< "$evaluated_statuses"; then
             missing_evaluated_statuses+=("$status")
         fi
     done <<< "$detector_statuses"
@@ -144,6 +145,7 @@ teardown() {
         printf 'upstream monitor evaluated-status list rejects detector status: %s\n' "${missing_evaluated_statuses[*]}" >&2
         return 1
     fi
+    ! grep -Fxq "not_evaluable" <<< "$evaluated_statuses"
 }
 
 @test "fixtures pin the internal owner instead of inheriting fork CI" {
@@ -3762,21 +3764,24 @@ EOF
 # workflow. This covers the coverage gate, scoping, notices, and its success
 # exits without requiring a live workflow dispatch.
 _load_drift_consumer() {
-    local workflow_run statuses_helper compared_statuses_helper validator_helper notice_helper consumer_helper
+    local workflow_run statuses_helper completed_statuses_helper compared_statuses_helper validator_helper notice_helper consumer_helper
     workflow_run=$(yq -r '.jobs."detect-digest-drift".steps[] | select(.id == "detect") | .run' \
         "$PROJECT_ROOT/.github/workflows/upstream-monitor.yaml")
     statuses_helper=$(sed -n '/^evaluated_drift_statuses() {/,/^}/p' <<<"$workflow_run")
+    completed_statuses_helper=$(sed -n '/^completed_drift_statuses() {/,/^}/p' <<<"$workflow_run")
     compared_statuses_helper=$(sed -n '/^compared_drift_statuses() {/,/^}/p' <<<"$workflow_run")
     validator_helper=$(sed -n '/^validate_drift_result() {/,/^}/p' <<<"$workflow_run")
     notice_helper=$(sed -n '/^emit_drift_notice() {/,/^}/p' <<<"$workflow_run")
     consumer_helper=$(sed -n '/^consume_drift_result() {/,/^}/p' <<<"$workflow_run")
     [ -n "$statuses_helper" ] || return 1
+    [ -n "$completed_statuses_helper" ] || return 1
     [ -n "$compared_statuses_helper" ] || return 1
     [ -n "$validator_helper" ] || return 1
     [ -n "$notice_helper" ] || return 1
     [ -n "$consumer_helper" ] || return 1
     source "$PROJECT_ROOT/helpers/gha.sh"
     eval "$statuses_helper"
+    eval "$completed_statuses_helper"
     eval "$compared_statuses_helper"
     eval "$validator_helper"
     eval "$notice_helper"
@@ -4044,7 +4049,7 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-@test "base_image_kind unresolved_external_base fails coverage with its own reason" {
+@test "unresolved_external_base is not_evaluable with its own reason" {
     local lineage_dir="$TEST_TEMP_DIR/base-image-kind-unresolved"
     local same_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     mkdir -p "$lineage_dir"
@@ -4060,8 +4065,8 @@ EOF
     result=$(_VALID_CONTAINERS_OVERRIDE=$'unresolved\ncontrol' \
         _DEPGRAPH_CONTAINERS_OVERRIDE='unresolved control' \
         PROBE_CMD="$probe_stub" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
-    [ "$(printf '%s' "$result" | jq -r '.[] | select(.container == "unresolved") | .variants[0].status')" = "error" ]
-    [ "$(printf '%s' "$result" | jq -r '.[] | select(.container == "unresolved") | .variants[0].error_reason')" = "unresolved_external_base" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | select(.container == "unresolved") | .variants[0].status')" = "not_evaluable" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | select(.container == "unresolved") | .variants[0].reason')" = "unresolved_external_base" ]
     # Control without the marker still reaches comparison instead of this branch.
     [ "$(printf '%s' "$result" | jq -r '.[] | select(.container == "control") | .variants[0].status')" = "unchanged" ]
 
@@ -4069,8 +4074,107 @@ EOF
     validate_drift_result "$result"
     local rc=0 notice
     notice=$(emit_drift_notice "$result") || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$notice" = "::notice::No base image digest drift detected; 1 record(s) evaluated, 1 record(s) not evaluable from valid lineage" ]
+}
+
+@test "not_evaluated is not_evaluable with a distinct reason" {
+    local lineage_dir="$TEST_TEMP_DIR/base-image-kind-not-evaluated"
+    mkdir -p "$lineage_dir"
+    jq -cn '{container: "not_eval", tag: "latest", base_image_kind: "not_evaluated"}' \
+        > "$lineage_dir/not-evaluated.json"
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE='not_eval' \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='not_eval' \
+        PROBE_CMD=/bin/false bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "not_evaluable" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].reason')" = "not_evaluated" ]
+}
+
+@test "malformed marker record remains an error" {
+    local lineage_dir="$TEST_TEMP_DIR/malformed-marker-record"
+    mkdir -p "$lineage_dir"
+    jq -cn '{container: "malformed", tag: "latest", base_image_kind: "not_evaluated", base_image_ref: "alpine:3.21"}' \
+        > "$lineage_dir/malformed.json"
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE='malformed' \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='malformed' \
+        PROBE_CMD=/bin/false bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].status')" = "error" ]
+    [ "$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')" = "marker_carries_external_base_fields" ]
+}
+
+@test "mixed fleet passes until a malformed record makes coverage fail" {
+    local lineage_dir="$TEST_TEMP_DIR/mixed-not-evaluable-fleet"
+    local recorded_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    local current_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    mkdir -p "$lineage_dir"
+    jq -cn '{container: "unresolved", tag: "latest", base_image_kind: "unresolved_external_base"}' > "$lineage_dir/unresolved.json"
+    jq -cn '{container: "not_eval", tag: "latest", base_image_kind: "not_evaluated"}' > "$lineage_dir/not-evaluated.json"
+    jq -cn '{container: "sibling", tag: "latest", base_image_kind: "sibling_target", base_image_sibling: {container: "base", version: "1.0", flavor: "", platform: "linux/amd64", textual_ref: "ghcr.io/oorabona/base:1.0", bake_target_id: "base_1_0"}}' > "$lineage_dir/sibling.json"
+    jq -cn '{container: "scratch", tag: "latest", base_image_kind: "no_external_base"}' > "$lineage_dir/scratch.json"
+    jq -cn --arg digest "$recorded_digest" '{container: "drifting", tag: "latest", base_image_ref: "alpine:3.21", base_image_digest: $digest}' > "$lineage_dir/drifting.json"
+    jq -cn --arg digest "$current_digest" '{container: "unchanged", tag: "latest", base_image_ref: "alpine:3.21", base_image_digest: $digest}' > "$lineage_dir/unchanged.json"
+
+    local probe_stub result rc=0 notice
+    probe_stub=$(_make_digest_probe_stub "$current_digest")
+    result=$(_VALID_CONTAINERS_OVERRIDE=$'unresolved\nnot_eval\nsibling\nscratch\ndrifting\nunchanged' \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='unresolved not_eval sibling scratch drifting unchanged' \
+        PROBE_CMD="$probe_stub" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status == "not_evaluable")] | length')" -eq 2 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status == "drift")] | length')" -eq 1 ]
+    [ "$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status == "unchanged")] | length')" -eq 1 ]
+
+    _load_drift_consumer
+    validate_drift_result "$result"
+    notice=$(emit_drift_notice "$result") || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$notice" = "::notice::Digest drift detected for 1 container(s); 4 record(s) evaluated, 2 record(s) not evaluable from valid lineage" ]
+
+    jq -cn '{container: "malformed", tag: "latest", base_image_kind: "not_evaluated", base_image_ref: "alpine:3.21"}' > "$lineage_dir/malformed.json"
+    result=$(_VALID_CONTAINERS_OVERRIDE=$'unresolved\nnot_eval\nsibling\nscratch\ndrifting\nunchanged\nmalformed' \
+        _DEPGRAPH_CONTAINERS_OVERRIDE='unresolved not_eval sibling scratch drifting unchanged malformed' \
+        PROBE_CMD="$probe_stub" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+    validate_drift_result "$result"
+    rc=0
+    notice=$(emit_drift_notice "$result") || rc=$?
     [ "$rc" -eq 1 ]
     [[ "$notice" == *"coverage incomplete"* ]]
+}
+
+@test "workflow not_evaluable status is allowed but excluded from failures and drift matrices" {
+    local workflow_run allowed_statuses unavailable_count matrix_builders
+    workflow_run=$(yq -r '.jobs."detect-digest-drift".steps[] | select(.id == "detect") | .run' \
+        "$PROJECT_ROOT/.github/workflows/upstream-monitor.yaml")
+    allowed_statuses=$(jq -r '.[]' <<<"$(sed -n '/validate_drift_result()/,/^          }$/p' <<<"$workflow_run" | grep -o '\["drift".*"not_evaluable"\]')")
+    grep -Fxq 'not_evaluable' <<< "$allowed_statuses"
+    unavailable_count=$(awk '
+        /unavailable_count=\$\(printf/ { capture = 1 }
+        capture { print }
+        capture && /\| length/ { exit }
+    ' <<<"$workflow_run")
+    [[ "$unavailable_count" != *"not_evaluable"* ]]
+    matrix_builders=$(sed -n '/drift_containers=$(/,/gha_output drift_matrix_consumers/p' <<<"$workflow_run")
+    [[ "$matrix_builders" != *"not_evaluable"* ]]
+}
+
+@test "a not_evaluable-only scoped result completes without a drift matrix" {
+    _load_drift_consumer
+
+    local drift_json output rc=0
+    drift_json='[{"container":"not_eval","internal_deps":[],"variants":[{"variant_tag":"latest","status":"not_evaluable","reason":"not_evaluated"}]}]'
+    validate_drift_result "$drift_json"
+    GITHUB_OUTPUT="$TEST_TEMP_DIR/drift-consumer-output"
+    : > "$GITHUB_OUTPUT"
+
+    output=$(consume_drift_result "$drift_json" 'not_eval') || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$output" = "::notice::No base image digest drift detected; 0 record(s) evaluated, 1 record(s) not evaluable from valid lineage" ]
+    [ "$(get_output drift_containers)" = "[]" ]
+    [ "$(get_output drift_matrix)" = "[]" ]
 }
 
 @test "consumer schema rejects every relied-on malformed record shape" {

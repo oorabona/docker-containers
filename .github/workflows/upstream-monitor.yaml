@@ -1829,10 +1829,19 @@ jobs:
           # requested-container notice below (including the legacy ##[ marker).
           source helpers/gha.sh
 
-          # One vocabulary defines every non-error status that completed
-          # evaluation. The requested-container gate consumes it below.
+          # One vocabulary defines every status that completed a base-identity
+          # evaluation. A valid not_evaluable marker is deliberately excluded:
+          # its identity was not observable, so a scoped request must not call
+          # it an evaluated drift variant.
           evaluated_drift_statuses() {
             printf '%s\n' '["drift", "unchanged", "legacy", "no_external_base", "sibling_target"]'
+          }
+
+          # A requested scope can complete with valid lineage that cannot be
+          # evaluated. Keep that status out of evaluated totals, but do not
+          # turn an honest not_evaluable result into a failed scan.
+          completed_drift_statuses() {
+            printf '%s\n' '["drift", "unchanged", "legacy", "no_external_base", "sibling_target", "not_evaluable"]'
           }
 
           # Only these statuses performed an external digest comparison. Keep
@@ -1870,9 +1879,12 @@ jobs:
                   (.variant_tag | type == "string" and length > 0) and
                   (.status as $status |
                     ($status | type == "string") and
-                    (["drift", "unchanged", "legacy", "error", "no_external_base", "sibling_target"] | index($status) != null)) and
+                    (["drift", "unchanged", "legacy", "error", "no_external_base", "sibling_target", "not_evaluable"] | index($status) != null)) and
                   (if .status == "error" then
                      (has("error_reason") and (.error_reason | type == "string" and length > 0))
+                   elif .status == "not_evaluable" then
+                     (has("reason") and
+                      (.reason == "unresolved_external_base" or .reason == "not_evaluated"))
                    elif .status == "sibling_target" then
                      (has("base_image_sibling") and
                       (.base_image_sibling | type == "object") and
@@ -1893,9 +1905,10 @@ jobs:
           emit_drift_notice() {
             local notice_json="$1"
             local mode="${2:-normal}"
-            local drift_count unavailable_count compared_count record_count compared_statuses
+            local drift_count unavailable_count not_evaluable_count evaluated_count compared_count record_count compared_statuses evaluated_statuses
 
             compared_statuses=$(compared_drift_statuses)
+            evaluated_statuses=$(evaluated_drift_statuses)
 
             drift_count=$(printf '%s' "$notice_json" | jq \
               '[.[] | select(.variants | any(.status == "drift" or .status == "legacy"))] | length')
@@ -1905,6 +1918,11 @@ jobs:
             unavailable_count=$(printf '%s' "$notice_json" | jq \
               '([.[] | select(has("error_reason"))] +
                 [.[] | .variants[] | select(.status == "error")]) | length')
+            not_evaluable_count=$(printf '%s' "$notice_json" | jq \
+              '[.[] | .variants[] | select(.status == "not_evaluable")] | length')
+            evaluated_count=$(printf '%s' "$notice_json" | jq --argjson evaluated_statuses "$evaluated_statuses" \
+              '[.[] | .variants[] |
+                select(.status as $status | $evaluated_statuses | index($status) != null)] | length')
             compared_count=$(printf '%s' "$notice_json" | jq --argjson compared_statuses "$compared_statuses" \
               '[.[] | .variants[] |
                 select(.status as $status | $compared_statuses | index($status) != null)] | length')
@@ -1924,9 +1942,17 @@ jobs:
               # scoped or unscoped consumer output has been assembled below.
               return 0
             elif [[ "$drift_count" -gt 0 ]]; then
-              echo "::notice::Digest drift detected for ${drift_count} container(s)"
+              if [[ "$not_evaluable_count" -gt 0 ]]; then
+                echo "::notice::Digest drift detected for ${drift_count} container(s); ${evaluated_count} record(s) evaluated, ${not_evaluable_count} record(s) not evaluable from valid lineage"
+              else
+                echo "::notice::Digest drift detected for ${drift_count} container(s)"
+              fi
             else
-              echo "::notice::No base image digest drift detected"
+              if [[ "$not_evaluable_count" -gt 0 ]]; then
+                echo "::notice::No base image digest drift detected; ${evaluated_count} record(s) evaluated, ${not_evaluable_count} record(s) not evaluable from valid lineage"
+              else
+                echo "::notice::No base image digest drift detected"
+              fi
             fi
           }
 
@@ -1938,7 +1964,7 @@ jobs:
             local requested_container="$2"
             local drift_containers_all drift_containers_csv
             local drift_containers drift_matrix drift_matrix_leaves drift_matrix_consumers
-            local population_record_count evaluated_statuses
+            local population_record_count completed_statuses
 
             # Coverage is deliberately decided from the unfiltered result
             # before a requested-container scope can take a successful exit.
@@ -1976,10 +2002,10 @@ jobs:
 
             if [[ -n "$requested_container" ]]; then
               drift_json=$(echo "$drift_json" | jq --arg c "$requested_container" '[.[] | select(.container == $c)]')
-              evaluated_statuses=$(evaluated_drift_statuses)
-              scoped_record_count=$(printf '%s' "$drift_json" | jq --argjson evaluated_statuses "$evaluated_statuses" \
+              completed_statuses=$(completed_drift_statuses)
+              scoped_record_count=$(printf '%s' "$drift_json" | jq --argjson completed_statuses "$completed_statuses" \
                 '[.[] | .variants[] |
-                  select(.status as $status | $evaluated_statuses | index($status) != null)] | length')
+                  select(.status as $status | $completed_statuses | index($status) != null)] | length')
               if [[ "$scoped_record_count" -eq 0 ]]; then
                 echo "::error::Requested container $(_escape_gha_command "$requested_container") has no evaluated drift variants" >&2
                 return 1
@@ -2053,7 +2079,8 @@ jobs:
             exit 1
           fi
 
-          # Surface unavailable-record count; per-variant diagnostics are already
+          # Surface unavailable-record count; valid not_evaluable markers are
+          # reported by emit_drift_notice and must not fail coverage. Per-variant diagnostics are already
           # emitted by the script itself (escaped) and passed through via stderr above.
           # Do NOT re-compose warning lines from drift_json fields here — those fields
           # are untrusted lineage data and would reintroduce GHA command injection.

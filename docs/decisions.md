@@ -70,7 +70,7 @@ Daily cron (via `upstream-monitor.yaml`) compares each container/variant's `base
 
 ### Key design choices
 
-**Status enum** (`drift` / `unchanged` / `error` / `legacy` / `no_external_base` / `sibling_target`): probe failures are not collapsed to drift to avoid false-positive rebuilds. `legacy` handles pre-#530 lineage without `base_image_digest`; `no_external_base` means the stage has no external base to compare against, so there is nothing to act on. `sibling_target` means the base is another target built in the same invocation, so there is no registry comparison to make and the record is complete. `upstream-monitor.yaml` validates records against this same set.
+**Status enum** (`drift` / `unchanged` / `error` / `legacy` / `no_external_base` / `sibling_target` / `not_evaluable`): probe failures are not collapsed to drift to avoid false-positive rebuilds. `legacy` handles pre-#530 lineage without `base_image_digest`; `no_external_base` means the stage has no external base to compare against, so there is nothing to act on. `sibling_target` means the base is another target built in the same invocation, so there is no registry comparison to make and the record is complete. `not_evaluable` records are structurally valid lineage whose external base was declared unresolvable or never observed; they are reported separately and do not fail the scan. `upstream-monitor.yaml` validates records against this same set.
 
 **Per-container grouping**: output is `[{container, variants[]}]` rather than one record per variant. This enables one PR per container (not one per variant), reducing PR noise.
 
