@@ -494,7 +494,10 @@ purge_dockerhub() {
   # inconsistent or incomplete listing, but cannot prove stability under
   # same-count churn before DELETE.
   while :; do
-    if ! response=$(curl -sf -H "Authorization: Bearer $dh_jwt" "$dh_listing_url"); then
+    # --globoff: a continuation URL is remote input. Without it curl reads `[`
+    # and `{` as range and set syntax and expands one URL into many
+    # authenticated requests.
+    if ! response=$(curl --globoff -sf -H "Authorization: Bearer $dh_jwt" "$dh_listing_url"); then
       echo "  ✗ Failed to list Docker Hub tags; skipping $container" >&2
       return "$LISTING_FAILURE"
     fi
