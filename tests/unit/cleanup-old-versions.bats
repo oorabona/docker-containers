@@ -999,7 +999,8 @@ run_old_version_validation_case() {
         CUTOFF_DATE="2000-01-01T00:00:00Z" \
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
-            validate_cleanup_config
+            validate_cleanup_authority
+            validate_age_retention
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
             gh() { [[ "$*" != *"/versions"* ]] && { printf "%s\\n" "{\"version_count\":1}"; return; }; printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"; }
             purge_container malformed
@@ -1030,7 +1031,8 @@ EOF
         CUTOFF_DATE="2000-01-01T00:00:00Z" \
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
-            validate_cleanup_config
+            validate_cleanup_authority
+            validate_age_retention
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
             gh() { [[ "$*" != *"/versions"* ]] && { printf "%s\\n" "{\"version_count\":1}"; return; }; printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"; }
             purge_container validator-killed
@@ -1184,6 +1186,19 @@ JSON
     [[ "$(<"$curl_log")" != *"DELETE"* ]]
 }
 
+@test "age cleanup rejects a malformed latest-retention count" {
+    run env \
+        GH_TOKEN=test-token \
+        OWNER=test-owner \
+        DRY_RUN=true \
+        KEEP_LATEST_COUNT=not-a-number \
+        KEEP_MONTHS=0 \
+        bash "$PROJECT_ROOT/scripts/cleanup-old-versions.sh" stale
+
+    [[ "$status" -eq 64 ]]
+    [[ "$output" == "cleanup configuration rejected: KEEP_LATEST_COUNT must be 0 or [1-9][0-9]*" ]]
+}
+
 @test "age purge revalidates a marker-shaped bypass before its first network call" {
     local gh_log="$BATS_TEST_TMPDIR/direct-age-purge-gh.log"
     : > "$gh_log"
@@ -1239,7 +1254,7 @@ EOF
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" DRY_RUN=true KEEP_LATEST_COUNT=0 KEEP_MONTHS=0 bash -c '
         source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
         gh() { printf "%s\\n" "$*" >> "$GH_LOG"; }
-        validate_cleanup_config
+        validate_cleanup_authority
         _cleanup_old_versions_delete stale 101
     '
 

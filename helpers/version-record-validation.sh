@@ -90,11 +90,8 @@ parse_result_counters() {
   done
 }
 
-# Validate the common destructive-cleanup configuration.
-validate_cleanup_config() {
-  local variable value
-  local -r maximum_retention_count=2147483647
-
+# Validate the authority to execute destructive cleanup.
+validate_cleanup_authority() {
   case "${DRY_RUN-}" in
     true|false) ;;
     *)
@@ -102,6 +99,12 @@ validate_cleanup_config() {
       return 64
       ;;
   esac
+}
+
+# Validate the retention policy used by the age-based cleanup.
+validate_age_retention() {
+  local variable value
+  local -r maximum_retention_count=2147483647
 
   for variable in KEEP_LATEST_COUNT KEEP_MONTHS; do
     value="${!variable-}"
