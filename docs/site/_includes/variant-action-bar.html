@@ -20,7 +20,8 @@
   Build a flat variants list from page.versions (postgres-style) OR page.variants
   (single-version) OR empty array (no variants at all).
   Each entry: { tag, version, flavor, name, size_amd64, size_arm64, build_digest,
-                attestation_url, attestation_id, trivy_summary, multi_arch_platforms }
+    attestation_url, attestation_id, trivy_summary, multi_arch_platforms,
+                publication_observation }
 {%- endcomment -%}
 
 {%- comment -%} Emit one version pill for each page.versions entry {%- endcomment -%}
@@ -66,6 +67,7 @@
 {%- endcapture -%}
 
 {%- comment -%} Build flat variant objects array for JS consumption {%- endcomment -%}
+{%- assign _vab_repository = page.github_username | append: "/" | append: page.name -%}
 {%- capture _vab_variants_json -%}[
 {%- if page.versions -%}
   {%- assign _vab_first_row = true -%}
@@ -73,16 +75,16 @@
     {%- for _vab_v in _vab_ver.variants -%}
       {%- unless _vab_first_row -%},{%- endunless -%}
       {%- assign _vab_first_row = false -%}
-      {"tag":{{ _vab_v.tag | jsonify }},"version":{{ _vab_ver.base_tag | default: _vab_ver.tag | jsonify }},"flavor":{{ _vab_v.name | default: "" | jsonify }},"name":{{ _vab_v.name | default: "" | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
+      {"tag":{{ _vab_v.tag | jsonify }},"version":{{ _vab_ver.base_tag | default: _vab_ver.tag | jsonify }},"flavor":{{ _vab_v.name | default: "" | jsonify }},"name":{{ _vab_v.name | default: "" | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }},"publication_observation":{{ _vab_v.publication_observation | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
     {%- endfor -%}
   {%- endfor -%}
 {%- elsif page.variants -%}
   {%- for _vab_v in page.variants -%}
     {%- unless forloop.first -%},{%- endunless -%}
-    {"tag":{{ _vab_v.tag | jsonify }},"version":"","flavor":{{ _vab_v.tag | jsonify }},"name":{{ _vab_v.tag | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
+    {"tag":{{ _vab_v.tag | jsonify }},"version":"","flavor":{{ _vab_v.tag | jsonify }},"name":{{ _vab_v.tag | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }},"publication_observation":{{ _vab_v.publication_observation | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
   {%- endfor -%}
 {%- else -%}
-  {"tag":{{ page.current_version | jsonify }},"version":"","flavor":"","name":"","size_amd64":{{ page.size_amd64 | default: "" | jsonify }},"size_arm64":{{ page.size_arm64 | default: "" | jsonify }},"build_digest":{{ page.build_digest | default: "" | jsonify }},"attestation_url":"","attestation_id":"","trivy_summary":null,"multi_arch_platforms":[]}
+  {"tag":{{ page.current_version | jsonify }},"version":"","flavor":"","name":"","size_amd64":{{ page.size_amd64 | default: "" | jsonify }},"size_arm64":{{ page.size_arm64 | default: "" | jsonify }},"build_digest":{{ page.build_digest | default: "" | jsonify }},"attestation_url":"","attestation_id":"","publication_observation":{{ page.publication_observation | jsonify }},"trivy_summary":null,"multi_arch_platforms":[]}
 {%- endif -%}
 ]
 {%- endcapture -%}
@@ -125,7 +127,29 @@
   {%- endfor -%}
 {%- endif -%}
 
+{%- assign _vab_default_publication_observation = page.publication_observation -%}
+{%- if page.versions -%}
+  {%- for _vab_observation_ver in page.versions -%}
+    {%- for _vab_observation_var in _vab_observation_ver.variants -%}
+      {%- if _vab_observation_var.tag == _vab_default_tag -%}
+        {%- assign _vab_default_publication_observation = _vab_observation_var.publication_observation -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endfor -%}
+{%- elsif page.variants -%}
+  {%- for _vab_observation_var in page.variants -%}
+    {%- if _vab_observation_var.tag == _vab_default_tag -%}
+      {%- assign _vab_default_publication_observation = _vab_observation_var.publication_observation -%}
+    {%- endif -%}
+  {%- endfor -%}
+{%- endif -%}
+
 {%- capture _vab_registries -%}[{"id":"ghcr","label":"GHCR"},{"id":"dockerhub","label":"Docker Hub"}]{%- endcapture -%}
+
+{%- assign _vab_default_has_publication_observation = false -%}
+{%- if _vab_default_publication_observation.registry == "ghcr.io" and _vab_default_publication_observation.repository == _vab_repository and _vab_default_publication_observation.tag == _vab_default_tag -%}
+  {%- assign _vab_default_has_publication_observation = true -%}
+{%- endif -%}
 
 <section id="variants-pull" class="vab-section" aria-label="Variant selector and pull commands">
   <variant-action-bar
@@ -145,10 +169,15 @@
   <noscript>
     <div class="vab-noscript">
       <p class="vab-noscript-label">JavaScript is disabled — showing default variant.</p>
+      {%- if _vab_default_has_publication_observation -%}
       <pre><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _vab_default_tag | escape }}</code></pre>
       <pre><code>cosign verify ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _vab_default_tag | escape }} \
   --certificate-identity-regexp=https://github.com/{{ page.github_username | escape }} \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com</code></pre>
+      {%- else -%}
+      <p>Publication evidence is not recorded for this image.</p>
+      <p>No pull command is shown for this reference.</p>
+      {%- endif -%}
       {%- if page.versions or page.variants -%}
       <details>
         <summary>All variants</summary>
@@ -158,12 +187,12 @@
             {%- if page.versions -%}
               {%- for _ns_ver in page.versions -%}
                 {%- for _ns_v in _ns_ver.variants -%}
-                  <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code></td></tr>
+                  <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td>{% if _ns_v.publication_observation.registry == "ghcr.io" and _ns_v.publication_observation.repository == _vab_repository and _ns_v.publication_observation.tag == _ns_v.tag %}<code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code>{% else %}Publication evidence is not recorded for this image. No pull command is shown for this reference.{% endif %}</td></tr>
                 {%- endfor -%}
               {%- endfor -%}
             {%- elsif page.variants -%}
               {%- for _ns_v in page.variants -%}
-                <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code></td></tr>
+                <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td>{% if _ns_v.publication_observation.registry == "ghcr.io" and _ns_v.publication_observation.repository == _vab_repository and _ns_v.publication_observation.tag == _ns_v.tag %}<code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code>{% else %}Publication evidence is not recorded for this image. No pull command is shown for this reference.{% endif %}</td></tr>
               {%- endfor -%}
             {%- endif -%}
           </tbody>

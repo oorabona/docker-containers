@@ -19,7 +19,7 @@ setup() {
     STATS_FILE="$TEST_DIR/docs/site/_data/stats.yml"
     export DATA_FILE CONTAINERS_DIR STATS_FILE
 
-    get_container_versions()             { echo "1.0.0|1.0.0|green|Up to date|true"; }
+    get_container_versions()             { echo "1.0.0|1.0.0|up_to_date|green|Up to Date|true"; }
     get_container_description()          { echo "Alpha test container"; }
     get_container_build_status()         { echo "success"; }
     populate_container_build_status_cache() { :; }
@@ -120,10 +120,10 @@ capture_container_page() {
     get_current_published_version() { echo ""; }
     run _real_get_container_versions "unconfirmed"
     [ "$status" -eq 0 ]
-    [[ "$(tail -n1 <<< "$output")" == "|1.0.0|warning|Publication information unavailable|false" ]]
+    [[ "$(tail -n1 <<< "$output")" == "|1.0.0|indeterminate|warning|Publication information unavailable|false" ]]
 
     capture_container_page
-    get_container_versions() { echo "|9.9.9|warning|Publication information unavailable|false"; }
+    get_container_versions() { echo "|9.9.9|indeterminate|warning|Publication information unavailable|false"; }
 
     run generate_data
     [ "$status" -eq 0 ]
@@ -134,21 +134,89 @@ capture_container_page() {
         .current_version == "" and
         .current_version_confirmed == false and
         .latest_version == "9.9.9" and
+        .comparison_outcome == "indeterminate" and
+        .attention_state == "needs_attention" and
+        .publication_observation == null and
         .status_text == "Publication information unavailable" and
         .ghcr_image == "" and
         .dockerhub_image == ""
     ' >/dev/null
 
-    # Lexical, and deliberately so: no Ruby or Jekyll runs in this environment,
-    # so nothing here renders Liquid. These two greps assert only that the
-    # templates branch on the explicit field rather than on a string sentinel.
-    # They cannot show what the built page emits — that check is fetching the
-    # deployed site, which is where a Liquid quirk that survives a source grep
-    # has bitten this repository before.
-    grep -q 'include.current_version_confirmed == true' \
-        "$ORIG_DIR/docs/site/_includes/container-card.html"
-    grep -q 'page.current_version_confirmed == true' \
-        "$ORIG_DIR/docs/site/_layouts/container-detail.html"
+    grep -q 'publication_observation' "$ORIG_DIR/docs/site/_includes/variant-action-bar.html"
+    grep -q '_hasPublicationObservation' "$ORIG_DIR/docs/site/assets/js/components/variant-action-bar.js"
+}
+
+@test "dashboard: a failed registry lookup is indeterminate and contributes zero updates" {
+    make_fixture_container "failed-lookup"
+    capture_container_page
+    get_container_versions() { echo "|9.9.9|indeterminate|warning|Publication information unavailable|false"; }
+
+    run generate_data
+    [ "$status" -eq 0 ]
+
+    run yq -e '.updates_available == 0 and .up_to_date == 0' "$STATS_FILE"
+    [ "$status" -eq 0 ]
+    run jq -e '.comparison_outcome == "indeterminate" and .publication_observation == null' \
+        "$TEST_DIR/captured-failed-lookup.json"
+    [ "$status" -eq 0 ]
+}
+
+@test "dashboard: only a concluded equal or different version comparison selects its outcome" {
+    make_fixture_container "comparison"
+
+    get_current_published_version() { echo "1.0.0"; }
+    run _real_get_container_versions "comparison"
+    [ "$status" -eq 0 ]
+    [[ "$(tail -n1 <<< "$output")" == "1.0.0|1.0.0|up_to_date|green|Up to Date|true" ]]
+
+    get_current_published_version() { echo "2.0.0"; }
+    run _real_get_container_versions "comparison"
+    [ "$status" -eq 0 ]
+    [[ "$(tail -n1 <<< "$output")" == "2.0.0|1.0.0|update_available|warning|Update Available|true" ]]
+
+    get_current_published_version() { echo "unknown"; }
+    run _real_get_container_versions "comparison"
+    [ "$status" -eq 0 ]
+    [[ "$(tail -n1 <<< "$output")" == "unknown|1.0.0|indeterminate|secondary|Unknown Status|true" ]]
+
+    printf '#!/usr/bin/env bash\necho unknown\n' > "$TEST_DIR/comparison/version.sh"
+    chmod +x "$TEST_DIR/comparison/version.sh"
+    get_current_published_version() { echo "1.0.0"; }
+    run _real_get_container_versions "comparison"
+    [ "$status" -eq 0 ]
+    [[ "$(tail -n1 <<< "$output")" == "1.0.0|unknown|indeterminate|secondary|Unknown Status|true" ]]
+}
+
+@test "dashboard: unknown comparison outcome and wrong field count fail closed" {
+    make_fixture_container "unrecognised-outcome"
+    capture_container_page
+    get_container_versions() { echo "1.0.0|2.0.0|not-a-state|warning|Update Available|true"; }
+
+    run generate_data
+    [ "$status" -eq 0 ]
+    run yq -e '.updates_available == 0' "$STATS_FILE"
+    [ "$status" -eq 0 ]
+    run jq -e '.comparison_outcome == "indeterminate" and .status_text == "Unknown Status"' \
+        "$TEST_DIR/captured-unrecognised-outcome.json"
+    [ "$status" -eq 0 ]
+
+    get_container_versions() { echo "1.0.0|2.0.0|update_available|warning|Update Available"; }
+    run generate_data
+    [ "$status" -eq 0 ]
+    run yq -e '.updates_available == 0' "$STATS_FILE"
+    [ "$status" -eq 0 ]
+}
+
+@test "variant action bar with no publication observation offers no pull command" {
+    run grep -F 'Publication evidence is not recorded for this image.' \
+        "$ORIG_DIR/docs/site/assets/js/components/variant-action-bar.js"
+    [ "$status" -eq 0 ]
+    run grep -F 'No pull command is shown for this reference.' \
+        "$ORIG_DIR/docs/site/_includes/variant-action-bar.html"
+    [ "$status" -eq 0 ]
+    run grep -F 'if (!hasPublicationObservation)' \
+        "$ORIG_DIR/docs/site/assets/js/components/variant-action-bar.js"
+    [ "$status" -eq 0 ]
 }
 
 # Creates a minimal container directory that satisfies generate_data()'s

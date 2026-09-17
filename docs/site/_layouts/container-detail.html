@@ -129,14 +129,7 @@
           {%- endif -%}
 
           {%- comment -%} Variant action bar — replaces static pull command + meta-cards {%- endcomment -%}
-          {% if page.current_version_confirmed == true %}
-            {% include variant-action-bar.html %}
-          {% else %}
-            <section id="variants-pull" class="vab-section" aria-label="Publication information">
-              <p>Publication information is unavailable; no pull reference is shown.</p>
-              <p>Upstream version: {{ page.latest_version | default: "unknown" | escape }}</p>
-            </section>
-          {% endif %}
+          {% include variant-action-bar.html %}
 
         </header>{%- comment -%} /Zone 1 — Identity {%- endcomment -%}
 

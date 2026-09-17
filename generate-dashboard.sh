@@ -5,6 +5,8 @@
 # Architecture: data is collected as JSON objects, then converted to YAML via yq.
 # This eliminates fragile echo/heredoc YAML generation and ensures consistency
 # between containers.yml and per-container page files.
+# The sources use the runtime-resolved SCRIPT_DIR; shellcheck -x follows them.
+# shellcheck disable=SC1091
 
 set -euo pipefail
 
@@ -182,7 +184,7 @@ get_build_lineage_field() {
         local _val
         _val=$(jq -r ".[\"$field\"] // \"unknown\"" "$lineage_file" 2>/dev/null) || _val="unknown"
         # Sanitize: leaked placeholder (e.g. "${OS_IMAGE_BASE}:${OS_IMAGE_TAG}") → empty
-        if [[ "$_val" == *'${'* ]]; then
+        if [[ "$_val" == *"\${"* ]]; then
             echo ""
         else
             echo "$_val"
@@ -301,11 +303,11 @@ get_container_versions() {
     local container=$1
 
     pushd "$container" >/dev/null 2>&1 || {
-        echo "unknown|unknown|secondary|Unknown Status"
+        echo "unknown|unknown|indeterminate|warning|Publication information unavailable|false"
         return 1
     }
 
-    local current_version latest_version status_color status_text current_version_confirmed="false"
+    local current_version latest_version comparison_outcome status_color status_text current_version_confirmed="false"
 
     local _t0_skopeo=${EPOCHREALTIME:-}
     current_version=$(get_current_published_version "oorabona/$container")
@@ -319,20 +321,24 @@ get_container_versions() {
     popd >/dev/null 2>&1
 
     if [[ "$current_version_confirmed" != "true" ]]; then
+        comparison_outcome="indeterminate"
         status_color="warning"
         status_text="Publication information unavailable"
     elif [[ "$current_version" == "unknown" || "$latest_version" == "unknown" ]]; then
+        comparison_outcome="indeterminate"
         status_color="secondary"
         status_text="Unknown Status"
     elif [[ "$current_version" == "$latest_version" ]]; then
+        comparison_outcome="up_to_date"
         status_color="green"
         status_text="Up to Date"
     else
+        comparison_outcome="update_available"
         status_color="warning"
         status_text="Update Available"
     fi
 
-    echo "${current_version}|${latest_version}|${status_color}|${status_text}|${current_version_confirmed}"
+    echo "${current_version}|${latest_version}|${comparison_outcome}|${status_color}|${status_text}|${current_version_confirmed}"
 }
 
 # Get container description from README
@@ -406,7 +412,7 @@ resolve_variant_lineage_json() {
         # placeholders in base_image_ref. Sanitize only when the value actually
         # contains an unresolved placeholder — the absence of lineage_schema_version
         # is NOT a signal of corruption; v1 files can have concrete values.
-        if [[ "$_raw_base_image" == *'${'* ]]; then
+        if [[ "$_raw_base_image" == *"\${"* ]]; then
             base_image="unknown"
         else
             base_image="$_raw_base_image"
@@ -609,8 +615,8 @@ variant_deps_for_flavor() {
 # Handles sizes, lineage, and build_args in one place (no duplication)
 collect_variant_json() {
     local container="$1" container_dir="$2" variant_name="$3"
-    local version="$4" current_version="$5" fallback_base_image="$6"
-    local is_versioned="${7:-false}" current_version_confirmed="${8:-false}"
+    local version="$4" fallback_base_image="$5"
+    local is_versioned="${6:-false}" current_version_confirmed="${7:-false}"
 
     local variant_tag variant_desc is_default
     variant_tag=$(variant_image_tag "$version" "$variant_name" "$container_dir")
@@ -625,8 +631,8 @@ collect_variant_json() {
 
     # Lineage (build_digest + base_image with version mismatch check + #515 enrichment fields)
     # Use variant_tag for lineage file lookup, version for mismatch check
-    # (NOT current_version — that's the container's latest published version,
-    # which may differ from this variant's PG major version).
+    # (not the container's latest published version, which may differ from
+    # this variant's PG major version).
     # Resolved EARLY so the lineage-first reads below can consume it; resolve
     # is cheap (file read + jq) and idempotent under repeated calls.
     local flavor
@@ -860,6 +866,7 @@ collect_variant_json() {
     jq -s \
         --arg name "$variant_name" \
         --arg tag "$variant_tag" \
+        --arg repository "oorabona/$container" \
         --arg desc "$variant_desc" \
         --argjson is_default "$is_default" \
         --arg size_amd64 "$size_amd64" \
@@ -889,6 +896,15 @@ collect_variant_json() {
         }
         + (if ($multi_arch_platforms | length) > 0 then {multi_arch_platforms: $multi_arch_platforms} else {} end)
         + (if $multi_arch_digests.index_digest != null then {multi_arch_index_digest: $multi_arch_digests.index_digest} else {} end)
+        + (if $multi_arch_digests.index_digest != null then {
+            publication_observation: {
+                registry: "ghcr.io",
+                repository: $repository,
+                tag: $tag,
+                source: "registry_manifest_lookup",
+                index_digest: $multi_arch_digests.index_digest
+            }
+        } else {} end)
         + (if $multi_arch_digests.manifest_digest_amd64 != null then {manifest_digest_amd64: $multi_arch_digests.manifest_digest_amd64} else {} end)
         + (if $multi_arch_digests.manifest_digest_arm64 != null then {manifest_digest_arm64: $multi_arch_digests.manifest_digest_arm64} else {} end)
         + (if ($attestation_id | length) > 0 then {attestation_id: $attestation_id, attestation_url: $attestation_url} else {} end)
@@ -925,7 +941,7 @@ collect_variants_json() {
                 [[ -z "$variant_name" ]] && continue
                 local var_json
                 var_json=$(collect_variant_json "$container" "$container_dir" "$variant_name" \
-                    "$ver_tag" "$current_version" "$base_image" "true" "$current_version_confirmed")
+                    "$ver_tag" "$base_image" "true" "$current_version_confirmed")
                 variants_arr=$(printf '%s\n%s' "$variants_arr" "$var_json" | jq -s '.[0] + [.[1]]')
             done < <(list_variants "$container_dir" "$ver_tag")
 
@@ -949,7 +965,7 @@ collect_variants_json() {
                 && [[ -f "$SCRIPT_DIR/.build-lineage/${container}-${ver_tag}.json" ]]; then
                 local var_json
                 var_json=$(collect_variant_json "$container" "$container_dir" "" \
-                    "$ver_tag" "$current_version" "$base_image" "true" "$current_version_confirmed")
+                    "$ver_tag" "$base_image" "true" "$current_version_confirmed")
                 variants_arr=$(printf '%s\n%s' "[]" "$var_json" | jq -s '.[0] + [.[1]]')
             fi
 
@@ -969,7 +985,7 @@ collect_variants_json() {
             [[ -z "$variant_name" ]] && continue
             local var_json
             var_json=$(collect_variant_json "$container" "$container_dir" "$variant_name" \
-                "$current_version" "$current_version" "$base_image" "false" "$current_version_confirmed")
+                "$current_version" "$base_image" "false" "$current_version_confirmed")
             variants_arr=$(printf '%s\n%s' "$variants_arr" "$var_json" | jq -s '.[0] + [.[1]]')
         done < <(list_variants "$container_dir")
 
@@ -1518,7 +1534,9 @@ generate_data() {
             esac
             # Compute elapsed with awk (handles both fractional and integer timestamps)
             _elapsed=$(awk "BEGIN{printf \"%.3f\", ${_t1} - ${_t0}}" 2>/dev/null || echo "0")
-            [ -n "${PROF:-}" ] && { printf '%s %s\n' "$_class" "$_elapsed" >> "$PROF/curl.log"; } 2>/dev/null || true
+            if [[ -n "${PROF:-}" ]]; then
+                printf '%s %s\n' "$_class" "$_elapsed" >> "$PROF/curl.log" 2>/dev/null || true
+            fi
             return $_rc
         }
 
@@ -1529,7 +1547,9 @@ generate_data() {
         jq() {
             local _rc=0
             command jq "$@" || _rc=$?
-            [ -n "${PROF:-}" ] && { printf 'x' >> "$PROF/jq.count"; } 2>/dev/null || true
+            if [[ -n "${PROF:-}" ]]; then
+                printf 'x' >> "$PROF/jq.count" 2>/dev/null || true
+            fi
             return $_rc
         }
 
@@ -1538,7 +1558,9 @@ generate_data() {
         yq() {
             local _rc=0
             command yq "$@" || _rc=$?
-            [ -n "${PROF:-}" ] && { printf 'x' >> "$PROF/yq.count"; } 2>/dev/null || true
+            if [[ -n "${PROF:-}" ]]; then
+                printf 'x' >> "$PROF/yq.count" 2>/dev/null || true
+            fi
             return $_rc
         }
 
@@ -1590,9 +1612,58 @@ generate_data() {
         local version_info
         version_info=$(get_container_versions "$container")
 
-        local current_version_confirmed
-        IFS='|' read -r current_version latest_version status_color status_text current_version_confirmed <<< "$version_info"
+        # The version probe is a six-field contract.  Do not let a truncated or
+        # hand-written record shift a presentation field into the comparison
+        # outcome: invalid records fail closed before stats or pages consume it.
+        local -a version_fields
+        IFS='|' read -r -a version_fields <<< "$version_info"
+        local current_version latest_version comparison_outcome status_color status_text current_version_confirmed
+        if [[ "${#version_fields[@]}" -ne 6 ]]; then
+            current_version=""
+            latest_version="unknown"
+            comparison_outcome="indeterminate"
+            current_version_confirmed="false"
+        else
+            current_version="${version_fields[0]}"
+            latest_version="${version_fields[1]}"
+            comparison_outcome="${version_fields[2]}"
+            current_version_confirmed="${version_fields[5]}"
+        fi
+
         [[ "$current_version_confirmed" == "true" ]] || current_version_confirmed="false"
+        case "$comparison_outcome" in
+            up_to_date|update_available|indeterminate) ;;
+            *) comparison_outcome="indeterminate" ;;
+        esac
+        # A comparison cannot be concluded without two known versions, even if
+        # a malformed producer claims a successful outcome.
+        if [[ "$current_version_confirmed" != "true" || -z "$current_version" ||
+              -z "$latest_version" || "$current_version" == "unknown" || "$latest_version" == "unknown" ]]; then
+            comparison_outcome="indeterminate"
+        fi
+
+        # Presentation is derived from the validated outcome, never read from
+        # the pipe record.  Indeterminate retains its existing distinction
+        # between missing publication evidence and an unknown version value.
+        case "$comparison_outcome" in
+            up_to_date)
+                status_color="green"
+                status_text="Up to Date"
+                ;;
+            update_available)
+                status_color="warning"
+                status_text="Update Available"
+                ;;
+            *)
+                if [[ "$current_version_confirmed" == "true" ]]; then
+                    status_color="secondary"
+                    status_text="Unknown Status"
+                else
+                    status_color="warning"
+                    status_text="Publication information unavailable"
+                fi
+                ;;
+        esac
 
         local description
         description=$(get_container_description "$container")
@@ -1611,9 +1682,9 @@ generate_data() {
         fi
 
         total=$((total + 1))
-        case "$status_color" in
-            "green") up_to_date=$((up_to_date + 1)) ;;
-            "warning") updates_available=$((updates_available + 1)) ;;
+        case "$comparison_outcome" in
+            up_to_date) up_to_date=$((up_to_date + 1)) ;;
+            update_available) updates_available=$((updates_available + 1)) ;;
         esac
 
         # Get Docker Hub stats (pulls and stars)
@@ -1639,6 +1710,22 @@ generate_data() {
         local build_digest base_image
         build_digest=$(get_build_lineage_field "$container" "build_digest")
         base_image=$(get_build_lineage_field "$container" "base_image_ref")
+        local attention_state publication_observation
+        if [[ "$comparison_outcome" == "up_to_date" ]]; then
+            attention_state="none"
+        else
+            attention_state="needs_attention"
+        fi
+        # This records what the earlier registry tag lookup observed for this
+        # exact GHCR reference.  It is evidence for displaying a command, not
+        # a promise that the tag can be resolved when the reader runs it.
+        if [[ "$current_version_confirmed" == "true" ]]; then
+            publication_observation=$(jq -nc \
+                --arg repository "oorabona/$container" --arg tag "$current_version" \
+                '{registry: "ghcr.io", repository: $repository, tag: $tag, source: "registry_tag_lookup"}')
+        else
+            publication_observation="null"
+        fi
 
         local container_json
         container_json=$(
@@ -1664,8 +1751,17 @@ generate_data() {
                 .pull_count = strenv(PC) | .pull_count_formatted = strenv(PCF) | .star_count = strenv(SC2) |
                 .size_amd64 = strenv(SA) | .size_arm64 = strenv(SR)
             ')
-        container_json=$(echo "$container_json" | jq --argjson pt "$pull_trend_json" '
-            . + {pull_trend: $pt} + (
+        container_json=$(echo "$container_json" | jq \
+            --arg comparison_outcome "$comparison_outcome" \
+            --arg attention_state "$attention_state" \
+            --argjson publication_observation "$publication_observation" \
+            --argjson pt "$pull_trend_json" '
+            . + {
+                comparison_outcome: $comparison_outcome,
+                attention_state: $attention_state,
+                publication_observation: $publication_observation,
+                pull_trend: $pt
+            } + (
                 (
                     $pt
                     | map(select(

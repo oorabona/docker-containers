@@ -337,13 +337,32 @@ _collect_variant_yaml_with_trivy_summary() {
     get_build_history() { printf '[]\n'; }
     get_attestation_id() { return 1; }
     build_trivy_category() { printf 'variant:1.0-base\n'; }
+    ghcr_get_manifest_sizes() { printf '\n'; }
+    ghcr_get_multi_arch_digests() { printf '%s\n' "${TEST_VARIANT_MULTI_ARCH_DIGESTS:-}"; }
     get_trivy_summary() {
         [[ "${TEST_VARIANT_TRIVY_FAILURE:-false}" == "true" ]] && return 1
         printf '%s\n' "$TEST_TRIVY_SUMMARY"
     }
     variant_deps_for_flavor() { printf '[]\n'; }
 
-    collect_variant_json "variant" "$TEST_DIR/variant" "base" "1.0" "1.0" "alpine:3.19" false false 2>/dev/null | yq -P
+    collect_variant_json "variant" "$TEST_DIR/variant" "base" "1.0" "alpine:3.19" false "${TEST_VARIANT_PUBLICATION_CONFIRMED:-false}" 2>/dev/null | yq -P
+}
+
+@test "collect_variant_json records publication observation only for the exact observed tag" {
+    TEST_VARIANT_PUBLICATION_CONFIRMED=true
+    TEST_VARIANT_MULTI_ARCH_DIGESTS='{"index_digest":"sha256:observed","manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+    TEST_TRIVY_SUMMARY='{}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e '.publication_observation.registry == "ghcr.io" and .publication_observation.repository == "oorabona/variant" and .publication_observation.tag == "1.0-base" and .publication_observation.source == "registry_manifest_lookup" and .publication_observation.index_digest == "sha256:observed"' <<<"$output"
+    [ "$status" -eq 0 ]
+
+    TEST_VARIANT_PUBLICATION_CONFIRMED=false
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e 'has("publication_observation") | not' <<<"$output"
+    [ "$status" -eq 0 ]
 }
 
 @test "collect_variant_json: Code Scanning evidence without scan record is emitted" {
