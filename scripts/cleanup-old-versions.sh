@@ -59,7 +59,7 @@ print_banner() {
 _cleanup_old_versions_delete() {
   local container="$1" version_id="$2"
 
-  validate_cleanup_config || return 64
+  validate_cleanup_authority || return 64
   [[ "${DRY_RUN-}" == false ]] || { echo "cleanup deletion refused: DRY_RUN must be false" >&2; return 64; }
 
   gh api --method DELETE \
@@ -86,7 +86,8 @@ purge_container() {
   local -a replay_positions=() replay_ids=() replay_tags=()
   declare -A major_seen=()
 
-  validate_cleanup_config || return 64
+  validate_cleanup_authority || return 64
+  validate_age_retention || return 64
 
   if ! versions=$(gh api \
     -H "Accept: application/vnd.github+json" \
@@ -151,7 +152,7 @@ purge_container() {
     return "$PROCESSING_FAILURE"
   fi
 
-  # shellcheck disable=SC2153 # validate_cleanup_config assigns CUTOFF_TS.
+  # shellcheck disable=SC2153 # validate_age_retention assigns CUTOFF_TS.
   cutoff_ts="$CUTOFF_TS"
   if ! versions_file=$(mktemp) || ! deletions_file=$(mktemp); then
     rm -f "$versions_file" "$deletions_file"
@@ -332,7 +333,7 @@ main() {
   if [[ ! -v DRY_RUN ]]; then DRY_RUN=false; fi
   if [[ ! -v KEEP_LATEST_COUNT ]]; then KEEP_LATEST_COUNT=10; fi
   if [[ ! -v KEEP_MONTHS ]]; then KEEP_MONTHS=6; fi
-  if ! validate_cleanup_config; then
+  if ! validate_cleanup_authority || ! validate_age_retention; then
     return 64
   fi
   : "${GH_TOKEN:?GH_TOKEN is required}"

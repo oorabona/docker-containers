@@ -30,10 +30,6 @@ on:
 permissions:
   packages: write
 
-env:
-  KEEP_LATEST_COUNT: 10
-  KEEP_MONTHS: 6
-
 # Never cancel a started cleanup: a half-replayed deletion plan leaves no summary. The key is
 # fixed rather than partitioned by container_filter, because cleanup-ext-images is workflow-global.
 # A newer dispatch supersedes a PENDING run, which shows up as cancelled. The obsolete-tag prune
@@ -56,6 +52,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          KEEP_LATEST_COUNT: 10
+          KEEP_MONTHS: 6
           OWNER: ${{ github.repository_owner }}
           CONTAINER_FILTER: ${{ inputs.container_filter }}
         run: |

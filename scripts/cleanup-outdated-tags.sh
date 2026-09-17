@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Purge container images whose tags are not in the current valid build set.
 # Required env vars: GH_TOKEN, OWNER
-# Optional env vars: DRY_RUN (default: false; exactly true or false),
-# KEEP_LATEST_COUNT (default: 10; 0 disables the latest-version floor), and
-# KEEP_MONTHS (default: 6; 0 disables the age-retention floor).
+# Optional env vars: DRY_RUN (default: false; exactly true or false).
 #
 # Usage: cleanup-outdated-tags.sh [container]
 # With an argument, process exactly one package. Multiple package names need a
@@ -46,7 +44,7 @@ valid_container_target() {
 _cleanup_outdated_tags_delete() {
   local deletion_target="$1"
 
-  validate_cleanup_config || return 64
+  validate_cleanup_authority || return 64
   [[ "${DRY_RUN-}" == false ]] || { echo "cleanup deletion refused: DRY_RUN must be false" >&2; return 64; }
 
   case "$deletion_target" in
@@ -157,7 +155,7 @@ purge_ghcr() {
   local -a untagged_ids=() untagged_digests=() orphan_ids=() orphan_digests=() obsolete_replay=()
   local -a parent_ids=() parent_digests=() parent_tags=() obsolete_ids=() obsolete_digests=() obsolete_tags=()
 
-  validate_cleanup_config || return 64
+  validate_cleanup_authority || return 64
 
   cleanup_files() { rm -f "$versions_file" "$obsolete_file" "$protected_file"; }
 
@@ -451,7 +449,7 @@ purge_ghcr() {
 # was not attempted (0|0); a returned non-zero status is always a real failure.
 purge_dockerhub() {
   local container="$1" valid_tags="$2" dh_jwt response dh_tags tag dh_kept=0 dh_deleted=0 delete_failures=0
-  validate_cleanup_config || return 64
+  validate_cleanup_authority || return 64
   if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
     printf '%s\n' "0|0" || return "$PROCESSING_FAILURE"
     return 0
@@ -509,9 +507,7 @@ main() {
   fi
 
   if [[ ! -v DRY_RUN ]]; then DRY_RUN=false; fi
-  if [[ ! -v KEEP_LATEST_COUNT ]]; then KEEP_LATEST_COUNT=10; fi
-  if [[ ! -v KEEP_MONTHS ]]; then KEEP_MONTHS=6; fi
-  if ! validate_cleanup_config; then
+  if ! validate_cleanup_authority; then
     return 64
   fi
   : "${GH_TOKEN:?GH_TOKEN is required}"
