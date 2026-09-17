@@ -312,7 +312,7 @@ get_container_versions() {
     local _t0_skopeo=${EPOCHREALTIME:-}
     current_version=$(get_current_published_version "oorabona/$container")
     log_latency "skopeo-list-tags oorabona/$container" "$_t0_skopeo" 60
-    if [[ -n "$current_version" ]]; then
+    if [[ -n "$current_version" && "$current_version" != "unknown" ]]; then
         current_version_confirmed="true"
     fi
 
@@ -332,10 +332,16 @@ get_container_versions() {
         comparison_outcome="up_to_date"
         status_color="green"
         status_text="Up to Date"
-    else
+    elif version_is_greater "$latest_version" "$current_version"; then
         comparison_outcome="update_available"
         status_color="warning"
         status_text="Update Available"
+    else
+        # A lower or unordered candidate must not be presented as an update.
+        # version_is_greater returns 1 for not-greater and 2 for unparseable.
+        comparison_outcome="indeterminate"
+        status_color="secondary"
+        status_text="Unknown Status"
     fi
 
     echo "${current_version}|${latest_version}|${comparison_outcome}|${status_color}|${status_text}|${current_version_confirmed}"
@@ -734,36 +740,51 @@ collect_variant_json() {
         echo "[debug] trivy_summary for $container-$variant_tag = ${trivy_summary:0:60}…" >&2
     [[ -n "${DASHBOARD_TRACE:-}" ]] && printf '[trace] %s post-trivy %s:%s\n' "$(date -Iseconds)" "$container" "$variant_tag" >&2
 
-    # Multi-arch platform list + manifest digests — prefer lineage (post-#515 enriched
-    # fields), fall back to network only when lineage lacks all three digest fields.
+    # Multi-arch platform list + manifest digests.  Fallback lineage is useful
+    # metadata, but is never evidence for this tag.  Only an exact-tag lineage
+    # file whose own identity agrees may supply cached manifest evidence; the
+    # live lookup remains behind confirmed container publication evidence.
     local multi_arch_platforms_json="[]"
     local multi_arch_digests_json
     multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+    local publication_observation_json="null"
+    local exact_lineage_file="$SCRIPT_DIR/.build-lineage/${container}-${variant_tag}.json"
+    local exact_lineage_json="" exact_lineage_platforms=""
+    local exact_lineage_index_digest="" exact_lineage_amd64="" exact_lineage_arm64=""
+    if [[ -f "$exact_lineage_file" ]]; then
+        exact_lineage_json=$(jq -c --arg container "$container" --arg tag "$variant_tag" \
+            'select(.container == $container and .tag == $tag)' "$exact_lineage_file" 2>/dev/null) || exact_lineage_json=""
+    fi
+    if [[ -n "$exact_lineage_json" ]]; then
+        exact_lineage_platforms=$(jq -c '.multi_arch_platforms // empty | select(type == "array")' \
+            <<<"$exact_lineage_json" 2>/dev/null) || exact_lineage_platforms=""
+        exact_lineage_index_digest=$(jq -r '.multi_arch_index_digest // empty' <<<"$exact_lineage_json" 2>/dev/null) || exact_lineage_index_digest=""
+        exact_lineage_amd64=$(jq -r '.manifest_digest_amd64 // empty' <<<"$exact_lineage_json" 2>/dev/null) || exact_lineage_amd64=""
+        exact_lineage_arm64=$(jq -r '.manifest_digest_arm64 // empty' <<<"$exact_lineage_json" 2>/dev/null) || exact_lineage_arm64=""
+
+        [[ "$exact_lineage_index_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || exact_lineage_index_digest=""
+        [[ "$exact_lineage_amd64" =~ ^sha256:[a-f0-9]{64}$ ]] || exact_lineage_amd64=""
+        [[ "$exact_lineage_arm64" =~ ^sha256:[a-f0-9]{64}$ ]] || exact_lineage_arm64=""
+        if [[ -n "$exact_lineage_platforms" && "$exact_lineage_platforms" != "[]" ]]; then
+            multi_arch_platforms_json="$exact_lineage_platforms"
+        fi
+        if [[ -n "$exact_lineage_index_digest" || -n "$exact_lineage_amd64" || -n "$exact_lineage_arm64" ]]; then
+            multi_arch_digests_json=$(jq -nc \
+                --arg idx "$exact_lineage_index_digest" --arg amd "$exact_lineage_amd64" --arg arm "$exact_lineage_arm64" \
+                '{index_digest: (if $idx == "" then null else $idx end), manifest_digest_amd64: (if $amd == "" then null else $amd end), manifest_digest_arm64: (if $arm == "" then null else $arm end)}') || true
+        fi
+        if [[ -n "$exact_lineage_index_digest" ]]; then
+            publication_observation_json=$(jq -nc \
+                --arg repository "oorabona/$container" --arg tag "$variant_tag" --arg digest "$exact_lineage_index_digest" \
+                '{registry: "ghcr.io", repository: $repository, tag: $tag, source: "exact_lineage_manifest", index_digest: $digest}')
+        fi
+    fi
 
     if [[ "$current_version_confirmed" == "true" ]]; then
-        local lineage_platforms lineage_index_digest lineage_amd64 lineage_arm64
-        lineage_platforms=$(echo "$lineage_json" | jq -c '.multi_arch_platforms // empty' 2>/dev/null) || lineage_platforms=""
-        lineage_index_digest=$(echo "$lineage_json" | jq -r '.multi_arch_index_digest // empty' 2>/dev/null) || lineage_index_digest=""
-        lineage_amd64=$(echo "$lineage_json" | jq -r '.manifest_digest_amd64 // empty' 2>/dev/null) || lineage_amd64=""
-        lineage_arm64=$(echo "$lineage_json" | jq -r '.manifest_digest_arm64 // empty' 2>/dev/null) || lineage_arm64=""
-
-        if [[ -n "$lineage_platforms" && "$lineage_platforms" != "null" && "$lineage_platforms" != "[]" ]]; then
-            multi_arch_platforms_json="$lineage_platforms"
-        fi
-        if [[ -n "$lineage_index_digest" || -n "$lineage_amd64" || -n "$lineage_arm64" ]]; then
-            multi_arch_digests_json=$(jq -nc \
-                --arg idx "${lineage_index_digest}" \
-                --arg amd "${lineage_amd64}" \
-                --arg arm "${lineage_arm64}" \
-                '{
-                    index_digest: (if $idx == "" then null else $idx end),
-                    manifest_digest_amd64: (if $amd == "" then null else $amd end),
-                    manifest_digest_arm64: (if $arm == "" then null else $arm end)
-                }') || multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
-        fi
-
-        # Fallback: only if lineage had NO platforms AND NO digests at all
-        if [[ "$multi_arch_platforms_json" == "[]" && -z "$lineage_index_digest" && -z "$lineage_amd64" && -z "$lineage_arm64" ]]; then
+        # The live fallback is an exact request for variant_tag.  Do not run it
+        # during a container-level publication outage, and do not let fallback
+        # lineage decide whether it is needed.
+        if [[ "$multi_arch_platforms_json" == "[]" && -z "$exact_lineage_index_digest" && -z "$exact_lineage_amd64" && -z "$exact_lineage_arm64" ]]; then
             local raw_sizes arch_list=""
             local _t0_ghcr=${EPOCHREALTIME:-}
             raw_sizes=$(ghcr_get_manifest_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
@@ -779,6 +800,18 @@ collect_variant_json() {
             log_latency "ghcr-index oorabona/${container}:${variant_tag} (multi-arch)" "$_t0_ghcr_ma" 30
             [[ -z "$multi_arch_digests_json" ]] && \
                 multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+            multi_arch_digests_json=$(jq -c '
+                .index_digest = (if (.index_digest | type) == "string" and test("^sha256:[a-f0-9]{64}$") then .index_digest else null end)
+                | .manifest_digest_amd64 = (if (.manifest_digest_amd64 | type) == "string" and test("^sha256:[a-f0-9]{64}$") then .manifest_digest_amd64 else null end)
+                | .manifest_digest_arm64 = (if (.manifest_digest_arm64 | type) == "string" and test("^sha256:[a-f0-9]{64}$") then .manifest_digest_arm64 else null end)' \
+                <<<"$multi_arch_digests_json") || multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+            local live_index_digest
+            live_index_digest=$(jq -r '.index_digest // empty' <<<"$multi_arch_digests_json" 2>/dev/null) || live_index_digest=""
+            if [[ "$live_index_digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+                publication_observation_json=$(jq -nc \
+                    --arg repository "oorabona/$container" --arg tag "$variant_tag" --arg digest "$live_index_digest" \
+                    '{registry: "ghcr.io", repository: $repository, tag: $tag, source: "registry_manifest_lookup", index_digest: $digest}')
+            fi
         fi
     fi
     [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
@@ -866,7 +899,6 @@ collect_variant_json() {
     jq -s \
         --arg name "$variant_name" \
         --arg tag "$variant_tag" \
-        --arg repository "oorabona/$container" \
         --arg desc "$variant_desc" \
         --argjson is_default "$is_default" \
         --arg size_amd64 "$size_amd64" \
@@ -876,6 +908,7 @@ collect_variant_json() {
         --argjson extensions "$extensions_json" \
         --arg when_to_use "$when_to_use" \
         --argjson variant_deps "$variant_deps_json" \
+        --argjson publication_observation "$publication_observation_json" \
         "$(trivy_summary_jq)"'
         .[0] as $lineage |
         .[1] as $build_args |
@@ -896,15 +929,7 @@ collect_variant_json() {
         }
         + (if ($multi_arch_platforms | length) > 0 then {multi_arch_platforms: $multi_arch_platforms} else {} end)
         + (if $multi_arch_digests.index_digest != null then {multi_arch_index_digest: $multi_arch_digests.index_digest} else {} end)
-        + (if $multi_arch_digests.index_digest != null then {
-            publication_observation: {
-                registry: "ghcr.io",
-                repository: $repository,
-                tag: $tag,
-                source: "registry_manifest_lookup",
-                index_digest: $multi_arch_digests.index_digest
-            }
-        } else {} end)
+        + (if $publication_observation != null then {publication_observation: $publication_observation} else {} end)
         + (if $multi_arch_digests.manifest_digest_amd64 != null then {manifest_digest_amd64: $multi_arch_digests.manifest_digest_amd64} else {} end)
         + (if $multi_arch_digests.manifest_digest_arm64 != null then {manifest_digest_arm64: $multi_arch_digests.manifest_digest_arm64} else {} end)
         + (if ($attestation_id | length) > 0 then {attestation_id: $attestation_id, attestation_url: $attestation_url} else {} end)
@@ -1610,7 +1635,9 @@ generate_data() {
         log_info "Processing $container..."
 
         local version_info
-        version_info=$(get_container_versions "$container")
+        if ! version_info=$(get_container_versions "$container"); then
+            log_warning "Version probe failed for $container; using its returned indeterminate record"
+        fi
 
         # The version probe is a six-field contract.  Do not let a truncated or
         # hand-written record shift a presentation field into the comparison
@@ -1630,7 +1657,11 @@ generate_data() {
             current_version_confirmed="${version_fields[5]}"
         fi
 
-        [[ "$current_version_confirmed" == "true" ]] || current_version_confirmed="false"
+        if [[ "$current_version" == "unknown" || -z "$current_version" ]]; then
+            current_version_confirmed="false"
+        elif [[ "$current_version_confirmed" != "true" ]]; then
+            current_version_confirmed="false"
+        fi
         case "$comparison_outcome" in
             up_to_date|update_available|indeterminate) ;;
             *) comparison_outcome="indeterminate" ;;

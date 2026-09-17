@@ -348,20 +348,42 @@ _collect_variant_yaml_with_trivy_summary() {
     collect_variant_json "variant" "$TEST_DIR/variant" "base" "1.0" "alpine:3.19" false "${TEST_VARIANT_PUBLICATION_CONFIRMED:-false}" 2>/dev/null | yq -P
 }
 
-@test "collect_variant_json records publication observation only for the exact observed tag" {
-    TEST_VARIANT_PUBLICATION_CONFIRMED=true
-    TEST_VARIANT_MULTI_ARCH_DIGESTS='{"index_digest":"sha256:observed","manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+@test "collect_variant_json records manifest evidence only from matching exact-tag lineage" {
+    mkdir -p "$TEST_DIR/.build-lineage"
+    local digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    jq -nc --arg digest "$digest" '{container: "variant", tag: "1.0-base", multi_arch_index_digest: $digest}' \
+        > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
+    TEST_VARIANT_PUBLICATION_CONFIRMED=false
+    TEST_VARIANT_MULTI_ARCH_DIGESTS=''
     TEST_TRIVY_SUMMARY='{}'
 
     run _collect_variant_yaml_with_trivy_summary
     [ "$status" -eq 0 ]
-    run yq -e '.publication_observation.registry == "ghcr.io" and .publication_observation.repository == "oorabona/variant" and .publication_observation.tag == "1.0-base" and .publication_observation.source == "registry_manifest_lookup" and .publication_observation.index_digest == "sha256:observed"' <<<"$output"
+    run yq -e '.publication_observation.registry == "ghcr.io" and .publication_observation.repository == "oorabona/variant" and .publication_observation.tag == "1.0-base" and .publication_observation.source == "exact_lineage_manifest" and .publication_observation.index_digest == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' <<<"$output"
     [ "$status" -eq 0 ]
 
-    TEST_VARIANT_PUBLICATION_CONFIRMED=false
+    jq -nc --arg digest "$digest" '{container: "other-container", tag: "1.0-base", multi_arch_index_digest: $digest}' \
+        > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
     run _collect_variant_yaml_with_trivy_summary
     [ "$status" -eq 0 ]
     run yq -e 'has("publication_observation") | not' <<<"$output"
+    [ "$status" -eq 0 ]
+
+    jq -nc --arg digest "$digest" '{container: "variant", tag: "another-tag", multi_arch_index_digest: $digest}' \
+        > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e 'has("publication_observation") | not' <<<"$output"
+    [ "$status" -eq 0 ]
+
+    TEST_VARIANT_PUBLICATION_CONFIRMED=false
+    jq -nc '{container: "variant", tag: "1.0-base", multi_arch_index_digest: "sha256:not-a-manifest"}' \
+        > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e 'has("publication_observation") | not' <<<"$output"
+    [ "$status" -eq 0 ]
+    run yq -e 'has("multi_arch_index_digest") | not' <<<"$output"
     [ "$status" -eq 0 ]
 }
 

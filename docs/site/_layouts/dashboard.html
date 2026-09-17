@@ -43,7 +43,7 @@
     {%- assign current_issue_count = 0 -%}
     {%- for container in site.data.containers -%}
       {%- assign attention_state = container.attention_state | default: "needs_attention" -%}
-      {%- if attention_state == "needs_attention" -%}
+      {%- if attention_state != "none" -%}
         {%- assign current_issue_count = current_issue_count | plus: 1 -%}
       {%- endif -%}
     {%- endfor -%}
@@ -121,9 +121,9 @@
                   role="radio" aria-checked="false">
             Updates <span class="count" id="count-update-available">0</span>
           </button>
-          <button class="filter-btn" data-status="not-published"
+          <button class="filter-btn" data-status="comparison-unconfirmed"
                   role="radio" aria-checked="false">
-            Not published <span class="count" id="count-not-published">0</span>
+            Comparison unconfirmed <span class="count" id="count-comparison-unconfirmed">0</span>
           </button>
         </div>
       </div>

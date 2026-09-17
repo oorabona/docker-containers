@@ -596,6 +596,7 @@
     // reference.  It is intentionally stricter than container-wide state: a
     // sibling tag or an update result cannot authorise this tag's pull command.
     _hasPublicationObservation(variant, tag) {
+      if (this._selectedRegistry !== 'ghcr') return false;
       if (!variant || !variant.publication_observation || typeof variant.publication_observation !== 'object') {
         return false;
       }
@@ -605,9 +606,9 @@
         return false;
       }
       if (observation.source === 'registry_tag_lookup') return true;
-      return observation.source === 'registry_manifest_lookup'
+      return (observation.source === 'registry_manifest_lookup' || observation.source === 'exact_lineage_manifest')
         && typeof observation.index_digest === 'string'
-        && observation.index_digest.length > 0;
+        && /^sha256:[a-f0-9]{64}$/.test(observation.index_digest);
     }
 
     _extractOwner(base) {

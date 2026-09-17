@@ -33,7 +33,7 @@
     function filterStatusForOutcome(outcome) {
       if (outcome === 'up_to_date') return 'up-to-date';
       if (outcome === 'update_available') return 'update-available';
-      return 'not-published';
+      return 'comparison-unconfirmed';
     }
 
     // Registry availability is defined by the controls this page rendered.
@@ -162,7 +162,7 @@
     // Update filter button counts
     function updateFilterCounts() {
       var cards = document.querySelectorAll('.container-card');
-      var counts = { 'all': cards.length, 'up-to-date': 0, 'update-available': 0, 'not-published': 0 };
+      var counts = { 'all': cards.length, 'up-to-date': 0, 'update-available': 0, 'comparison-unconfirmed': 0 };
 
       cards.forEach(function(card) {
         var outcome = comparisonOutcomeFor(card);
@@ -171,7 +171,7 @@
         } else if (outcome === 'update_available') {
           counts['update-available']++;
         } else {
-          counts['not-published']++;
+          counts['comparison-unconfirmed']++;
         }
       });
 

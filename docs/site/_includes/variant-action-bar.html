@@ -148,7 +148,16 @@
 
 {%- assign _vab_default_has_publication_observation = false -%}
 {%- if _vab_default_publication_observation.registry == "ghcr.io" and _vab_default_publication_observation.repository == _vab_repository and _vab_default_publication_observation.tag == _vab_default_tag -%}
-  {%- assign _vab_default_has_publication_observation = true -%}
+  {%- if _vab_default_publication_observation.source == "registry_tag_lookup" -%}
+    {%- assign _vab_default_has_publication_observation = true -%}
+  {%- elsif _vab_default_publication_observation.source == "registry_manifest_lookup" or _vab_default_publication_observation.source == "exact_lineage_manifest" -%}
+    {%- assign _vab_default_digest = _vab_default_publication_observation.index_digest | default: "" -%}
+    {%- assign _vab_default_digest_prefix = _vab_default_digest | slice: 0, 7 -%}
+    {%- assign _vab_default_digest_hex = _vab_default_digest | remove: "sha256:" | remove: "0" | remove: "1" | remove: "2" | remove: "3" | remove: "4" | remove: "5" | remove: "6" | remove: "7" | remove: "8" | remove: "9" | remove: "a" | remove: "b" | remove: "c" | remove: "d" | remove: "e" | remove: "f" -%}
+    {%- if _vab_default_digest.size == 71 and _vab_default_digest_prefix == "sha256:" and _vab_default_digest_hex == "" -%}
+      {%- assign _vab_default_has_publication_observation = true -%}
+    {%- endif -%}
+  {%- endif -%}
 {%- endif -%}
 
 <section id="variants-pull" class="vab-section" aria-label="Variant selector and pull commands">
@@ -187,12 +196,38 @@
             {%- if page.versions -%}
               {%- for _ns_ver in page.versions -%}
                 {%- for _ns_v in _ns_ver.variants -%}
-                  <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td>{% if _ns_v.publication_observation.registry == "ghcr.io" and _ns_v.publication_observation.repository == _vab_repository and _ns_v.publication_observation.tag == _ns_v.tag %}<code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code>{% else %}Publication evidence is not recorded for this image. No pull command is shown for this reference.{% endif %}</td></tr>
+                  {%- assign _ns_has_observation = false -%}
+                  {%- if _ns_v.publication_observation.registry == "ghcr.io" and _ns_v.publication_observation.repository == _vab_repository and _ns_v.publication_observation.tag == _ns_v.tag -%}
+                    {%- if _ns_v.publication_observation.source == "registry_tag_lookup" -%}
+                      {%- assign _ns_has_observation = true -%}
+                    {%- elsif _ns_v.publication_observation.source == "registry_manifest_lookup" or _ns_v.publication_observation.source == "exact_lineage_manifest" -%}
+                      {%- assign _ns_digest = _ns_v.publication_observation.index_digest | default: "" -%}
+                      {%- assign _ns_digest_prefix = _ns_digest | slice: 0, 7 -%}
+                      {%- assign _ns_digest_hex = _ns_digest | remove: "sha256:" | remove: "0" | remove: "1" | remove: "2" | remove: "3" | remove: "4" | remove: "5" | remove: "6" | remove: "7" | remove: "8" | remove: "9" | remove: "a" | remove: "b" | remove: "c" | remove: "d" | remove: "e" | remove: "f" -%}
+                      {%- if _ns_digest.size == 71 and _ns_digest_prefix == "sha256:" and _ns_digest_hex == "" -%}
+                        {%- assign _ns_has_observation = true -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                  <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td>{% if _ns_has_observation %}<code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code>{% else %}Publication evidence is not recorded for this image. No pull command is shown for this reference.{% endif %}</td></tr>
                 {%- endfor -%}
               {%- endfor -%}
             {%- elsif page.variants -%}
               {%- for _ns_v in page.variants -%}
-                <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td>{% if _ns_v.publication_observation.registry == "ghcr.io" and _ns_v.publication_observation.repository == _vab_repository and _ns_v.publication_observation.tag == _ns_v.tag %}<code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code>{% else %}Publication evidence is not recorded for this image. No pull command is shown for this reference.{% endif %}</td></tr>
+                {%- assign _ns_has_observation = false -%}
+                {%- if _ns_v.publication_observation.registry == "ghcr.io" and _ns_v.publication_observation.repository == _vab_repository and _ns_v.publication_observation.tag == _ns_v.tag -%}
+                  {%- if _ns_v.publication_observation.source == "registry_tag_lookup" -%}
+                    {%- assign _ns_has_observation = true -%}
+                  {%- elsif _ns_v.publication_observation.source == "registry_manifest_lookup" or _ns_v.publication_observation.source == "exact_lineage_manifest" -%}
+                    {%- assign _ns_digest = _ns_v.publication_observation.index_digest | default: "" -%}
+                    {%- assign _ns_digest_prefix = _ns_digest | slice: 0, 7 -%}
+                    {%- assign _ns_digest_hex = _ns_digest | remove: "sha256:" | remove: "0" | remove: "1" | remove: "2" | remove: "3" | remove: "4" | remove: "5" | remove: "6" | remove: "7" | remove: "8" | remove: "9" | remove: "a" | remove: "b" | remove: "c" | remove: "d" | remove: "e" | remove: "f" -%}
+                    {%- if _ns_digest.size == 71 and _ns_digest_prefix == "sha256:" and _ns_digest_hex == "" -%}
+                      {%- assign _ns_has_observation = true -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endif -%}
+                <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td>{% if _ns_has_observation %}<code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code>{% else %}Publication evidence is not recorded for this image. No pull command is shown for this reference.{% endif %}</td></tr>
               {%- endfor -%}
             {%- endif -%}
           </tbody>
