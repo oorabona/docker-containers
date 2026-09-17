@@ -30,15 +30,20 @@ digest() {
 cell() {
     local container=$1 tag=$2 target_id=$3 base_identity=$4
     local build_args=${5:-'{"NPROC":"${NPROC}"}'}
+    local is_default=${6-true}
+    local is_latest_version=${7-true}
     jq -cn \
         --arg container "$container" \
         --arg tag "$tag" \
         --arg target_id "$target_id" \
         --argjson base_identity "$base_identity" \
         --argjson build_args "$build_args" \
+        --arg is_default "$is_default" \
+        --arg is_latest_version "$is_latest_version" \
         '{container:$container, tag:$tag, target_id:$target_id, version:$tag,
-          flavor:"", dockerfile:"Dockerfile", build_args:$build_args,
-          is_default:true, is_latest_version:true, base_identity:$base_identity}'
+          flavor:"", dockerfile:"Dockerfile", build_args:$build_args, base_identity:$base_identity}
+        + (if $is_default == "" then {} else {is_default:($is_default | fromjson)} end)
+        + (if $is_latest_version == "" then {} else {is_latest_version:($is_latest_version | fromjson)} end)'
 }
 
 write_inputs() {
@@ -86,6 +91,38 @@ record_path() {
     lineage_complete_record_valid "$record"
     [ "$(jq -r '.lineage_schema_version' <<< "$record")" = 3 ]
     [ "$(jq -r '.base_image_digest' <<< "$record")" = "$base_digest" ]
+}
+
+@test "writer preserves false planned booleans" {
+    local build_digest base_identity plan metadata record
+    build_digest=$(digest a)
+    base_identity='{"kind":"not_evaluated"}'
+    plan="[$(cell false-flags 1 false_flags_1 "$base_identity" '{"NPROC":"${NPROC}"}' false false)]"
+    metadata=$(jq -cn --arg digest "$build_digest" '{false_flags_1:{"containerimage.digest":$digest}}')
+    write_inputs "$plan" '{}' "$metadata"
+
+    run_writer
+    [ "$status" -eq 0 ]
+    record=$(cat "$(record_path false-flags 1)")
+    [ "$(jq -r '.is_default' <<< "$record")" = false ]
+    [ "$(jq -r '.is_latest_version' <<< "$record")" = false ]
+}
+
+@test "writer rejects absent and non-boolean planned is_default" {
+    local build_digest base_identity plan metadata
+    build_digest=$(digest a)
+    base_identity='{"kind":"not_evaluated"}'
+    plan="[$(cell absent-default 1 absent_default_1 "$base_identity" '{"NPROC":"${NPROC}"}' '' true),$(cell string-default 1 string_default_1 "$base_identity" '{"NPROC":"${NPROC}"}' '"false"' true),$(cell valid 1 valid_1 "$base_identity")]"
+    metadata=$(jq -cn --arg digest "$build_digest" '{absent_default_1:{"containerimage.digest":$digest},string_default_1:{"containerimage.digest":$digest},valid_1:{"containerimage.digest":$digest}}')
+    write_inputs "$plan" '{}' "$metadata"
+
+    run_writer
+    [ "$status" -eq 1 ]
+    [[ "$output" == *'absent-default:1: malformed planned build fields'* ]]
+    [[ "$output" == *'string-default:1: malformed planned build fields'* ]]
+    [ ! -e "$(record_path absent-default 1)" ]
+    [ ! -e "$(record_path string-default 1)" ]
+    [ -e "$(record_path valid 1)" ]
 }
 
 @test "bake NPROC reference records its declared default when writer environment unsets NPROC" {

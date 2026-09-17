@@ -2444,8 +2444,10 @@ jobs:
                ! flavor=$(jq -er '.flavor | strings' <<< "$cell") || \
                ! dockerfile=$(jq -er '.dockerfile | strings | select(length > 0)' <<< "$cell") || \
                ! build_args=$(jq -ce '.build_args | select(type == "object")' <<< "$cell") || \
-               ! is_default=$(jq -er '.is_default | booleans' <<< "$cell") || \
-               ! is_latest_version=$(jq -er '.is_latest_version | booleans' <<< "$cell"); then
+               ! jq -e '.is_default | type == "boolean"' <<< "$cell" >/dev/null || \
+               ! jq -e '.is_latest_version | type == "boolean"' <<< "$cell" >/dev/null || \
+               ! is_default=$(jq -r '.is_default' <<< "$cell") || \
+               ! is_latest_version=$(jq -r '.is_latest_version' <<< "$cell"); then
               echo "::error::Bake lineage ${cell_name}: malformed planned build fields"
               failures=1
               continue
