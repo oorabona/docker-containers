@@ -41,6 +41,14 @@ valid_container_target() {
   [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]]
 }
 
+valid_docker_tag() {
+  [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]
+}
+
+dockerhub_path_segment() {
+  jq -rn --arg segment "$1" '$segment | @uri'
+}
+
 _cleanup_outdated_tags_delete() {
   local deletion_target="$1"
 
@@ -55,8 +63,15 @@ _cleanup_outdated_tags_delete() {
       ;;
     dockerhub-tag)
       local dh_jwt="$2" container="$3" tag="$4"
-      curl -sf -X DELETE -H "Authorization: Bearer $dh_jwt" \
-        "https://hub.docker.com/v2/repositories/$DOCKERHUB_USERNAME/$container/tags/$tag/" >/dev/null
+      local dh_namespace_path dh_container_path dh_tag_path
+      if ! dh_namespace_path=$(dockerhub_path_segment "$DOCKERHUB_USERNAME") \
+        || ! dh_container_path=$(dockerhub_path_segment "$container") \
+        || ! dh_tag_path=$(dockerhub_path_segment "$tag"); then
+        echo "cleanup deletion refused: could not encode Docker Hub path" >&2
+        return 1
+      fi
+      curl --globoff -sf -X DELETE -H "Authorization: Bearer $dh_jwt" \
+        "https://hub.docker.com/v2/repositories/$dh_namespace_path/$dh_container_path/tags/$dh_tag_path/" >/dev/null
       ;;
     *)
       echo "cleanup deletion refused: unknown deletion target" >&2
@@ -445,13 +460,19 @@ purge_ghcr() {
   [[ "$delete_failures" -eq 0 ]] || return "$DELETE_FAILURE"
 }
 
-# stdout is assessed|deleted.  No configured Docker Hub credentials means it
-# was not attempted (0|0); a returned non-zero status is always a real failure.
+# stdout is assessed|candidates|successful_deletes|delete_failures. No configured
+# Docker Hub credentials means it was not attempted (0|0|0|0); a returned
+# non-zero status is always a real failure.
 purge_dockerhub() {
-  local container="$1" valid_tags="$2" dh_jwt response dh_tags tag dh_kept=0 dh_deleted=0 delete_failures=0
+  local container="$1" valid_tags="$2" dh_jwt response dh_next dh_listing_url dh_repository_path dh_continuation_prefix
+  local dh_namespace_path dh_container_path dh_page_total dh_reported_total="" dh_entry entry_json tag
+  local dh_kept=0 dh_candidates=0 dh_successful_deletes=0 delete_failures=0
+  local -a dh_entries=()
+  local -A dh_seen_urls=()
+
   validate_cleanup_authority || return 64
   if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
-    printf '%s\n' "0|0" || return "$PROCESSING_FAILURE"
+    printf '%s\n' "0|0|0|0" || return "$PROCESSING_FAILURE"
     return 0
   fi
   echo "  Docker Hub cleanup for $container..." >&2
@@ -459,30 +480,94 @@ purge_dockerhub() {
       -d "{\"username\":\"$DOCKERHUB_USERNAME\",\"password\":\"$DOCKERHUB_TOKEN\"}" | jq -er '.token'); then
     echo "  ✗ Failed to authenticate to Docker Hub; skipping $container" >&2; return "$PROCESSING_FAILURE"
   fi
-  if ! response=$(curl -sf -H "Authorization: Bearer $dh_jwt" \
-      "https://hub.docker.com/v2/repositories/$DOCKERHUB_USERNAME/$container/tags?page_size=100"); then
-    echo "  ✗ Failed to list Docker Hub tags; skipping $container" >&2; return "$LISTING_FAILURE"
+  if ! dh_namespace_path=$(dockerhub_path_segment "$DOCKERHUB_USERNAME") \
+    || ! dh_container_path=$(dockerhub_path_segment "$container"); then
+    echo "  ✗ Failed to encode Docker Hub repository path; skipping $container" >&2
+    return "$PROCESSING_FAILURE"
   fi
-  if ! jq -e '.results | type == "array"' >/dev/null <<< "$response"; then
-    echo "  ✗ Docker Hub tag listing was not a JSON array; skipping $container" >&2; return "$LISTING_FAILURE"
+  dh_repository_path="/v2/repositories/$dh_namespace_path/$dh_container_path/tags"
+  dh_continuation_prefix="https://hub.docker.com$dh_repository_path"
+  dh_listing_url="$dh_continuation_prefix?page_size=100"
+  dh_seen_urls["$dh_listing_url"]=1
+
+  # This is deliberately a two-phase flow: no tag is classified or deleted
+  # until every page has been read and validated. A concurrent publish can
+  # still race this completed listing before DELETE; pagination is not a lock.
+  while :; do
+    if ! response=$(curl -sf -H "Authorization: Bearer $dh_jwt" "$dh_listing_url"); then
+      echo "  ✗ Failed to list Docker Hub tags; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    fi
+    if ! jq -e '
+      type == "object"
+      and (.results | type == "array")
+      and ((.next? // null) | . == null or (type == "string" and length > 0))
+      and (if has("count") then (.count | type == "number" and floor == . and . >= 0) else true end)
+    ' >/dev/null <<< "$response"; then
+      echo "  ✗ Docker Hub tag listing page was malformed; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    fi
+    while IFS= read -r dh_entry; do
+      dh_entries+=("$dh_entry")
+    done < <(jq -r '.results[] | @base64' <<< "$response")
+    if jq -e 'has("count")' >/dev/null <<< "$response"; then
+      if ! dh_page_total=$(jq -er '.count' <<< "$response"); then
+        echo "  ✗ Failed to read Docker Hub tag count; skipping $container" >&2
+        return "$LISTING_FAILURE"
+      fi
+      if [[ -n "$dh_reported_total" && "$dh_reported_total" != "$dh_page_total" ]]; then
+        echo "  ✗ Docker Hub tag listing counts disagree between pages; skipping $container" >&2
+        return "$LISTING_FAILURE"
+      fi
+      dh_reported_total="$dh_page_total"
+    fi
+    dh_next=$(jq -r '.next? // empty' <<< "$response") || {
+      echo "  ✗ Failed to read Docker Hub tag continuation; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    }
+    [[ -n "$dh_next" ]] || break
+    if [[ "$dh_next" != "$dh_continuation_prefix" && "$dh_next" != "$dh_continuation_prefix"\?* ]]; then
+      echo "  ✗ Docker Hub tag continuation was not for this repository; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    fi
+    if [[ -v "dh_seen_urls[$dh_next]" ]]; then
+      echo "  ✗ Docker Hub tag continuation was cyclic; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    fi
+    dh_seen_urls["$dh_next"]=1
+    dh_listing_url="$dh_next"
+  done
+  if [[ -n "$dh_reported_total" && "$dh_reported_total" != "${#dh_entries[@]}" ]]; then
+    echo "  ✗ Docker Hub tag listing count does not agree with accumulated entries; skipping $container" >&2
+    return "$LISTING_FAILURE"
   fi
-  if ! dh_tags=$(jq -r '.results[].name // empty' <<< "$response"); then
-    echo "  ✗ Failed to read Docker Hub tag listing; skipping $container" >&2; return "$PROCESSING_FAILURE"
-  fi
-  while IFS= read -r tag; do
-    [[ -z "$tag" ]] && continue
+  for dh_entry in "${dh_entries[@]}"; do
+    if ! entry_json=$(jq -Rer '@base64d' <<< "$dh_entry") \
+      || ! jq -e 'type == "object" and (.name | type == "string")' >/dev/null <<< "$entry_json" \
+      || ! tag=$(jq -er '.name' <<< "$entry_json") \
+      || ! valid_docker_tag "$tag"; then
+      echo "  ✗ Docker Hub tag listing entry was invalid; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    fi
+  done
+  for dh_entry in "${dh_entries[@]}"; do
+    tag=$(jq -Rer '@base64d | fromjson | .name' <<< "$dh_entry") || {
+      echo "  ✗ Failed to read validated Docker Hub tag listing; skipping $container" >&2
+      return "$PROCESSING_FAILURE"
+    }
     if is_valid_tag "$tag" "$valid_tags"; then dh_kept=$((dh_kept + 1)); continue; fi
+    dh_candidates=$((dh_candidates + 1))
     if [[ "$DRY_RUN" == true ]]; then
       echo "    [DRY RUN] Would delete Docker Hub tag: $tag" >&2
     elif _cleanup_outdated_tags_delete dockerhub-tag "$dh_jwt" "$container" "$tag"; then
       echo "    ✓ Deleted Docker Hub tag: $tag" >&2
+      dh_successful_deletes=$((dh_successful_deletes + 1))
     else
       echo "    ✗ Failed to delete Docker Hub tag: $tag" >&2; delete_failures=$((delete_failures + 1))
     fi
-    dh_deleted=$((dh_deleted + 1))
-  done <<< "$dh_tags"
-  echo "  Docker Hub: kept=$dh_kept, deleted=$dh_deleted" >&2
-  if ! printf '%s\n' "1|$dh_deleted"; then
+  done
+  echo "  Docker Hub: kept=$dh_kept, candidates=$dh_candidates, successful_deletes=$dh_successful_deletes, delete_failures=$delete_failures" >&2
+  if ! printf '%s\n' "1|$dh_candidates|$dh_successful_deletes|$delete_failures"; then
     return "$PROCESSING_FAILURE"
   fi
   [[ "$delete_failures" -eq 0 ]] || return "$DELETE_FAILURE"
@@ -522,9 +607,10 @@ main() {
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
   local containers_output container valid_tags valid_count result ghcr_status dh_result dh_status containers_discovered=true
   local -a containers=()
-  local kept obsolete orphans delete_failures dh_assessed dh_deleted package_assessed skip_dockerhub
+  # shellcheck disable=SC2034 # parse_result_counters assigns this dynamic output destination.
+  local kept obsolete orphans delete_failures dh_assessed dh_candidates dh_successful_deletes dh_delete_failures package_assessed skip_dockerhub
   local total_assessed=0 total_build_failures=0 total_listing_failures=0 total_processing_failures=0 total_ghcr_delete_failures=0 total_dh_delete_failures=0
-  local total_kept=0 total_obsolete=0 total_orphans=0 total_dh_deleted=0
+  local total_kept=0 total_obsolete=0 total_orphans=0 total_dh_candidates=0 total_dh_successful_deletes=0
   if [[ $# -gt 0 ]]; then
     containers=("$@")
   elif ! containers_output=$("$ROOT_DIR/make" list); then
@@ -584,9 +670,8 @@ main() {
     case "$dh_status" in
       0|"$DELETE_FAILURE")
         if parse_result_counters "$dh_result" "Docker Hub cleanup result" \
-          dh_assessed - dh_deleted total_dh_deleted; then
+          dh_assessed - dh_candidates total_dh_candidates dh_successful_deletes total_dh_successful_deletes dh_delete_failures total_dh_delete_failures; then
           [[ "$package_assessed" == true || "$dh_assessed" -eq 0 ]] || package_assessed=true
-          [[ "$dh_status" -eq 0 ]] || total_dh_delete_failures=$((total_dh_delete_failures + 1))
         else
           echo "  ✗ Failed to read Docker Hub cleanup result; skipping $container"; total_processing_failures=$((total_processing_failures + 1))
         fi ;;
@@ -605,7 +690,7 @@ main() {
   echo "GHCR — kept: $total_kept, obsolete: $total_obsolete, orphans: $total_orphans"
   echo "GHCR — delete failures: $total_ghcr_delete_failures"
   [[ -n "$DOCKERHUB_USERNAME" ]] && echo "Docker Hub — delete failures: $total_dh_delete_failures"
-  [[ -n "$DOCKERHUB_USERNAME" ]] && echo "Docker Hub — deleted: $total_dh_deleted"
+  [[ -n "$DOCKERHUB_USERNAME" ]] && echo "Docker Hub — candidates: $total_dh_candidates, successful deletes: $total_dh_successful_deletes"
   echo "========================================"
   [[ "$total_build_failures" -eq 0 && "$total_listing_failures" -eq 0 && "$total_processing_failures" -eq 0 && "$total_ghcr_delete_failures" -eq 0 && "$total_dh_delete_failures" -eq 0 ]]
 }

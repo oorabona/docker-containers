@@ -73,6 +73,158 @@ make_valid_tags() {
     printf '%s\n' "$@"
 }
 
+run_dockerhub_fixture() {
+    local page_one="$1"
+    local page_two="$2"
+    local delete_status="$3"
+    local dry_run="$4"
+    local valid_tags="$5"
+
+    DH_CURL_LOG="$BATS_TEST_TMPDIR/dockerhub-curl.log"
+    : > "$DH_CURL_LOG"
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        DH_PAGE_ONE="$page_one" \
+        DH_PAGE_TWO="$page_two" \
+        DH_DELETE_STATUS="$delete_status" \
+        DH_CURL_LOG="$DH_CURL_LOG" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DOCKERHUB_USERNAME="test-user" \
+        DOCKERHUB_TOKEN="test-password" \
+        DRY_RUN="$dry_run" \
+        DH_VALID_TAGS="$valid_tags" \
+        bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            curl() {
+                printf "%s\\n" "$*" >> "$DH_CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*) printf "%s\\n" "$DH_PAGE_ONE" ;;
+                    *"page=2"*) printf "%s\\n" "$DH_PAGE_TWO" ;;
+                    *"-X DELETE"*) return "$DH_DELETE_STATUS" ;;
+                    *) echo "unexpected curl request: $*" >&2; return 1 ;;
+                esac
+            }
+            purge_dockerhub app "$DH_VALID_TAGS"
+        '
+}
+
+@test "Docker Hub cleanup reads every page before deleting an obsolete tag" {
+    run_dockerhub_fixture \
+        '{"count":2,"results":[{"name":"latest"}],"next":"https://hub.docker.com/v2/repositories/test-user/app/tags?page=2"}' \
+        '{"count":2,"results":[{"name":"obsolete"}],"next":null}' \
+        0 false latest
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"1|1|1|0"* ]]
+    [[ "$(<"$DH_CURL_LOG")" == *"page=2"* ]]
+    [[ "$(<"$DH_CURL_LOG")" == *"/tags/obsolete/"* ]]
+}
+
+@test "Docker Hub cleanup accepts terminal null or absent continuations" {
+    local listing
+    for listing in \
+        '{"results":[{"name":"latest"}],"next":null}' \
+        '{"results":[{"name":"latest"}]}'; do
+        run_dockerhub_fixture "$listing" '' 0 false latest
+        [[ "$status" -eq 0 ]]
+        [[ "$output" == *"1|0|0|0"* ]]
+    done
+}
+
+@test "Docker Hub cleanup refuses unsafe continuations before sending its token" {
+    local continuation listing
+    for continuation in \
+        'https://example.invalid/tags?page=2' \
+        'http://hub.docker.com/v2/repositories/test-user/app/tags?page=2' \
+        'https://hub.docker.com/v2/repositories/test-user/other/tags?page=2'; do
+        listing=$(jq -cn --arg next "$continuation" '{results: [{name: "obsolete"}], next: $next}')
+        run_dockerhub_fixture "$listing" '' 0 false latest
+        [[ "$status" -eq 10 ]]
+        [[ "$output" == *"continuation was not for this repository"* ]]
+        [[ "$(<"$DH_CURL_LOG")" != *"$continuation"* ]]
+        [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+    done
+}
+
+@test "Docker Hub cleanup refuses a cyclic continuation before deleting" {
+    run_dockerhub_fixture \
+        '{"results":[{"name":"obsolete"}],"next":"https://hub.docker.com/v2/repositories/test-user/app/tags?page_size=100"}' \
+        '' 0 false latest
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"continuation was cyclic"* ]]
+    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup rejects every invalid entry before classifying or deleting" {
+    local results listing
+    for results in '[null]' '[{}]' '[{"name":42}]' '[{"name":"not/a-tag"}]'; do
+        listing=$(jq -cn --argjson results "$results" '{results: $results, next: null}')
+        run_dockerhub_fixture "$listing" '' 0 false latest
+        [[ "$status" -eq 10 ]]
+        [[ "$output" == *"tag listing entry was invalid"* ]]
+        [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+    done
+}
+
+@test "Docker Hub cleanup rejects a reported total that disagrees with accumulated entries" {
+    run_dockerhub_fixture '{"count":2,"results":[{"name":"obsolete"}],"next":null}' '' 0 false latest
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"count does not agree with accumulated entries"* ]]
+    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup records a failed DELETE without counting it as successful" {
+    run_dockerhub_fixture '{"results":[{"name":"obsolete"}],"next":null}' '' 1 false latest
+
+    [[ "$status" -eq 12 ]]
+    [[ "$output" == *"1|1|0|1"* ]]
+    [[ "$output" == *"candidates=1, successful_deletes=0, delete_failures=1"* ]]
+}
+
+@test "Docker Hub cleanup reports dry-run candidates without successful deletions" {
+    run_dockerhub_fixture '{"results":[{"name":"obsolete"}],"next":null}' '' 0 true latest
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"1|1|0|0"* ]]
+    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+}
+
+@test "outdated-tag main aggregates each Docker Hub cleanup counter" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" latest; }
+            purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
+            purge_dockerhub() { printf "%s\\n" "1|2|1|1"; return 12; }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"Docker Hub — candidates: 2, successful deletes: 1"* ]]
+    [[ "$output" == *"Docker Hub — delete failures: 1"* ]]
+}
+
+@test "Docker Hub DELETE path segments are percent-encoded and curl globbing is disabled" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-delete-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME='test user' DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            curl() { printf "%s\\n" "$*" >> "$CURL_LOG"; }
+            _cleanup_outdated_tags_delete dockerhub-tag fixture-jwt "repo/name" "tag[{/%"
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(<"$curl_log")" == *"--globoff"* ]]
+    [[ "$(<"$curl_log")" == *"/test%20user/repo%2Fname/tags/tag%5B%7B%2F%25/"* ]]
+}
+
 @test "build_valid_tags mirrors rolling aliases from Linux variants and Windows flavors" {
     local root_dir="$BATS_TEST_TMPDIR/build-valid-tags-root"
     mkdir -p "$root_dir"
@@ -188,7 +340,7 @@ run_manifest_protection_refusal() {
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" "latest"; }
-            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "0|0"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "0|0|0|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
@@ -282,7 +434,7 @@ run_orphan_phase_completion_case() {
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" "latest"; }
-            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then
                     printf "DELETE:%s\\n" "$*" >> "$GH_LOG"
@@ -463,7 +615,7 @@ run_orphan_phase_completion_case() {
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
-            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             eval "$(declare -f load_framed_work_list | sed "1s/^load_framed_work_list /original_load_framed_work_list /")"
             load_framed_work_list() {
                 if [[ "$1" == "deletion replay" ]]; then
@@ -498,7 +650,7 @@ run_orphan_phase_completion_case() {
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
-            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             eval "$(declare -f load_framed_work_list | sed "1s/^load_framed_work_list /original_load_framed_work_list /")"
             load_framed_work_list() {
                 if [[ "$1" == "deletion replay" ]]; then
@@ -1032,7 +1184,7 @@ run_orphan_phase_completion_case() {
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" "latest"; }
-            purge_dockerhub() { printf "%s\\n" "0|0"; }
+            purge_dockerhub() { printf "%s\\n" "0|0|0|0"; }
             gh() {
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale-first\"]}}}]"
@@ -1082,7 +1234,7 @@ run_orphan_phase_completion_case() {
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" "latest"; }
-            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             for expectation in success:0:complete:success listing:10:incomplete:failure processing:11:incomplete:failure delete:12:complete:failure post-complete:13:complete:failure uninterpretable:14:incomplete:failure protection:15:incomplete:failure incomplete-delete:16:incomplete:failure unexpected:99:incomplete:failure; do
                 name=${expectation%%:*}; remainder=${expectation#*:}; stub_ghcr_status=${remainder%%:*}; remainder=${remainder#*:}; assessment=${remainder%%:*}; expected_run=${remainder#*:}
                 : > "$DOCKERHUB_CALLS"
@@ -1389,7 +1541,7 @@ EOF
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" "latest"; }
-            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":1}"; return 0; fi
@@ -1424,7 +1576,7 @@ EOF
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" "latest"; }
-            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
@@ -1455,7 +1607,7 @@ EOF
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
             purge_ghcr() { printf "%s\\n" stray "0|0|0|0"; }
-            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0"; }
+            purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             main stale
         '
 
@@ -1470,7 +1622,7 @@ EOF
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
             purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
-            purge_dockerhub() { printf "%s\\n" "1|0" stray; }
+            purge_dockerhub() { printf "%s\\n" "1|0|0|0" stray; }
             main stale
         '
 
@@ -1492,15 +1644,15 @@ EOF
                     case "$CONSUMER" in
                       ghcr-complete)
                         purge_ghcr() { printf "%s\\n" "$RESULT_COUNTER|0|0|0"; return 13; }
-                        purge_dockerhub() { printf "%s\\n" "1|0"; }
+                        purge_dockerhub() { printf "%s\\n" "1|0|0|0"; }
                         ;;
                       ghcr-incomplete)
                         purge_ghcr() { printf "%s\\n" "$RESULT_COUNTER|0|0|0"; return 16; }
-                        purge_dockerhub() { printf "%s\\n" "1|0"; }
+                        purge_dockerhub() { printf "%s\\n" "1|0|0|0"; }
                         ;;
                       dockerhub)
                         purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
-                        purge_dockerhub() { printf "%s\\n" "1|$RESULT_COUNTER"; }
+                        purge_dockerhub() { printf "%s\\n" "1|0|$RESULT_COUNTER|0"; }
                         ;;
                     esac
                     main stale
@@ -1551,7 +1703,7 @@ run_outdated_validation_case() {
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\n" "latest"; }
-            purge_dockerhub() { printf "%s\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\n" "1|0"; }
+            purge_dockerhub() { printf "%s\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\n" "1|0|0|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "%s\n" "$*" >> "$GH_LOG"; return 0; fi
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\n" "{\"version_count\":$(jq length <<< "$RESPONSE_JSON")}"; return 0; fi
@@ -1818,7 +1970,7 @@ run_invalid_build_case() {
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
             purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
-            purge_dockerhub() { printf "%s\\n" "0|0"; }
+            purge_dockerhub() { printf "%s\\n" "0|0|0|0"; }
             main stale
         '
 
