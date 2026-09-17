@@ -75,6 +75,15 @@ record_path() {
     printf '%s/.build-lineage/%s-%s.json' "$TEST_TEMP_DIR" "$1" "$2"
 }
 
+assert_boolean_field() {
+    local record=$1 field=$2 expected=$3
+    jq -e \
+        --arg field "$field" \
+        --argjson expected "$expected" \
+        '(.[$field] == $expected) and (.[$field] | type == "boolean")' \
+        <<< "$record" >/dev/null
+}
+
 @test "external index descriptor writes a valid schema-v3 record" {
     local build_digest base_digest base_identity plan metadata descriptors record
     build_digest=$(digest a)
@@ -94,34 +103,64 @@ record_path() {
 }
 
 @test "writer preserves false planned booleans" {
-    local build_digest base_identity plan metadata record
+    local build_digest base_identity plan metadata record case_name target_id
+    local -a case_names is_default_values is_latest_version_values
     build_digest=$(digest a)
     base_identity='{"kind":"not_evaluated"}'
-    plan="[$(cell false-flags 1 false_flags_1 "$base_identity" '{"NPROC":"${NPROC}"}' false false)]"
-    metadata=$(jq -cn --arg digest "$build_digest" '{false_flags_1:{"containerimage.digest":$digest}}')
+    case_names=(both-false both-true default-true-latest-false default-false-latest-true)
+    is_default_values=(false true true false)
+    is_latest_version_values=(false true false true)
+    plan='['
+    metadata='{}'
+    for i in "${!case_names[@]}"; do
+        case_name=${case_names[$i]}
+        target_id="${case_name//-/_}_1"
+        plan+="$(cell "$case_name" 1 "$target_id" "$base_identity" '{"NPROC":"${NPROC}"}' "${is_default_values[$i]}" "${is_latest_version_values[$i]}"),"
+        metadata=$(jq -c --arg target_id "$target_id" --arg digest "$build_digest" \
+            '. + {($target_id): {"containerimage.digest": $digest}}' <<< "$metadata")
+    done
+    plan=${plan%,}
+    plan+=']'
     write_inputs "$plan" '{}' "$metadata"
 
     run_writer
     [ "$status" -eq 0 ]
-    record=$(cat "$(record_path false-flags 1)")
-    [ "$(jq -r '.is_default' <<< "$record")" = false ]
-    [ "$(jq -r '.is_latest_version' <<< "$record")" = false ]
+    for i in "${!case_names[@]}"; do
+        record=$(cat "$(record_path "${case_names[$i]}" 1)")
+        assert_boolean_field "$record" is_default "${is_default_values[$i]}"
+        assert_boolean_field "$record" is_latest_version "${is_latest_version_values[$i]}"
+    done
 }
 
-@test "writer rejects absent and non-boolean planned is_default" {
-    local build_digest base_identity plan metadata
+@test "writer rejects absent and non-boolean planned boolean fields" {
+    local build_digest base_identity plan metadata case_name target_id
+    local -a case_names is_default_values is_latest_version_values
     build_digest=$(digest a)
     base_identity='{"kind":"not_evaluated"}'
-    plan="[$(cell absent-default 1 absent_default_1 "$base_identity" '{"NPROC":"${NPROC}"}' '' true),$(cell string-default 1 string_default_1 "$base_identity" '{"NPROC":"${NPROC}"}' '"false"' true),$(cell valid 1 valid_1 "$base_identity")]"
-    metadata=$(jq -cn --arg digest "$build_digest" '{absent_default_1:{"containerimage.digest":$digest},string_default_1:{"containerimage.digest":$digest},valid_1:{"containerimage.digest":$digest}}')
+    case_names=(absent-default string-default number-default null-default absent-latest string-latest number-latest null-latest)
+    is_default_values=('' '"false"' 0 null true true true true)
+    is_latest_version_values=(true true true true '' '"false"' 0 null)
+    plan='['
+    metadata='{}'
+    for i in "${!case_names[@]}"; do
+        case_name=${case_names[$i]}
+        target_id="${case_name//-/_}_1"
+        plan+="$(cell "$case_name" 1 "$target_id" "$base_identity" '{"NPROC":"${NPROC}"}' "${is_default_values[$i]}" "${is_latest_version_values[$i]}"),"
+        metadata=$(jq -c --arg target_id "$target_id" --arg digest "$build_digest" \
+            '. + {($target_id): {"containerimage.digest": $digest}}' <<< "$metadata")
+    done
+    plan+="$(cell valid 1 valid_1 "$base_identity")"
+    plan+=']'
+    metadata=$(jq -c --arg digest "$build_digest" \
+        '. + {valid_1: {"containerimage.digest": $digest}}' <<< "$metadata")
     write_inputs "$plan" '{}' "$metadata"
 
     run_writer
     [ "$status" -eq 1 ]
-    [[ "$output" == *'absent-default:1: malformed planned build fields'* ]]
-    [[ "$output" == *'string-default:1: malformed planned build fields'* ]]
-    [ ! -e "$(record_path absent-default 1)" ]
-    [ ! -e "$(record_path string-default 1)" ]
+    for case_name in "${case_names[@]}"; do
+        [[ "$output" == *"${case_name}:1: malformed planned build fields"* ]]
+        [ ! -e "$(record_path "$case_name" 1)" ]
+    done
     [ -e "$(record_path valid 1)" ]
 }
 
