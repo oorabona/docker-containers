@@ -205,6 +205,51 @@ record_path() {
     [[ "$output" == *'returned no usable index descriptor'* ]]
 }
 
+@test "bake-plan compute writes the fixture generator cells array" {
+    local compute_step fixture_cells
+    compute_step=$(yq -r '.jobs."bake-plan".steps[] | select(.name == "Compute bake lineage plan") | .run' "$WORKFLOW")
+    [ -n "$compute_step" ]
+    mkdir -p "$TEST_TEMP_DIR/scripts"
+    printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
+        '[[ "${FIXTURE_GENERATOR_MODE:-success}" != fail ]]' \
+        'printf "%s\\n" "$FIXTURE_CELLS"' > "$TEST_TEMP_DIR/scripts/generate-bake-hcl.sh"
+    chmod +x "$TEST_TEMP_DIR/scripts/generate-bake-hcl.sh"
+    fixture_cells=$(jq -cn '[range(0; 24) | {container:("fixture-" + tostring)}]')
+
+    run env BAKE_CONTAINERS=fixture BAKE_RETAINED_CONTAINERS= BAKE_FINAL_BUILDS='[]' \
+        FIXTURE_CELLS="$fixture_cells" \
+        bash -c 'cd "$1" && bash -c "$2"' _ "$TEST_TEMP_DIR" "$compute_step"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r 'type' "$TEST_TEMP_DIR/bake-plan.json")" = array ]
+    [ "$(jq -r 'length' "$TEST_TEMP_DIR/bake-plan.json")" -eq 24 ]
+    [[ "$output" == *'::notice::Bake lineage plan contains 24 cells'* ]]
+
+    run env BAKE_CONTAINERS=fixture BAKE_RETAINED_CONTAINERS= BAKE_FINAL_BUILDS='[]' \
+        FIXTURE_GENERATOR_MODE=fail FIXTURE_CELLS="$fixture_cells" \
+        bash -c 'cd "$1" && bash -c "$2"' _ "$TEST_TEMP_DIR" "$compute_step"
+    [ "$status" -ne 0 ]
+}
+
+@test "bake-plan inspection rejects invalid plans and accepts no external cells" {
+    local inspect_step plan
+    inspect_step=$(yq -r '.jobs."bake-plan".steps[] | select(.name == "Inspect planned external base indexes") | .run' "$WORKFLOW")
+    [ -n "$inspect_step" ]
+
+    for plan in true '{}' '' '[true]'; do
+        printf '%s\n' "$plan" > "$TEST_TEMP_DIR/bake-plan.json"
+        run env DRY_RUN=false IS_PR=false \
+            bash -c 'cd "$1" && bash -c "$2"' _ "$TEST_TEMP_DIR" "$inspect_step"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *'bake-plan.json'* ]]
+    done
+
+    printf '%s\n' '[{"base_identity":{"kind":"not_evaluated"}}]' > "$TEST_TEMP_DIR/bake-plan.json"
+    run env DRY_RUN=false IS_PR=false \
+        bash -c 'cd "$1" && bash -c "$2"' _ "$TEST_TEMP_DIR" "$inspect_step"
+    [ "$status" -eq 0 ]
+    [ "$(jq -c . "$TEST_TEMP_DIR/bake-base-descriptors.json")" = '{}' ]
+}
+
 @test "missing, malformed, short, nonhex, and uppercase metadata digests fail named cells but write valid cells" {
     local build_digest base_identity plan metadata
     build_digest=$(digest a)
