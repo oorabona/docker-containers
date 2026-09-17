@@ -41,10 +41,6 @@ valid_container_target() {
   [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]]
 }
 
-valid_docker_tag() {
-  [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]
-}
-
 dockerhub_path_segment() {
   jq -rn --arg segment "$1" '$segment | @uri'
 }
@@ -63,15 +59,18 @@ _cleanup_outdated_tags_delete() {
       ;;
     dockerhub-tag)
       local dh_jwt="$2" container="$3" tag="$4"
-      local dh_namespace_path dh_container_path dh_tag_path
+      local dh_namespace_path dh_container_path dh_tag_path dh_http_status
       if ! dh_namespace_path=$(dockerhub_path_segment "$DOCKERHUB_USERNAME") \
         || ! dh_container_path=$(dockerhub_path_segment "$container") \
         || ! dh_tag_path=$(dockerhub_path_segment "$tag"); then
         echo "cleanup deletion refused: could not encode Docker Hub path" >&2
         return 1
       fi
-      curl --globoff -sf -X DELETE -H "Authorization: Bearer $dh_jwt" \
-        "https://hub.docker.com/v2/repositories/$dh_namespace_path/$dh_container_path/tags/$dh_tag_path/" >/dev/null
+      if ! dh_http_status=$(curl --globoff -sf -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $dh_jwt" \
+        "https://hub.docker.com/v2/repositories/$dh_namespace_path/$dh_container_path/tags/$dh_tag_path/") \
+        || [[ "$dh_http_status" != 204 ]]; then
+        return 1
+      fi
       ;;
     *)
       echo "cleanup deletion refused: unknown deletion target" >&2
@@ -464,11 +463,11 @@ purge_ghcr() {
 # Docker Hub credentials means it was not attempted (0|0|0|0); a returned
 # non-zero status is always a real failure.
 purge_dockerhub() {
-  local container="$1" valid_tags="$2" dh_jwt response dh_next dh_listing_url dh_repository_path dh_continuation_prefix
-  local dh_namespace_path dh_container_path dh_page_total dh_reported_total="" dh_entry entry_json tag
+  local container="$1" valid_tags="$2" dh_jwt response dh_next dh_listing_url dh_repository_path dh_continuation_prefix dh_page
+  local dh_namespace_path dh_container_path dh_page_total dh_reported_total="" tag dh_new_tags
   local dh_kept=0 dh_candidates=0 dh_successful_deletes=0 delete_failures=0
-  local -a dh_entries=()
-  local -A dh_seen_urls=()
+  local -a dh_page_values=() dh_tags=()
+  local -A dh_seen_tags=()
 
   validate_cleanup_authority || return 64
   if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
@@ -488,73 +487,84 @@ purge_dockerhub() {
   dh_repository_path="/v2/repositories/$dh_namespace_path/$dh_container_path/tags"
   dh_continuation_prefix="https://hub.docker.com$dh_repository_path"
   dh_listing_url="$dh_continuation_prefix?page_size=100"
-  dh_seen_urls["$dh_listing_url"]=1
 
   # This is deliberately a two-phase flow: no tag is classified or deleted
-  # until every page has been read and validated. A concurrent publish can
-  # still race this completed listing before DELETE; pagination is not a lock.
+  # until every page has been read and validated. Offset pagination is not an
+  # atomic snapshot: the count, uniqueness, and progress protocol detects an
+  # inconsistent or incomplete listing, but cannot prove stability under
+  # same-count churn before DELETE.
   while :; do
     if ! response=$(curl -sf -H "Authorization: Bearer $dh_jwt" "$dh_listing_url"); then
       echo "  ✗ Failed to list Docker Hub tags; skipping $container" >&2
       return "$LISTING_FAILURE"
     fi
-    if ! jq -e '
-      type == "object"
-      and (.results | type == "array")
-      and ((.next? // null) | . == null or (type == "string" and length > 0))
-      and (if has("count") then (.count | type == "number" and floor == . and . >= 0) else true end)
-    ' >/dev/null <<< "$response"; then
+    if ! dh_page=$(jq -er -s '
+      def valid_tag:
+        type == "string" and test("^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}\\z");
+      if (length == 1
+          and (.[0] | type == "object")
+          and (.[0] | has("results") and (.results | type == "array"))
+          and (.[0] | has("count") and (.count | type == "number" and floor == . and . >= 0))
+          and (.[0] | has("next") and (.next | . == null or (type == "string" and length > 0
+              and (index("\n") == null) and (index("\r") == null) and (index("\u0000") == null))))
+          and (.[0].results | all(.[]; type == "object" and has("name") and (.name | valid_tag))))
+      then .[0] as $page
+      | $page.count,
+        (if $page.next == null then "N" else "U" + $page.next end),
+        $page.results[].name
+      else error("malformed Docker Hub tag listing page")
+      end
+    ' <<< "$response"); then
       echo "  ✗ Docker Hub tag listing page was malformed; skipping $container" >&2
       return "$LISTING_FAILURE"
     fi
-    while IFS= read -r dh_entry; do
-      dh_entries+=("$dh_entry")
-    done < <(jq -r '.results[] | @base64' <<< "$response")
-    if jq -e 'has("count")' >/dev/null <<< "$response"; then
-      if ! dh_page_total=$(jq -er '.count' <<< "$response"); then
-        echo "  ✗ Failed to read Docker Hub tag count; skipping $container" >&2
+    mapfile -t dh_page_values <<< "$dh_page"
+    dh_page_total="${dh_page_values[0]-}"
+    case "${dh_page_values[1]-}" in
+      N) dh_next="" ;;
+      U*) dh_next="${dh_page_values[1]#U}" ;;
+      *)
+        echo "  ✗ Docker Hub tag listing page was malformed; skipping $container" >&2
         return "$LISTING_FAILURE"
-      fi
-      if [[ -n "$dh_reported_total" && "$dh_reported_total" != "$dh_page_total" ]]; then
-        echo "  ✗ Docker Hub tag listing counts disagree between pages; skipping $container" >&2
-        return "$LISTING_FAILURE"
-      fi
-      dh_reported_total="$dh_page_total"
-    fi
-    dh_next=$(jq -r '.next? // empty' <<< "$response") || {
-      echo "  ✗ Failed to read Docker Hub tag continuation; skipping $container" >&2
+        ;;
+    esac
+    if [[ -n "$dh_reported_total" && "$dh_reported_total" != "$dh_page_total" ]]; then
+      echo "  ✗ Docker Hub tag listing counts disagree between pages; skipping $container" >&2
       return "$LISTING_FAILURE"
-    }
-    [[ -n "$dh_next" ]] || break
+    fi
+    dh_reported_total="$dh_page_total"
+    dh_new_tags=0
+    for tag in "${dh_page_values[@]:2}"; do
+      if [[ -v "dh_seen_tags[$tag]" ]]; then
+        echo "  ✗ Docker Hub tag listing contained a duplicate tag; skipping $container" >&2
+        return "$LISTING_FAILURE"
+      fi
+      dh_seen_tags["$tag"]=1
+      dh_tags+=("$tag")
+      dh_new_tags=$((dh_new_tags + 1))
+    done
+    if [[ "${#dh_tags[@]}" -gt "$dh_reported_total" ]]; then
+      echo "  ✗ Docker Hub tag listing count does not agree with accumulated entries; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    fi
+    if [[ -z "$dh_next" ]]; then
+      if [[ "${#dh_tags[@]}" -ne "$dh_reported_total" ]]; then
+        echo "  ✗ Docker Hub tag listing count does not agree with accumulated entries; skipping $container" >&2
+        return "$LISTING_FAILURE"
+      fi
+      break
+    fi
+    if [[ "$dh_new_tags" -eq 0 || "${#dh_tags[@]}" -eq "$dh_reported_total" ]]; then
+      echo "  ✗ Docker Hub tag continuation made no valid progress; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    fi
     if [[ "$dh_next" != "$dh_continuation_prefix" && "$dh_next" != "$dh_continuation_prefix"\?* ]]; then
       echo "  ✗ Docker Hub tag continuation was not for this repository; skipping $container" >&2
       return "$LISTING_FAILURE"
     fi
-    if [[ -v "dh_seen_urls[$dh_next]" ]]; then
-      echo "  ✗ Docker Hub tag continuation was cyclic; skipping $container" >&2
-      return "$LISTING_FAILURE"
-    fi
-    dh_seen_urls["$dh_next"]=1
     dh_listing_url="$dh_next"
   done
-  if [[ -n "$dh_reported_total" && "$dh_reported_total" != "${#dh_entries[@]}" ]]; then
-    echo "  ✗ Docker Hub tag listing count does not agree with accumulated entries; skipping $container" >&2
-    return "$LISTING_FAILURE"
-  fi
-  for dh_entry in "${dh_entries[@]}"; do
-    if ! entry_json=$(jq -Rer '@base64d' <<< "$dh_entry") \
-      || ! jq -e 'type == "object" and (.name | type == "string")' >/dev/null <<< "$entry_json" \
-      || ! tag=$(jq -er '.name' <<< "$entry_json") \
-      || ! valid_docker_tag "$tag"; then
-      echo "  ✗ Docker Hub tag listing entry was invalid; skipping $container" >&2
-      return "$LISTING_FAILURE"
-    fi
-  done
-  for dh_entry in "${dh_entries[@]}"; do
-    tag=$(jq -Rer '@base64d | fromjson | .name' <<< "$dh_entry") || {
-      echo "  ✗ Failed to read validated Docker Hub tag listing; skipping $container" >&2
-      return "$PROCESSING_FAILURE"
-    }
+  for tag in "${dh_tags[@]}"; do
     if is_valid_tag "$tag" "$valid_tags"; then dh_kept=$((dh_kept + 1)); continue; fi
     dh_candidates=$((dh_candidates + 1))
     if [[ "$DRY_RUN" == true ]]; then

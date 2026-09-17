@@ -76,7 +76,7 @@ make_valid_tags() {
 run_dockerhub_fixture() {
     local page_one="$1"
     local page_two="$2"
-    local delete_status="$3"
+    local delete_http_code="$3"
     local dry_run="$4"
     local valid_tags="$5"
 
@@ -86,7 +86,7 @@ run_dockerhub_fixture() {
         PROJECT_ROOT="$PROJECT_ROOT" \
         DH_PAGE_ONE="$page_one" \
         DH_PAGE_TWO="$page_two" \
-        DH_DELETE_STATUS="$delete_status" \
+        DH_DELETE_HTTP_CODE="$delete_http_code" \
         DH_CURL_LOG="$DH_CURL_LOG" \
         GH_TOKEN="$GH_TOKEN" \
         OWNER="$OWNER" \
@@ -103,7 +103,7 @@ run_dockerhub_fixture() {
                     *"/users/login"*) printf "%s\\n" "{\"token\":\"fixture-jwt\"}" ;;
                     *"page_size=100"*) printf "%s\\n" "$DH_PAGE_ONE" ;;
                     *"page=2"*) printf "%s\\n" "$DH_PAGE_TWO" ;;
-                    *"-X DELETE"*) return "$DH_DELETE_STATUS" ;;
+                    *"-X DELETE"*) printf '%s' "$DH_DELETE_HTTP_CODE" ;;
                     *) echo "unexpected curl request: $*" >&2; return 1 ;;
                 esac
             }
@@ -115,7 +115,7 @@ run_dockerhub_fixture() {
     run_dockerhub_fixture \
         '{"count":2,"results":[{"name":"latest"}],"next":"https://hub.docker.com/v2/repositories/test-user/app/tags?page=2"}' \
         '{"count":2,"results":[{"name":"obsolete"}],"next":null}' \
-        0 false latest
+        204 false latest
 
     [[ "$status" -eq 0 ]]
     [[ "$output" == *"1|1|1|0"* ]]
@@ -123,15 +123,20 @@ run_dockerhub_fixture() {
     [[ "$(<"$DH_CURL_LOG")" == *"/tags/obsolete/"* ]]
 }
 
-@test "Docker Hub cleanup accepts terminal null or absent continuations" {
-    local listing
-    for listing in \
-        '{"results":[{"name":"latest"}],"next":null}' \
-        '{"results":[{"name":"latest"}]}'; do
-        run_dockerhub_fixture "$listing" '' 0 false latest
-        [[ "$status" -eq 0 ]]
-        [[ "$output" == *"1|0|0|0"* ]]
-    done
+@test "Docker Hub cleanup requires count on every listing page" {
+    run_dockerhub_fixture '{"results":[{"name":"latest"}],"next":null}' '' 204 false latest
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"listing page was malformed"* ]]
+    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup requires next on every listing page" {
+    run_dockerhub_fixture '{"count":1,"results":[{"name":"latest"}]}' '' 204 false latest
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"listing page was malformed"* ]]
+    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
 }
 
 @test "Docker Hub cleanup refuses unsafe continuations before sending its token" {
@@ -140,8 +145,8 @@ run_dockerhub_fixture() {
         'https://example.invalid/tags?page=2' \
         'http://hub.docker.com/v2/repositories/test-user/app/tags?page=2' \
         'https://hub.docker.com/v2/repositories/test-user/other/tags?page=2'; do
-        listing=$(jq -cn --arg next "$continuation" '{results: [{name: "obsolete"}], next: $next}')
-        run_dockerhub_fixture "$listing" '' 0 false latest
+        listing=$(jq -cn --arg next "$continuation" '{count: 2, results: [{name: "obsolete"}], next: $next}')
+        run_dockerhub_fixture "$listing" '' 204 false latest
         [[ "$status" -eq 10 ]]
         [[ "$output" == *"continuation was not for this repository"* ]]
         [[ "$(<"$DH_CURL_LOG")" != *"$continuation"* ]]
@@ -149,37 +154,37 @@ run_dockerhub_fixture() {
     done
 }
 
-@test "Docker Hub cleanup refuses a cyclic continuation before deleting" {
+@test "Docker Hub cleanup refuses a non-terminal page that adds no names before deleting" {
     run_dockerhub_fixture \
-        '{"results":[{"name":"obsolete"}],"next":"https://hub.docker.com/v2/repositories/test-user/app/tags?page_size=100"}' \
-        '' 0 false latest
+        '{"count":1,"results":[],"next":"https://hub.docker.com/v2/repositories/test-user/app/tags?page=2"}' \
+        '' 204 false latest
 
     [[ "$status" -eq 10 ]]
-    [[ "$output" == *"continuation was cyclic"* ]]
+    [[ "$output" == *"continuation made no valid progress"* ]]
     [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
 }
 
 @test "Docker Hub cleanup rejects every invalid entry before classifying or deleting" {
     local results listing
     for results in '[null]' '[{}]' '[{"name":42}]' '[{"name":"not/a-tag"}]'; do
-        listing=$(jq -cn --argjson results "$results" '{results: $results, next: null}')
-        run_dockerhub_fixture "$listing" '' 0 false latest
+        listing=$(jq -cn --argjson results "$results" '{count: 1, results: $results, next: null}')
+        run_dockerhub_fixture "$listing" '' 204 false latest
         [[ "$status" -eq 10 ]]
-        [[ "$output" == *"tag listing entry was invalid"* ]]
+        [[ "$output" == *"listing page was malformed"* ]]
         [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
     done
 }
 
 @test "Docker Hub cleanup rejects a reported total that disagrees with accumulated entries" {
-    run_dockerhub_fixture '{"count":2,"results":[{"name":"obsolete"}],"next":null}' '' 0 false latest
+    run_dockerhub_fixture '{"count":2,"results":[{"name":"obsolete"}],"next":null}' '' 204 false latest
 
     [[ "$status" -eq 10 ]]
     [[ "$output" == *"count does not agree with accumulated entries"* ]]
     [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
 }
 
-@test "Docker Hub cleanup records a failed DELETE without counting it as successful" {
-    run_dockerhub_fixture '{"results":[{"name":"obsolete"}],"next":null}' '' 1 false latest
+@test "Docker Hub cleanup records a 404 DELETE without counting it as successful" {
+    run_dockerhub_fixture '{"count":1,"results":[{"name":"obsolete"}],"next":null}' '' 404 false latest
 
     [[ "$status" -eq 12 ]]
     [[ "$output" == *"1|1|0|1"* ]]
@@ -187,11 +192,70 @@ run_dockerhub_fixture() {
 }
 
 @test "Docker Hub cleanup reports dry-run candidates without successful deletions" {
-    run_dockerhub_fixture '{"results":[{"name":"obsolete"}],"next":null}' '' 0 true latest
+    run_dockerhub_fixture '{"count":1,"results":[{"name":"obsolete"}],"next":null}' '' 204 true latest
 
     [[ "$status" -eq 0 ]]
     [[ "$output" == *"1|1|0|0"* ]]
     [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup rejects concatenated listing documents before deleting" {
+    local page='{"count":1,"results":[{"name":"obsolete"}],"next":null}'
+
+    run_dockerhub_fixture "$page$page" '' 204 false latest
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"listing page was malformed"* ]]
+    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup rejects a tag name ending in a newline before deleting" {
+    local listing
+    listing=$(jq -cn --arg name $'obsolete\n' '{count: 1, results: [{name: $name}], next: null}')
+
+    run_dockerhub_fixture "$listing" '' 204 false latest
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"listing page was malformed"* ]]
+    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup rejects a tag name containing NUL before deleting" {
+    run_dockerhub_fixture '{"count":1,"results":[{"name":"obsolete\\u0000"}],"next":null}' '' 204 false latest
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"listing page was malformed"* ]]
+    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup rejects duplicate names across pages before deleting" {
+    run_dockerhub_fixture \
+        '{"count":2,"results":[{"name":"obsolete"}],"next":"https://hub.docker.com/v2/repositories/test-user/app/tags?page=2"}' \
+        '{"count":2,"results":[{"name":"obsolete"}],"next":null}' \
+        204 false latest
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"contained a duplicate tag"* ]]
+    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup rejects changing counts across pages before deleting" {
+    run_dockerhub_fixture \
+        '{"count":2,"results":[{"name":"obsolete"}],"next":"https://hub.docker.com/v2/repositories/test-user/app/tags?page=2"}' \
+        '{"count":3,"results":[{"name":"other"}],"next":null}' \
+        204 false latest
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"counts disagree between pages"* ]]
+    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup does not count a 301 DELETE as successful" {
+    run_dockerhub_fixture '{"count":1,"results":[{"name":"obsolete"}],"next":null}' '' 301 false latest
+
+    [[ "$status" -eq 12 ]]
+    [[ "$output" == *"1|1|0|1"* ]]
+    [[ "$output" == *"candidates=1, successful_deletes=0, delete_failures=1"* ]]
 }
 
 @test "outdated-tag main aggregates each Docker Hub cleanup counter" {
@@ -216,7 +280,7 @@ run_dockerhub_fixture() {
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
         DOCKERHUB_USERNAME='test user' DRY_RUN=false CURL_LOG="$curl_log" bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            curl() { printf "%s\\n" "$*" >> "$CURL_LOG"; }
+            curl() { printf "%s\\n" "$*" >> "$CURL_LOG"; printf '%s' 204; }
             _cleanup_outdated_tags_delete dockerhub-tag fixture-jwt "repo/name" "tag[{/%"
         '
 
