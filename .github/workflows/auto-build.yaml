@@ -1967,7 +1967,12 @@ jobs:
             retained_cells=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
             cells_json=$(jq -s '(.[0] + .[1]) | unique_by([.container, (.tag // ""), (.flavor // "")])' <<< "$cells_json"$'\n'"$retained_cells")
           fi
-          jq -e 'type == "array"' <<< "$cells_json" > bake-plan.json
+          if ! jq -e 'type == "array"' <<< "$cells_json" >/dev/null; then
+            echo "::error::Bake lineage plan generator did not produce a JSON array"
+            exit 1
+          fi
+          printf '%s\n' "$cells_json" > bake-plan.json
+          echo "::notice::Bake lineage plan contains $(jq -r 'length' bake-plan.json) cells"
 
       - name: Inspect planned external base indexes
         env:
@@ -1976,11 +1981,22 @@ jobs:
           set -euo pipefail
           source helpers/retry.sh
           printf '{}' > bake-base-descriptors.json
+          if ! jq -e 'type == "array"' bake-plan.json >/dev/null; then
+            echo "::error::Bake lineage plan bake-plan.json is not a JSON array"
+            exit 1
+          fi
+          if ! refs_text=$(jq -r '[.[] | select(.base_identity.kind == "external") | .base_identity.ref] | unique[]' bake-plan.json); then
+            echo "::error::Could not extract planned external base indexes from bake-plan.json"
+            exit 1
+          fi
           if [[ "${DRY_RUN:-false}" == "true" || "$IS_PR" == "true" ]]; then
             echo "::notice::Bake lineage plan skips external base inspection for dry runs and pull requests"
             exit 0
           fi
-          mapfile -t refs < <(jq -r '[.[] | select(.base_identity.kind == "external") | .base_identity.ref] | unique[]' bake-plan.json)
+          refs=()
+          if [[ -n "$refs_text" ]]; then
+            mapfile -t refs <<< "$refs_text"
+          fi
           for ref in "${refs[@]}"; do
             if ! descriptor=$(retry_with_backoff 2 10 timeout -k 5 30 docker buildx imagetools inspect --format '{{json .Manifest}}' -- "$ref" 2>/dev/null); then
               # The build pulls this base too, so an outage already blocks it;
