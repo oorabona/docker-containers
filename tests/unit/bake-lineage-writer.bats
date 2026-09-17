@@ -30,15 +30,20 @@ digest() {
 cell() {
     local container=$1 tag=$2 target_id=$3 base_identity=$4
     local build_args=${5:-'{"NPROC":"${NPROC}"}'}
+    local is_default=${6-true}
+    local is_latest_version=${7-true}
     jq -cn \
         --arg container "$container" \
         --arg tag "$tag" \
         --arg target_id "$target_id" \
         --argjson base_identity "$base_identity" \
         --argjson build_args "$build_args" \
+        --arg is_default "$is_default" \
+        --arg is_latest_version "$is_latest_version" \
         '{container:$container, tag:$tag, target_id:$target_id, version:$tag,
-          flavor:"", dockerfile:"Dockerfile", build_args:$build_args,
-          is_default:true, is_latest_version:true, base_identity:$base_identity}'
+          flavor:"", dockerfile:"Dockerfile", build_args:$build_args, base_identity:$base_identity}
+        + (if $is_default == "" then {} else {is_default:($is_default | fromjson)} end)
+        + (if $is_latest_version == "" then {} else {is_latest_version:($is_latest_version | fromjson)} end)'
 }
 
 write_inputs() {
@@ -70,6 +75,15 @@ record_path() {
     printf '%s/.build-lineage/%s-%s.json' "$TEST_TEMP_DIR" "$1" "$2"
 }
 
+assert_boolean_field() {
+    local record=$1 field=$2 expected=$3
+    jq -e \
+        --arg field "$field" \
+        --argjson expected "$expected" \
+        '(.[$field] == $expected) and (.[$field] | type == "boolean")' \
+        <<< "$record" >/dev/null
+}
+
 @test "external index descriptor writes a valid schema-v3 record" {
     local build_digest base_digest base_identity plan metadata descriptors record
     build_digest=$(digest a)
@@ -86,6 +100,68 @@ record_path() {
     lineage_complete_record_valid "$record"
     [ "$(jq -r '.lineage_schema_version' <<< "$record")" = 3 ]
     [ "$(jq -r '.base_image_digest' <<< "$record")" = "$base_digest" ]
+}
+
+@test "writer preserves false planned booleans" {
+    local build_digest base_identity plan metadata record case_name target_id
+    local -a case_names is_default_values is_latest_version_values
+    build_digest=$(digest a)
+    base_identity='{"kind":"not_evaluated"}'
+    case_names=(both-false both-true default-true-latest-false default-false-latest-true)
+    is_default_values=(false true true false)
+    is_latest_version_values=(false true false true)
+    plan='['
+    metadata='{}'
+    for i in "${!case_names[@]}"; do
+        case_name=${case_names[$i]}
+        target_id="${case_name//-/_}_1"
+        plan+="$(cell "$case_name" 1 "$target_id" "$base_identity" '{"NPROC":"${NPROC}"}' "${is_default_values[$i]}" "${is_latest_version_values[$i]}"),"
+        metadata=$(jq -c --arg target_id "$target_id" --arg digest "$build_digest" \
+            '. + {($target_id): {"containerimage.digest": $digest}}' <<< "$metadata")
+    done
+    plan=${plan%,}
+    plan+=']'
+    write_inputs "$plan" '{}' "$metadata"
+
+    run_writer
+    [ "$status" -eq 0 ]
+    for i in "${!case_names[@]}"; do
+        record=$(cat "$(record_path "${case_names[$i]}" 1)")
+        assert_boolean_field "$record" is_default "${is_default_values[$i]}"
+        assert_boolean_field "$record" is_latest_version "${is_latest_version_values[$i]}"
+    done
+}
+
+@test "writer rejects absent and non-boolean planned boolean fields" {
+    local build_digest base_identity plan metadata case_name target_id
+    local -a case_names is_default_values is_latest_version_values
+    build_digest=$(digest a)
+    base_identity='{"kind":"not_evaluated"}'
+    case_names=(absent-default string-default number-default null-default absent-latest string-latest number-latest null-latest)
+    is_default_values=('' '"false"' 0 null true true true true)
+    is_latest_version_values=(true true true true '' '"false"' 0 null)
+    plan='['
+    metadata='{}'
+    for i in "${!case_names[@]}"; do
+        case_name=${case_names[$i]}
+        target_id="${case_name//-/_}_1"
+        plan+="$(cell "$case_name" 1 "$target_id" "$base_identity" '{"NPROC":"${NPROC}"}' "${is_default_values[$i]}" "${is_latest_version_values[$i]}"),"
+        metadata=$(jq -c --arg target_id "$target_id" --arg digest "$build_digest" \
+            '. + {($target_id): {"containerimage.digest": $digest}}' <<< "$metadata")
+    done
+    plan+="$(cell valid 1 valid_1 "$base_identity")"
+    plan+=']'
+    metadata=$(jq -c --arg digest "$build_digest" \
+        '. + {valid_1: {"containerimage.digest": $digest}}' <<< "$metadata")
+    write_inputs "$plan" '{}' "$metadata"
+
+    run_writer
+    [ "$status" -eq 1 ]
+    for case_name in "${case_names[@]}"; do
+        [[ "$output" == *"${case_name}:1: malformed planned build fields"* ]]
+        [ ! -e "$(record_path "$case_name" 1)" ]
+    done
+    [ -e "$(record_path valid 1)" ]
 }
 
 @test "bake NPROC reference records its declared default when writer environment unsets NPROC" {
