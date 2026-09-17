@@ -12,8 +12,8 @@
     page.variants[]      — flat array of variants (single-version containers)
     selected_variant_tag — resolved selected image tag from the enclosing layout
 
-  The JS component tolerates missing versions/variants gracefully (single-image
-  containers will show only the pull + verify commands and a signals strip).
+  The JS component tolerates missing versions/variants gracefully. Commands
+  appear only when an exact publication observation is available.
 {%- endcomment -%}
 
 {%- comment -%}

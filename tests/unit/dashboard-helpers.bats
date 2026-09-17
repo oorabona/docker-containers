@@ -338,7 +338,10 @@ _collect_variant_yaml_with_trivy_summary() {
     get_attestation_id() { return 1; }
     build_trivy_category() { printf 'variant:1.0-base\n'; }
     ghcr_get_manifest_sizes() { printf '\n'; }
-    ghcr_get_multi_arch_digests() { printf '%s\n' "${TEST_VARIANT_MULTI_ARCH_DIGESTS:-}"; }
+    ghcr_get_multi_arch_digests() {
+        [[ -n "${TEST_VARIANT_LOOKUP_MARKER:-}" ]] && : > "$TEST_VARIANT_LOOKUP_MARKER"
+        printf '%s\n' "${TEST_VARIANT_MULTI_ARCH_DIGESTS:-}"
+    }
     get_trivy_summary() {
         [[ "${TEST_VARIANT_TRIVY_FAILURE:-false}" == "true" ]] && return 1
         printf '%s\n' "$TEST_TRIVY_SUMMARY"
@@ -355,12 +358,14 @@ _collect_variant_yaml_with_trivy_summary() {
         > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
     TEST_VARIANT_PUBLICATION_CONFIRMED=false
     TEST_VARIANT_MULTI_ARCH_DIGESTS=''
+    TEST_VARIANT_LOOKUP_MARKER="$TEST_DIR/registry-lookup-called"
     TEST_TRIVY_SUMMARY='{}'
 
     run _collect_variant_yaml_with_trivy_summary
     [ "$status" -eq 0 ]
     run yq -e '.publication_observation.registry == "ghcr.io" and .publication_observation.repository == "oorabona/variant" and .publication_observation.tag == "1.0-base" and .publication_observation.source == "exact_lineage_manifest" and .publication_observation.index_digest == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' <<<"$output"
     [ "$status" -eq 0 ]
+    [ ! -e "$TEST_VARIANT_LOOKUP_MARKER" ]
 
     jq -nc --arg digest "$digest" '{container: "other-container", tag: "1.0-base", multi_arch_index_digest: $digest}' \
         > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
@@ -368,6 +373,7 @@ _collect_variant_yaml_with_trivy_summary() {
     [ "$status" -eq 0 ]
     run yq -e 'has("publication_observation") | not' <<<"$output"
     [ "$status" -eq 0 ]
+    [ ! -e "$TEST_VARIANT_LOOKUP_MARKER" ]
 
     jq -nc --arg digest "$digest" '{container: "variant", tag: "another-tag", multi_arch_index_digest: $digest}' \
         > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
@@ -384,6 +390,60 @@ _collect_variant_yaml_with_trivy_summary() {
     run yq -e 'has("publication_observation") | not' <<<"$output"
     [ "$status" -eq 0 ]
     run yq -e 'has("multi_arch_index_digest") | not' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json records a live publication observation without exact lineage" {
+    local digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    TEST_VARIANT_PUBLICATION_CONFIRMED=true
+    TEST_VARIANT_MULTI_ARCH_DIGESTS=$(jq -nc --arg digest "$digest" '{index_digest: $digest}')
+    TEST_TRIVY_SUMMARY='{}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e '.publication_observation.source == "registry_manifest_lookup" and .publication_observation.index_digest == "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json rejects malformed live publication evidence without exact lineage" {
+    TEST_VARIANT_PUBLICATION_CONFIRMED=true
+    TEST_VARIANT_MULTI_ARCH_DIGESTS='{"index_digest":"sha256:not-a-manifest","manifest_digest_amd64":""}'
+    TEST_TRIVY_SUMMARY='{}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e 'has("publication_observation") | not' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json uses live evidence for partial exact lineage without replacing metadata" {
+    mkdir -p "$TEST_DIR/.build-lineage"
+    local amd64="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    local index="sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    jq -nc --arg amd64 "$amd64" '{container: "variant", tag: "1.0-base", multi_arch_platforms: ["linux/amd64"], manifest_digest_amd64: $amd64}' \
+        > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
+    TEST_VARIANT_PUBLICATION_CONFIRMED=true
+    TEST_VARIANT_MULTI_ARCH_DIGESTS=$(jq -nc --arg index "$index" '{index_digest: $index, manifest_digest_amd64: ""}')
+    TEST_TRIVY_SUMMARY='{}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e '.publication_observation.source == "registry_manifest_lookup" and .publication_observation.index_digest == "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" and .manifest_digest_amd64 == "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" and .multi_arch_platforms[0] == "linux/amd64" and (.multi_arch_platforms | length) == 1' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json keeps partial exact metadata when live evidence is malformed" {
+    mkdir -p "$TEST_DIR/.build-lineage"
+    local amd64="sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    jq -nc --arg amd64 "$amd64" '{container: "variant", tag: "1.0-base", manifest_digest_amd64: $amd64}' \
+        > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
+    TEST_VARIANT_PUBLICATION_CONFIRMED=true
+    TEST_VARIANT_MULTI_ARCH_DIGESTS='{"index_digest":"sha256:not-a-manifest","manifest_digest_amd64":""}'
+    TEST_TRIVY_SUMMARY='{}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e 'has("publication_observation") | not and .manifest_digest_amd64 == "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' <<<"$output"
     [ "$status" -eq 0 ]
 }
 

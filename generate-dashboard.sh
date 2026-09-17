@@ -781,10 +781,11 @@ collect_variant_json() {
     fi
 
     if [[ "$current_version_confirmed" == "true" ]]; then
-        # The live fallback is an exact request for variant_tag.  Do not run it
-        # during a container-level publication outage, and do not let fallback
-        # lineage decide whether it is needed.
+        # Complete absent metadata only when exact lineage supplied none.  The
+        # exact request below separately acquires publication evidence.
+        local metadata_completion_needed=false
         if [[ "$multi_arch_platforms_json" == "[]" && -z "$exact_lineage_index_digest" && -z "$exact_lineage_amd64" && -z "$exact_lineage_arm64" ]]; then
+            metadata_completion_needed=true
             local raw_sizes arch_list=""
             local _t0_ghcr=${EPOCHREALTIME:-}
             raw_sizes=$(ghcr_get_manifest_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
@@ -794,19 +795,29 @@ collect_variant_json() {
                     jq -R . | jq -s '.')
             fi
             [[ -n "$arch_list" && "$arch_list" != "[]" ]] && multi_arch_platforms_json="$arch_list"
+        fi
 
+        if [[ "$metadata_completion_needed" == "true" || "$publication_observation_json" == "null" ]]; then
             local _t0_ghcr_ma=${EPOCHREALTIME:-}
-            multi_arch_digests_json=$(ghcr_get_multi_arch_digests "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+            local live_multi_arch_digests_json
+            live_multi_arch_digests_json=$(ghcr_get_multi_arch_digests "oorabona/$container" "$variant_tag" 2>/dev/null) || true
             log_latency "ghcr-index oorabona/${container}:${variant_tag} (multi-arch)" "$_t0_ghcr_ma" 30
-            [[ -z "$multi_arch_digests_json" ]] && \
-                multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
-            multi_arch_digests_json=$(jq -c '
-                .index_digest = (if (.index_digest | type) == "string" and test("^sha256:[a-f0-9]{64}$") then .index_digest else null end)
-                | .manifest_digest_amd64 = (if (.manifest_digest_amd64 | type) == "string" and test("^sha256:[a-f0-9]{64}$") then .manifest_digest_amd64 else null end)
-                | .manifest_digest_arm64 = (if (.manifest_digest_arm64 | type) == "string" and test("^sha256:[a-f0-9]{64}$") then .manifest_digest_arm64 else null end)' \
-                <<<"$multi_arch_digests_json") || multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+            [[ -z "$live_multi_arch_digests_json" ]] && \
+                live_multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+            live_multi_arch_digests_json=$(jq -c '
+                .index_digest = (if (.index_digest | type) == "string" and (.index_digest | test("^sha256:[a-f0-9]{64}$")) then .index_digest else null end)
+                | .manifest_digest_amd64 = (if (.manifest_digest_amd64 | type) == "string" and (.manifest_digest_amd64 | test("^sha256:[a-f0-9]{64}$")) then .manifest_digest_amd64 else null end)
+                | .manifest_digest_arm64 = (if (.manifest_digest_arm64 | type) == "string" and (.manifest_digest_arm64 | test("^sha256:[a-f0-9]{64}$")) then .manifest_digest_arm64 else null end)' \
+                <<<"$live_multi_arch_digests_json") || live_multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+            if [[ "$metadata_completion_needed" == "true" ]]; then
+                multi_arch_digests_json="$live_multi_arch_digests_json"
+            fi
+
+            # Evidence requires an exact lookup for this variant whenever exact
+            # lineage could not provide a valid index digest. Its result stays
+            # separate so a failed lookup cannot replace cached metadata.
             local live_index_digest
-            live_index_digest=$(jq -r '.index_digest // empty' <<<"$multi_arch_digests_json" 2>/dev/null) || live_index_digest=""
+            live_index_digest=$(jq -r '.index_digest // empty' <<<"$live_multi_arch_digests_json" 2>/dev/null) || live_index_digest=""
             if [[ "$live_index_digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
                 publication_observation_json=$(jq -nc \
                     --arg repository "oorabona/$container" --arg tag "$variant_tag" --arg digest "$live_index_digest" \
