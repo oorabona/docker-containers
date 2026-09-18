@@ -123,10 +123,11 @@ STUB
   chmod +x "$TEST_TEMP_DIR/bin/rm"
 }
 
-_write_bash_env_remove_enumeration_read_access() {
-  local fixture="$TEST_TEMP_DIR/enumeration-read-failure.bash"
+# Make the enumeration file disappear immediately before mapfile reads it.
+_write_bash_env_remove_enumeration_file_before_read() {
+  local fixture="$TEST_TEMP_DIR/enumeration-file-disappears-before-read.bash"
   cat > "$fixture" <<'FIXTURE'
-trap 'if [[ "$BASH_COMMAND" == '\''mapfile -t lineage_files < "$lineage_files_file"'\'' ]]; then chmod 000 "$lineage_files_file"; fi' DEBUG
+trap 'if [[ "$BASH_COMMAND" == '\''mapfile -t lineage_files < "$lineage_files_file"'\'' && "$lineage_files_file" == "$TMPDIR"/enrich-lineage-files.* && -e "$lineage_files_file" ]]; then trap - DEBUG; command -p rm -f -- "$lineage_files_file"; : > "$TEST_TEMP_DIR/enumeration-file-disappeared-before-read"; fi' DEBUG
 FIXTURE
   export BASH_ENV="$fixture"
 }
@@ -209,9 +210,9 @@ _run_enrich() {
   [[ "$output" != *"Enriched "* ]]
 }
 
-@test "enumeration open failure reports an error, removes its temporary, and does not enrich records" {
+@test "enumeration file disappearing before read reports an error and does not enrich records" {
   _write_lineage "unreadable-1.0.0.json" "unreadable" "1.0.0"
-  _write_bash_env_remove_enumeration_read_access
+  _write_bash_env_remove_enumeration_file_before_read
 
   _run_enrich
 
@@ -219,7 +220,7 @@ _run_enrich() {
   [[ "$output" == *"::error::Failed to open lineage enumeration file"* ]]
   [[ "$output" != *"Enriched "* ]]
   [ "$(jq -r 'has("multi_arch_index_digest")' "$LINEAGE_DIR/unreadable-1.0.0.json")" = "false" ]
-  [ "$(find "$TMPDIR" -name 'enrich-lineage-files.*' -type f | wc -l)" -eq 0 ]
+  [ -f "$TEST_TEMP_DIR/enumeration-file-disappeared-before-read" ]
 }
 
 # -----------------------------------------------------------------------
