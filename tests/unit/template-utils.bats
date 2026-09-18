@@ -57,6 +57,24 @@ with open('$file', 'w') as f:
 "
 }
 
+# Template whose first output is a passthrough line, for stdout write failures.
+_make_template_passthrough_first() {
+    local file="$1"
+    python3 -c "
+with open('$file', 'w') as f:
+    f.write('ARG VERSION\n# @@BLOCK_A@@\n')
+"
+}
+
+# Template whose first output is replacement content, for marker write failures.
+_make_template_marker_first() {
+    local file="$1"
+    python3 -c "
+with open('$file', 'w') as f:
+    f.write('# @@BLOCK_A@@\n# @@BLOCK_B@@\n')
+"
+}
+
 # ---------------------------------------------------------------------------
 # (a1) Successful expansion: last marker (last line) replacement NON-EMPTY → 0
 # ---------------------------------------------------------------------------
@@ -165,4 +183,76 @@ with open('$file', 'w') as f:
     [ "$status" -eq 0 ]
     echo "$output" | grep -Fqx 'ARG VERSION'
     echo "$output" | grep -Fqx 'CMD ["postgres"]'
+}
+
+# ---------------------------------------------------------------------------
+# (e) stdout write failures must be returned explicitly.  These calls use
+# /dev/full rather than a mocked printf because callers redirect the function's
+# stdout to generated Dockerfiles.
+# ---------------------------------------------------------------------------
+@test "expand_template: marker write to /dev/full returns non-zero directly" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    _make_template_marker_first "$tpl"
+
+    run bash -c 'source "$1"; expand_template "$2" BLOCK_A content BLOCK_B "" > /dev/full' \
+        bash "$HELPERS_DIR/template-utils.sh" "$tpl"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"@@BLOCK_A@@"* ]]
+    [[ "$output" == *"$tpl"* ]]
+}
+
+@test "expand_template: marker write to /dev/full returns non-zero under if" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    _make_template_marker_first "$tpl"
+
+    run bash -c 'source "$1"; if expand_template "$2" BLOCK_A content BLOCK_B "" > /dev/full; then exit 0; else exit 1; fi' \
+        bash "$HELPERS_DIR/template-utils.sh" "$tpl"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"@@BLOCK_A@@"* ]]
+}
+
+@test "expand_template: marker write to /dev/full returns non-zero on left of ||" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    _make_template_marker_first "$tpl"
+
+    run bash -c 'source "$1"; expand_template "$2" BLOCK_A content BLOCK_B "" > /dev/full || exit 1' \
+        bash "$HELPERS_DIR/template-utils.sh" "$tpl"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"@@BLOCK_A@@"* ]]
+}
+
+@test "expand_template: passthrough write to /dev/full returns non-zero" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    _make_template_passthrough_first "$tpl"
+
+    run bash -c 'source "$1"; expand_template "$2" BLOCK_A "" > /dev/full' \
+        bash "$HELPERS_DIR/template-utils.sh" "$tpl"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"passthrough line (no marker)"* ]]
+    [[ "$output" == *"$tpl"* ]]
+}
+
+@test "expand_template: template reader failure returns non-zero" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    local fake_bin="$TEST_TEMP_DIR/fake-bin"
+    _make_template_marker_first "$tpl"
+    mkdir -p "$fake_bin"
+    python3 -c '
+import os
+import sys
+path = sys.argv[1]
+with open(path, "w") as f:
+    f.write("#!/usr/bin/env bash\\nprintf \\\"%s\\\\n\\\" \\\"# @@BLOCK_A@@\\\"\\nexit 1\\n")
+os.chmod(path, 0o755)
+' "$fake_bin/cat"
+
+    run env PATH="$fake_bin:$PATH" bash -c 'source "$1"; expand_template "$2" BLOCK_A content BLOCK_B ""' \
+        bash "$HELPERS_DIR/template-utils.sh" "$tpl"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"failed to read template: $tpl"* ]]
 }

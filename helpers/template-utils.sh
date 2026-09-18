@@ -15,6 +15,8 @@ _TEMPLATE_UTILS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source logging if available
 if [[ -f "$_TEMPLATE_UTILS_DIR/logging.sh" ]]; then
+    # shellcheck source=helpers/logging.sh
+    # shellcheck disable=SC1091 # Source path is intentionally computed at runtime.
     source "$_TEMPLATE_UTILS_DIR/logging.sh"
 else
     log_info()    { echo "INFO: $*" >&2; }
@@ -67,23 +69,46 @@ expand_template() {
         fi
     done
 
-    # Process template line by line
-    while IFS= read -r line; do
+    # Process template line by line.  Feed the loop through cat and wait for it
+    # afterwards: read alone cannot distinguish EOF from an input read error.
+    # Every write is checked explicitly because callers commonly invoke this
+    # function where errexit is suppressed.
+    local _template_reader_pid
+    local _template_status=0
+    if ! while IFS= read -r line || [[ -n "$line" ]]; do
         local matched=false
         local i
         for i in "${!_marker_names[@]}"; do
             if [[ "$line" == *"@@${_marker_names[$i]}@@"* ]]; then
                 # Replace marker line with content (if non-empty)
                 if [[ -n "${_marker_content[$i]}" ]]; then
-                    printf '%s' "${_marker_content[$i]}"
+                    if ! printf '%s' "${_marker_content[$i]}"; then
+                        log_error "expand_template: failed to write marker @@${_marker_names[$i]}@@ from template: $template"
+                        _template_status=1
+                        break
+                    fi
                 fi
                 matched=true
                 break
             fi
         done
         if [[ "$matched" != "true" ]]; then
-            printf '%s\n' "$line"
+            if ! printf '%s\n' "$line"; then
+                log_error "expand_template: failed to write passthrough line (no marker) from template: $template"
+                _template_status=1
+                break
+            fi
         fi
-    done < "$template"
-    return 0
+    done < <(cat -- "$template"); then
+        log_error "expand_template: failed to read template: $template"
+        _template_status=1
+    fi
+    _template_reader_pid=$!
+
+    if ! wait "$_template_reader_pid"; then
+        log_error "expand_template: failed to read template: $template"
+        _template_status=1
+    fi
+
+    return "$_template_status"
 }
