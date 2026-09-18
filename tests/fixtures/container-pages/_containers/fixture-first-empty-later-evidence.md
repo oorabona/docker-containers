@@ -15,6 +15,12 @@ versions:
     variants:
       - name: alpine
         tag: retained-evidence-alpine
+        publication_observation:
+          registry: ghcr.io
+          repository: fixture-owner/fixture-first-empty-later-evidence
+          tag: retained-evidence-alpine
+          source: registry_manifest_lookup
+          index_digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         trivy_summary:
           display_source: scan-record
           as_of: "2026-09-12"

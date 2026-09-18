@@ -598,7 +598,10 @@
     // sibling tag or an update result cannot authorise this tag's pull command.
     _hasPublicationObservation(variant, tag) {
       if (this._selectedRegistry !== 'ghcr') return false;
-      var observation = variant
+      // A selected variant's own observation wins.  Only an absent observation
+      // may use the page-level default, which is still constrained below to
+      // the selected reference.
+      var observation = variant && variant.publication_observation
         ? variant.publication_observation
         : this._defaultPublicationObservation;
       if (!observation || typeof observation !== 'object') {

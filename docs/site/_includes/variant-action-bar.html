@@ -131,14 +131,14 @@
 {%- if page.versions -%}
   {%- for _vab_observation_ver in page.versions -%}
     {%- for _vab_observation_var in _vab_observation_ver.variants -%}
-      {%- if _vab_observation_var.tag == _vab_default_tag -%}
+      {%- if _vab_observation_var.tag == _vab_default_tag and _vab_observation_var.publication_observation -%}
         {%- assign _vab_default_publication_observation = _vab_observation_var.publication_observation -%}
       {%- endif -%}
     {%- endfor -%}
   {%- endfor -%}
 {%- elsif page.variants -%}
   {%- for _vab_observation_var in page.variants -%}
-    {%- if _vab_observation_var.tag == _vab_default_tag -%}
+    {%- if _vab_observation_var.tag == _vab_default_tag and _vab_observation_var.publication_observation -%}
       {%- assign _vab_default_publication_observation = _vab_observation_var.publication_observation -%}
     {%- endif -%}
   {%- endfor -%}
@@ -198,11 +198,15 @@
               {%- for _ns_ver in page.versions -%}
                 {%- for _ns_v in _ns_ver.variants -%}
                   {%- assign _ns_has_observation = false -%}
-                  {%- if _ns_v.publication_observation.registry == "ghcr.io" and _ns_v.publication_observation.repository == _vab_repository and _ns_v.publication_observation.tag == _ns_v.tag -%}
-                    {%- if _ns_v.publication_observation.source == "registry_tag_lookup" -%}
+                  {%- assign _ns_publication_observation = _ns_v.publication_observation -%}
+                  {%- unless _ns_publication_observation -%}
+                    {%- assign _ns_publication_observation = _vab_default_publication_observation -%}
+                  {%- endunless -%}
+                  {%- if _ns_publication_observation.registry == "ghcr.io" and _ns_publication_observation.repository == _vab_repository and _ns_publication_observation.tag == _ns_v.tag -%}
+                    {%- if _ns_publication_observation.source == "registry_tag_lookup" -%}
                       {%- assign _ns_has_observation = true -%}
-                    {%- elsif _ns_v.publication_observation.source == "registry_manifest_lookup" or _ns_v.publication_observation.source == "exact_lineage_manifest" -%}
-                      {%- assign _ns_digest = _ns_v.publication_observation.index_digest | default: "" -%}
+                    {%- elsif _ns_publication_observation.source == "registry_manifest_lookup" or _ns_publication_observation.source == "exact_lineage_manifest" -%}
+                      {%- assign _ns_digest = _ns_publication_observation.index_digest | default: "" -%}
                       {%- assign _ns_digest_prefix = _ns_digest | slice: 0, 7 -%}
                       {%- assign _ns_digest_hex = _ns_digest | remove: "sha256:" | remove: "0" | remove: "1" | remove: "2" | remove: "3" | remove: "4" | remove: "5" | remove: "6" | remove: "7" | remove: "8" | remove: "9" | remove: "a" | remove: "b" | remove: "c" | remove: "d" | remove: "e" | remove: "f" -%}
                       {%- if _ns_digest.size == 71 and _ns_digest_prefix == "sha256:" and _ns_digest_hex == "" -%}
@@ -216,11 +220,15 @@
             {%- elsif page.variants -%}
               {%- for _ns_v in page.variants -%}
                 {%- assign _ns_has_observation = false -%}
-                {%- if _ns_v.publication_observation.registry == "ghcr.io" and _ns_v.publication_observation.repository == _vab_repository and _ns_v.publication_observation.tag == _ns_v.tag -%}
-                  {%- if _ns_v.publication_observation.source == "registry_tag_lookup" -%}
+                {%- assign _ns_publication_observation = _ns_v.publication_observation -%}
+                {%- unless _ns_publication_observation -%}
+                  {%- assign _ns_publication_observation = _vab_default_publication_observation -%}
+                {%- endunless -%}
+                {%- if _ns_publication_observation.registry == "ghcr.io" and _ns_publication_observation.repository == _vab_repository and _ns_publication_observation.tag == _ns_v.tag -%}
+                  {%- if _ns_publication_observation.source == "registry_tag_lookup" -%}
                     {%- assign _ns_has_observation = true -%}
-                  {%- elsif _ns_v.publication_observation.source == "registry_manifest_lookup" or _ns_v.publication_observation.source == "exact_lineage_manifest" -%}
-                    {%- assign _ns_digest = _ns_v.publication_observation.index_digest | default: "" -%}
+                  {%- elsif _ns_publication_observation.source == "registry_manifest_lookup" or _ns_publication_observation.source == "exact_lineage_manifest" -%}
+                    {%- assign _ns_digest = _ns_publication_observation.index_digest | default: "" -%}
                     {%- assign _ns_digest_prefix = _ns_digest | slice: 0, 7 -%}
                     {%- assign _ns_digest_hex = _ns_digest | remove: "sha256:" | remove: "0" | remove: "1" | remove: "2" | remove: "3" | remove: "4" | remove: "5" | remove: "6" | remove: "7" | remove: "8" | remove: "9" | remove: "a" | remove: "b" | remove: "c" | remove: "d" | remove: "e" | remove: "f" -%}
                     {%- if _ns_digest.size == 71 and _ns_digest_prefix == "sha256:" and _ns_digest_hex == "" -%}

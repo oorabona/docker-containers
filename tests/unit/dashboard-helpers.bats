@@ -594,7 +594,7 @@ NODE
     [ "$status" -eq 0 ] || { echo "$output" >&2; return 1; }
 }
 
-@test "variant action bar uses a current variant observation instead of the default observation" {
+@test "variant action bar fills an absent current observation from an exact default without overriding its own observation" {
     run node - "$ORIG_DIR/docs/site/assets/js/components/variant-action-bar.js" <<'NODE'
 const fs = require('fs');
 const vm = require('vm');
@@ -618,9 +618,30 @@ function isOffered(variantObservation, defaultObservation) {
   return bar._hasPublicationObservation(bar._currentVariant, tag);
 }
 const valid = { registry: 'ghcr.io', repository: 'oorabona/fixture', tag, source: 'registry_tag_lookup' };
-const invalid = { registry: 'ghcr.io', repository: 'oorabona/fixture', tag: 'other-tag', source: 'registry_tag_lookup' };
-if (isOffered(invalid, valid)) process.exit(1);
-if (!isOffered(valid, invalid)) process.exit(1);
+const otherTag = { registry: 'ghcr.io', repository: 'oorabona/fixture', tag: 'other-tag', source: 'registry_tag_lookup' };
+const otherRepository = { registry: 'ghcr.io', repository: 'oorabona/other-fixture', tag, source: 'registry_tag_lookup' };
+if (!isOffered(undefined, valid)) process.exit(1);
+if (isOffered(undefined, otherTag) || isOffered(undefined, otherRepository)) process.exit(1);
+if (isOffered(otherTag, valid)) process.exit(1);
+if (!isOffered(valid, otherTag)) process.exit(1);
+NODE
+    [ "$status" -eq 0 ] || { echo "$output" >&2; return 1; }
+}
+
+@test "variant action bar no-script branches use the same absent-observation fallback as the component" {
+    run node - "$ORIG_DIR/docs/site/_includes/variant-action-bar.html" <<'NODE'
+const fs = require('fs');
+const source = fs.readFileSync(process.argv[2], 'utf8');
+
+function count(pattern) {
+  return (source.match(pattern) || []).length;
+}
+
+const defaultSelection = /\{%- if _vab_observation_var\.tag == _vab_default_tag and _vab_observation_var\.publication_observation -%\}\s*\{%- assign _vab_default_publication_observation = _vab_observation_var\.publication_observation -%\}/g;
+const rowFallback = /\{%- assign _ns_publication_observation = _ns_v\.publication_observation -%\}\s*\{%- unless _ns_publication_observation -%\}\s*\{%- assign _ns_publication_observation = _vab_default_publication_observation -%\}\s*\{%- endunless -%\}/g;
+const exactReferenceGuard = /_ns_publication_observation\.registry == "ghcr\.io" and _ns_publication_observation\.repository == _vab_repository and _ns_publication_observation\.tag == _ns_v\.tag/g;
+
+if (count(defaultSelection) !== 2 || count(rowFallback) !== 2 || count(exactReferenceGuard) !== 2) process.exit(1);
 NODE
     [ "$status" -eq 0 ] || { echo "$output" >&2; return 1; }
 }
