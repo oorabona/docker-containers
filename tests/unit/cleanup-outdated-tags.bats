@@ -139,6 +139,45 @@ run_dockerhub_fixture() {
     [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
 }
 
+@test "Docker Hub cleanup refuses an exponential count before deleting from the raw listing response" {
+    run_dockerhub_fixture '{"count":1e20,"results":[{"name":"obsolete"}],"next":null}' '' 204 false latest
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"not a canonical decimal at the Bash boundary"* ]]
+    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup accepts an exponent that jq normalizes to a canonical Bash decimal" {
+    run_dockerhub_fixture '{"count":1e0,"results":[{"name":"obsolete"}],"next":null}' '' 204 false latest
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"1|1|1|0"* ]]
+    [[ "$(<"$DH_CURL_LOG")" == *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup refuses a count above MAX_TAGS before accumulating tags" {
+    local listing
+    listing=$(printf '{"count":%s,"results":[{"name":"obsolete"}],"next":null}' "$((MAX_TAGS + 1))")
+
+    run_dockerhub_fixture "$listing" '' 204 false latest
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"count exceeds MAX_TAGS=$MAX_TAGS"* ]]
+    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup refuses non-integral and negative counts before deleting" {
+    local listing
+    for listing in \
+        '{"count":1.5,"results":[{"name":"obsolete"}],"next":null}' \
+        '{"count":-1,"results":[{"name":"obsolete"}],"next":null}'; do
+        run_dockerhub_fixture "$listing" '' 204 false latest
+        [[ "$status" -eq 10 ]]
+        [[ "$output" == *"listing page was malformed"* ]]
+        [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+    done
+}
+
 @test "Docker Hub cleanup refuses unsafe continuations before sending its token" {
     local continuation listing
     for continuation in \
@@ -256,6 +295,83 @@ run_dockerhub_fixture() {
     [[ "$status" -eq 12 ]]
     [[ "$output" == *"1|1|0|1"* ]]
     [[ "$output" == *"candidates=1, successful_deletes=0, delete_failures=1"* ]]
+}
+
+@test "Docker Hub cleanup refuses MAX_PAGES continuations before the next request" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-max-pages-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=true CURL_LOG="$curl_log" bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            curl() {
+                printf "%s\\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"/tags?"*)
+                        page=1
+                        for curl_arg in "$@"; do
+                            case "$curl_arg" in *page_size=100*) page=1 ;; *page=*) page="${curl_arg##*page=}" ;; esac
+                        done
+                        if [[ "$page" -gt "$MAX_PAGES" ]]; then next=null; else next="\"https://hub.docker.com/v2/repositories/test-user/app/tags?page=$((page + 1))\""; fi
+                        printf "{\"count\":%s,\"results\":[{\"name\":\"tag%s\"}],\"next\":%s}\\n" \
+                            "$((MAX_PAGES + 1))" "$page" "$next"
+                        ;;
+                    *) echo "unexpected curl request: $*" >&2; return 1 ;;
+                esac
+            }
+            purge_dockerhub app latest
+        '
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"exceeds MAX_PAGES=$MAX_PAGES"* ]]
+    [[ "$(grep -c -- '/tags?' "$curl_log")" -eq "$MAX_PAGES" ]]
+    [[ "$(<"$curl_log")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup accepts a terminal listing exactly at MAX_PAGES" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-terminal-max-pages-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=true CURL_LOG="$curl_log" bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            curl() {
+                printf "%s\\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"/tags?"*)
+                        page=1
+                        for curl_arg in "$@"; do
+                            case "$curl_arg" in *page_size=100*) page=1 ;; *page=*) page="${curl_arg##*page=}" ;; esac
+                        done
+                        if [[ "$page" -eq "$MAX_PAGES" ]]; then next=null; else next="\"https://hub.docker.com/v2/repositories/test-user/app/tags?page=$((page + 1))\""; fi
+                        printf "{\"count\":%s,\"results\":[{\"name\":\"tag%s\"}],\"next\":%s}\\n" \
+                            "$MAX_PAGES" "$page" "$next"
+                        ;;
+                    *) echo "unexpected curl request: $*" >&2; return 1 ;;
+                esac
+            }
+            purge_dockerhub app latest
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"1|$MAX_PAGES|0|0"* ]]
+    [[ "$(grep -c -- '/tags?' "$curl_log")" -eq "$MAX_PAGES" ]]
+    [[ "$(<"$curl_log")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub authentication, listings, and DELETEs have connect and transfer timeouts" {
+    run_dockerhub_fixture '{"count":1,"results":[{"name":"obsolete"}],"next":null}' '' 204 false latest
+
+    [[ "$status" -eq 0 ]]
+    local curl_request
+    while IFS= read -r curl_request; do
+        [[ "$curl_request" == *"--connect-timeout $DOCKERHUB_CURL_CONNECT_TIMEOUT"* ]]
+        [[ "$curl_request" == *"--max-time $DOCKERHUB_CURL_MAX_TIME"* ]]
+    done < "$DH_CURL_LOG"
 }
 
 @test "outdated-tag main aggregates each Docker Hub cleanup counter" {

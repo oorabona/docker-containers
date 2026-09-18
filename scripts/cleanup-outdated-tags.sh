@@ -18,6 +18,18 @@ if ! source "$_cleanup_outdated_tags_root/helpers/version-record-validation.sh";
 fi
 unset _cleanup_outdated_tags_root
 
+# Measured 2026-09-18 against hub.docker.com: the largest package in this
+# namespace reports 124 tags (postgres), then github-runner 67 and terraform 66.
+# MAX_TAGS keeps roughly eight times that, and MAX_PAGES is generous against a
+# listing that is required to add at least one new name per page. The two bound
+# different axes and are enforced independently; neither bounds a single HTTP
+# response body. A listing above either ceiling is refused rather than pruned,
+# which is the right answer for a destructive client reading remote input.
+MAX_TAGS=1000
+MAX_PAGES=100
+DOCKERHUB_CURL_CONNECT_TIMEOUT=10
+DOCKERHUB_CURL_MAX_TIME=30
+
 script_root() {
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
@@ -66,7 +78,8 @@ _cleanup_outdated_tags_delete() {
         echo "cleanup deletion refused: could not encode Docker Hub path" >&2
         return 1
       fi
-      if ! dh_http_status=$(curl --globoff -sf -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $dh_jwt" \
+      if ! dh_http_status=$(curl --globoff -sf --connect-timeout "$DOCKERHUB_CURL_CONNECT_TIMEOUT" --max-time "$DOCKERHUB_CURL_MAX_TIME" \
+        -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $dh_jwt" \
         "https://hub.docker.com/v2/repositories/$dh_namespace_path/$dh_container_path/tags/$dh_tag_path/") \
         || [[ "$dh_http_status" != 204 ]]; then
         return 1
@@ -464,7 +477,7 @@ purge_ghcr() {
 # non-zero status is always a real failure.
 purge_dockerhub() {
   local container="$1" valid_tags="$2" dh_jwt response dh_next dh_listing_url dh_repository_path dh_continuation_prefix dh_page
-  local dh_namespace_path dh_container_path dh_page_total dh_reported_total="" tag dh_new_tags
+  local dh_namespace_path dh_container_path dh_page_total dh_reported_total="" tag dh_new_tags dh_pages_read=0
   local dh_kept=0 dh_candidates=0 dh_successful_deletes=0 delete_failures=0
   local -a dh_page_values=() dh_tags=()
   local -A dh_seen_tags=()
@@ -475,7 +488,8 @@ purge_dockerhub() {
     return 0
   fi
   echo "  Docker Hub cleanup for $container..." >&2
-  if ! dh_jwt=$(curl -sf -X POST "https://hub.docker.com/v2/users/login" -H "Content-Type: application/json" \
+  if ! dh_jwt=$(curl -sf --connect-timeout "$DOCKERHUB_CURL_CONNECT_TIMEOUT" --max-time "$DOCKERHUB_CURL_MAX_TIME" \
+      -X POST "https://hub.docker.com/v2/users/login" -H "Content-Type: application/json" \
       -d "{\"username\":\"$DOCKERHUB_USERNAME\",\"password\":\"$DOCKERHUB_TOKEN\"}" | jq -er '.token'); then
     echo "  ✗ Failed to authenticate to Docker Hub; skipping $container" >&2; return "$PROCESSING_FAILURE"
   fi
@@ -497,7 +511,8 @@ purge_dockerhub() {
     # --globoff: a continuation URL is remote input. Without it curl reads `[`
     # and `{` as range and set syntax and expands one URL into many
     # authenticated requests.
-    if ! response=$(curl --globoff -sf -H "Authorization: Bearer $dh_jwt" "$dh_listing_url"); then
+    if ! response=$(curl --globoff -sf --connect-timeout "$DOCKERHUB_CURL_CONNECT_TIMEOUT" --max-time "$DOCKERHUB_CURL_MAX_TIME" \
+      -H "Authorization: Bearer $dh_jwt" "$dh_listing_url"); then
       echo "  ✗ Failed to list Docker Hub tags; skipping $container" >&2
       return "$LISTING_FAILURE"
     fi
@@ -523,6 +538,17 @@ purge_dockerhub() {
     fi
     mapfile -t dh_page_values <<< "$dh_page"
     dh_page_total="${dh_page_values[0]-}"
+    # jq may normalize JSON spellings such as 1e0 to 1. The boundary contract
+    # is canonical decimal text in Bash, before this value reaches a comparison.
+    if ! is_canonical_decimal "$dh_page_total"; then
+      echo "  ✗ Docker Hub tag listing count was not a canonical decimal at the Bash boundary; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    fi
+    if decimal_string_greater_than "$dh_page_total" "$MAX_TAGS"; then
+      echo "  ✗ Docker Hub tag listing count exceeds MAX_TAGS=$MAX_TAGS; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    fi
+    dh_pages_read=$((dh_pages_read + 1))
     case "${dh_page_values[1]-}" in
       N) dh_next="" ;;
       U*) dh_next="${dh_page_values[1]#U}" ;;
@@ -563,6 +589,10 @@ purge_dockerhub() {
     fi
     if [[ "$dh_next" != "$dh_continuation_prefix" && "$dh_next" != "$dh_continuation_prefix"\?* ]]; then
       echo "  ✗ Docker Hub tag continuation was not for this repository; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    fi
+    if [[ "$dh_pages_read" -ge "$MAX_PAGES" ]]; then
+      echo "  ✗ Docker Hub tag listing exceeds MAX_PAGES=$MAX_PAGES; skipping $container" >&2
       return "$LISTING_FAILURE"
     fi
     dh_listing_url="$dh_next"
