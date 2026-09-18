@@ -84,7 +84,7 @@ expand_template() {
                     if ! printf '%s' "${_marker_content[$i]}"; then
                         log_error "expand_template: failed to write marker @@${_marker_names[$i]}@@ from template: $template"
                         _template_status=1
-                        break
+                        return 1
                     fi
                 fi
                 matched=true
@@ -95,7 +95,7 @@ expand_template() {
             if ! printf '%s\n' "$line"; then
                 log_error "expand_template: failed to write passthrough line (no marker) from template: $template"
                 _template_status=1
-                break
+                return 1
             fi
         fi
     done < "$template"; then

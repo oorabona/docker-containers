@@ -253,6 +253,86 @@ with open('$file', 'w') as f:
     [[ "$output" == *"@@BLOCK_A@@"* ]]
 }
 
+@test "expand_template: marker write failure emits no marker or later content" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    local generated="$TEST_TEMP_DIR/generated"
+    local marker_content=$'A_CONTENT\n'
+    local second_content=$'B_CONTENT\n'
+    local position expected
+
+    for position in first middle last; do
+        case "$position" in
+            first)
+                printf '%s' $'# @@BLOCK_A@@\n# @@BLOCK_B@@\nafter\n' > "$tpl"
+                expected=""
+                ;;
+            middle)
+                printf '%s' $'before\n# @@BLOCK_A@@\n# @@BLOCK_B@@\nafter\n' > "$tpl"
+                expected=$'before\n'
+                ;;
+            last)
+                printf '%s' $'before\n# @@BLOCK_B@@\n# @@BLOCK_A@@\n' > "$tpl"
+                expected=$'before\nB_CONTENT\n'
+                ;;
+        esac
+
+        run bash -c '
+            source "$1"
+            marker_content="$4"
+            printf() {
+                if [[ "$1" == "%s" && "$2" == "$marker_content" ]]; then
+                    return 1
+                fi
+                builtin printf "$@"
+            }
+            if expand_template "$2" BLOCK_A "$4" BLOCK_B "$5" > "$3"; then
+                exit 0
+            fi
+            exit 1
+        ' bash "$HELPERS_DIR/template-utils.sh" "$tpl" "$generated" "$marker_content" "$second_content"
+
+        [ "$status" -eq 1 ]
+        [ "$(<"$generated")" = "${expected%$'\n'}" ]
+        ! grep -Fq '@@' "$generated"
+    done
+}
+
+@test "expand_template: passthrough write failure emits nothing later" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    local generated="$TEST_TEMP_DIR/generated"
+
+    printf '%s' $'# @@BLOCK_A@@\nfailed\nafter\n' > "$tpl"
+
+    run bash -c '
+        source "$1"
+        printf() {
+            if [[ "$1" == "%s\\n" && "$2" == "failed" ]]; then
+                return 1
+            fi
+            builtin printf "$@"
+        }
+        if expand_template "$2" BLOCK_A "" > "$3"; then
+            exit 0
+        fi
+        exit 1
+    ' bash "$HELPERS_DIR/template-utils.sh" "$tpl" "$generated"
+
+    [ "$status" -eq 1 ]
+    [ ! -s "$generated" ]
+    ! grep -Fq 'after' "$generated"
+}
+
+@test "expand_template: empty marker content succeeds and emits later lines" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+
+    printf '%s' $'before\n# @@BLOCK_A@@\nafter\n' > "$tpl"
+
+    run expand_template "$tpl" BLOCK_A ""
+
+    [ "$status" -eq 0 ]
+    [ "$output" = $'before\nafter' ]
+}
+
 @test "expand_template: passthrough write to /dev/full returns non-zero" {
     local tpl="$TEST_TEMP_DIR/Dockerfile.template"
     _make_template_passthrough_first "$tpl"
