@@ -34,7 +34,7 @@ _is_single_json_type() {
     local file="$2"
 
     jq -en --arg expected_type "$expected_type" \
-        '([inputs] | length == 1 and (.[0] | type == $expected_type))' \
+        '([limit(2; inputs)] | length == 1 and (.[0] | type == $expected_type))' \
         -- "$file" >/dev/null 2>&1
 }
 

@@ -65,6 +65,14 @@ STUB
     chmod +x "$TEST_TEMP_DIR/bin/jq"
 }
 
+write_failing_mv_stub() {
+    cat > "$TEST_TEMP_DIR/bin/mv" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/mv"
+}
+
 write_failing_wc_stub() {
     cat > "$TEST_TEMP_DIR/bin/wc" <<'STUB'
 #!/usr/bin/env bash
@@ -268,26 +276,52 @@ JSON
     [[ "$output" == *"or-failure-observed"* ]] || return 1
 }
 
-@test "append_build_history returns failure to if and || for malformed changelog counters" {
+@test "enrich_changelog preserves the original changelog when final mv fails" {
+    write_failing_mv_stub
+    local changelog_file="$TEST_TEMP_DIR/example.changelog.json"
+    local original_file="$TEST_TEMP_DIR/example.changelog.original.json"
+    write_changelog "$changelog_file"
+    cp -- "$changelog_file" "$original_file"
+
+    run bash -c 'source "$1"; enrich_changelog "$2"' _ "$SBOM_UTILS" "$changelog_file"
+
+    [ "$status" -ne 0 ] || return 1
+    cmp -s -- "$original_file" "$changelog_file" || return 1
+}
+
+@test "append_build_history rejects malformed changelog counters without publishing" {
     local lineage_file="$TEST_TEMP_DIR/lineage.json"
-    local changelog_file="$TEST_TEMP_DIR/result.changelog.json"
     local summary='{"total":1,"apk":1}'
+    local field invalid_value changelog_file history_if history_or case_index=0
     write_lineage "$lineage_file"
-    printf '{"summary":{"added":"bad","removed":2,"updated":3}}\n' > "$changelog_file"
 
-    run bash -c '
-        source "$1"
-        if append_build_history "$2" "$3" "$4" 10 "$5"; then
-            printf "unexpected-if-success\\n"
-            exit 1
-        fi
-        printf "if-failure-observed\\n"
-        append_build_history "$2" "$3" "$6" 10 "$5" || printf "or-failure-observed\\n"
-    ' _ "$SBOM_UTILS" "$lineage_file" "$summary" "$TEST_TEMP_DIR/result-if.history.json" "$changelog_file" "$TEST_TEMP_DIR/result-or.history.json"
+    for field in added removed updated; do
+        for invalid_value in '"bad"' '-1' '1.5'; do
+            case_index=$((case_index + 1))
+            changelog_file="$TEST_TEMP_DIR/malformed-${case_index}.changelog.json"
+            history_if="$TEST_TEMP_DIR/malformed-${case_index}-if.history.json"
+            history_or="$TEST_TEMP_DIR/malformed-${case_index}-or.history.json"
+            printf '{"summary":{"added":1,"removed":2,"updated":3}}\n' \
+                | "$SYSTEM_JQ" --arg field "$field" --argjson value "$invalid_value" \
+                    '.summary[$field] = $value' > "$changelog_file"
 
-    [ "$status" -eq 0 ] || return 1
-    [[ "$output" == *"if-failure-observed"* ]] || return 1
-    [[ "$output" == *"or-failure-observed"* ]] || return 1
+            run bash -c '
+                source "$1"
+                if append_build_history "$2" "$3" "$4" 10 "$5"; then
+                    printf "unexpected-if-success\\n"
+                    exit 1
+                fi
+                printf "if-failure-observed\\n"
+                append_build_history "$2" "$3" "$6" 10 "$5" || printf "or-failure-observed\\n"
+            ' _ "$SBOM_UTILS" "$lineage_file" "$summary" "$history_if" "$changelog_file" "$history_or"
+
+            [ "$status" -eq 0 ] || return 1
+            [[ "$output" == *"if-failure-observed"* ]] || return 1
+            [[ "$output" == *"or-failure-observed"* ]] || return 1
+            [ ! -e "$history_if" ] || return 1
+            [ ! -e "$history_or" ] || return 1
+        done
+    done
 }
 
 @test "append_build_history returns failure to if and || when its jq writer fails" {
