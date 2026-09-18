@@ -81,6 +81,13 @@ write_changelog() {
 JSON
 }
 
+write_lineage() {
+    local path="$1"
+    cat > "$path" <<'JSON'
+{"built_at":"2026-09-18T00:00:00Z","version":"1.0.0","build_digest":"sha256:abc"}
+JSON
+}
+
 @test "generate_sbom publishes a complete JSON document only after its producer succeeds" {
     write_syft_stub
     local output_file="$TEST_TEMP_DIR/result.sbom.json"
@@ -90,6 +97,32 @@ JSON
     [ "$status" -eq 0 ] || return 1
     jq -e '.packages == []' "$output_file" >/dev/null || return 1
     [ "$(find "$TEST_TEMP_DIR" -name 'result.sbom.json.tmp.*' -print -quit)" = "" ] || return 1
+}
+
+@test "generate_sbom preserves an existing destination mode" {
+    write_syft_stub
+    local output_file="$TEST_TEMP_DIR/existing.sbom.json"
+    printf 'old\n' > "$output_file"
+    chmod 0641 "$output_file"
+
+    run bash -c 'source "$1"; generate_sbom example/image:tag "$2"; stat -c "%a" "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    [ "${lines[-1]}" = "641" ] || return 1
+}
+
+@test "generate_sbom applies the caller umask to new destinations" {
+    write_syft_stub
+    local restrictive_output="$TEST_TEMP_DIR/restrictive.sbom.json"
+    local permissive_output="$TEST_TEMP_DIR/permissive.sbom.json"
+
+    run bash -c 'source "$1"; umask 0077; generate_sbom example/image:tag "$2"; stat -c "%a" "$2"' _ "$SBOM_UTILS" "$restrictive_output"
+    [ "$status" -eq 0 ] || return 1
+    [ "${lines[-1]}" = "600" ] || return 1
+
+    run bash -c 'source "$1"; umask 0000; generate_sbom example/image:tag "$2"; stat -c "%a" "$2"' _ "$SBOM_UTILS" "$permissive_output"
+    [ "$status" -eq 0 ] || return 1
+    [ "${lines[-1]}" = "666" ] || return 1
 }
 
 @test "generate_sbom returns nonzero directly when syft writes no output" {
@@ -205,4 +238,44 @@ JSON
     [[ "$output" == *"failure-observed"* ]] || return 1
     [ ! -e "$history_file" ] || return 1
     [ "$(find "$TEST_TEMP_DIR" -name 'result.history.json.tmp.*' -print -quit)" = "" ] || return 1
+}
+
+@test "append_build_history rejects malformed changelog counters without publishing" {
+    local lineage_file="$TEST_TEMP_DIR/lineage.json"
+    local summary='{"total":1,"apk":1}'
+    local counters
+    write_lineage "$lineage_file"
+
+    for counters in \
+        '"added":"bad","removed":2,"updated":3' \
+        '"added":1,"removed":"bad","updated":3' \
+        '"added":1,"removed":2,"updated":"bad"' \
+        '"added":"bad","removed":"bad","updated":"bad"' \
+        '"added":-1,"removed":2,"updated":3' \
+        '"added":1.5,"removed":2,"updated":3'; do
+        local changelog_file="$TEST_TEMP_DIR/${RANDOM}.changelog.json"
+        local history_file="$TEST_TEMP_DIR/${RANDOM}.history.json"
+        printf '{"summary":{%s}}\n' "$counters" > "$changelog_file"
+
+        run bash -c 'source "$1"; append_build_history "$2" "$3" "$4" 10 "$5"' \
+            _ "$SBOM_UTILS" "$lineage_file" "$summary" "$history_file" "$changelog_file"
+
+        [ "$status" -ne 0 ] || return 1
+        [ ! -e "$history_file" ] || return 1
+    done
+}
+
+@test "append_build_history publishes valid changelog counters without repositioning" {
+    local lineage_file="$TEST_TEMP_DIR/lineage.json"
+    local changelog_file="$TEST_TEMP_DIR/result.changelog.json"
+    local history_file="$TEST_TEMP_DIR/result.history.json"
+    local summary='{"total":1,"apk":1}'
+    write_lineage "$lineage_file"
+    printf '{"summary":{"added":1,"removed":2,"updated":3}}\n' > "$changelog_file"
+
+    run bash -c 'source "$1"; append_build_history "$2" "$3" "$4" 10 "$5"' \
+        _ "$SBOM_UTILS" "$lineage_file" "$summary" "$history_file" "$changelog_file"
+
+    [ "$status" -eq 0 ] || return 1
+    [ "$(jq -r '.[0].changes_summary' "$history_file")" = '+1 -2 ~3' ] || return 1
 }

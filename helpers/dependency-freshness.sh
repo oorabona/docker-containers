@@ -14,7 +14,7 @@ _DEPENDENCY_FRESHNESS_HELPER="${BASH_SOURCE[0]}"
 _DEPENDENCY_FRESHNESS_DIR="$(cd "$(dirname "${_DEPENDENCY_FRESHNESS_HELPER}")" && pwd)"
 
 # shellcheck source=./version-utils.sh
-source "${_DEPENDENCY_FRESHNESS_DIR}/version-utils.sh"
+source "${_DEPENDENCY_FRESHNESS_DIR}/version-utils.sh" || return 1
 
 _freshness_resolver_for() {
     case "${1:-}" in

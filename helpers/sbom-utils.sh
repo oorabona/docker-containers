@@ -29,6 +29,39 @@ if ! source "$_SBOM_UTILS_DIR/retry.sh"; then
     return 1
 fi
 
+# Publish a staged file atomically while retaining the destination's mode, or
+# applying the mode a regular file would receive from the caller's umask.
+_publish_staged_file() {
+    if [[ "$#" -ne 2 || -z "$1" || -z "$2" ]]; then
+        log_error "_publish_staged_file requires staged and destination paths"
+        return 2
+    fi
+
+    local staged_file="$1"
+    local destination="$2"
+    local mode current_umask
+    if [[ -e "$destination" ]]; then
+        if ! mode=$(stat -c '%a' -- "$destination"); then
+            log_error "Failed to read destination mode: $destination"
+            return 1
+        fi
+    else
+        if ! current_umask=$(umask) || [[ ! "$current_umask" =~ ^0?[0-7]{3}$ ]]; then
+            log_error "Failed to read a numeric umask"
+            return 1
+        fi
+        mode=$(printf '%03o' "$((0666 & ~8#$current_umask))")
+    fi
+    if ! chmod "$mode" -- "$staged_file"; then
+        log_error "Failed to set staged file mode: $staged_file"
+        return 1
+    fi
+    if ! mv -f -- "$staged_file" "$destination"; then
+        return 1
+    fi
+    return 0
+}
+
 # Install syft if not present
 install_syft() {
     if command -v syft &>/dev/null; then
@@ -222,9 +255,11 @@ generate_sbom() (
         log_error "SBOM producer did not create a readable output: $output_file"
         return 1
     fi
+    # This establishes only that the producer wrote a JSON object; it does not
+    # validate the SBOM's SPDX schema or shape.
     if ! jq -e 'type == "object"' "$tmp_file" >/dev/null 2>&1; then
         rm -f -- "$tmp_file"
-        log_error "SBOM producer did not create valid JSON: $output_file"
+        log_error "SBOM producer did not write a JSON object: $output_file"
         return 1
     fi
     if ! output_size=$(wc -c < "$tmp_file"); then
@@ -238,7 +273,7 @@ generate_sbom() (
         log_error "Generated SBOM has an invalid size: $output_file"
         return 1
     fi
-    if ! mv -f -- "$tmp_file" "$output_file"; then
+    if ! _publish_staged_file "$tmp_file" "$output_file"; then
         rm -f -- "$tmp_file"
         log_error "Failed to publish generated SBOM: $output_file"
         return 1
@@ -426,7 +461,7 @@ compare_sboms() (
         log_error "Generated changelog has invalid summary counts: $output_file"
         return 1
     fi
-    if ! mv -f -- "$tmp_file" "$output_file"; then
+    if ! _publish_staged_file "$tmp_file" "$output_file"; then
         rm -f -- "$tmp_file"
         log_error "Failed to publish generated changelog: $output_file"
         return 1
@@ -745,7 +780,7 @@ enrich_changelog() (
             log_warning "Dependency freshness enrichment produced invalid JSON: $changelog_file"
             return 1
         fi
-        if ! mv -f -- "$tmp_file" "$changelog_file"; then
+        if ! _publish_staged_file "$tmp_file" "$changelog_file"; then
             rm -f -- "$tmp_file"
             log_warning "Dependency freshness enrichment failed while writing changelog: $changelog_file"
             return 1
@@ -857,14 +892,14 @@ append_build_history() (
     local changes_summary=""
     local changelog_file="${5:-${history_file%.history.json}.changelog.json}"
     if [[ -f "$changelog_file" ]]; then
-        if ! changes_summary=$(jq -er '
-            [(.summary.added // 0), (.summary.removed // 0), (.summary.updated // 0)]
-            | map(select(type == "number"))
-            | "+\(.[0]) -\(.[1]) ~\(.[2])"
-        ' "$changelog_file" 2>/dev/null); then
+        local added_count removed_count updated_count
+        if ! added_count=$(jq -er '.summary.added | select(type == "number" and . >= 0 and floor == .)' "$changelog_file" 2>/dev/null) \
+            || ! removed_count=$(jq -er '.summary.removed | select(type == "number" and . >= 0 and floor == .)' "$changelog_file" 2>/dev/null) \
+            || ! updated_count=$(jq -er '.summary.updated | select(type == "number" and . >= 0 and floor == .)' "$changelog_file" 2>/dev/null); then
             log_error "Failed to read build changelog summary: $changelog_file"
             return 1
         fi
+        changes_summary="+$added_count -$removed_count ~$updated_count"
     fi
 
     # Create new entry and prepend to history, keeping max_entries.
@@ -915,7 +950,7 @@ append_build_history() (
         log_error "Generated build history has an invalid entry count: $history_file"
         return 1
     fi
-    if ! mv -f -- "$tmp_file" "$history_file"; then
+    if ! _publish_staged_file "$tmp_file" "$history_file"; then
         rm -f -- "$tmp_file"
         log_error "Failed to publish build history: $history_file"
         return 1
