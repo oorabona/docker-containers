@@ -185,14 +185,14 @@ with open('$file', 'w') as f:
     echo "$output" | grep -Fqx 'CMD ["postgres"]'
 }
 
-@test "expand_template: succeeds without cat on PATH" {
+@test "expand_template: succeeds with cat on restricted PATH" {
     local tpl="$TEST_TEMP_DIR/Dockerfile.template"
     local restricted_path="$TEST_TEMP_DIR/restricted-path"
     local tool
     _make_template_marker_last "$tpl"
     mkdir -p "$restricted_path"
 
-    for tool in bash sh jq yq git sed grep sort tail tr paste cut awk dirname pwd realpath wc find; do
+    for tool in bash sh jq yq git sed grep sort tail tr paste cut awk dirname pwd realpath wc find cat; do
         ln -s "$(command -v "$tool")" "$restricted_path/$tool"
     done
 
@@ -203,7 +203,7 @@ with open('$file', 'w') as f:
     [[ "$output" == *"content"* ]]
 }
 
-@test "expand_template: unterminated final line is not emitted" {
+@test "expand_template: unterminated final line is emitted" {
     local tpl="$TEST_TEMP_DIR/Dockerfile.template"
     printf '%s' $'ARG VERSION\n# @@BLOCK_A@@\nunterminated final line' > "$tpl"
 
@@ -211,7 +211,7 @@ with open('$file', 'w') as f:
 
     [ "$status" -eq 0 ]
     echo "$output" | grep -Fqx 'ARG VERSION'
-    ! echo "$output" | grep -Fq 'unterminated final line'
+    echo "$output" | grep -Fqx 'unterminated final line'
 }
 
 # ---------------------------------------------------------------------------
@@ -367,6 +367,21 @@ os.chmod(path, 0o755)
 ' "$fake_bin/grep"
 
     run env PATH="$fake_bin:$PATH" REAL_GREP="$real_grep" TEMPLATE_TO_REMOVE="$tpl" bash -c 'source "$1"; expand_template "$2" BLOCK_A content' \
+        bash "$HELPERS_DIR/template-utils.sh" "$tpl"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"failed to read template: $tpl"* ]]
+}
+
+@test "expand_template: reader failure returns non-zero" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    local fake_bin="$TEST_TEMP_DIR/fake-bin"
+    _make_template_marker_first "$tpl"
+    mkdir -p "$fake_bin"
+    printf '%s\n' '#!/usr/bin/env bash' 'IFS= read -r line < "$2"' 'printf "%s\\n" "$line"' 'exit 1' > "$fake_bin/cat"
+    chmod +x "$fake_bin/cat"
+
+    run env PATH="$fake_bin:$PATH" bash -c 'source "$1"; expand_template "$2" BLOCK_A content BLOCK_B ""' \
         bash "$HELPERS_DIR/template-utils.sh" "$tpl"
 
     [ "$status" -ne 0 ]

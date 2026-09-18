@@ -69,41 +69,40 @@ expand_template() {
         fi
     done
 
-    # Process template line by line.  A redirection failure is the status of
-    # the loop, so it can be reported without an external reader.  Every write
-    # is checked explicitly because callers commonly invoke this function where
-    # errexit is suppressed.
-    local _template_status=0
-    if while IFS= read -r line; do
-        local matched=false
-        local i
-        for i in "${!_marker_names[@]}"; do
-            if [[ "$line" == *"@@${_marker_names[$i]}@@"* ]]; then
-                # Replace marker line with content (if non-empty)
-                if [[ -n "${_marker_content[$i]}" ]]; then
-                    if ! printf '%s' "${_marker_content[$i]}"; then
-                        log_error "expand_template: failed to write marker @@${_marker_names[$i]}@@ from template: $template"
-                        _template_status=1
-                        return 1
+    # Process template line by line.  Preserve the reader's status as well as
+    # the loop's, so an I/O failure after opening the template cannot yield a
+    # silently truncated artifact.  Every write is checked explicitly because
+    # callers commonly invoke this function where errexit is suppressed.
+    local -a _template_pipeline_status=()
+    if {
+        cat -- "$template" | while IFS= read -r line || [[ -n "$line" ]]; do
+            local matched=false
+            local i
+            for i in "${!_marker_names[@]}"; do
+                if [[ "$line" == *"@@${_marker_names[$i]}@@"* ]]; then
+                    # Replace marker line with content (if non-empty)
+                    if [[ -n "${_marker_content[$i]}" ]]; then
+                        if ! printf '%s' "${_marker_content[$i]}"; then
+                            log_error "expand_template: failed to write marker @@${_marker_names[$i]}@@ from template: $template"
+                            return 1
+                        fi
                     fi
+                    matched=true
+                    break
                 fi
-                matched=true
-                break
+            done
+            if [[ "$matched" != "true" ]]; then
+                if ! printf '%s\n' "$line"; then
+                    log_error "expand_template: failed to write passthrough line (no marker) from template: $template"
+                    return 1
+                fi
             fi
         done
-        if [[ "$matched" != "true" ]]; then
-            if ! printf '%s\n' "$line"; then
-                log_error "expand_template: failed to write passthrough line (no marker) from template: $template"
-                _template_status=1
-                return 1
-            fi
+        _template_pipeline_status=("${PIPESTATUS[@]}")
+    }; then
+        if [[ "${_template_pipeline_status[0]}" -ne 0 || "${_template_pipeline_status[1]}" -ne 0 ]]; then
+            log_error "expand_template: failed to read template: $template"
+            return 1
         fi
-    done < "$template"; then
-        :
-    else
-        log_error "expand_template: failed to read template: $template"
-        _template_status=1
     fi
-
-    return "$_template_status"
 }

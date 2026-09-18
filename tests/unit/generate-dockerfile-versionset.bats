@@ -1861,7 +1861,7 @@ _run_registry_probe_3state() {
     local fake_bin
     fake_bin=$(mktemp -d)
     # Include all tools that the valid-artifact path of generate_dockerfile needs.
-    for _tool in bash sh jq yq git sed grep sort tail tr paste cut awk dirname pwd realpath wc find; do
+    for _tool in bash sh jq yq git sed grep sort tail tr paste cut awk dirname pwd realpath wc find cat; do
         local _real_path
         _real_path=$(command -v "$_tool" 2>/dev/null || true)
         [[ -z "$_real_path" ]] && continue
