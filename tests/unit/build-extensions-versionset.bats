@@ -14652,7 +14652,7 @@ EOF
             echo "FAIL: ${probe_arch} probe error must fail finalization. Got status $status"
             false
         }
-        [[ "$output" == *"transient registry probe error on ${probe_arch} per-arch source ref — fail closed"* ]] || {
+        [[ "$output" == *"source reference resolution failed on ${probe_arch} per-arch source ref — fail closed"* ]] || {
             echo "FAIL: ${probe_arch} probe error was not logged as indeterminate. Got: $output"
             false
         }
@@ -14661,6 +14661,80 @@ EOF
             false
         }
     done
+}
+
+# Push/dispatch coverage remains separate from the PR exception above: an
+# existing single-arch canonical target must be repaired using exactly the
+# canonical reference selected by ext_ref_resolve.
+@test "push context, non-resolver single-arch canonical manifest repairs selected canonical target" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local imagetools_log="$tmpd/push_single_arch_imagetools.log"
+
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX=''
+        export imagetools_log='${imagetools_log}'
+        cd '${sd}'
+        source ./build-extensions.sh
+        export ROOT_DIR='${tmpd}'
+
+        ext_config() {
+            case \"\$1:\$2\" in
+                pgvector:version) echo '0.8.0' ;;
+                pgvector:repo)    echo 'https://github.com/pgvector/pgvector' ;;
+                *)                echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/computed-ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        ext_ref_resolve() {
+            case \"\${4:-}\" in
+                '') printf '%s' 'ghcr.io/test/selected-canonical-pgvector:pg18-0.8.0' ;;
+                amd64) printf '%s' 'ghcr.io/test/ext-pgvector:pg18-0.8.0-amd64' ;;
+                arm64) printf '%s' 'ghcr.io/test/ext-pgvector:pg18-0.8.0-arm64' ;;
+            esac
+        }
+        export -f ext_ref_resolve
+
+        docker() {
+            if [[ \"\${1:-}\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'inspect' ]]; then
+                printf 'linux/amd64\\n'
+                return 0
+            fi
+            if [[ \"\${1:-}\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CREATE \${*}\" >> \"\$imagetools_log\"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
+    "
+
+    [ "$status" -eq 0 ]
+    [ -f "$imagetools_log" ]
+    local call
+    call=$(cat "$imagetools_log")
+    [ "$call" = "IMAGETOOLS_CREATE buildx imagetools create -t ghcr.io/test/selected-canonical-pgvector:pg18-0.8.0 ghcr.io/test/ext-pgvector:pg18-0.8.0-amd64 ghcr.io/test/ext-pgvector:pg18-0.8.0-arm64" ] || {
+        echo "FAIL: push repair must use the exact selected canonical target. Got: $call"
+        false
+    }
 }
 
 @test "non-resolver per-arch absent probe fails closed without imagetools create" {

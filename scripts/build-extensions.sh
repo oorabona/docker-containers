@@ -68,6 +68,10 @@ _arch_suffix_tag() {
 # a rollback/audit convenience. Master never imports a PR-scoped cache ref.
 # Forks are excluded at the job if: clause so only trusted same-repo PRs write
 # to the GHCR namespace.
+# Exception: when a trusted same-repository pull request resolves a canonical
+# manifest that inspection proves is single-arch, Stage B repairs that canonical
+# target in place. This deliberately accepts canonical mutation in that state:
+# leaving the production-consumed canonical manifest single-arch is worse.
 #
 # Examples (PR_TAG_SUFFIX=-pr42):
 #   _scoped_tag "ghcr.io/owner/ext-ts:pg18-2.27.1"  => "ghcr.io/owner/ext-ts:pg18-2.27.1-pr42"
@@ -2422,7 +2426,7 @@ finalize_multiarch_manifests() {
                         esac
                         ;;
                     2)
-                        log_error "$ext $ceiling pg${major_ver}: transient registry probe error on non-resolver ref — fail closed"
+                        log_error "$ext $ceiling pg${major_ver}: source reference resolution failed on non-resolver ref — fail closed"
                         _failed=true
                         continue
                         ;;
@@ -2440,7 +2444,7 @@ finalize_multiarch_manifests() {
                     continue
                     ;;
                 2)
-                    log_error "$ext $ceiling pg${major_ver}: transient registry probe error on amd64 per-arch source ref — fail closed"
+                    log_error "$ext $ceiling pg${major_ver}: source reference resolution failed on amd64 per-arch source ref — fail closed"
                     _failed=true
                     continue
                     ;;
@@ -2453,15 +2457,14 @@ finalize_multiarch_manifests() {
                     continue
                     ;;
                 2)
-                    log_error "$ext $ceiling pg${major_ver}: transient registry probe error on arm64 per-arch source ref — fail closed"
+                    log_error "$ext $ceiling pg${major_ver}: source reference resolution failed on arm64 per-arch source ref — fail closed"
                     _failed=true
                     continue
                     ;;
             esac
 
-            # Only the un-suffixed target is normally absent before this create.
-            # A single-arch canonical manifest is repaired in place; otherwise
-            # an absent probe or FORCE selects the configured scoped target.
+            # An absent probe or FORCE selects the configured scoped target;
+            # a target resolved above remains selected for repair.
             if [[ -z "$_nr_target" ]]; then
                 local _nr_image
                 _nr_image=$(ext_image_name "$ext" "$ceiling" "$major_ver") || { _failed=true; continue; }
