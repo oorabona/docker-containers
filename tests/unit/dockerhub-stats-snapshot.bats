@@ -9,6 +9,7 @@ setup() {
 
     ln -s "$SCRIPTS_DIR/snapshot-stats.sh" "$TEST_REPO/scripts/snapshot-stats.sh"
     cp "$HELPERS_DIR/logging.sh" "$TEST_REPO/helpers/logging.sh"
+    cp "$HELPERS_DIR/collect-lines.sh" "$TEST_REPO/helpers/collect-lines.sh"
 
     for container in alpha beta gamma; do
         mkdir -p "$TEST_REPO/$container"
@@ -331,4 +332,99 @@ EOF
     ' "$stats_file" >/dev/null
 
     grep -qx "alpha" "$CURL_LOG"
+}
+
+@test "snapshot-stats refuses a partial failed container enumeration without appending" {
+    rm "$TEST_REPO/.build-lineage/stats-history.jsonl"
+    cat >> "$TEST_REPO/helpers/logging.sh" <<'EOF'
+list_containers() {
+    printf 'alpha\n'
+    return 73
+}
+EOF
+
+    run bash -c 'cd "$1" && ./scripts/snapshot-stats.sh' _ "$TEST_REPO"
+    [ "$status" -eq 73 ]
+    [[ "$output" == *"::error::Failed to enumerate containers"* ]]
+    [ ! -e "$TEST_REPO/stats/dockerhub-pull-history.jsonl" ]
+    [[ ! -s "$CURL_LOG" ]]
+}
+
+@test "snapshot-stats accepts an empty successful container enumeration as a no-op" {
+    rm "$TEST_REPO/.build-lineage/stats-history.jsonl"
+    cat >> "$TEST_REPO/helpers/logging.sh" <<'EOF'
+list_containers() {
+    return 0
+}
+EOF
+
+    run bash -c 'cd "$1" && ./scripts/snapshot-stats.sh' _ "$TEST_REPO"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Stats snapshot: 0 new, 0 already-today, 0 failed"* ]]
+    [ ! -e "$TEST_REPO/stats/dockerhub-pull-history.jsonl" ]
+    [[ ! -s "$CURL_LOG" ]]
+}
+
+@test "snapshot-stats rejects a nonempty container enumeration containing only whitespace" {
+    rm "$TEST_REPO/.build-lineage/stats-history.jsonl"
+    cat >> "$TEST_REPO/helpers/logging.sh" <<'EOF'
+list_containers() {
+    printf ' \t \n'
+}
+EOF
+
+    run bash -c 'cd "$1" && ./scripts/snapshot-stats.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Container enumeration contains only whitespace"* ]]
+    [ ! -e "$TEST_REPO/stats/dockerhub-pull-history.jsonl" ]
+    [[ ! -s "$CURL_LOG" ]]
+}
+
+@test "snapshot-stats refuses duplicate collection when existing snapshot state cannot be read" {
+    rm "$TEST_REPO/.build-lineage/stats-history.jsonl"
+    mkdir -p "$TEST_REPO/stats"
+    printf '{"date":"2026-01-01","container":"alpha","pull_count":1,"star_count":1}\n' \
+        > "$TEST_REPO/stats/dockerhub-pull-history.jsonl"
+    cat > "$TEST_REPO/bin/jq" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "$TEST_REPO/bin/jq"
+
+    run bash -c 'cd "$1" && ./scripts/snapshot-stats.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Cannot read existing snapshot state; refusing duplicate collection"* ]]
+    [[ ! -s "$CURL_LOG" ]]
+    [ "$(wc -l < "$TEST_REPO/stats/dockerhub-pull-history.jsonl")" -eq 1 ]
+}
+
+@test "snapshot-stats treats an absent stats file as a normal first run" {
+    rm "$TEST_REPO/.build-lineage/stats-history.jsonl"
+    [ ! -e "$TEST_REPO/stats/dockerhub-pull-history.jsonl" ]
+
+    run bash -c 'cd "$1" && ./scripts/snapshot-stats.sh' _ "$TEST_REPO"
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$TEST_REPO/stats/dockerhub-pull-history.jsonl")" -eq 3 ]
+    [ "$(wc -l < "$CURL_LOG")" -eq 3 ]
+}
+
+@test "snapshot-stats reports a failed stats append and stops" {
+    rm "$TEST_REPO/.build-lineage/stats-history.jsonl"
+    mkdir -p "$TEST_REPO/stats"
+    ln -s /dev/full "$TEST_REPO/stats/dockerhub-pull-history.jsonl"
+
+    run bash -c 'cd "$1" && ./scripts/snapshot-stats.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Could not append Docker Hub stats entry to stats/dockerhub-pull-history.jsonl"* ]]
+    [ "$(wc -l < "$CURL_LOG")" -eq 1 ]
+}
+
+@test "snapshot-stats reports a failed legacy reconciliation append and stops" {
+    mkdir -p "$TEST_REPO/stats"
+    ln -s /dev/full "$TEST_REPO/stats/dockerhub-pull-history.jsonl"
+
+    run bash -c 'cd "$1" && ./scripts/snapshot-stats.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Could not append reconciled Docker Hub stats entries to stats/dockerhub-pull-history.jsonl"* ]]
+    [[ ! -s "$CURL_LOG" ]]
 }
