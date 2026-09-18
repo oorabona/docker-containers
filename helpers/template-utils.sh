@@ -69,13 +69,12 @@ expand_template() {
         fi
     done
 
-    # Process template line by line.  Feed the loop through cat and wait for it
-    # afterwards: read alone cannot distinguish EOF from an input read error.
-    # Every write is checked explicitly because callers commonly invoke this
-    # function where errexit is suppressed.
-    local _template_reader_pid
+    # Process template line by line.  A redirection failure is the status of
+    # the loop, so it can be reported without an external reader.  Every write
+    # is checked explicitly because callers commonly invoke this function where
+    # errexit is suppressed.
     local _template_status=0
-    if ! while IFS= read -r line || [[ -n "$line" ]]; do
+    if while IFS= read -r line; do
         local matched=false
         local i
         for i in "${!_marker_names[@]}"; do
@@ -99,13 +98,9 @@ expand_template() {
                 break
             fi
         fi
-    done < <(cat -- "$template"); then
-        log_error "expand_template: failed to read template: $template"
-        _template_status=1
-    fi
-    _template_reader_pid=$!
-
-    if ! wait "$_template_reader_pid"; then
+    done < "$template"; then
+        :
+    else
         log_error "expand_template: failed to read template: $template"
         _template_status=1
     fi

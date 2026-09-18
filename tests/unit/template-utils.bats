@@ -185,6 +185,35 @@ with open('$file', 'w') as f:
     echo "$output" | grep -Fqx 'CMD ["postgres"]'
 }
 
+@test "expand_template: succeeds without cat on PATH" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    local restricted_path="$TEST_TEMP_DIR/restricted-path"
+    local tool
+    _make_template_marker_last "$tpl"
+    mkdir -p "$restricted_path"
+
+    for tool in bash sh jq yq git sed grep sort tail tr paste cut awk dirname pwd realpath wc find; do
+        ln -s "$(command -v "$tool")" "$restricted_path/$tool"
+    done
+
+    run env PATH="$restricted_path" bash -c 'source "$1"; expand_template "$2" BLOCK_A content BLOCK_B ""' \
+        bash "$HELPERS_DIR/template-utils.sh" "$tpl"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"content"* ]]
+}
+
+@test "expand_template: unterminated final line is not emitted" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    printf '%s' $'ARG VERSION\n# @@BLOCK_A@@\nunterminated final line' > "$tpl"
+
+    run expand_template "$tpl" "BLOCK_A" ""
+
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -Fqx 'ARG VERSION'
+    ! echo "$output" | grep -Fq 'unterminated final line'
+}
+
 # ---------------------------------------------------------------------------
 # (e) stdout write failures must be returned explicitly.  These calls use
 # /dev/full rather than a mocked printf because callers redirect the function's
@@ -236,21 +265,28 @@ with open('$file', 'w') as f:
     [[ "$output" == *"$tpl"* ]]
 }
 
-@test "expand_template: template reader failure returns non-zero" {
+@test "expand_template: template redirection failure returns non-zero" {
     local tpl="$TEST_TEMP_DIR/Dockerfile.template"
     local fake_bin="$TEST_TEMP_DIR/fake-bin"
+    local real_grep
     _make_template_marker_first "$tpl"
     mkdir -p "$fake_bin"
+    real_grep="$(command -v grep)"
     python3 -c '
 import os
 import sys
 path = sys.argv[1]
 with open(path, "w") as f:
-    f.write("#!/usr/bin/env bash\\nprintf \\\"%s\\\\n\\\" \\\"# @@BLOCK_A@@\\\"\\nexit 1\\n")
+    f.write("""#!/usr/bin/env bash
+"$REAL_GREP" "$@"
+status=$?
+rm -f -- "$TEMPLATE_TO_REMOVE"
+exit "$status"
+""")
 os.chmod(path, 0o755)
-' "$fake_bin/cat"
+' "$fake_bin/grep"
 
-    run env PATH="$fake_bin:$PATH" bash -c 'source "$1"; expand_template "$2" BLOCK_A content BLOCK_B ""' \
+    run env PATH="$fake_bin:$PATH" REAL_GREP="$real_grep" TEMPLATE_TO_REMOVE="$tpl" bash -c 'source "$1"; expand_template "$2" BLOCK_A content' \
         bash "$HELPERS_DIR/template-utils.sh" "$tpl"
 
     [ "$status" -ne 0 ]
