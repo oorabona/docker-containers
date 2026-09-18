@@ -69,9 +69,12 @@ _arch_suffix_tag() {
 # Forks are excluded at the job if: clause so only trusted same-repo PRs write
 # to the GHCR namespace.
 # Exception: when a trusted same-repository pull request resolves a canonical
-# manifest that inspection proves is single-arch, Stage B repairs that canonical
-# target in place. This deliberately accepts canonical mutation in that state:
-# leaving the production-consumed canonical manifest single-arch is worse.
+# manifest that inspection proves does not cover both linux/amd64 and
+# linux/arm64 (a single architecture manifest or a partial multi-platform
+# index — must re-create), Stage B repairs that canonical target in place.
+# This deliberately accepts canonical mutation in that state: leaving the
+# production-consumed canonical manifest without both
+# required platforms, whether single architecture or a partial index, is worse.
 #
 # Examples (PR_TAG_SUFFIX=-pr42):
 #   _scoped_tag "ghcr.io/owner/ext-ts:pg18-2.27.1"  => "ghcr.io/owner/ext-ts:pg18-2.27.1-pr42"
