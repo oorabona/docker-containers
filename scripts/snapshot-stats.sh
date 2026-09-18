@@ -20,7 +20,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 # shellcheck source=../helpers/logging.sh
+# shellcheck disable=SC1091
 source "$ROOT_DIR/helpers/logging.sh"
+# shellcheck source=../helpers/collect-lines.sh
+# shellcheck disable=SC1091
+source "$ROOT_DIR/helpers/collect-lines.sh"
 
 # Anchor relative snapshot paths and no-argument container enumeration at the repository root.
 cd "$ROOT_DIR"
@@ -32,6 +36,7 @@ mkdir -p "$(dirname "$STATS_FILE")"
 
 reconcile_legacy_stats_history() {
   local today_utc="$1"
+  local append_status
 
   [[ -f "$LEGACY_STATS_FILE" ]] || return 0
 
@@ -118,7 +123,17 @@ reconcile_legacy_stats_history() {
   local reconciled
   reconciled=$(awk 'NR > 1 && length($0) > 0 { count++ } END { print count + 0 }' "$reconciliation_tmp")
   if [[ "$reconciled" -gt 0 ]]; then
-    awk 'NR > 1 && length($0) > 0 { print }' "$reconciliation_tmp" >> "$STATS_FILE"
+    # These checks improve diagnostics; they do not make either append atomic.
+    if awk 'NR > 1 && length($0) > 0 { print }' "$reconciliation_tmp" >> "$STATS_FILE"; then
+      :
+    else
+      append_status=$?
+      log_error "Could not append reconciled Docker Hub stats entries to $STATS_FILE"
+      if ! rm -f "$reconciliation_tmp"; then
+        log_warning "Could not remove legacy reconciliation file $reconciliation_tmp"
+      fi
+      return "$append_status"
+    fi
   fi
 
   rm -f "$reconciliation_tmp"
@@ -141,11 +156,13 @@ declare -A SNAPSHOTS_TODAY=()
 load_today_snapshot_keys() {
   [[ -f "$STATS_FILE" ]] || return 0
 
-  local container
-  while IFS= read -r container; do
-    [[ -n "$container" ]] && SNAPSHOTS_TODAY["$container"]=1
-  done < <(
-    jq -Rrn --arg date "$today" '
+  local snapshot_keys_file read_status
+  snapshot_keys_file=$(mktemp "${TMPDIR:-/tmp}/snapshot-stats-keys.XXXXXX") || {
+    log_error "Could not create existing snapshot state file in ${TMPDIR:-/tmp}"
+    return 1
+  }
+
+  if jq -Rrn --arg date "$today" '
       def parsed_stats_row:
         (try fromjson catch null) as $obj
         | if ($obj | type) == "object"
@@ -168,8 +185,34 @@ load_today_snapshot_keys() {
       | parsed_stats_row
       | select(. != null and .date == $date)
       | .container
-    ' "$STATS_FILE" 2>/dev/null || true
-  )
+    ' "$STATS_FILE" > "$snapshot_keys_file"; then
+    :
+  else
+    read_status=$?
+    if ! rm -f "$snapshot_keys_file"; then
+      log_warning "Could not remove existing snapshot state file $snapshot_keys_file"
+    fi
+    return "$read_status"
+  fi
+
+  local -a snapshot_keys
+  if mapfile -t snapshot_keys < "$snapshot_keys_file"; then
+    :
+  else
+    read_status=$?
+    if ! rm -f "$snapshot_keys_file"; then
+      log_warning "Could not remove existing snapshot state file $snapshot_keys_file"
+    fi
+    return "$read_status"
+  fi
+  if ! rm -f "$snapshot_keys_file"; then
+    log_warning "Could not remove existing snapshot state file $snapshot_keys_file"
+  fi
+
+  local container
+  for container in "${snapshot_keys[@]}"; do
+    [[ -n "$container" ]] && SNAPSHOTS_TODAY["$container"]=1
+  done
 }
 
 snapshot_exists_for_today() {
@@ -177,13 +220,60 @@ snapshot_exists_for_today() {
   [[ -n "${SNAPSHOTS_TODAY[$container]:-}" ]]
 }
 
-load_today_snapshot_keys
+if ! load_today_snapshot_keys; then
+  log_error "Cannot read existing snapshot state; refusing duplicate collection"
+  exit 1
+fi
 
 snapshotted=0
 skipped=0
 failed=0
 
-while IFS= read -r container; do
+container_list_file=$(mktemp "${TMPDIR:-/tmp}/snapshot-stats-containers.XXXXXX") || {
+  echo "::error::Could not create container enumeration file in ${TMPDIR:-/tmp}" >&2
+  exit 1
+}
+if collect_lines "$container_list_file" -- list_containers; then
+  :
+else
+  enumeration_status=$?
+  if ! rm -f "$container_list_file"; then
+    echo "::warning::Could not remove container enumeration file $container_list_file" >&2
+  fi
+  echo "::error::Failed to enumerate containers" >&2
+  exit "$enumeration_status"
+fi
+
+declare -a containers
+if mapfile -t containers < "$container_list_file"; then
+  :
+else
+  read_status=$?
+  if ! rm -f "$container_list_file"; then
+    echo "::warning::Could not remove container enumeration file $container_list_file" >&2
+  fi
+  echo "::error::Failed to open container enumeration file $container_list_file" >&2
+  exit "$read_status"
+fi
+if ! rm -f "$container_list_file"; then
+  echo "::warning::Could not remove container enumeration file $container_list_file" >&2
+fi
+
+if [[ "${#containers[@]}" -gt 0 ]]; then
+  has_container=0
+  for container in "${containers[@]}"; do
+    if [[ "$container" =~ [^[:space:]] ]]; then
+      has_container=1
+      break
+    fi
+  done
+  if [[ "$has_container" -eq 0 ]]; then
+    echo "::error::Container enumeration contains only whitespace" >&2
+    exit 1
+  fi
+fi
+
+for container in "${containers[@]}"; do
   [[ -z "$container" ]] && continue
 
   # Idempotent: skip if today's snapshot already exists for this container.
@@ -217,18 +307,24 @@ while IFS= read -r container; do
 
   IFS=$'\t' read -r pull_count star_count <<< "$counts_tsv"
 
-  jq -nc \
-    --arg ts "$ts" \
-    --arg date "$today" \
-    --arg container "$container" \
-    --argjson pull_count "$pull_count" \
-    --argjson star_count "$star_count" \
-    '{ts: $ts, date: $date, container: $container, pull_count: $pull_count, star_count: $star_count, source: "dockerhub"}' \
-    >> "$STATS_FILE"
+  if jq -nc \
+      --arg ts "$ts" \
+      --arg date "$today" \
+      --arg container "$container" \
+      --argjson pull_count "$pull_count" \
+      --argjson star_count "$star_count" \
+      '{ts: $ts, date: $date, container: $container, pull_count: $pull_count, star_count: $star_count, source: "dockerhub"}' \
+      >> "$STATS_FILE"; then
+    :
+  else
+    append_status=$?
+    log_error "Could not append Docker Hub stats entry to $STATS_FILE"
+    exit "$append_status"
+  fi
 
   SNAPSHOTS_TODAY["$container"]=1
   snapshotted=$((snapshotted + 1))
-done < <(list_containers)
+done
 
 total=0
 [[ -f "$STATS_FILE" ]] && total=$(wc -l < "$STATS_FILE")
