@@ -58,6 +58,7 @@
       this._imageBase = this.dataset.imageBase || '';
       this._imageBaseDockerHub = this.dataset.imageBaseDockerhub || this.dataset.imageBase || '';
       this._defaultTag = this.dataset.defaultTag || '';
+      this._defaultPublicationObservation = parse(this.dataset.defaultPublicationObservation, null);
 
       // Registry options. We only synthesize the GHCR + Docker Hub default pair
       // when the page actually provides a Docker Hub image base — otherwise
@@ -597,10 +598,12 @@
     // sibling tag or an update result cannot authorise this tag's pull command.
     _hasPublicationObservation(variant, tag) {
       if (this._selectedRegistry !== 'ghcr') return false;
-      if (!variant || !variant.publication_observation || typeof variant.publication_observation !== 'object') {
+      var observation = variant
+        ? variant.publication_observation
+        : this._defaultPublicationObservation;
+      if (!observation || typeof observation !== 'object') {
         return false;
       }
-      var observation = variant.publication_observation;
       var expectedRepository = (this._imageBase || '').replace(/^ghcr\.io\//, '');
       if (observation.registry !== 'ghcr.io' || observation.repository !== expectedRepository || observation.tag !== tag) {
         return false;
