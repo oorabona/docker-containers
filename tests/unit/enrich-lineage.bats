@@ -43,6 +43,7 @@ setup() {
 teardown() {
   teardown_temp_dir
   export PATH="$ORIGINAL_PATH"
+  unset BASH_ENV
 }
 
 # Write a stub gh that returns no attestations
@@ -122,6 +123,14 @@ STUB
   chmod +x "$TEST_TEMP_DIR/bin/rm"
 }
 
+_write_bash_env_remove_enumeration_read_access() {
+  local fixture="$TEST_TEMP_DIR/enumeration-read-failure.bash"
+  cat > "$fixture" <<'FIXTURE'
+trap 'if [[ "$BASH_COMMAND" == '\''mapfile -t lineage_files < "$lineage_files_file"'\'' ]]; then chmod 000 "$lineage_files_file"; fi' DEBUG
+FIXTURE
+  export BASH_ENV="$fixture"
+}
+
 # Create a minimal lineage file in LINEAGE_DIR
 _write_lineage() {
   local filename="$1"
@@ -198,6 +207,19 @@ _run_enrich() {
   [[ "$output" == *"::warning::Could not remove lineage enumeration file"* ]]
   [[ "$output" == *"::error::Failed to enumerate lineage files"* ]]
   [[ "$output" != *"Enriched "* ]]
+}
+
+@test "enumeration open failure reports an error, removes its temporary, and does not enrich records" {
+  _write_lineage "unreadable-1.0.0.json" "unreadable" "1.0.0"
+  _write_bash_env_remove_enumeration_read_access
+
+  _run_enrich
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error::Failed to open lineage enumeration file"* ]]
+  [[ "$output" != *"Enriched "* ]]
+  [ "$(jq -r 'has("multi_arch_index_digest")' "$LINEAGE_DIR/unreadable-1.0.0.json")" = "false" ]
+  [ "$(find "$TMPDIR" -name 'enrich-lineage-files.*' -type f | wc -l)" -eq 0 ]
 }
 
 # -----------------------------------------------------------------------

@@ -107,7 +107,16 @@ else
 fi
 
 declare -a lineage_files
-mapfile -t lineage_files < "$lineage_files_file"
+if mapfile -t lineage_files < "$lineage_files_file"; then
+    :
+else
+    read_status=$?
+    if ! rm -f "$lineage_files_file"; then
+        echo "::warning::Could not remove lineage enumeration file $lineage_files_file" >&2
+    fi
+    echo "::error::Failed to open lineage enumeration file $lineage_files_file" >&2
+    exit "$read_status"
+fi
 if ! rm -f "$lineage_files_file"; then
     echo "::warning::Could not remove lineage enumeration file $lineage_files_file" >&2
 fi
