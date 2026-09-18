@@ -27,6 +27,7 @@ unset _cleanup_outdated_tags_root
 # rather than truncated or pruned.
 MAX_TAGS=1000
 MAX_PAGES=100
+DOCKERHUB_LOGIN_MAX_BYTES=65536
 DOCKERHUB_LISTING_MAX_BYTES=1048576
 DOCKERHUB_CURL_CONNECT_TIMEOUT=10
 DOCKERHUB_CURL_MAX_TIME=30
@@ -70,6 +71,7 @@ dockerhub_reserve_request() {
     return 1
   fi
   DOCKERHUB_REQUESTS_REMAINING=$((DOCKERHUB_REQUESTS_REMAINING - 1))
+  DOCKERHUB_REQUESTS_USED=$((DOCKERHUB_REQUESTS_USED + 1))
 }
 
 _cleanup_outdated_tags_delete() {
@@ -507,7 +509,7 @@ purge_ghcr() {
 # stdout is assessed|candidates|successful_deletes|delete_failures. No configured
 # Docker Hub credentials means it was not attempted (0|0|0|0); a returned
 # non-zero status is always a real failure.
-purge_dockerhub() {
+_purge_dockerhub() {
   local container="$1" valid_tags="$2" dh_jwt dh_next dh_listing_url dh_repository_path dh_continuation_prefix dh_page dh_listing_file=""
   local dh_namespace_path dh_container_path dh_page_total dh_reported_total="" tag dh_new_tags dh_pages_read=0 validation_status
   local dh_kept=0 dh_candidates=0 dh_successful_deletes=0 delete_failures=0
@@ -523,9 +525,16 @@ purge_dockerhub() {
   if ! dockerhub_reserve_request; then
     return "$PROCESSING_FAILURE"
   fi
-  if ! dh_jwt=$(curl -sf --connect-timeout "$DOCKERHUB_CURL_CONNECT_TIMEOUT" --max-time "$DOCKERHUB_CURL_MAX_TIME" \
+  if ! dh_jwt=$(curl -sf --connect-timeout "$DOCKERHUB_CURL_CONNECT_TIMEOUT" --max-time "$DOCKERHUB_CURL_MAX_TIME" --max-filesize "$DOCKERHUB_LOGIN_MAX_BYTES" \
       -X POST "https://hub.docker.com/v2/users/login" -H "Content-Type: application/json" \
-      -d "{\"username\":\"$DOCKERHUB_USERNAME\",\"password\":\"$DOCKERHUB_TOKEN\"}" | jq -er '.token'); then
+      -d "{\"username\":\"$DOCKERHUB_USERNAME\",\"password\":\"$DOCKERHUB_TOKEN\"}" | jq -er -s '
+        if (length == 1
+            and (.[0] | type == "object")
+            and (.[0] | has("token") and (.token | type == "string" and length > 0)))
+        then .[0].token
+        else error("malformed Docker Hub login response")
+        end
+      '); then
     echo "  ✗ Failed to authenticate to Docker Hub; skipping $container" >&2; return "$PROCESSING_FAILURE"
   fi
   if ! dh_namespace_path=$(dockerhub_path_segment "$DOCKERHUB_USERNAME") \
@@ -683,6 +692,21 @@ purge_dockerhub() {
   [[ "$delete_failures" -eq 0 ]] || return "$DELETE_FAILURE"
 }
 
+# Command substitution runs this cleanup in a subshell, so report its local
+# request reservations alongside the counters for main to apply to its shared
+# budget. The separator cannot occur in the counter record and is removed
+# before that record reaches its parser.
+purge_dockerhub() {
+  local dockerhub_status
+
+  DOCKERHUB_REQUESTS_USED=0
+  if _purge_dockerhub "$@"; then dockerhub_status=0; else dockerhub_status=$?; fi
+  if [[ "${DOCKERHUB_REPORT_REQUESTS-}" == true ]]; then
+    printf '\036%s' "$DOCKERHUB_REQUESTS_USED"
+  fi
+  return "$dockerhub_status"
+}
+
 main() {
   set -euo pipefail
   if [[ "${1-}" == --help || "${1-}" == -h ]]; then
@@ -715,7 +739,7 @@ main() {
   # 16 is fail-closed when the listing required an orphan assessment but a
   # prior deletion failure or replay abort prevented that phase from running.
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
-  local containers_output container valid_tags valid_count result ghcr_status dh_result dh_result_file dh_status containers_discovered=true
+  local containers_output container valid_tags valid_count result ghcr_status dh_result dh_requests_used dh_status containers_discovered=true
   local -a containers=()
   # shellcheck disable=SC2034 # parse_result_counters assigns this dynamic output destination.
   local kept obsolete orphans delete_failures dh_assessed dh_candidates dh_successful_deletes dh_delete_failures package_assessed skip_dockerhub
@@ -776,16 +800,18 @@ main() {
       continue
     fi
 
-    if ! dh_result_file=$(mktemp); then
-      echo "  ✗ Failed to prepare Docker Hub cleanup result; skipping $container"
-      total_processing_failures=$((total_processing_failures + 1))
-      continue
+    if dh_result=$(DOCKERHUB_REPORT_REQUESTS=true purge_dockerhub "$container" "$valid_tags"); then dh_status=0; else dh_status=$?; fi
+    if [[ "$dh_result" == *$'\036'* ]]; then
+      dh_requests_used=${dh_result##*$'\036'}
+      dh_result=${dh_result%$'\n'$'\036'*}
+      if ! is_canonical_decimal "$dh_requests_used" \
+        || decimal_string_greater_than "$dh_requests_used" "$DOCKERHUB_REQUESTS_REMAINING"; then
+        echo "  ✗ Docker Hub cleanup reported an invalid request reservation; skipping $container"
+        total_processing_failures=$((total_processing_failures + 1))
+        continue
+      fi
+      DOCKERHUB_REQUESTS_REMAINING=$((DOCKERHUB_REQUESTS_REMAINING - dh_requests_used))
     fi
-    if purge_dockerhub "$container" "$valid_tags" > "$dh_result_file"; then dh_status=0; else dh_status=$?; fi
-    dh_result=$(<"$dh_result_file")
-    # The completed result is already in memory; a failed best-effort removal
-    # must not discard its accounting or hide the cleanup status.
-    rm -f "$dh_result_file" 2>/dev/null || true
     case "$dh_status" in
       0|"$DELETE_FAILURE")
         if parse_result_counters "$dh_result" "Docker Hub cleanup result" \

@@ -337,10 +337,12 @@ run_dockerhub_fixture() {
 
 @test "Docker Hub cleanup removes a streamed listing body above the cap before deleting" {
     local curl_log="$BATS_TEST_TMPDIR/dockerhub-streamed-cap-curl.log"
+    local listing_file_path="$BATS_TEST_TMPDIR/dockerhub-streamed-cap-listing-path"
     : > "$curl_log"
+    : > "$listing_file_path"
 
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
-        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" LISTING_FILE_PATH="$listing_file_path" bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
             curl() {
@@ -351,6 +353,7 @@ run_dockerhub_fixture() {
                         output_file="" previous=""
                         for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
                         [[ -n "$output_file" ]] || return 1
+                        printf "%s\n" "$output_file" > "$LISTING_FILE_PATH"
                         if [[ "$*" == *"--max-filesize $DOCKERHUB_LISTING_MAX_BYTES"* ]]; then
                             head -c "$((DOCKERHUB_LISTING_MAX_BYTES + 1))" /dev/zero > "$output_file"
                             return 63
@@ -367,6 +370,68 @@ run_dockerhub_fixture() {
     [[ "$status" -eq 10 ]]
     [[ "$output" == *"Failed to list Docker Hub tags"* ]]
     [[ "$(<"$curl_log")" != *"-X DELETE"* ]]
+    [[ ! -e "$(<"$listing_file_path")" ]]
+}
+
+@test "Docker Hub cleanup refuses malformed login responses before listing" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-malformed-login-curl.log"
+    local login_response
+
+    for login_response in \
+        $'{"token":"fixture-jwt"}\n{"token":"fixture-jwt"}' \
+        '{"token":null}' \
+        '{"token":42}' \
+        '{"token":""}'; do
+        : > "$curl_log"
+        run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+            DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" LOGIN_RESPONSE="$login_response" bash -c '
+                source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+                LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+                curl() {
+                    printf "%s\n" "$*" >> "$CURL_LOG"
+                    case "$*" in
+                        *"/users/login"*) printf "%s" "$LOGIN_RESPONSE" ;;
+                        *"page_size=100"*) return 1 ;;
+                        *) return 1 ;;
+                    esac
+                }
+                purge_dockerhub app latest
+            '
+
+        [[ "$status" -eq 11 ]]
+        [[ "$output" == *"Failed to authenticate to Docker Hub"* ]]
+        [[ "$(<"$curl_log")" != *"page_size=100"* ]]
+    done
+}
+
+@test "Docker Hub cleanup refuses a login response above its cap before listing" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-login-cap-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            DOCKERHUB_LOGIN_MAX_BYTES=16
+            curl() {
+                printf "%s\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*)
+                        [[ "$*" == *"--max-filesize $DOCKERHUB_LOGIN_MAX_BYTES"* ]] || { printf "%s" "{\"token\":\"fixture-jwt\"}"; return 0; }
+                        head -c "$((DOCKERHUB_LOGIN_MAX_BYTES + 1))" /dev/zero
+                        return 63
+                        ;;
+                    *"page_size=100"*) return 1 ;;
+                    *) return 1 ;;
+                esac
+            }
+            purge_dockerhub app latest
+        '
+
+    [[ "$status" -eq 11 ]]
+    [[ "$output" == *"Failed to authenticate to Docker Hub"* ]]
+    [[ "$(<"$curl_log")" == *"--max-filesize 16"* ]]
+    [[ "$(<"$curl_log")" != *"page_size=100"* ]]
 }
 
 @test "Docker Hub cleanup accepts a listing exactly at the cap" {
@@ -649,18 +714,25 @@ run_dockerhub_fixture() {
     done < "$DH_CURL_LOG"
 }
 
-@test "outdated-tag main aggregates each Docker Hub cleanup counter" {
+@test "outdated-tag main aggregates Docker Hub counters and continues after a delete failure" {
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
         DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false bash -c '
+            set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
             purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
-            purge_dockerhub() { printf "%s\\n" "1|2|1|1"; return 12; }
-            main stale
+            purge_dockerhub() {
+                case "$1" in
+                    stale) printf "%s\\n" "1|2|1|1"; return 12 ;;
+                    fresh) printf "%s\\n" "1|1|1|0" ;;
+                esac
+            }
+            main stale fresh
         '
 
     [[ "$status" -eq 1 ]]
-    [[ "$output" == *"Docker Hub — candidates: 2, successful deletes: 1"* ]]
+    [[ "$output" == *"Purging obsolete images: fresh"* ]]
+    [[ "$output" == *"Docker Hub — candidates: 3, successful deletes: 2"* ]]
     [[ "$output" == *"Docker Hub — delete failures: 1"* ]]
 }
 
