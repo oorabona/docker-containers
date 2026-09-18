@@ -58,6 +58,7 @@
       this._imageBase = this.dataset.imageBase || '';
       this._imageBaseDockerHub = this.dataset.imageBaseDockerhub || this.dataset.imageBase || '';
       this._defaultTag = this.dataset.defaultTag || '';
+      this._defaultPublicationObservation = parse(this.dataset.defaultPublicationObservation, null);
 
       // Registry options. We only synthesize the GHCR + Docker Hub default pair
       // when the page actually provides a Docker Hub image base — otherwise
@@ -214,6 +215,7 @@
       row2.className = 'vab-row vab-row--commands';
       row2.appendChild(this._makeCommandBlock('pull'));
       row2.appendChild(this._makeCommandBlock('verify'));
+      row2.appendChild(this._makePublicationEvidenceMessage());
       card.appendChild(row2);
 
       // Row 3 — signals strip (status · size amd64 · size arm64)
@@ -284,6 +286,22 @@
       if (pillClass === 'vab-flavor-pill' && availableFlavorNames.length === 0) {
         wrap.hidden = true;
       }
+      return wrap;
+    }
+
+    _makePublicationEvidenceMessage() {
+      var wrap = document.createElement('div');
+      wrap.className = 'vab-publication-evidence';
+      wrap.setAttribute('data-vab-publication-evidence', '');
+      wrap.hidden = true;
+
+      var evidence = document.createElement('p');
+      evidence.textContent = 'Publication evidence is not recorded for this image.';
+      wrap.appendChild(evidence);
+
+      var command = document.createElement('p');
+      command.textContent = 'No pull command is shown for this reference.';
+      wrap.appendChild(command);
       return wrap;
     }
 
@@ -518,6 +536,26 @@
       var tag = (v && v.tag) ? v.tag : this._defaultTag;
       var ghcrBase = this._imageBase;
       var owner = this._extractOwner(ghcrBase);
+      var hasPublicationObservation = this._hasPublicationObservation(v, tag);
+
+      var commandBlocks = this.querySelectorAll('.vab-command-block');
+      for (var i = 0; i < commandBlocks.length; i++) {
+        commandBlocks[i].hidden = !hasPublicationObservation;
+      }
+      var evidenceMessage = this.querySelector('[data-vab-publication-evidence]');
+      if (evidenceMessage) evidenceMessage.hidden = hasPublicationObservation;
+      var stickyCommand = this.querySelector('[data-vab-sticky-cmd]');
+      if (stickyCommand) stickyCommand.hidden = !hasPublicationObservation;
+      var collapsedActions = this.querySelector('.vab-collapsed-actions');
+      if (collapsedActions) collapsedActions.hidden = !hasPublicationObservation;
+
+      var pullEl = this.querySelector('[data-vab-cmd="pull"]');
+      var verifyEl = this.querySelector('[data-vab-cmd="verify"]');
+      if (!hasPublicationObservation) {
+        if (pullEl) pullEl.textContent = '';
+        if (verifyEl) verifyEl.textContent = '';
+        return;
+      }
 
       // Pull command uses selected registry; verify always uses GHCR (Sigstore lives there)
       var pullBase = (this._selectedRegistry === 'dockerhub')
@@ -528,8 +566,6 @@
         + ' --certificate-identity-regexp=https://github.com/' + owner
         + ' --certificate-oidc-issuer=https://token.actions.githubusercontent.com';
 
-      var pullEl = this.querySelector('[data-vab-cmd="pull"]');
-      var verifyEl = this.querySelector('[data-vab-cmd="verify"]');
       if (pullEl) { pullEl.textContent = pullCmd; }
       if (verifyEl) { verifyEl.textContent = verifyCmd; }
 
@@ -555,6 +591,30 @@
       this._updateCollapsedActionsState();
       // Sync sticky pull command text in collapsed bandeau
       this._updateStickyCommand();
+    }
+
+    // A publication observation is a recorded past lookup for this exact GHCR
+    // reference.  It is intentionally stricter than container-wide state: a
+    // sibling tag or an update result cannot authorise this tag's pull command.
+    _hasPublicationObservation(variant, tag) {
+      if (this._selectedRegistry !== 'ghcr') return false;
+      // A selected variant's own observation wins.  Only an absent observation
+      // may use the page-level default, which is still constrained below to
+      // the selected reference.
+      var observation = variant && variant.publication_observation
+        ? variant.publication_observation
+        : this._defaultPublicationObservation;
+      if (!observation || typeof observation !== 'object') {
+        return false;
+      }
+      var expectedRepository = (this._imageBase || '').replace(/^ghcr\.io\//, '');
+      if (observation.registry !== 'ghcr.io' || observation.repository !== expectedRepository || observation.tag !== tag) {
+        return false;
+      }
+      if (observation.source === 'registry_tag_lookup') return true;
+      return (observation.source === 'registry_manifest_lookup' || observation.source === 'exact_lineage_manifest')
+        && typeof observation.index_digest === 'string'
+        && /^sha256:[a-f0-9]{64}$/.test(observation.index_digest);
     }
 
     _extractOwner(base) {

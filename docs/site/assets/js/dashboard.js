@@ -5,6 +5,36 @@
     var currentRegistry = localStorage.getItem('preferredRegistry') || 'ghcr';
     var currentSearch = '';
     var currentStatus = 'all';
+    var comparisonOutcomes = {};
+
+    (function loadComparisonOutcomes() {
+      var data = document.getElementById('dashboard-comparison-outcomes');
+      if (!data) return;
+      try {
+        var parsed = JSON.parse(data.textContent || '{}');
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          comparisonOutcomes = parsed;
+        }
+      } catch (e) {
+        comparisonOutcomes = {};
+      }
+    }());
+
+    // The generated data contract owns comparison semantics.  An absent or
+    // unknown value is deliberately indeterminate, never an available update.
+    function comparisonOutcomeFor(card) {
+      var outcome = comparisonOutcomes[card.dataset.container || ''];
+      if (outcome === 'up_to_date' || outcome === 'update_available' || outcome === 'indeterminate') {
+        return outcome;
+      }
+      return 'indeterminate';
+    }
+
+    function filterStatusForOutcome(outcome) {
+      if (outcome === 'up_to_date') return 'up-to-date';
+      if (outcome === 'update_available') return 'update-available';
+      return 'comparison-unconfirmed';
+    }
 
     // Registry availability is defined by the controls this page rendered.
     // A stored preference may outlive a removed registry option.
@@ -89,9 +119,7 @@
 
       cards.forEach(function(card) {
         var name = card.dataset.container.toLowerCase();
-        var statusColor = card.classList.contains('status-green') ? 'up-to-date' :
-                         card.classList.contains('status-warning') ? 'update-available' :
-                         'not-published';
+        var status = filterStatusForOutcome(comparisonOutcomeFor(card));
         // F1: also match description text and variant tag names
         var descEl = card.querySelector('.card-description');
         var desc = descEl ? descEl.textContent.toLowerCase() : '';
@@ -100,7 +128,7 @@
           .join(' ');
         var searchable = name + ' ' + desc + ' ' + variantTexts;
         var matchesSearch = currentSearch === '' || searchable.includes(currentSearch);
-        var matchesStatus = currentStatus === 'all' || statusColor === currentStatus;
+        var matchesStatus = currentStatus === 'all' || status === currentStatus;
         var isVisible = matchesSearch && matchesStatus;
         card.style.display = isVisible ? '' : 'none';
         if (isVisible) visibleCount++;
@@ -134,15 +162,16 @@
     // Update filter button counts
     function updateFilterCounts() {
       var cards = document.querySelectorAll('.container-card');
-      var counts = { 'all': cards.length, 'up-to-date': 0, 'update-available': 0, 'not-published': 0 };
+      var counts = { 'all': cards.length, 'up-to-date': 0, 'update-available': 0, 'comparison-unconfirmed': 0 };
 
       cards.forEach(function(card) {
-        if (card.classList.contains('status-green')) {
+        var outcome = comparisonOutcomeFor(card);
+        if (outcome === 'up_to_date') {
           counts['up-to-date']++;
-        } else if (card.classList.contains('status-warning')) {
+        } else if (outcome === 'update_available') {
           counts['update-available']++;
         } else {
-          counts['not-published']++;
+          counts['comparison-unconfirmed']++;
         }
       });
 

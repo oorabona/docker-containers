@@ -42,9 +42,10 @@
     {%- assign stats_updated = s.last_updated | default: "unknown" -%}
     {%- assign current_issue_count = 0 -%}
     {%- for container in site.data.containers -%}
-      {%- unless container.status_color == "green" -%}
+      {%- assign attention_state = container.attention_state | default: "needs_attention" -%}
+      {%- if attention_state != "none" -%}
         {%- assign current_issue_count = current_issue_count | plus: 1 -%}
-      {%- endunless -%}
+      {%- endif -%}
     {%- endfor -%}
     {%- if current_issue_count > 0 -%}
       {%- assign health_status = "warn" -%}
@@ -65,6 +66,13 @@
       {%- assign health_label = "All systems green" -%}
       {%- assign health_icon = "ti-circle-check" -%}
     {%- endif -%}
+
+    <script id="dashboard-comparison-outcomes" type="application/json">{
+      {%- for container in site.data.containers -%}
+        {%- unless forloop.first -%},{%- endunless -%}
+        {{ container.name | jsonify }}:{{ container.comparison_outcome | default: "indeterminate" | jsonify }}
+      {%- endfor -%}
+    }</script>
 
     <section class="dashboard-hero" aria-labelledby="dashboard-hero-title">
       <div class="dashboard-hero-status">
@@ -113,9 +121,9 @@
                   role="radio" aria-checked="false">
             Updates <span class="count" id="count-update-available">0</span>
           </button>
-          <button class="filter-btn" data-status="not-published"
+          <button class="filter-btn" data-status="comparison-unconfirmed"
                   role="radio" aria-checked="false">
-            Not published <span class="count" id="count-not-published">0</span>
+            Comparison unconfirmed <span class="count" id="count-comparison-unconfirmed">0</span>
           </button>
         </div>
       </div>

@@ -337,13 +337,313 @@ _collect_variant_yaml_with_trivy_summary() {
     get_build_history() { printf '[]\n'; }
     get_attestation_id() { return 1; }
     build_trivy_category() { printf 'variant:1.0-base\n'; }
+    ghcr_get_manifest_sizes() { printf '\n'; }
+    ghcr_get_multi_arch_digests() {
+        [[ -n "${TEST_VARIANT_LOOKUP_MARKER:-}" ]] && : > "$TEST_VARIANT_LOOKUP_MARKER"
+        printf '%s\n' "${TEST_VARIANT_MULTI_ARCH_DIGESTS:-}"
+    }
     get_trivy_summary() {
         [[ "${TEST_VARIANT_TRIVY_FAILURE:-false}" == "true" ]] && return 1
         printf '%s\n' "$TEST_TRIVY_SUMMARY"
     }
     variant_deps_for_flavor() { printf '[]\n'; }
 
-    collect_variant_json "variant" "$TEST_DIR/variant" "base" "1.0" "1.0" "alpine:3.19" false false 2>/dev/null | yq -P
+    collect_variant_json "variant" "$TEST_DIR/variant" "base" "1.0" "alpine:3.19" false "${TEST_VARIANT_PUBLICATION_CONFIRMED:-false}" 2>/dev/null | yq -P
+}
+
+@test "collect_variant_json records manifest evidence only from matching exact-tag lineage" {
+    mkdir -p "$TEST_DIR/.build-lineage"
+    local digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    jq -nc --arg digest "$digest" '{container: "variant", tag: "1.0-base", multi_arch_index_digest: $digest}' \
+        > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
+    TEST_VARIANT_PUBLICATION_CONFIRMED=false
+    TEST_VARIANT_MULTI_ARCH_DIGESTS=''
+    TEST_VARIANT_LOOKUP_MARKER="$TEST_DIR/registry-lookup-called"
+    TEST_TRIVY_SUMMARY='{}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e '.publication_observation.registry == "ghcr.io" and .publication_observation.repository == "oorabona/variant" and .publication_observation.tag == "1.0-base" and .publication_observation.source == "exact_lineage_manifest" and .publication_observation.index_digest == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' <<<"$output"
+    [ "$status" -eq 0 ]
+    [ ! -e "$TEST_VARIANT_LOOKUP_MARKER" ]
+
+    jq -nc --arg digest "$digest" '{container: "other-container", tag: "1.0-base", multi_arch_index_digest: $digest}' \
+        > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e 'has("publication_observation") | not' <<<"$output"
+    [ "$status" -eq 0 ]
+    [ ! -e "$TEST_VARIANT_LOOKUP_MARKER" ]
+
+    jq -nc --arg digest "$digest" '{container: "variant", tag: "another-tag", multi_arch_index_digest: $digest}' \
+        > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e 'has("publication_observation") | not' <<<"$output"
+    [ "$status" -eq 0 ]
+
+    TEST_VARIANT_PUBLICATION_CONFIRMED=false
+    jq -nc '{container: "variant", tag: "1.0-base", multi_arch_index_digest: "sha256:not-a-manifest"}' \
+        > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e 'has("publication_observation") | not' <<<"$output"
+    [ "$status" -eq 0 ]
+    run yq -e 'has("multi_arch_index_digest") | not' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json records a live publication observation without exact lineage" {
+    local digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    TEST_VARIANT_PUBLICATION_CONFIRMED=true
+    TEST_VARIANT_MULTI_ARCH_DIGESTS=$(jq -nc --arg digest "$digest" '{index_digest: $digest}')
+    TEST_TRIVY_SUMMARY='{}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e '.publication_observation.source == "registry_manifest_lookup" and .publication_observation.index_digest == "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json rejects malformed live publication evidence without exact lineage" {
+    TEST_VARIANT_PUBLICATION_CONFIRMED=true
+    TEST_VARIANT_MULTI_ARCH_DIGESTS='{"index_digest":"sha256:not-a-manifest","manifest_digest_amd64":""}'
+    TEST_TRIVY_SUMMARY='{}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e 'has("publication_observation") | not' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json uses live evidence for partial exact lineage without replacing metadata" {
+    mkdir -p "$TEST_DIR/.build-lineage"
+    local amd64="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    local index="sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    jq -nc --arg amd64 "$amd64" '{container: "variant", tag: "1.0-base", multi_arch_platforms: ["linux/amd64"], manifest_digest_amd64: $amd64}' \
+        > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
+    TEST_VARIANT_PUBLICATION_CONFIRMED=true
+    TEST_VARIANT_MULTI_ARCH_DIGESTS=$(jq -nc --arg index "$index" '{index_digest: $index, manifest_digest_amd64: ""}')
+    TEST_TRIVY_SUMMARY='{}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e '.publication_observation.source == "registry_manifest_lookup" and .publication_observation.index_digest == "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" and .manifest_digest_amd64 == "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" and .multi_arch_platforms[0] == "linux/amd64" and (.multi_arch_platforms | length) == 1' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "collect_variant_json keeps partial exact metadata when live evidence is malformed" {
+    mkdir -p "$TEST_DIR/.build-lineage"
+    local amd64="sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    jq -nc --arg amd64 "$amd64" '{container: "variant", tag: "1.0-base", manifest_digest_amd64: $amd64}' \
+        > "$TEST_DIR/.build-lineage/variant-1.0-base.json"
+    TEST_VARIANT_PUBLICATION_CONFIRMED=true
+    TEST_VARIANT_MULTI_ARCH_DIGESTS='{"index_digest":"sha256:not-a-manifest","manifest_digest_amd64":""}'
+    TEST_TRIVY_SUMMARY='{}'
+
+    run _collect_variant_yaml_with_trivy_summary
+    [ "$status" -eq 0 ]
+    run yq -e 'has("publication_observation") | not and .manifest_digest_amd64 == "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+# ===================================================================
+# Variant action bar default publication observation
+# Versions-only containers deliberately have no synthesized variants when
+# exact lineage is absent. Their current_version observation must therefore
+# reach both the rendered no-script fallback and the component as a default.
+# ===================================================================
+
+@test "variant action bar renders the versions-only default command in no-script and interactive paths" {
+    run node - "$ORIG_DIR/docs/site/_includes/variant-action-bar.html" "$ORIG_DIR/docs/site/assets/js/components/variant-action-bar.js" <<'NODE'
+const fs = require('fs');
+const vm = require('vm');
+const [templatePath, componentPath] = process.argv.slice(2);
+const tag = '1.2.3';
+const observation = {
+  registry: 'ghcr.io', repository: 'oorabona/fixture', tag,
+  source: 'registry_manifest_lookup',
+  index_digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+};
+
+function escapeAttribute(value) {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function renderVersionsOnlyActionBar() {
+  const source = fs.readFileSync(templatePath, 'utf8');
+  const expectedAttribute = 'data-default-publication-observation="{{ _vab_default_publication_observation | jsonify | escape }}"';
+  const startTag = source.match(/<variant-action-bar\s+id="variant-action-bar"[\s\S]*?>/);
+  if (!startTag || !startTag[0].includes(expectedAttribute)) throw new Error('default observation is not serialized');
+  const renderedStartTag = startTag[0].replace(
+    expectedAttribute,
+    'data-default-publication-observation="' + escapeAttribute(JSON.stringify(observation)) + '"'
+  );
+  const noScriptStart = source.indexOf('<noscript>');
+  const variantDetails = source.indexOf('{%- if page.versions or page.variants -%}', noScriptStart);
+  let noScript = source.slice(noScriptStart, variantDetails);
+  noScript = noScript.replace(
+    /\{%- if _vab_default_has_publication_observation -%\}([\s\S]*?)\{%- else -%\}([\s\S]*?)\{%- endif -%\}/,
+    '$1'
+  );
+  noScript = noScript.replace(/\{\{ page\.github_username \| escape \}\}/g, 'oorabona')
+    .replace(/\{\{ page\.name \| escape \}\}/g, 'fixture')
+    .replace(/\{\{ _vab_default_tag \| escape \}\}/g, tag);
+  return { renderedStartTag, noScript };
+}
+
+function loadBar() {
+  global.HTMLElement = class {};
+  const definitions = {};
+  global.customElements = { get: () => undefined, define: (name, value) => { definitions[name] = value; } };
+  const modelPath = componentPath.replace('/components/variant-action-bar.js', '/variant-selection-model.js');
+  vm.runInThisContext(fs.readFileSync(modelPath, 'utf8'), { filename: modelPath });
+  vm.runInThisContext(fs.readFileSync(componentPath, 'utf8'), { filename: componentPath });
+  return new definitions['variant-action-bar']();
+}
+
+function interactivePull(defaultObservation) {
+  const bar = loadBar();
+  bar.dataset = {
+    container: 'fixture', imageBase: 'ghcr.io/oorabona/fixture', defaultTag: tag,
+    defaultVersion: '', defaultFlavor: '', registries: '[{"id":"ghcr","label":"GHCR"}]',
+    versions: '[{"tag":"1.2.3","variants":[]}]', flavors: '[]', variants: '[]',
+    defaultPublicationObservation: JSON.stringify(defaultObservation)
+  };
+  bar._parseData();
+  const pull = { textContent: '' };
+  bar.querySelectorAll = () => [];
+  bar.querySelector = (selector) => selector === '[data-vab-cmd="pull"]' ? pull : null;
+  bar._updateCollapsedActionsState = () => {};
+  bar._updateStickyCommand = () => {};
+  bar._updateCommands();
+  return pull.textContent;
+}
+
+const rendered = renderVersionsOnlyActionBar();
+const expected = 'docker pull ghcr.io/oorabona/fixture:' + tag;
+if (!rendered.renderedStartTag.includes('data-default-publication-observation="' + escapeAttribute(JSON.stringify(observation)) + '"')) process.exit(1);
+if (!rendered.noScript.includes(expected)) process.exit(1);
+if (interactivePull(observation) !== expected) process.exit(1);
+NODE
+    [ "$status" -eq 0 ] || { echo "$output" >&2; return 1; }
+}
+
+@test "variant action bar rejects default observations whose tag or repository disagrees with the rendered reference" {
+    run node - "$ORIG_DIR/docs/site/assets/js/components/variant-action-bar.js" <<'NODE'
+const fs = require('fs');
+const vm = require('vm');
+global.HTMLElement = class {};
+const definitions = {};
+global.customElements = { get: () => undefined, define: (name, value) => { definitions[name] = value; } };
+const modelPath = process.argv[2].replace('/components/variant-action-bar.js', '/variant-selection-model.js');
+vm.runInThisContext(fs.readFileSync(modelPath, 'utf8'), { filename: modelPath });
+vm.runInThisContext(fs.readFileSync(process.argv[2], 'utf8'), { filename: process.argv[2] });
+const bar = new definitions['variant-action-bar']();
+bar.dataset = {
+  container: 'fixture', imageBase: 'ghcr.io/oorabona/fixture', defaultTag: '1.2.3',
+  defaultVersion: '', defaultFlavor: '', registries: '[{"id":"ghcr","label":"GHCR"}]',
+  versions: '[{"tag":"1.2.3","variants":[]}]', flavors: '[]', variants: '[]',
+  defaultPublicationObservation: JSON.stringify({
+    registry: 'ghcr.io', repository: 'oorabona/fixture', tag: 'other-tag', source: 'registry_tag_lookup'
+  })
+};
+bar._parseData();
+const pull = { textContent: '' };
+bar.querySelectorAll = () => [];
+bar.querySelector = (selector) => selector === '[data-vab-cmd="pull"]' ? pull : null;
+bar._updateCommands();
+if (pull.textContent || bar._hasPublicationObservation(bar._currentVariant, '1.2.3')) process.exit(1);
+bar.dataset.defaultPublicationObservation = JSON.stringify({
+  registry: 'ghcr.io', repository: 'oorabona/other-fixture', tag: '1.2.3', source: 'registry_tag_lookup'
+});
+bar._parseData();
+if (bar._hasPublicationObservation(bar._currentVariant, '1.2.3')) process.exit(1);
+NODE
+    [ "$status" -eq 0 ] || { echo "$output" >&2; return 1; }
+}
+
+@test "variant action bar rejects malformed, absent, and invalid-JSON default observations without throwing" {
+    run node - "$ORIG_DIR/docs/site/assets/js/components/variant-action-bar.js" <<'NODE'
+const fs = require('fs');
+const vm = require('vm');
+global.HTMLElement = class {};
+const definitions = {};
+global.customElements = { get: () => undefined, define: (name, value) => { definitions[name] = value; } };
+const modelPath = process.argv[2].replace('/components/variant-action-bar.js', '/variant-selection-model.js');
+vm.runInThisContext(fs.readFileSync(modelPath, 'utf8'), { filename: modelPath });
+vm.runInThisContext(fs.readFileSync(process.argv[2], 'utf8'), { filename: process.argv[2] });
+function hasObservation(value, includeAttribute) {
+  const bar = new definitions['variant-action-bar']();
+  bar.dataset = {
+    container: 'fixture', imageBase: 'ghcr.io/oorabona/fixture', defaultTag: '1.2.3',
+    defaultVersion: '', defaultFlavor: '', registries: '[{"id":"ghcr","label":"GHCR"}]',
+    versions: '[{"tag":"1.2.3","variants":[]}]', flavors: '[]', variants: '[]'
+  };
+  if (includeAttribute) bar.dataset.defaultPublicationObservation = value;
+  bar._parseData();
+  return bar._hasPublicationObservation(bar._currentVariant, '1.2.3');
+}
+const malformed = JSON.stringify({
+  registry: 'ghcr.io', repository: 'oorabona/fixture', tag: '1.2.3',
+  source: 'registry_manifest_lookup', index_digest: 'sha256:not-a-manifest'
+});
+if (hasObservation(malformed, true) || hasObservation('', false) || hasObservation('{not-json', true)) process.exit(1);
+NODE
+    [ "$status" -eq 0 ] || { echo "$output" >&2; return 1; }
+}
+
+@test "variant action bar fills an absent current observation from an exact default without overriding its own observation" {
+    run node - "$ORIG_DIR/docs/site/assets/js/components/variant-action-bar.js" <<'NODE'
+const fs = require('fs');
+const vm = require('vm');
+global.HTMLElement = class {};
+const definitions = {};
+global.customElements = { get: () => undefined, define: (name, value) => { definitions[name] = value; } };
+const modelPath = process.argv[2].replace('/components/variant-action-bar.js', '/variant-selection-model.js');
+vm.runInThisContext(fs.readFileSync(modelPath, 'utf8'), { filename: modelPath });
+vm.runInThisContext(fs.readFileSync(process.argv[2], 'utf8'), { filename: process.argv[2] });
+const tag = '1.2.3-base';
+function isOffered(variantObservation, defaultObservation) {
+  const bar = new definitions['variant-action-bar']();
+  bar.dataset = {
+    container: 'fixture', imageBase: 'ghcr.io/oorabona/fixture', defaultTag: tag,
+    defaultVersion: '1.2.3', defaultFlavor: 'base', registries: '[{"id":"ghcr","label":"GHCR"}]',
+    versions: '[{"tag":"1.2.3","variants":[{"tag":"1.2.3-base"}]}]', flavors: '[]',
+    variants: JSON.stringify([{ tag, version: '1.2.3', flavor: 'base', publication_observation: variantObservation }]),
+    defaultPublicationObservation: JSON.stringify(defaultObservation)
+  };
+  bar._parseData();
+  return bar._hasPublicationObservation(bar._currentVariant, tag);
+}
+const valid = { registry: 'ghcr.io', repository: 'oorabona/fixture', tag, source: 'registry_tag_lookup' };
+const otherTag = { registry: 'ghcr.io', repository: 'oorabona/fixture', tag: 'other-tag', source: 'registry_tag_lookup' };
+const otherRepository = { registry: 'ghcr.io', repository: 'oorabona/other-fixture', tag, source: 'registry_tag_lookup' };
+if (!isOffered(undefined, valid)) process.exit(1);
+if (isOffered(undefined, otherTag) || isOffered(undefined, otherRepository)) process.exit(1);
+if (isOffered(otherTag, valid)) process.exit(1);
+if (!isOffered(valid, otherTag)) process.exit(1);
+NODE
+    [ "$status" -eq 0 ] || { echo "$output" >&2; return 1; }
+}
+
+@test "variant action bar no-script branches use the same absent-observation fallback as the component" {
+    run node - "$ORIG_DIR/docs/site/_includes/variant-action-bar.html" <<'NODE'
+const fs = require('fs');
+const source = fs.readFileSync(process.argv[2], 'utf8');
+
+function count(pattern) {
+  return (source.match(pattern) || []).length;
+}
+
+const defaultSelection = /\{%- if _vab_observation_var\.tag == _vab_default_tag and _vab_observation_var\.publication_observation -%\}\s*\{%- assign _vab_default_publication_observation = _vab_observation_var\.publication_observation -%\}/g;
+const rowFallback = /\{%- assign _ns_publication_observation = _ns_v\.publication_observation -%\}\s*\{%- unless _ns_publication_observation -%\}\s*\{%- assign _ns_publication_observation = _vab_default_publication_observation -%\}\s*\{%- endunless -%\}/g;
+const exactReferenceGuard = /_ns_publication_observation\.registry == "ghcr\.io" and _ns_publication_observation\.repository == _vab_repository and _ns_publication_observation\.tag == _ns_v\.tag/g;
+
+if (count(defaultSelection) !== 2 || count(rowFallback) !== 2 || count(exactReferenceGuard) !== 2) process.exit(1);
+NODE
+    [ "$status" -eq 0 ] || { echo "$output" >&2; return 1; }
 }
 
 @test "collect_variant_json: Code Scanning evidence without scan record is emitted" {
