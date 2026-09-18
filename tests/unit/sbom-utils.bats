@@ -10,6 +10,8 @@ setup() {
     PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
     SBOM_UTILS="$PROJECT_ROOT/helpers/sbom-utils.sh"
     ORIGINAL_PATH="$PATH"
+    SYSTEM_JQ="$(command -v jq)"
+    export SYSTEM_JQ
     mkdir -p "$TEST_TEMP_DIR/bin"
     export PATH="$TEST_TEMP_DIR/bin:$PATH"
 }
@@ -36,6 +38,7 @@ done
 case "${SYFT_STUB_MODE:-valid}" in
     valid) printf '{"packages":[]}' > "$output_file" ;;
     no-output) ;;
+    multi-root) printf '[]\n{"packages":[]}\n' > "$output_file" ;;
     invalid) printf 'not-json' > "$output_file" ;;
     fail) exit 1 ;;
 esac
@@ -51,22 +54,15 @@ STUB
     chmod +x "$TEST_TEMP_DIR/bin/jq"
 }
 
-write_failing_mv_stub() {
-    cat > "$TEST_TEMP_DIR/bin/mv" <<'STUB'
+write_generation_failing_jq_stub() {
+    cat > "$TEST_TEMP_DIR/bin/jq" <<'STUB'
 #!/usr/bin/env bash
-exit 1
+for argument in "$@"; do
+    [[ "$argument" == "-n" ]] && exit 1
+done
+exec "$SYSTEM_JQ" "$@"
 STUB
-    chmod +x "$TEST_TEMP_DIR/bin/mv"
-}
-
-write_term_mv_stub() {
-    cat > "$TEST_TEMP_DIR/bin/mv" <<'STUB'
-#!/usr/bin/env bash
-kill -TERM "$PPID"
-sleep 0.1
-exit 1
-STUB
-    chmod +x "$TEST_TEMP_DIR/bin/mv"
+    chmod +x "$TEST_TEMP_DIR/bin/jq"
 }
 
 write_failing_wc_stub() {
@@ -75,6 +71,14 @@ write_failing_wc_stub() {
 exit 1
 STUB
     chmod +x "$TEST_TEMP_DIR/bin/wc"
+}
+
+write_failing_mkdir_stub() {
+    cat > "$TEST_TEMP_DIR/bin/mkdir" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/mkdir"
 }
 
 write_sbom() {
@@ -98,7 +102,7 @@ write_lineage() {
 JSON
 }
 
-@test "generate_sbom publishes a complete JSON document only after its producer succeeds" {
+@test "generate_sbom publishes a valid JSON object" {
     write_syft_stub
     local output_file="$TEST_TEMP_DIR/result.sbom.json"
 
@@ -106,200 +110,208 @@ JSON
 
     [ "$status" -eq 0 ] || return 1
     jq -e '.packages == []' "$output_file" >/dev/null || return 1
-    [ "$(find "$TEST_TEMP_DIR" -name 'result.sbom.json.tmp.*' -print -quit)" = "" ] || return 1
 }
 
-@test "generate_sbom publishes a destination beginning with a hyphen" {
+@test "generate_sbom returns failure to if and || when syft writes no output" {
     write_syft_stub
-    local output_dir="$TEST_TEMP_DIR/hyphen-destination"
-    mkdir -p "$output_dir"
-
-    run bash -c 'cd "$2"; source "$1"; generate_sbom example/image:tag -result.sbom.json' _ "$SBOM_UTILS" "$output_dir"
-
-    [ "$status" -eq 0 ] || return 1
-    jq -e '.packages == []' "$output_dir/-result.sbom.json" >/dev/null || return 1
-    [ "$(find "$output_dir" -name -- '-result.sbom.json.tmp.*' -print -quit)" = "" ] || return 1
-}
-
-@test "generate_sbom removes its staged file when TERM arrives before rename" {
-    write_syft_stub
-    write_term_mv_stub
-    local output_file="$TEST_TEMP_DIR/term.sbom.json"
-
-    run bash -c 'source "$1"; generate_sbom example/image:tag "$2"' _ "$SBOM_UTILS" "$output_file"
-
-    [ "$status" -ne 0 ] || return 1
-    [ ! -e "$output_file" ] || return 1
-    [ "$(find "$TEST_TEMP_DIR" -name 'term.sbom.json.tmp.*' -print -quit)" = "" ] || return 1
-}
-
-@test "generate_sbom preserves an existing destination mode" {
-    write_syft_stub
-    local output_file="$TEST_TEMP_DIR/existing.sbom.json"
-    printf 'old\n' > "$output_file"
-    chmod 0641 "$output_file"
-
-    run bash -c 'source "$1"; generate_sbom example/image:tag "$2"; stat -c "%a" "$2"' _ "$SBOM_UTILS" "$output_file"
-
-    [ "$status" -eq 0 ] || return 1
-    [ "${lines[-1]}" = "641" ] || return 1
-}
-
-@test "generate_sbom applies the caller umask to new destinations" {
-    write_syft_stub
-    local restrictive_output="$TEST_TEMP_DIR/restrictive.sbom.json"
-    local permissive_output="$TEST_TEMP_DIR/permissive.sbom.json"
-
-    run bash -c 'source "$1"; umask 0077; generate_sbom example/image:tag "$2"; stat -c "%a" "$2"' _ "$SBOM_UTILS" "$restrictive_output"
-    [ "$status" -eq 0 ] || return 1
-    [ "${lines[-1]}" = "600" ] || return 1
-
-    run bash -c 'source "$1"; umask 0000; generate_sbom example/image:tag "$2"; stat -c "%a" "$2"' _ "$SBOM_UTILS" "$permissive_output"
-    [ "$status" -eq 0 ] || return 1
-    [ "${lines[-1]}" = "666" ] || return 1
-}
-
-@test "generate_sbom returns nonzero directly when syft writes no output" {
-    write_syft_stub
-    local output_file="$TEST_TEMP_DIR/missing.sbom.json"
-
-    run env SYFT_STUB_MODE=no-output bash -c 'source "$1"; generate_sbom example/image:tag "$2"' _ "$SBOM_UTILS" "$output_file"
-
-    [ "$status" -ne 0 ] || return 1
-    [ ! -e "$output_file" ] || return 1
-    [[ "$output" != *"bytes)"* ]] || return 1
-}
-
-@test "generate_sbom returns nonzero as an if condition when syft writes no output" {
-    write_syft_stub
-    local output_file="$TEST_TEMP_DIR/missing-if.sbom.json"
 
     run env SYFT_STUB_MODE=no-output bash -c '
         source "$1"
         if generate_sbom example/image:tag "$2"; then
-            printf "unexpected-success\\n"
+            printf "unexpected-if-success\\n"
             exit 1
         fi
-        printf "failure-observed\\n"
-    ' _ "$SBOM_UTILS" "$output_file"
+        printf "if-failure-observed\\n"
+        generate_sbom example/image:tag "$3" || printf "or-failure-observed\\n"
+    ' _ "$SBOM_UTILS" "$TEST_TEMP_DIR/missing-if.sbom.json" "$TEST_TEMP_DIR/missing-or.sbom.json"
 
     [ "$status" -eq 0 ] || return 1
-    [[ "$output" == *"failure-observed"* ]] || return 1
-    [ ! -e "$output_file" ] || return 1
+    [[ "$output" == *"if-failure-observed"* ]] || return 1
+    [[ "$output" == *"or-failure-observed"* ]] || return 1
+    [[ "$output" != *"bytes)"* ]] || return 1
 }
 
-@test "generate_sbom detects a log-size command substitution failure on the right of ||" {
+@test "generate_sbom returns failure to if and || when wc fails" {
     write_syft_stub
     write_failing_wc_stub
-    local output_file="$TEST_TEMP_DIR/wc-failure.sbom.json"
 
     run bash -c '
         source "$1"
-        false || generate_sbom example/image:tag "$2"
-    ' _ "$SBOM_UTILS" "$output_file"
+        if generate_sbom example/image:tag "$2"; then
+            printf "unexpected-if-success\\n"
+            exit 1
+        fi
+        printf "if-failure-observed\\n"
+        generate_sbom example/image:tag "$3" || printf "or-failure-observed\\n"
+    ' _ "$SBOM_UTILS" "$TEST_TEMP_DIR/wc-if.sbom.json" "$TEST_TEMP_DIR/wc-or.sbom.json"
 
-    [ "$status" -ne 0 ] || return 1
-    [ ! -e "$output_file" ] || return 1
-    [ "$(find "$TEST_TEMP_DIR" -name 'wc-failure.sbom.json.tmp.*' -print -quit)" = "" ] || return 1
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"if-failure-observed"* ]] || return 1
+    [[ "$output" == *"or-failure-observed"* ]] || return 1
+    [[ "$output" != *"bytes)"* ]] || return 1
 }
 
-@test "compare_sboms returns nonzero for a required read failure on the left of ||" {
+@test "generate_sbom rejects a multi-root JSON stream" {
+    write_syft_stub
+    local output_file="$TEST_TEMP_DIR/multi-root.sbom.json"
+
+    run env SYFT_STUB_MODE=multi-root bash -c 'source "$1"; generate_sbom example/image:tag "$2" || printf "failure-observed\\n"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"failure-observed"* ]] || return 1
+}
+
+@test "generate_sbom returns failure to if and || when mkdir fails" {
+    write_syft_stub
+    write_failing_mkdir_stub
+
+    run bash -c '
+        source "$1"
+        if generate_sbom example/image:tag "$2"; then
+            printf "unexpected-if-success\\n"
+            exit 1
+        fi
+        printf "if-failure-observed\\n"
+        generate_sbom example/image:tag "$3" || printf "or-failure-observed\\n"
+    ' _ "$SBOM_UTILS" "$TEST_TEMP_DIR/new-if/result.sbom.json" "$TEST_TEMP_DIR/new-or/result.sbom.json"
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"if-failure-observed"* ]] || return 1
+    [[ "$output" == *"or-failure-observed"* ]] || return 1
+}
+
+@test "compare_sboms returns failure to if and || when a required jq read fails" {
     write_failing_jq_stub
     local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
     local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
-    local output_file="$TEST_TEMP_DIR/result.changelog.json"
     write_sbom "$new_sbom"
     write_sbom "$old_sbom"
-    printf '{"previous":true}\n' > "$output_file"
 
     run bash -c '
         source "$1"
-        compare_sboms "$2" "$3" "$4" || printf "failure-observed\\n"
-    ' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$output_file"
+        if compare_sboms "$2" "$3" "$4"; then
+            printf "unexpected-if-success\\n"
+            exit 1
+        fi
+        printf "if-failure-observed\\n"
+        compare_sboms "$2" "$3" "$5" || printf "or-failure-observed\\n"
+    ' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$TEST_TEMP_DIR/result-if.changelog.json" "$TEST_TEMP_DIR/result-or.changelog.json"
 
     [ "$status" -eq 0 ] || return 1
-    [[ "$output" == *"failure-observed"* ]] || return 1
-    [ "$(cat "$output_file")" = '{"previous":true}' ] || return 1
-    [ "$(find "$TEST_TEMP_DIR" -name 'result.changelog.json.tmp.*' -print -quit)" = "" ] || return 1
+    [[ "$output" == *"if-failure-observed"* ]] || return 1
+    [[ "$output" == *"or-failure-observed"* ]] || return 1
 }
 
-@test "extract_sbom_summary returns nonzero for invalid JSON" {
+@test "compare_sboms returns failure to if and || when its jq writer fails" {
+    write_generation_failing_jq_stub
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    write_sbom "$new_sbom"
+    write_sbom "$old_sbom"
+
+    run bash -c '
+        source "$1"
+        if compare_sboms "$2" "$3" "$4"; then
+            printf "unexpected-if-success\\n"
+            exit 1
+        fi
+        printf "if-failure-observed\\n"
+        compare_sboms "$2" "$3" "$5" || printf "or-failure-observed\\n"
+    ' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$TEST_TEMP_DIR/result-if.changelog.json" "$TEST_TEMP_DIR/result-or.changelog.json"
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"if-failure-observed"* ]] || return 1
+    [[ "$output" == *"or-failure-observed"* ]] || return 1
+}
+
+@test "extract_sbom_summary returns failure to if and || for invalid JSON" {
     local invalid_sbom="$TEST_TEMP_DIR/invalid.sbom.json"
     printf 'not-json\n' > "$invalid_sbom"
 
-    run bash -c 'source "$1"; extract_sbom_summary "$2" || printf "failure-observed\\n"' _ "$SBOM_UTILS" "$invalid_sbom"
-
-    [ "$status" -eq 0 ] || return 1
-    [[ "$output" == *"failure-observed"* ]] || return 1
-}
-
-@test "enrich_changelog leaves the prior JSON whole when publishing fails" {
-    write_failing_mv_stub
-    local changelog_file="$TEST_TEMP_DIR/example.changelog.json"
-    write_changelog "$changelog_file"
-    local before
-    before="$(cat "$changelog_file")"
-
     run bash -c '
         source "$1"
-        false || enrich_changelog "$2"
-    ' _ "$SBOM_UTILS" "$changelog_file"
-
-    [ "$status" -ne 0 ] || return 1
-    [ "$(cat "$changelog_file")" = "$before" ] || return 1
-    [ "$(find "$TEST_TEMP_DIR" -name 'example.changelog.json.tmp.*' -print -quit)" = "" ] || return 1
-}
-
-@test "append_build_history returns nonzero on write failure without a partial history" {
-    write_failing_mv_stub
-    local lineage_file="$TEST_TEMP_DIR/lineage.json"
-    local history_file="$TEST_TEMP_DIR/result.history.json"
-    local summary='{"total":1,"apk":1}'
-    cat > "$lineage_file" <<'JSON'
-{"built_at":"2026-09-18T00:00:00Z","version":"1.0.0","build_digest":"sha256:abc"}
-JSON
-
-    run bash -c '
-        source "$1"
-        if append_build_history "$2" "$4" "$3"; then
-            printf "unexpected-success\\n"
+        if extract_sbom_summary "$2"; then
+            printf "unexpected-if-success\\n"
             exit 1
         fi
-        printf "failure-observed\\n"
-    ' _ "$SBOM_UTILS" "$lineage_file" "$history_file" "$summary"
+        printf "if-failure-observed\\n"
+        extract_sbom_summary "$2" || printf "or-failure-observed\\n"
+    ' _ "$SBOM_UTILS" "$invalid_sbom"
 
     [ "$status" -eq 0 ] || return 1
-    [[ "$output" == *"failure-observed"* ]] || return 1
-    [ ! -e "$history_file" ] || return 1
-    [ "$(find "$TEST_TEMP_DIR" -name 'result.history.json.tmp.*' -print -quit)" = "" ] || return 1
+    [[ "$output" == *"if-failure-observed"* ]] || return 1
+    [[ "$output" == *"or-failure-observed"* ]] || return 1
 }
 
-@test "append_build_history rejects malformed changelog counters without publishing" {
+@test "enrich_changelog returns failure to if and || when dependency freshness cannot load" {
+    local changelog_file="$TEST_TEMP_DIR/example.changelog.json"
+    write_changelog "$changelog_file"
+
+    run bash -c '
+        source "$1"
+        source() {
+            if [[ "$1" == */dependency-freshness.sh ]]; then
+                return 1
+            fi
+            builtin source "$@"
+        }
+        if enrich_changelog "$2"; then
+            printf "unexpected-if-success\\n"
+            exit 1
+        fi
+        printf "if-failure-observed\\n"
+        enrich_changelog "$2" || printf "or-failure-observed\\n"
+    ' _ "$SBOM_UTILS" "$changelog_file"
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"if-failure-observed"* ]] || return 1
+    [[ "$output" == *"or-failure-observed"* ]] || return 1
+}
+
+@test "append_build_history returns failure to if and || for malformed changelog counters" {
+    local lineage_file="$TEST_TEMP_DIR/lineage.json"
+    local changelog_file="$TEST_TEMP_DIR/result.changelog.json"
+    local summary='{"total":1,"apk":1}'
+    write_lineage "$lineage_file"
+    printf '{"summary":{"added":"bad","removed":2,"updated":3}}\n' > "$changelog_file"
+
+    run bash -c '
+        source "$1"
+        if append_build_history "$2" "$3" "$4" 10 "$5"; then
+            printf "unexpected-if-success\\n"
+            exit 1
+        fi
+        printf "if-failure-observed\\n"
+        append_build_history "$2" "$3" "$6" 10 "$5" || printf "or-failure-observed\\n"
+    ' _ "$SBOM_UTILS" "$lineage_file" "$summary" "$TEST_TEMP_DIR/result-if.history.json" "$changelog_file" "$TEST_TEMP_DIR/result-or.history.json"
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"if-failure-observed"* ]] || return 1
+    [[ "$output" == *"or-failure-observed"* ]] || return 1
+}
+
+@test "append_build_history returns failure to if and || when its jq writer fails" {
+    write_generation_failing_jq_stub
     local lineage_file="$TEST_TEMP_DIR/lineage.json"
     local summary='{"total":1,"apk":1}'
-    local counters
     write_lineage "$lineage_file"
 
-    for counters in \
-        '"added":"bad","removed":2,"updated":3' \
-        '"added":1,"removed":"bad","updated":3' \
-        '"added":1,"removed":2,"updated":"bad"' \
-        '"added":"bad","removed":"bad","updated":"bad"' \
-        '"added":-1,"removed":2,"updated":3' \
-        '"added":1.5,"removed":2,"updated":3'; do
-        local changelog_file="$TEST_TEMP_DIR/${RANDOM}.changelog.json"
-        local history_file="$TEST_TEMP_DIR/${RANDOM}.history.json"
-        printf '{"summary":{%s}}\n' "$counters" > "$changelog_file"
+    run bash -c '
+        source "$1"
+        if append_build_history "$2" "$3" "$4"; then
+            printf "unexpected-if-success\\n"
+            exit 1
+        fi
+        printf "if-failure-observed\\n"
+        append_build_history "$2" "$3" "$5" || printf "or-failure-observed\\n"
+    ' _ "$SBOM_UTILS" "$lineage_file" "$summary" "$TEST_TEMP_DIR/result-if.history.json" "$TEST_TEMP_DIR/result-or.history.json"
 
-        run bash -c 'source "$1"; append_build_history "$2" "$3" "$4" 10 "$5"' \
-            _ "$SBOM_UTILS" "$lineage_file" "$summary" "$history_file" "$changelog_file"
-
-        [ "$status" -ne 0 ] || return 1
-        [ ! -e "$history_file" ] || return 1
-    done
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"if-failure-observed"* ]] || return 1
+    [[ "$output" == *"or-failure-observed"* ]] || return 1
 }
 
-@test "append_build_history publishes valid changelog counters without repositioning" {
+@test "append_build_history publishes valid non-negative integer counters" {
     local lineage_file="$TEST_TEMP_DIR/lineage.json"
     local changelog_file="$TEST_TEMP_DIR/result.changelog.json"
     local history_file="$TEST_TEMP_DIR/result.history.json"

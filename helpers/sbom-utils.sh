@@ -29,73 +29,13 @@ if ! source "$_SBOM_UTILS_DIR/retry.sh"; then
     return 1
 fi
 
-_SBOM_STAGED_FILE=""
+_is_single_json_type() {
+    local expected_type="$1"
+    local file="$2"
 
-# The public writers that use this helper run in subshells, so these traps are
-# scoped to one write operation. They are best-effort signal cleanup, not its
-# ordinary-failure contract; callers retain their checked immediate cleanup.
-_cleanup_sbom_staged_file() {
-    if [[ -n "${_SBOM_STAGED_FILE:-}" ]]; then
-        rm -f -- "$_SBOM_STAGED_FILE" || :
-    fi
-}
-
-# Create a sibling staging file and arm cleanup for one public write operation.
-_stage_file_for_publication() {
-    if [[ "$#" -ne 1 || -z "$1" ]]; then
-        log_error "_stage_file_for_publication requires a destination path"
-        return 2
-    fi
-
-    local destination="$1"
-    local destination_dir destination_basename
-    if ! destination_dir=$(dirname -- "$destination") \
-        || ! destination_basename=$(basename -- "$destination"); then
-        log_error "Failed to determine staging path: $destination"
-        return 1
-    fi
-    if ! _SBOM_STAGED_FILE=$(mktemp "${destination_dir}/${destination_basename}.tmp.XXXXXX"); then
-        return 1
-    fi
-    trap '_cleanup_sbom_staged_file' EXIT
-    trap '_cleanup_sbom_staged_file; exit 130' INT
-    trap '_cleanup_sbom_staged_file; exit 143' TERM
-    return 0
-}
-
-# Publish a staged file atomically while retaining the destination's mode, or
-# applying the mode a regular file would receive from the caller's umask.
-_publish_staged_file() {
-    if [[ "$#" -ne 2 || -z "$1" || -z "$2" ]]; then
-        log_error "_publish_staged_file requires staged and destination paths"
-        return 2
-    fi
-
-    local staged_file="$1"
-    local destination="$2"
-    local mode current_umask
-    if [[ -e "$destination" ]]; then
-        if ! mode=$(stat -c '%a' -- "$destination"); then
-            log_error "Failed to read destination mode: $destination"
-            return 1
-        fi
-    else
-        if ! current_umask=$(umask) || [[ ! "$current_umask" =~ ^0?[0-7]{3}$ ]]; then
-            log_error "Failed to read a numeric umask"
-            return 1
-        fi
-        mode=$(printf '%03o' "$((0666 & ~8#$current_umask))")
-    fi
-    if ! chmod "$mode" -- "$staged_file"; then
-        log_error "Failed to set staged file mode: $staged_file"
-        return 1
-    fi
-    if ! mv -f -- "$staged_file" "$destination"; then
-        return 1
-    fi
-    _SBOM_STAGED_FILE=""
-    trap - EXIT INT TERM
-    return 0
+    jq -en --arg expected_type "$expected_type" \
+        '([inputs] | length == 1 and (.[0] | type == $expected_type))' \
+        -- "$file" >/dev/null 2>&1
 }
 
 # Install syft if not present
@@ -238,7 +178,8 @@ install_syft() {
 # output_file: path for the generated JSON-object output
 # The public SBOM operations use subshells only to isolate their shell options
 # from scripts that source this helper. Their failure contract is explicit:
-# every required operation is checked and failure is returned to the caller.
+# artifact reads and publications fail closed. Individual dependency-freshness
+# workers deliberately fail open into per-row query-failed results.
 generate_sbom() (
     set -uo pipefail
     if [[ "$#" -ne 2 || -z "$1" || -z "$2" ]]; then
@@ -258,7 +199,7 @@ generate_sbom() (
         return 1
     fi
 
-    local output_dir tmp_file output_size
+    local output_dir output_size
     if ! output_dir=$(dirname -- "$output_file"); then
         log_error "Failed to determine SBOM output directory: $output_file"
         return 1
@@ -267,14 +208,8 @@ generate_sbom() (
         log_error "Failed to create SBOM output directory: $output_dir"
         return 1
     fi
-    if ! _stage_file_for_publication "$output_file"; then
-        log_error "Failed to create temporary SBOM output: $output_file"
-        return 1
-    fi
-    tmp_file="$_SBOM_STAGED_FILE"
-
     log_info "Generating SBOM for $image_ref..."
-    local syft_args=("registry:${image_ref}" -o "spdx-json=${tmp_file}" --quiet)
+    local syft_args=("registry:${image_ref}" -o "spdx-json=${output_file}" --quiet)
     local syft_cmd=(syft)
     if syft --timeout 10m --help &>/dev/null; then
         syft_args=(--timeout 10m "${syft_args[@]}")
@@ -283,36 +218,26 @@ generate_sbom() (
     fi
 
     if ! retry_with_backoff 2 30 "${syft_cmd[@]}" "${syft_args[@]}"; then
-        rm -f -- "$tmp_file"
         log_error "Failed to generate SBOM for $image_ref"
         return 1
     fi
-    if [[ ! -f "$tmp_file" || ! -r "$tmp_file" ]]; then
-        rm -f -- "$tmp_file"
+    if [[ ! -f "$output_file" || ! -r "$output_file" ]]; then
         log_error "SBOM producer did not create a readable output: $output_file"
         return 1
     fi
     # This establishes only that the producer wrote a JSON object; it does not
     # validate the SBOM's SPDX schema or shape.
-    if ! jq -e 'type == "object"' "$tmp_file" >/dev/null 2>&1; then
-        rm -f -- "$tmp_file"
+    if ! _is_single_json_type object "$output_file"; then
         log_error "SBOM producer did not write a JSON object: $output_file"
         return 1
     fi
-    if ! output_size=$(wc -c < "$tmp_file"); then
-        rm -f -- "$tmp_file"
+    if ! output_size=$(wc -c < "$output_file"); then
         log_error "Failed to measure generated SBOM: $output_file"
         return 1
     fi
     output_size="${output_size//[[:space:]]/}"
     if [[ ! "$output_size" =~ ^[0-9]+$ ]]; then
-        rm -f -- "$tmp_file"
         log_error "Generated SBOM has an invalid size: $output_file"
-        return 1
-    fi
-    if ! _publish_staged_file "$tmp_file" "$output_file"; then
-        rm -f -- "$tmp_file"
-        log_error "Failed to publish generated SBOM: $output_file"
         return 1
     fi
     log_success "SBOM generated: $output_file (${output_size} bytes)"
@@ -390,7 +315,7 @@ compare_sboms() (
         return 1
     fi
 
-    local output_dir tmp_file generated_at
+    local output_dir generated_at
     if ! output_dir=$(dirname -- "$output_file"); then
         log_error "Failed to determine changelog output directory: $output_file"
         return 1
@@ -399,12 +324,6 @@ compare_sboms() (
         log_error "Failed to create changelog output directory: $output_dir"
         return 1
     fi
-    if ! _stage_file_for_publication "$output_file"; then
-        log_error "Failed to create temporary changelog output: $output_file"
-        return 1
-    fi
-    tmp_file="$_SBOM_STAGED_FILE"
-
     # Extract package lists as JSON arrays: [{type, name, version}, ...]
     local new_pkgs old_pkgs
     if ! new_pkgs=$(jq '[
@@ -418,7 +337,6 @@ compare_sboms() (
             version: .versionInfo
         }
     ] | sort_by(.name)' "$new_sbom"); then
-        rm -f -- "$tmp_file"
         log_error "Failed to read new SBOM: $new_sbom"
         return 1
     fi
@@ -434,13 +352,11 @@ compare_sboms() (
             version: .versionInfo
         }
     ] | sort_by(.name)' "$old_sbom"); then
-        rm -f -- "$tmp_file"
         log_error "Failed to read old SBOM: $old_sbom"
         return 1
     fi
 
     if ! generated_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ"); then
-        rm -f -- "$tmp_file"
         log_error "Failed to determine changelog generation time"
         return 1
     fi
@@ -479,29 +395,21 @@ compare_sboms() (
             },
             changes: ($added + $removed + $updated | sort_by(.name))
         }
-    ' > "$tmp_file"; then
-        rm -f -- "$tmp_file"
+    ' > "$output_file"; then
         log_error "Failed to generate changelog: $output_file"
         return 1
     fi
-    if [[ ! -f "$tmp_file" || ! -r "$tmp_file" ]] \
-        || ! jq -e 'type == "object"' "$tmp_file" >/dev/null 2>&1; then
-        rm -f -- "$tmp_file"
+    if [[ ! -f "$output_file" || ! -r "$output_file" ]] \
+        || ! _is_single_json_type object "$output_file"; then
         log_error "Generated changelog is not readable valid JSON: $output_file"
         return 1
     fi
 
     local added removed updated
-    if ! added=$(jq -er '.summary.added | select(type == "number")' "$tmp_file") \
-        || ! removed=$(jq -er '.summary.removed | select(type == "number")' "$tmp_file") \
-        || ! updated=$(jq -er '.summary.updated | select(type == "number")' "$tmp_file"); then
-        rm -f -- "$tmp_file"
+    if ! added=$(jq -er '.summary.added | select(type == "number" and . >= 0 and floor == .)' "$output_file") \
+        || ! removed=$(jq -er '.summary.removed | select(type == "number" and . >= 0 and floor == .)' "$output_file") \
+        || ! updated=$(jq -er '.summary.updated | select(type == "number" and . >= 0 and floor == .)' "$output_file"); then
         log_error "Generated changelog has invalid summary counts: $output_file"
-        return 1
-    fi
-    if ! _publish_staged_file "$tmp_file" "$output_file"; then
-        rm -f -- "$tmp_file"
-        log_error "Failed to publish generated changelog: $output_file"
         return 1
     fi
     log_info "Changelog: +$added -$removed ~$updated"
@@ -791,12 +699,11 @@ enrich_changelog() (
     done <<< "$eligible_rows"
 
     local tmp_file
-    if ! _stage_file_for_publication "$changelog_file"; then
+    if ! tmp_file=$(mktemp); then
         log_error "Failed to create temporary enriched changelog: $changelog_file"
         return 1
     fi
-    tmp_file="$_SBOM_STAGED_FILE"
-    if jq --argjson enrichments "$enrichments" '
+    if ! jq --argjson enrichments "$enrichments" '
         def installed_version: .to // .version;
         ($enrichments
             | map({
@@ -813,24 +720,23 @@ enrich_changelog() (
             end
           ))
     ' "$changelog_file" > "$tmp_file"; then
-        if [[ ! -f "$tmp_file" || ! -r "$tmp_file" ]] \
-            || ! jq -e 'type == "object"' "$tmp_file" >/dev/null 2>&1; then
-            rm -f -- "$tmp_file"
-            log_warning "Dependency freshness enrichment produced invalid JSON: $changelog_file"
-            return 1
-        fi
-        if ! _publish_staged_file "$tmp_file" "$changelog_file"; then
-            rm -f -- "$tmp_file"
-            log_warning "Dependency freshness enrichment failed while writing changelog: $changelog_file"
-            return 1
-        fi
-        log_info "Dependency freshness enriched: $changelog_file"
-        return 0
-    else
         rm -f -- "$tmp_file"
         log_warning "Dependency freshness enrichment failed; leaving changelog unchanged: $changelog_file"
         return 1
     fi
+    if [[ ! -f "$tmp_file" || ! -r "$tmp_file" ]] \
+        || ! _is_single_json_type object "$tmp_file"; then
+        rm -f -- "$tmp_file"
+        log_warning "Dependency freshness enrichment produced invalid JSON: $changelog_file"
+        return 1
+    fi
+    if ! mv "$tmp_file" "$changelog_file"; then
+        rm -f -- "$tmp_file"
+        log_warning "Dependency freshness enrichment failed while writing changelog: $changelog_file"
+        return 1
+    fi
+    log_info "Dependency freshness enriched: $changelog_file"
+    return 0
 )
 
 # Append build metadata to history file (keeps last N entries)
@@ -945,12 +851,7 @@ append_build_history() (
     # extensions_build_seconds is conditionally added only when the source
     # lineage carried it — preserves the "container has no extensions concept"
     # signal for non-postgres containers.
-    local tmp_file entry_count
-    if ! _stage_file_for_publication "$history_file"; then
-        log_error "Failed to create temporary build history: $history_file"
-        return 1
-    fi
-    tmp_file="$_SBOM_STAGED_FILE"
+    local entry_count
     if ! jq -n \
         --argjson history "$existing_history" \
         --arg built_at "$built_at" \
@@ -974,25 +875,17 @@ append_build_history() (
             duration_seconds: $duration
         } + (if $ext_present then {extensions_build_seconds: $ext_duration} else {} end))] + $history |
         .[:$max]
-    ' > "$tmp_file"; then
-        rm -f -- "$tmp_file"
+    ' > "$history_file"; then
         log_error "Failed to generate build history: $history_file"
         return 1
     fi
-    if [[ ! -f "$tmp_file" || ! -r "$tmp_file" ]] \
-        || ! jq -e 'type == "array"' "$tmp_file" >/dev/null 2>&1; then
-        rm -f -- "$tmp_file"
+    if [[ ! -f "$history_file" || ! -r "$history_file" ]] \
+        || ! _is_single_json_type array "$history_file"; then
         log_error "Generated build history is not readable valid JSON: $history_file"
         return 1
     fi
-    if ! entry_count=$(jq -er 'length | select(type == "number")' "$tmp_file"); then
-        rm -f -- "$tmp_file"
+    if ! entry_count=$(jq -er 'length | select(type == "number" and . >= 0 and floor == .)' "$history_file"); then
         log_error "Generated build history has an invalid entry count: $history_file"
-        return 1
-    fi
-    if ! _publish_staged_file "$tmp_file" "$history_file"; then
-        rm -f -- "$tmp_file"
-        log_error "Failed to publish build history: $history_file"
         return 1
     fi
 
