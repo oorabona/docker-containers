@@ -3,7 +3,7 @@
 # Provides functions for SBOM generation, comparison, and build history tracking.
 #
 # Dependencies: jq (required); install_syft requires curl, uname, mktemp, tar, install, mv, mkdir, rm, head, and sha256sum or shasum; syft (installed on demand)
-# SBOM format: SPDX JSON (industry standard, supported by GitHub attestations)
+# SBOM output validation: readable JSON object
 
 _SBOM_UTILS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -28,6 +28,40 @@ if ! source "$_SBOM_UTILS_DIR/retry.sh"; then
     log_error "Failed to load retry utilities"
     return 1
 fi
+
+_SBOM_STAGED_FILE=""
+
+# The public writers that use this helper run in subshells, so these traps are
+# scoped to one write operation. They are best-effort signal cleanup, not its
+# ordinary-failure contract; callers retain their checked immediate cleanup.
+_cleanup_sbom_staged_file() {
+    if [[ -n "${_SBOM_STAGED_FILE:-}" ]]; then
+        rm -f -- "$_SBOM_STAGED_FILE" || :
+    fi
+}
+
+# Create a sibling staging file and arm cleanup for one public write operation.
+_stage_file_for_publication() {
+    if [[ "$#" -ne 1 || -z "$1" ]]; then
+        log_error "_stage_file_for_publication requires a destination path"
+        return 2
+    fi
+
+    local destination="$1"
+    local destination_dir destination_basename
+    if ! destination_dir=$(dirname -- "$destination") \
+        || ! destination_basename=$(basename -- "$destination"); then
+        log_error "Failed to determine staging path: $destination"
+        return 1
+    fi
+    if ! _SBOM_STAGED_FILE=$(mktemp "${destination_dir}/${destination_basename}.tmp.XXXXXX"); then
+        return 1
+    fi
+    trap '_cleanup_sbom_staged_file' EXIT
+    trap '_cleanup_sbom_staged_file; exit 130' INT
+    trap '_cleanup_sbom_staged_file; exit 143' TERM
+    return 0
+}
 
 # Publish a staged file atomically while retaining the destination's mode, or
 # applying the mode a regular file would receive from the caller's umask.
@@ -59,6 +93,8 @@ _publish_staged_file() {
     if ! mv -f -- "$staged_file" "$destination"; then
         return 1
     fi
+    _SBOM_STAGED_FILE=""
+    trap - EXIT INT TERM
     return 0
 }
 
@@ -199,7 +235,7 @@ install_syft() {
 # Generate SBOM from a registry image
 # Usage: generate_sbom <image_ref> <output_file>
 # image_ref: full image reference (e.g., ghcr.io/owner/repo:tag)
-# output_file: path for the SPDX JSON output
+# output_file: path for the generated JSON-object output
 # The public SBOM operations use subshells only to isolate their shell options
 # from scripts that source this helper. Their failure contract is explicit:
 # every required operation is checked and failure is returned to the caller.
@@ -231,10 +267,11 @@ generate_sbom() (
         log_error "Failed to create SBOM output directory: $output_dir"
         return 1
     fi
-    if ! tmp_file=$(mktemp "${output_file}.tmp.XXXXXX"); then
+    if ! _stage_file_for_publication "$output_file"; then
         log_error "Failed to create temporary SBOM output: $output_file"
         return 1
     fi
+    tmp_file="$_SBOM_STAGED_FILE"
 
     log_info "Generating SBOM for $image_ref..."
     local syft_args=("registry:${image_ref}" -o "spdx-json=${tmp_file}" --quiet)
@@ -362,10 +399,11 @@ compare_sboms() (
         log_error "Failed to create changelog output directory: $output_dir"
         return 1
     fi
-    if ! tmp_file=$(mktemp "${output_file}.tmp.XXXXXX"); then
+    if ! _stage_file_for_publication "$output_file"; then
         log_error "Failed to create temporary changelog output: $output_file"
         return 1
     fi
+    tmp_file="$_SBOM_STAGED_FILE"
 
     # Extract package lists as JSON arrays: [{type, name, version}, ...]
     local new_pkgs old_pkgs
@@ -753,10 +791,11 @@ enrich_changelog() (
     done <<< "$eligible_rows"
 
     local tmp_file
-    if ! tmp_file=$(mktemp "${changelog_file}.tmp.XXXXXX"); then
+    if ! _stage_file_for_publication "$changelog_file"; then
         log_error "Failed to create temporary enriched changelog: $changelog_file"
         return 1
     fi
+    tmp_file="$_SBOM_STAGED_FILE"
     if jq --argjson enrichments "$enrichments" '
         def installed_version: .to // .version;
         ($enrichments
@@ -907,10 +946,11 @@ append_build_history() (
     # lineage carried it — preserves the "container has no extensions concept"
     # signal for non-postgres containers.
     local tmp_file entry_count
-    if ! tmp_file=$(mktemp "${history_file}.tmp.XXXXXX"); then
+    if ! _stage_file_for_publication "$history_file"; then
         log_error "Failed to create temporary build history: $history_file"
         return 1
     fi
+    tmp_file="$_SBOM_STAGED_FILE"
     if ! jq -n \
         --argjson history "$existing_history" \
         --arg built_at "$built_at" \

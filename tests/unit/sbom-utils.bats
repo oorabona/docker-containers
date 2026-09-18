@@ -59,6 +59,16 @@ STUB
     chmod +x "$TEST_TEMP_DIR/bin/mv"
 }
 
+write_term_mv_stub() {
+    cat > "$TEST_TEMP_DIR/bin/mv" <<'STUB'
+#!/usr/bin/env bash
+kill -TERM "$PPID"
+sleep 0.1
+exit 1
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/mv"
+}
+
 write_failing_wc_stub() {
     cat > "$TEST_TEMP_DIR/bin/wc" <<'STUB'
 #!/usr/bin/env bash
@@ -97,6 +107,30 @@ JSON
     [ "$status" -eq 0 ] || return 1
     jq -e '.packages == []' "$output_file" >/dev/null || return 1
     [ "$(find "$TEST_TEMP_DIR" -name 'result.sbom.json.tmp.*' -print -quit)" = "" ] || return 1
+}
+
+@test "generate_sbom publishes a destination beginning with a hyphen" {
+    write_syft_stub
+    local output_dir="$TEST_TEMP_DIR/hyphen-destination"
+    mkdir -p "$output_dir"
+
+    run bash -c 'cd "$2"; source "$1"; generate_sbom example/image:tag -result.sbom.json' _ "$SBOM_UTILS" "$output_dir"
+
+    [ "$status" -eq 0 ] || return 1
+    jq -e '.packages == []' "$output_dir/-result.sbom.json" >/dev/null || return 1
+    [ "$(find "$output_dir" -name -- '-result.sbom.json.tmp.*' -print -quit)" = "" ] || return 1
+}
+
+@test "generate_sbom removes its staged file when TERM arrives before rename" {
+    write_syft_stub
+    write_term_mv_stub
+    local output_file="$TEST_TEMP_DIR/term.sbom.json"
+
+    run bash -c 'source "$1"; generate_sbom example/image:tag "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -ne 0 ] || return 1
+    [ ! -e "$output_file" ] || return 1
+    [ "$(find "$TEST_TEMP_DIR" -name 'term.sbom.json.tmp.*' -print -quit)" = "" ] || return 1
 }
 
 @test "generate_sbom preserves an existing destination mode" {
