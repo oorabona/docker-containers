@@ -3,7 +3,7 @@
 # Provides functions for SBOM generation, comparison, and build history tracking.
 #
 # Dependencies: jq (required); install_syft requires curl, uname, mktemp, tar, install, mv, mkdir, rm, head, and sha256sum or shasum; syft (installed on demand)
-# SBOM format: SPDX JSON (industry standard, supported by GitHub attestations)
+# SBOM output validation: readable JSON object
 
 _SBOM_UTILS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -28,6 +28,15 @@ if ! source "$_SBOM_UTILS_DIR/retry.sh"; then
     log_error "Failed to load retry utilities"
     return 1
 fi
+
+_is_single_json_type() {
+    local expected_type="$1"
+    local file="$2"
+
+    jq -en --arg expected_type "$expected_type" \
+        '([limit(2; inputs)] | length == 1 and (.[0] | type == $expected_type))' \
+        -- "$file" >/dev/null 2>&1
+}
 
 # Install syft if not present
 install_syft() {
@@ -166,12 +175,17 @@ install_syft() {
 # Generate SBOM from a registry image
 # Usage: generate_sbom <image_ref> <output_file>
 # image_ref: full image reference (e.g., ghcr.io/owner/repo:tag)
-# output_file: path for the SPDX JSON output
-# The public SBOM operations retain their historical strict error handling in
-# subshells. This prevents their shell options from leaking into the scripts
-# that source this helper.
+# output_file: path for the generated JSON-object output
+# The public SBOM operations use subshells only to isolate their shell options
+# from scripts that source this helper. Their failure contract is explicit:
+# artifact reads and publications fail closed. Individual dependency-freshness
+# workers deliberately fail open into per-row query-failed results.
 generate_sbom() (
-    set -euo pipefail
+    set -uo pipefail
+    if [[ "$#" -ne 2 || -z "$1" || -z "$2" ]]; then
+        log_error "generate_sbom requires an image reference and output path"
+        return 2
+    fi
     local image_ref="$1"
     local output_file="$2"
 
@@ -180,10 +194,20 @@ generate_sbom() (
         return 1
     fi
 
-    local output_dir
-    output_dir=$(dirname "$output_file")
-    mkdir -p "$output_dir"
+    if [[ -d "$output_file" ]]; then
+        log_error "SBOM output path is a directory: $output_file"
+        return 1
+    fi
 
+    local output_dir output_size
+    if ! output_dir=$(dirname -- "$output_file"); then
+        log_error "Failed to determine SBOM output directory: $output_file"
+        return 1
+    fi
+    if ! mkdir -p -- "$output_dir"; then
+        log_error "Failed to create SBOM output directory: $output_dir"
+        return 1
+    fi
     log_info "Generating SBOM for $image_ref..."
     local syft_args=("registry:${image_ref}" -o "spdx-json=${output_file}" --quiet)
     local syft_cmd=(syft)
@@ -193,12 +217,31 @@ generate_sbom() (
         syft_cmd=(timeout 10m syft)
     fi
 
-    if retry_with_backoff 2 30 "${syft_cmd[@]}" "${syft_args[@]}"; then
-        log_success "SBOM generated: $output_file ($(wc -c < "$output_file") bytes)"
-    else
+    if ! retry_with_backoff 2 30 "${syft_cmd[@]}" "${syft_args[@]}"; then
         log_error "Failed to generate SBOM for $image_ref"
         return 1
     fi
+    if [[ ! -f "$output_file" || ! -r "$output_file" ]]; then
+        log_error "SBOM producer did not create a readable output: $output_file"
+        return 1
+    fi
+    # This establishes only that the producer wrote a JSON object; it does not
+    # validate the SBOM's SPDX schema or shape.
+    if ! _is_single_json_type object "$output_file"; then
+        log_error "SBOM producer did not write a JSON object: $output_file"
+        return 1
+    fi
+    if ! output_size=$(wc -c < "$output_file"); then
+        log_error "Failed to measure generated SBOM: $output_file"
+        return 1
+    fi
+    output_size="${output_size//[[:space:]]/}"
+    if [[ ! "$output_size" =~ ^[0-9]+$ ]]; then
+        log_error "Generated SBOM has an invalid size: $output_file"
+        return 1
+    fi
+    log_success "SBOM generated: $output_file (${output_size} bytes)"
+    return 0
 )
 
 # Extract sorted package list from SBOM (for diffing)
@@ -209,15 +252,21 @@ generate_sbom() (
 # Usage: extract_sbom_summary <sbom_file>
 # Output: JSON {"total": N, "apk": N, "pip": N, ...}
 extract_sbom_summary() (
-    set -euo pipefail
+    set -uo pipefail
+    if [[ "$#" -ne 1 || -z "$1" ]]; then
+        log_error "extract_sbom_summary requires an SBOM path"
+        return 2
+    fi
     local sbom_file="$1"
 
     if [[ ! -f "$sbom_file" ]]; then
-        echo '{"total": 0}'
-        return
+        if ! printf '%s\n' '{"total": 0}'; then
+            return 1
+        fi
+        return 0
     fi
 
-    jq '
+    if ! jq '
         .packages // [] |
         length as $total |
         [.[] |
@@ -228,7 +277,11 @@ extract_sbom_summary() (
         map({key: .[0], value: length}) |
         from_entries |
         . + {total: $total}
-    ' "$sbom_file" 2>/dev/null || echo '{"total": 0}'
+    ' "$sbom_file" 2>/dev/null; then
+        log_error "Failed to extract SBOM summary: $sbom_file"
+        return 1
+    fi
+    return 0
 )
 
 # Extract packages grouped by type (for dashboard drill-down)
@@ -239,13 +292,17 @@ extract_sbom_summary() (
 # Usage: compare_sboms <new_sbom> <old_sbom> <output_file>
 # Output: JSON with added/removed/updated arrays + summary counts
 compare_sboms() (
-    set -euo pipefail
+    set -uo pipefail
+    if [[ "$#" -ne 3 || -z "$1" || -z "$2" || -z "$3" ]]; then
+        log_error "compare_sboms requires new SBOM, old SBOM, and output paths"
+        return 2
+    fi
     local new_sbom="$1"
     local old_sbom="$2"
     local output_file="$3"
 
-    if [[ ! -f "$new_sbom" ]]; then
-        log_error "New SBOM not found: $new_sbom"
+    if [[ ! -f "$new_sbom" || ! -r "$new_sbom" ]]; then
+        log_error "New SBOM is not readable: $new_sbom"
         return 1
     fi
     if [[ ! -f "$old_sbom" ]]; then
@@ -253,13 +310,23 @@ compare_sboms() (
         return 0
     fi
 
-    local output_dir
-    output_dir=$(dirname "$output_file")
-    mkdir -p "$output_dir"
+    if [[ -d "$output_file" ]]; then
+        log_error "Changelog output path is a directory: $output_file"
+        return 1
+    fi
 
+    local output_dir generated_at
+    if ! output_dir=$(dirname -- "$output_file"); then
+        log_error "Failed to determine changelog output directory: $output_file"
+        return 1
+    fi
+    if ! mkdir -p -- "$output_dir"; then
+        log_error "Failed to create changelog output directory: $output_dir"
+        return 1
+    fi
     # Extract package lists as JSON arrays: [{type, name, version}, ...]
     local new_pkgs old_pkgs
-    new_pkgs=$(jq '[
+    if ! new_pkgs=$(jq '[
         .packages // [] |
         .[] |
         select(.name != null and .versionInfo != null) |
@@ -269,9 +336,12 @@ compare_sboms() (
             name: .name,
             version: .versionInfo
         }
-    ] | sort_by(.name)' "$new_sbom")
+    ] | sort_by(.name)' "$new_sbom"); then
+        log_error "Failed to read new SBOM: $new_sbom"
+        return 1
+    fi
 
-    old_pkgs=$(jq '[
+    if ! old_pkgs=$(jq '[
         .packages // [] |
         .[] |
         select(.name != null and .versionInfo != null) |
@@ -281,13 +351,21 @@ compare_sboms() (
             name: .name,
             version: .versionInfo
         }
-    ] | sort_by(.name)' "$old_sbom")
+    ] | sort_by(.name)' "$old_sbom"); then
+        log_error "Failed to read old SBOM: $old_sbom"
+        return 1
+    fi
+
+    if ! generated_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ"); then
+        log_error "Failed to determine changelog generation time"
+        return 1
+    fi
 
     # Compute diff using jq
-    jq -n \
+    if ! jq -n \
         --argjson new_pkgs "$new_pkgs" \
         --argjson old_pkgs "$old_pkgs" \
-        --arg generated_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+        --arg generated_at "$generated_at" \
     '
         # Build lookup maps: name -> {version, pkg_type}
         ($old_pkgs | map({key: .name, value: {version: .version, pkg_type: .pkg_type}}) | from_entries) as $old_map |
@@ -317,13 +395,25 @@ compare_sboms() (
             },
             changes: ($added + $removed + $updated | sort_by(.name))
         }
-    ' > "$output_file"
+    ' > "$output_file"; then
+        log_error "Failed to generate changelog: $output_file"
+        return 1
+    fi
+    if [[ ! -f "$output_file" || ! -r "$output_file" ]] \
+        || ! _is_single_json_type object "$output_file"; then
+        log_error "Generated changelog is not readable valid JSON: $output_file"
+        return 1
+    fi
 
     local added removed updated
-    added=$(jq '.summary.added' "$output_file")
-    removed=$(jq '.summary.removed' "$output_file")
-    updated=$(jq '.summary.updated' "$output_file")
+    if ! added=$(jq -er '.summary.added | select(type == "number" and . >= 0 and floor == .)' "$output_file") \
+        || ! removed=$(jq -er '.summary.removed | select(type == "number" and . >= 0 and floor == .)' "$output_file") \
+        || ! updated=$(jq -er '.summary.updated | select(type == "number" and . >= 0 and floor == .)' "$output_file"); then
+        log_error "Generated changelog has invalid summary counts: $output_file"
+        return 1
+    fi
     log_info "Changelog: +$added -$removed ~$updated"
+    return 0
 )
 
 _enrich_changelog_latest_results() {
@@ -404,9 +494,16 @@ _enrich_changelog_add_enrichment() {
 # Enrich compare_sboms output with latest-version and freshness metadata.
 # Usage: enrich_changelog <changelog_file> [current_sbom_file]
 enrich_changelog() (
-    set -euo pipefail
+    set -uo pipefail
+    if [[ "$#" -lt 1 || "$#" -gt 2 || -z "$1" ]]; then
+        log_error "enrich_changelog requires a changelog path"
+        return 2
+    fi
     local changelog_file="$1"
-    : "${2:-}"
+    # This optional argument is retained for the public call signature. The
+    # resolver derives image metadata from the adjacent lineage record instead.
+    local current_sbom_file="${2:-}"
+    : "$current_sbom_file"
 
     if [[ ! -f "$changelog_file" ]]; then
         log_warning "Changelog not found for freshness enrichment: $changelog_file"
@@ -421,25 +518,40 @@ enrich_changelog() (
         if [[ -f "${_SBOM_UTILS_DIR}/dependency-freshness.sh" ]]; then
             # shellcheck source=helpers/dependency-freshness.sh
             # shellcheck disable=SC1091
-            source "${_SBOM_UTILS_DIR}/dependency-freshness.sh"
+            if ! source "${_SBOM_UTILS_DIR}/dependency-freshness.sh"; then
+                log_error "Failed to load dependency-freshness helper"
+                return 1
+            fi
+            # dependency-freshness.sh has file-scope errexit; this public
+            # function continues to use its explicit return-value contract.
+            set +e
         else
             log_warning "dependency-freshness helper unavailable; skipping enrichment"
             return 0
         fi
     fi
 
-    _freshness_reset_apk_state
+    if ! _freshness_reset_apk_state; then
+        log_error "Failed to reset dependency freshness state"
+        return 1
+    fi
     unset DEPENDENCY_FRESHNESS_IMAGE_REF DEPENDENCY_FRESHNESS_PLATFORM
 
     local lineage_file lineage_image_ref lineage_platform
     lineage_file="${changelog_file%.changelog.json}.json"
     if [[ -f "$lineage_file" ]]; then
-        lineage_image_ref=$(jq -r '.images.ghcr // .images.dockerhub // empty' "$lineage_file" 2>/dev/null || true)
+        if ! lineage_image_ref=$(jq -r '.images.ghcr // .images.dockerhub // empty' "$lineage_file" 2>/dev/null); then
+            log_error "Failed to read lineage image reference: $lineage_file"
+            return 1
+        fi
         if [[ -n "$lineage_image_ref" ]]; then
             DEPENDENCY_FRESHNESS_IMAGE_REF="$lineage_image_ref"
             export DEPENDENCY_FRESHNESS_IMAGE_REF
         fi
-        lineage_platform=$(jq -r '.platform // empty' "$lineage_file" 2>/dev/null || true)
+        if ! lineage_platform=$(jq -r '.platform // empty' "$lineage_file" 2>/dev/null); then
+            log_error "Failed to read lineage platform: $lineage_file"
+            return 1
+        fi
         if [[ -n "$lineage_platform" ]]; then
             DEPENDENCY_FRESHNESS_PLATFORM="$lineage_platform"
             export DEPENDENCY_FRESHNESS_PLATFORM
@@ -448,7 +560,7 @@ enrich_changelog() (
 
     local eligible_json eligible_count queries_json latest_results
     local max_queries_raw max_queries query_count skipped_count skipped_queries_json skipped_results_json
-    eligible_json=$(jq -c '
+    if ! eligible_json=$(jq -c '
         [
             .changes[]?
             | select(.type == "updated" or .type == "added")
@@ -456,14 +568,26 @@ enrich_changelog() (
             | {pkg_type, name, installed: (.to // .version // null)}
             | select(.installed != null)
         ]
-    ' "$changelog_file")
-    eligible_count=$(jq 'length' <<< "$eligible_json")
+    ' "$changelog_file"); then
+        log_error "Failed to read changelog changes: $changelog_file"
+        return 1
+    fi
+    if ! eligible_count=$(jq -er 'length | select(type == "number")' <<< "$eligible_json"); then
+        log_error "Failed to count eligible changelog changes: $changelog_file"
+        return 1
+    fi
     if [[ "$eligible_count" -eq 0 ]]; then
         return 0
     fi
 
-    queries_json=$(jq -c 'sort_by([.pkg_type, .name]) | unique_by([.pkg_type, .name])' <<< "$eligible_json")
-    query_count=$(jq 'length' <<< "$queries_json")
+    if ! queries_json=$(jq -c 'sort_by([.pkg_type, .name]) | unique_by([.pkg_type, .name])' <<< "$eligible_json"); then
+        log_error "Failed to construct dependency freshness queries: $changelog_file"
+        return 1
+    fi
+    if ! query_count=$(jq -er 'length | select(type == "number")' <<< "$queries_json"); then
+        log_error "Failed to count dependency freshness queries: $changelog_file"
+        return 1
+    fi
     max_queries_raw="${DEPENDENCY_FRESHNESS_MAX_QUERIES:-200}"
     if [[ "$max_queries_raw" =~ ^[0-9]+$ ]]; then
         max_queries=$((10#$max_queries_raw))
@@ -473,8 +597,11 @@ enrich_changelog() (
     skipped_results_json="[]"
     if (( query_count > max_queries )); then
         skipped_count=$((query_count - max_queries))
-        skipped_queries_json=$(jq -c --argjson max "$max_queries" '.[$max:]' <<< "$queries_json")
-        skipped_results_json=$(jq -c '
+        if ! skipped_queries_json=$(jq -c --argjson max "$max_queries" '.[$max:]' <<< "$queries_json"); then
+            log_error "Failed to select skipped dependency freshness queries: $changelog_file"
+            return 1
+        fi
+        if ! skipped_results_json=$(jq -c '
             map({
                 pkg_type,
                 name,
@@ -482,8 +609,14 @@ enrich_changelog() (
                 query_failed: false,
                 skipped: true
             })
-        ' <<< "$skipped_queries_json")
-        queries_json=$(jq -c --argjson max "$max_queries" '.[0:$max]' <<< "$queries_json")
+        ' <<< "$skipped_queries_json"); then
+            log_error "Failed to mark skipped dependency freshness queries: $changelog_file"
+            return 1
+        fi
+        if ! queries_json=$(jq -c --argjson max "$max_queries" '.[0:$max]' <<< "$queries_json"); then
+            log_error "Failed to limit dependency freshness queries: $changelog_file"
+            return 1
+        fi
         log_warning "Dependency freshness query cap reached: checking ${max_queries} of ${query_count} unique packages; skipped ${skipped_count} packages as not-computed (set DEPENDENCY_FRESHNESS_MAX_QUERIES to adjust)"
     fi
 
@@ -494,22 +627,45 @@ enrich_changelog() (
         log_warning "Dependency freshness latest-version batch returned malformed JSON; marking affected checks as query-failed"
         latest_results="[]"
     fi
-    latest_results=$(jq -cn --argjson latest "$latest_results" --argjson skipped "$skipped_results_json" '$latest + $skipped')
+    if ! latest_results=$(jq -cn --argjson latest "$latest_results" --argjson skipped "$skipped_results_json" '$latest + $skipped'); then
+        log_error "Failed to combine dependency freshness results: $changelog_file"
+        return 1
+    fi
 
     local enrichments row pkg_type name installed resolver latest_record latest query_failed skipped freshness version_gt_status
     enrichments="[]"
+    local eligible_rows
+    if ! eligible_rows=$(jq -c '.[]' <<< "$eligible_json"); then
+        log_error "Failed to enumerate eligible changelog changes: $changelog_file"
+        return 1
+    fi
     while IFS= read -r row; do
-        pkg_type=$(jq -r '.pkg_type' <<< "$row")
-        name=$(jq -r '.name' <<< "$row")
-        installed=$(jq -r '.installed' <<< "$row")
-        resolver=$(_freshness_resolver_for "$pkg_type")
+        [[ -n "$row" ]] || continue
+        if ! pkg_type=$(jq -er '.pkg_type | select(type == "string")' <<< "$row") \
+            || ! name=$(jq -er '.name | select(type == "string")' <<< "$row") \
+            || ! installed=$(jq -er '.installed | select(type == "string")' <<< "$row") \
+            || ! resolver=$(_freshness_resolver_for "$pkg_type"); then
+            log_error "Failed to read dependency freshness query: $changelog_file"
+            return 1
+        fi
 
-        latest_record=$(jq -c --arg pkg_type "$pkg_type" --arg name "$name" '
+        if ! latest_record=$(jq -c --arg pkg_type "$pkg_type" --arg name "$name" '
             map(select(.pkg_type == $pkg_type and .name == $name)) | first // {latest:null, query_failed:true}
-        ' <<< "$latest_results")
-        latest=$(jq -r '.latest // "null"' <<< "$latest_record")
-        query_failed=$(jq -r 'if has("query_failed") then .query_failed else true end' <<< "$latest_record")
-        skipped=$(jq -r 'if has("skipped") then .skipped else false end' <<< "$latest_record")
+        ' <<< "$latest_results"); then
+            log_error "Failed to select dependency freshness result: $changelog_file"
+            return 1
+        fi
+        if ! latest=$(jq -r '.latest // "null"' <<< "$latest_record") \
+            || ! query_failed=$(jq -r 'if has("query_failed") then .query_failed else true end' <<< "$latest_record") \
+            || ! skipped=$(jq -r 'if has("skipped") then .skipped else false end' <<< "$latest_record"); then
+            log_error "Failed to read dependency freshness result: $changelog_file"
+            return 1
+        fi
+        if [[ "$query_failed" != "true" && "$query_failed" != "false" ]] \
+            || [[ "$skipped" != "true" && "$skipped" != "false" ]]; then
+            log_error "Dependency freshness result has invalid flags: $changelog_file"
+            return 1
+        fi
         freshness="not-computed"
 
         if [[ -z "$resolver" ]]; then
@@ -535,13 +691,19 @@ enrich_changelog() (
             freshness="query-failed"
         fi
 
-        enrichments=$(_enrich_changelog_add_enrichment \
-            "$enrichments" "$pkg_type" "$name" "$installed" "$latest" "$freshness")
-    done < <(jq -c '.[]' <<< "$eligible_json")
+        if ! enrichments=$(_enrich_changelog_add_enrichment \
+            "$enrichments" "$pkg_type" "$name" "$installed" "$latest" "$freshness"); then
+            log_error "Failed to construct dependency freshness enrichment: $changelog_file"
+            return 1
+        fi
+    done <<< "$eligible_rows"
 
     local tmp_file
-    tmp_file=$(mktemp)
-    if jq --argjson enrichments "$enrichments" '
+    if ! tmp_file=$(mktemp); then
+        log_error "Failed to create temporary enriched changelog: $changelog_file"
+        return 1
+    fi
+    if ! jq --argjson enrichments "$enrichments" '
         def installed_version: .to // .version;
         ($enrichments
             | map({
@@ -558,18 +720,23 @@ enrich_changelog() (
             end
           ))
     ' "$changelog_file" > "$tmp_file"; then
-        if mv "$tmp_file" "$changelog_file"; then
-            log_info "Dependency freshness enriched: $changelog_file"
-            return 0
-        fi
-        rm -f "$tmp_file"
-        log_warning "Dependency freshness enrichment failed while writing changelog: $changelog_file"
-        return 1
-    else
-        rm -f "$tmp_file"
+        rm -f -- "$tmp_file"
         log_warning "Dependency freshness enrichment failed; leaving changelog unchanged: $changelog_file"
         return 1
     fi
+    if [[ ! -f "$tmp_file" || ! -r "$tmp_file" ]] \
+        || ! _is_single_json_type object "$tmp_file"; then
+        rm -f -- "$tmp_file"
+        log_warning "Dependency freshness enrichment produced invalid JSON: $changelog_file"
+        return 1
+    fi
+    if ! mv "$tmp_file" "$changelog_file"; then
+        rm -f -- "$tmp_file"
+        log_warning "Dependency freshness enrichment failed while writing changelog: $changelog_file"
+        return 1
+    fi
+    log_info "Dependency freshness enriched: $changelog_file"
+    return 0
 )
 
 # Append build metadata to history file (keeps last N entries)
@@ -580,35 +747,66 @@ enrich_changelog() (
 # max_entries: max entries to keep (default: 10)
 # changelog_file: path to changelog JSON (default: derived from history_file)
 append_build_history() (
-    set -euo pipefail
+    set -uo pipefail
+    if [[ "$#" -lt 3 || "$#" -gt 5 || -z "$1" || -z "$2" || -z "$3" ]]; then
+        log_error "append_build_history requires lineage, summary, and history paths"
+        return 2
+    fi
     local lineage_file="$1"
     local sbom_summary="$2"
     local history_file="$3"
     local max_entries="${4:-10}"
 
+    if [[ -d "$history_file" ]]; then
+        log_error "Build history output path is a directory: $history_file"
+        return 1
+    fi
+    if [[ ! "$max_entries" =~ ^[0-9]+$ ]]; then
+        log_error "Build history max_entries must be a non-negative integer: $max_entries"
+        return 2
+    fi
+
     local output_dir
-    output_dir=$(dirname "$history_file")
-    mkdir -p "$output_dir"
+    if ! output_dir=$(dirname -- "$history_file"); then
+        log_error "Failed to determine build history output directory: $history_file"
+        return 1
+    fi
+    if ! mkdir -p -- "$output_dir"; then
+        log_error "Failed to create build history output directory: $output_dir"
+        return 1
+    fi
 
     # Extract metadata from lineage file
     local built_at version build_digest duration_seconds extensions_build_seconds extensions_present
     extensions_present="false"
     if [[ -f "$lineage_file" ]]; then
-        built_at=$(jq -r '.built_at // empty' "$lineage_file" 2>/dev/null || echo "")
-        version=$(jq -r '.version // empty' "$lineage_file" 2>/dev/null || echo "")
-        build_digest=$(jq -r '.build_digest // empty' "$lineage_file" 2>/dev/null || echo "")
-        duration_seconds=$(jq '.duration_seconds // null' "$lineage_file" 2>/dev/null || echo "null")
+        if ! built_at=$(jq -r '.built_at // empty' "$lineage_file" 2>/dev/null) \
+            || ! version=$(jq -r '.version // empty' "$lineage_file" 2>/dev/null) \
+            || ! build_digest=$(jq -r '.build_digest // empty' "$lineage_file" 2>/dev/null) \
+            || ! duration_seconds=$(jq -c '.duration_seconds // null' "$lineage_file" 2>/dev/null) \
+            || ! extensions_present=$(jq -r 'has("extensions_build_seconds")' "$lineage_file" 2>/dev/null) \
+            || ! extensions_build_seconds=$(jq -c '.extensions_build_seconds // null' "$lineage_file" 2>/dev/null); then
+            log_error "Failed to read build lineage: $lineage_file"
+            return 1
+        fi
+        if [[ "$extensions_present" != "true" && "$extensions_present" != "false" ]]; then
+            log_error "Build lineage has invalid extensions metadata: $lineage_file"
+            return 1
+        fi
         # Only emit extensions_build_seconds when the source lineage actually
         # carries it. Containers without `extensions/config.yaml` (terraform,
         # ansible, …) don't write the field, and we must not synthesise a
         # null entry — the dashboard frontend keys "container has extensions
         # concept" off field presence (Object.hasOwnProperty), not value.
-        extensions_present=$(jq 'has("extensions_build_seconds")' "$lineage_file" 2>/dev/null || echo "false")
-        extensions_build_seconds=$(jq '.extensions_build_seconds // null' "$lineage_file" 2>/dev/null || echo "null")
     fi
 
     # Fallback for missing fields
-    [[ -z "${built_at:-}" ]] && built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    if [[ -z "${built_at:-}" ]]; then
+        if ! built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ"); then
+            log_error "Failed to determine build history timestamp"
+            return 1
+        fi
+    fi
     [[ -z "${version:-}" ]] && version="unknown"
     [[ -z "${build_digest:-}" ]] && build_digest="unknown"
     [[ -z "${duration_seconds:-}" ]] && duration_seconds="null"
@@ -616,32 +814,45 @@ append_build_history() (
 
     # Extract totals from summary
     local packages_total
-    packages_total=$(echo "$sbom_summary" | jq '.total // 0' 2>/dev/null || echo "0")
+    if ! packages_total=$(jq -er '(.total // 0) | select(type == "number")' <<< "$sbom_summary" 2>/dev/null); then
+        log_error "Failed to read SBOM summary total"
+        return 1
+    fi
     local packages_by_type
-    packages_by_type=$(echo "$sbom_summary" | jq 'del(.total)' 2>/dev/null || echo "{}")
+    if ! packages_by_type=$(jq -ce 'del(.total)' <<< "$sbom_summary" 2>/dev/null); then
+        log_error "Failed to read SBOM summary package types"
+        return 1
+    fi
 
     # Load existing history or start fresh
     local existing_history="[]"
     if [[ -f "$history_file" ]]; then
-        existing_history=$(jq '.' "$history_file" 2>/dev/null || echo "[]")
+        if ! existing_history=$(jq -ce 'select(type == "array")' "$history_file" 2>/dev/null); then
+            log_error "Failed to read build history: $history_file"
+            return 1
+        fi
     fi
 
     # Build changes_summary from changelog if it exists
     local changes_summary=""
     local changelog_file="${5:-${history_file%.history.json}.changelog.json}"
     if [[ -f "$changelog_file" ]]; then
-        local added removed updated
-        added=$(jq '.summary.added // 0' "$changelog_file" 2>/dev/null || echo "0")
-        removed=$(jq '.summary.removed // 0' "$changelog_file" 2>/dev/null || echo "0")
-        updated=$(jq '.summary.updated // 0' "$changelog_file" 2>/dev/null || echo "0")
-        changes_summary="+${added} -${removed} ~${updated}"
+        local added_count removed_count updated_count
+        if ! added_count=$(jq -er '.summary.added | select(type == "number" and . >= 0 and floor == .)' "$changelog_file" 2>/dev/null) \
+            || ! removed_count=$(jq -er '.summary.removed | select(type == "number" and . >= 0 and floor == .)' "$changelog_file" 2>/dev/null) \
+            || ! updated_count=$(jq -er '.summary.updated | select(type == "number" and . >= 0 and floor == .)' "$changelog_file" 2>/dev/null); then
+            log_error "Failed to read build changelog summary: $changelog_file"
+            return 1
+        fi
+        changes_summary="+$added_count -$removed_count ~$updated_count"
     fi
 
     # Create new entry and prepend to history, keeping max_entries.
     # extensions_build_seconds is conditionally added only when the source
     # lineage carried it — preserves the "container has no extensions concept"
     # signal for non-postgres containers.
-    jq -n \
+    local entry_count
+    if ! jq -n \
         --argjson history "$existing_history" \
         --arg built_at "$built_at" \
         --arg version "$version" \
@@ -664,7 +875,20 @@ append_build_history() (
             duration_seconds: $duration
         } + (if $ext_present then {extensions_build_seconds: $ext_duration} else {} end))] + $history |
         .[:$max]
-    ' > "$history_file"
+    ' > "$history_file"; then
+        log_error "Failed to generate build history: $history_file"
+        return 1
+    fi
+    if [[ ! -f "$history_file" || ! -r "$history_file" ]] \
+        || ! _is_single_json_type array "$history_file"; then
+        log_error "Generated build history is not readable valid JSON: $history_file"
+        return 1
+    fi
+    if ! entry_count=$(jq -er 'length | select(type == "number" and . >= 0 and floor == .)' "$history_file"); then
+        log_error "Generated build history has an invalid entry count: $history_file"
+        return 1
+    fi
 
-    log_info "Build history updated: $history_file ($(jq 'length' "$history_file") entries)"
+    log_info "Build history updated: $history_file (${entry_count} entries)"
+    return 0
 )

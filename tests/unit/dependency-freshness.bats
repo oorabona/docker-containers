@@ -19,6 +19,25 @@ teardown() {
     rm -rf "$TEST_TEMP_DIR"
 }
 
+@test "dependency freshness source fails when version utilities fail to load" {
+    run bash -c '
+        source() {
+            if [[ "$1" == */version-utils.sh ]]; then
+                return 1
+            fi
+            builtin source "$@"
+        }
+        if source "$1"; then
+            printf "unexpected-success\\n"
+            exit 1
+        fi
+        printf "failure-observed\\n"
+    ' _ "$RESOLVER"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"failure-observed"* ]]
+}
+
 write_synthetic_changelog() {
     cat > "$CHANGELOG" <<'JSON'
 {
