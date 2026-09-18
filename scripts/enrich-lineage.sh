@@ -91,22 +91,26 @@ if [[ ! -d "$LINEAGE_DIR" ]]; then
 fi
 
 # Collect all *.json files in the lineage dir (non-recursive; lineage files are flat)
-lineage_files_file=$(mktemp "${LINEAGE_DIR}/.enrich-lineage-files.XXXXXX") || {
-    echo "::error::Could not create lineage enumeration file in $LINEAGE_DIR" >&2
+lineage_files_file=$(mktemp "${TMPDIR:-/tmp}/enrich-lineage-files.XXXXXX") || {
+    echo "::error::Could not create lineage enumeration file in ${TMPDIR:-/tmp}" >&2
     exit 1
 }
 if collect_lines "$lineage_files_file" -- _list_lineage_files; then
     :
 else
     enumeration_status=$?
-    rm -f "$lineage_files_file"
+    if ! rm -f "$lineage_files_file"; then
+        echo "::warning::Could not remove lineage enumeration file $lineage_files_file" >&2
+    fi
     echo "::error::Failed to enumerate lineage files in $LINEAGE_DIR" >&2
     exit "$enumeration_status"
 fi
 
 declare -a lineage_files
 mapfile -t lineage_files < "$lineage_files_file"
-rm -f "$lineage_files_file"
+if ! rm -f "$lineage_files_file"; then
+    echo "::warning::Could not remove lineage enumeration file $lineage_files_file" >&2
+fi
 
 for lineage_file in "${lineage_files[@]}"; do
     basename_file="$(basename "$lineage_file")"
@@ -201,21 +205,6 @@ for lineage_file in "${lineage_files[@]}"; do
             attestation_id:            $attestation_id,
             attestation_url:           $attestation_url
         }' "$lineage_file" > "$tmp_file" 2>/dev/null; then
-        # This catches an enrichment completed after the first idempotency read
-        # and before publication. It does not serialize a writer that updates
-        # after this recheck; that would require a per-record lock.
-        if ! current_digest=$(jq -r '.multi_arch_index_digest // empty' "$lineage_file" 2>/dev/null); then
-            rm -f "$tmp_file" 2>/dev/null || true
-            echo "::warning::Failed to recheck $basename_file before enrichment" >&2
-            errors=$((errors + 1))
-            continue
-        fi
-        if [[ -n "$current_digest" ]]; then
-            rm -f "$tmp_file" 2>/dev/null || true
-            skipped=$((skipped + 1))
-            continue
-        fi
-
         if mv -f "$tmp_file" "$lineage_file"; then
             enriched=$((enriched + 1))
         else

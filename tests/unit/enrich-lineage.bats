@@ -28,6 +28,8 @@ setup() {
   # Lineage dir under $TEST_TEMP_DIR for isolation
   export LINEAGE_DIR="$TEST_TEMP_DIR/.build-lineage"
   mkdir -p "$LINEAGE_DIR"
+  export TMPDIR="$TEST_TEMP_DIR/tmp"
+  mkdir -p "$TMPDIR"
 
   # Stub bin dir on PATH
   mkdir -p "$TEST_TEMP_DIR/bin"
@@ -100,34 +102,24 @@ STUB
   chmod +x "$TEST_TEMP_DIR/bin/find"
 }
 
-# On the second digest read (the recheck before mv), emulate a concurrent
-# writer that has already enriched the record.
-_write_stub_jq_concurrent_enrichment() {
-  export REAL_JQ JQ_RECHECK_COUNT_FILE
-  REAL_JQ="$(command -v jq)"
-  JQ_RECHECK_COUNT_FILE="$TEST_TEMP_DIR/jq-recheck-count"
-  cat > "$TEST_TEMP_DIR/bin/jq" <<'STUB'
+_write_stub_rm_fail_enumeration_cleanup() {
+  export REAL_RM
+  REAL_RM="$(command -v rm)"
+  cat > "$TEST_TEMP_DIR/bin/rm" <<'STUB'
 #!/usr/bin/env bash
-if [[ "$*" == *'.multi_arch_index_digest // empty'* ]]; then
-  count=0
-  [[ -f "$JQ_RECHECK_COUNT_FILE" ]] && count=$(<"$JQ_RECHECK_COUNT_FILE")
-  count=$((count + 1))
-  printf '%s\n' "$count" > "$JQ_RECHECK_COUNT_FILE"
-  if [[ "$count" -eq 2 ]]; then
-    target="${!#}"
-    cat > "$target" <<'JSON'
-{
-  "container": "concurrent",
-  "tag": "1.0.0",
-  "multi_arch_index_digest": "sha256:concurrent",
-  "concurrent_writer": true
-}
-JSON
-  fi
-fi
-exec "$REAL_JQ" "$@"
+for arg in "$@"; do
+  case "$arg" in
+    "$TMPDIR"/enrich-lineage-files.*.tmp.*)
+      ;;
+    "$TMPDIR"/enrich-lineage-files.*)
+      echo "simulated enumeration cleanup failure" >&2
+      exit 72
+      ;;
+  esac
+done
+exec "$REAL_RM" "$@"
 STUB
-  chmod +x "$TEST_TEMP_DIR/bin/jq"
+  chmod +x "$TEST_TEMP_DIR/bin/rm"
 }
 
 # Create a minimal lineage file in LINEAGE_DIR
@@ -170,6 +162,16 @@ _run_enrich() {
   [[ "$output" == *"Enriched 0"* ]]
 }
 
+@test "read-only lineage dir: exits 0 as an empty no-op" {
+  chmod a-w "$LINEAGE_DIR"
+
+  _run_enrich
+
+  chmod u+w "$LINEAGE_DIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Enriched 0 lineage files (0 skipped, 0 errors)"* ]]
+}
+
 @test "find failure after output reports an error and does not claim a complete pass" {
   _write_lineage "first-1.0.0.json" "first" "1.0.0"
   _write_stub_find_partial_failure
@@ -181,6 +183,21 @@ _run_enrich() {
   [[ "$output" == *"::error::Failed to enumerate lineage files"* ]]
   [[ "$output" != *"Enriched "* ]]
   [ "$(jq -r 'has("multi_arch_index_digest")' "$LINEAGE_DIR/first-1.0.0.json")" = "false" ]
+}
+
+@test "find failure survives an enumeration cleanup failure" {
+  _write_lineage "first-1.0.0.json" "first" "1.0.0"
+  _write_stub_find_partial_failure
+  _write_stub_rm_fail_enumeration_cleanup
+
+  _run_enrich
+
+  [ "$status" -eq 71 ]
+  [[ "$output" == *"simulated find failure"* ]]
+  [[ "$output" == *"simulated enumeration cleanup failure"* ]]
+  [[ "$output" == *"::warning::Could not remove lineage enumeration file"* ]]
+  [[ "$output" == *"::error::Failed to enumerate lineage files"* ]]
+  [[ "$output" != *"Enriched "* ]]
 }
 
 # -----------------------------------------------------------------------
@@ -393,18 +410,6 @@ JSON
   [[ "$output" == *"Enriched 0 lineage files (0 skipped, 1 errors)"* ]]
   [ "$(jq -r 'has("multi_arch_index_digest")' "$LINEAGE_DIR/mv-failure-1.0.0.json")" = "false" ]
   [ "$(find "$LINEAGE_DIR" -name '.enrich-tmp.*' -type f | wc -l)" -eq 0 ]
-}
-
-@test "concurrent enrichment before replacement is not overwritten" {
-  _write_lineage "concurrent-1.0.0.json" "concurrent" "1.0.0"
-  _write_stub_jq_concurrent_enrichment
-
-  _run_enrich
-
-  [ "$status" -eq 0 ]
-  [ "$(jq -r '.multi_arch_index_digest' "$LINEAGE_DIR/concurrent-1.0.0.json")" = "sha256:concurrent" ]
-  [ "$(jq -r '.concurrent_writer' "$LINEAGE_DIR/concurrent-1.0.0.json")" = "true" ]
-  [[ "$output" == *"Enriched 0 lineage files (1 skipped, 0 errors)"* ]]
 }
 
 # -----------------------------------------------------------------------
