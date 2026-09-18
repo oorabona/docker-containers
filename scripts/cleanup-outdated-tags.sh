@@ -22,13 +22,20 @@ unset _cleanup_outdated_tags_root
 # namespace reports 124 tags (postgres), then github-runner 67 and terraform 66.
 # MAX_TAGS keeps roughly eight times that, and MAX_PAGES is generous against a
 # listing that is required to add at least one new name per page. The two bound
-# different axes and are enforced independently; neither bounds a single HTTP
-# response body. A listing above either ceiling is refused rather than pruned,
-# which is the right answer for a destructive client reading remote input.
+# different axes and are enforced independently. Each listing body is also
+# held in a capped file before jq reads it; a response above the cap is refused
+# rather than truncated or pruned.
 MAX_TAGS=1000
 MAX_PAGES=100
+DOCKERHUB_LISTING_MAX_BYTES=1048576
 DOCKERHUB_CURL_CONNECT_TIMEOUT=10
 DOCKERHUB_CURL_MAX_TIME=30
+# The cleanup job has timeout-minutes: 75. Reserving five minutes for setup,
+# GHCR, and reporting leaves 70 * 60 = 4200 seconds; at most 4200 / 30 = 140
+# Docker Hub requests can each consume their full --max-time without exceeding
+# that allowance. This single allowance covers logins, listings, and DELETEs
+# across every container, and is reserved before each request.
+DOCKERHUB_REQUESTS_REMAINING=140
 
 script_root() {
   local script_dir
@@ -57,6 +64,14 @@ dockerhub_path_segment() {
   jq -rn --arg segment "$1" '$segment | @uri'
 }
 
+dockerhub_reserve_request() {
+  if (( DOCKERHUB_REQUESTS_REMAINING <= 0 )); then
+    echo "  ✗ Docker Hub request budget exhausted; refusing the next request" >&2
+    return 1
+  fi
+  DOCKERHUB_REQUESTS_REMAINING=$((DOCKERHUB_REQUESTS_REMAINING - 1))
+}
+
 _cleanup_outdated_tags_delete() {
   local deletion_target="$1"
 
@@ -78,6 +93,7 @@ _cleanup_outdated_tags_delete() {
         echo "cleanup deletion refused: could not encode Docker Hub path" >&2
         return 1
       fi
+      dockerhub_reserve_request || return 1
       if ! dh_http_status=$(curl --globoff -sf --connect-timeout "$DOCKERHUB_CURL_CONNECT_TIMEOUT" --max-time "$DOCKERHUB_CURL_MAX_TIME" \
         -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $dh_jwt" \
         "https://hub.docker.com/v2/repositories/$dh_namespace_path/$dh_container_path/tags/$dh_tag_path/") \
@@ -142,11 +158,17 @@ build_valid_tags() {
 }
 
 is_valid_tag() {
-  local tag="$1" valid_tags="$2" base_tag remainder cache_base_tag
-  if grep -qxF "$tag" <<< "$valid_tags"; then return 0; fi
+  local tag="$1" valid_tags="$2" base_tag remainder cache_base_tag grep_status
+  # grep returns 1 for no match and 2 for an I/O or resource error. The latter
+  # is not an obsolete verdict, so callers must fail closed on it.
+  if grep -qxF "$tag" <<< "$valid_tags"; then return 0; else grep_status=$?; fi
+  [[ "$grep_status" -eq 1 ]] || return "$grep_status"
   base_tag="${tag%-amd64}"
   base_tag="${base_tag%-arm64}"
-  if [[ "$base_tag" != "$tag" ]] && grep -qxF "$base_tag" <<< "$valid_tags"; then return 0; fi
+  if [[ "$base_tag" != "$tag" ]]; then
+    if grep -qxF "$base_tag" <<< "$valid_tags"; then return 0; else grep_status=$?; fi
+    [[ "$grep_status" -eq 1 ]] || return "$grep_status"
+  fi
   if [[ "$tag" == buildcache-* ]]; then
     remainder="${tag#buildcache-}"
     [[ "$remainder" == buildcache-* || -z "$remainder" ]] && return 1
@@ -288,7 +310,17 @@ purge_ghcr() {
       return "$PROCESSING_FAILURE"
     fi
     while IFS= read -r tag; do
-      if is_valid_tag "$tag" "$valid_tags"; then has_valid=true; break; fi
+      if is_valid_tag "$tag" "$valid_tags"; then
+        has_valid=true
+        break
+      else
+        validation_status=$?
+        if [[ "$validation_status" -ne 1 ]]; then
+          cleanup_files
+          echo "  ✗ Failed to classify GHCR version tags; skipping $container" >&2
+          return "$PROCESSING_FAILURE"
+        fi
+      fi
     done <<< "$tag_list"
     if [[ "$has_valid" == true ]]; then
       echo "  ✓ Keep (tags: $tags)" >&2
@@ -476,10 +508,10 @@ purge_ghcr() {
 # Docker Hub credentials means it was not attempted (0|0|0|0); a returned
 # non-zero status is always a real failure.
 purge_dockerhub() {
-  local container="$1" valid_tags="$2" dh_jwt response dh_next dh_listing_url dh_repository_path dh_continuation_prefix dh_page
-  local dh_namespace_path dh_container_path dh_page_total dh_reported_total="" tag dh_new_tags dh_pages_read=0
+  local container="$1" valid_tags="$2" dh_jwt dh_next dh_listing_url dh_repository_path dh_continuation_prefix dh_page dh_listing_file=""
+  local dh_namespace_path dh_container_path dh_page_total dh_reported_total="" tag dh_new_tags dh_pages_read=0 validation_status
   local dh_kept=0 dh_candidates=0 dh_successful_deletes=0 delete_failures=0
-  local -a dh_page_values=() dh_tags=()
+  local -a dh_page_values=() dh_tags=() dh_obsolete_tags=()
   local -A dh_seen_tags=()
 
   validate_cleanup_authority || return 64
@@ -488,6 +520,9 @@ purge_dockerhub() {
     return 0
   fi
   echo "  Docker Hub cleanup for $container..." >&2
+  if ! dockerhub_reserve_request; then
+    return "$PROCESSING_FAILURE"
+  fi
   if ! dh_jwt=$(curl -sf --connect-timeout "$DOCKERHUB_CURL_CONNECT_TIMEOUT" --max-time "$DOCKERHUB_CURL_MAX_TIME" \
       -X POST "https://hub.docker.com/v2/users/login" -H "Content-Type: application/json" \
       -d "{\"username\":\"$DOCKERHUB_USERNAME\",\"password\":\"$DOCKERHUB_TOKEN\"}" | jq -er '.token'); then
@@ -511,8 +546,20 @@ purge_dockerhub() {
     # --globoff: a continuation URL is remote input. Without it curl reads `[`
     # and `{` as range and set syntax and expands one URL into many
     # authenticated requests.
-    if ! response=$(curl --globoff -sf --connect-timeout "$DOCKERHUB_CURL_CONNECT_TIMEOUT" --max-time "$DOCKERHUB_CURL_MAX_TIME" \
-      -H "Authorization: Bearer $dh_jwt" "$dh_listing_url"); then
+    if ! dh_listing_file=$(mktemp); then
+      echo "  ✗ Failed to prepare Docker Hub tag listing snapshot; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    fi
+    if ! dockerhub_reserve_request; then
+      rm -f "$dh_listing_file" || echo "  ✗ Failed to remove Docker Hub tag listing snapshot" >&2
+      dh_listing_file=""
+      return "$LISTING_FAILURE"
+    fi
+    if ! curl --globoff -sf --connect-timeout "$DOCKERHUB_CURL_CONNECT_TIMEOUT" --max-time "$DOCKERHUB_CURL_MAX_TIME" \
+      --max-filesize "$DOCKERHUB_LISTING_MAX_BYTES" --output "$dh_listing_file" \
+      -H "Authorization: Bearer $dh_jwt" "$dh_listing_url"; then
+      rm -f "$dh_listing_file" || echo "  ✗ Failed to remove Docker Hub tag listing snapshot" >&2
+      dh_listing_file=""
       echo "  ✗ Failed to list Docker Hub tags; skipping $container" >&2
       return "$LISTING_FAILURE"
     fi
@@ -532,10 +579,18 @@ purge_dockerhub() {
         $page.results[].name
       else error("malformed Docker Hub tag listing page")
       end
-    ' <<< "$response"); then
+    ' "$dh_listing_file"); then
+      rm -f "$dh_listing_file" || echo "  ✗ Failed to remove Docker Hub tag listing snapshot" >&2
+      dh_listing_file=""
       echo "  ✗ Docker Hub tag listing page was malformed; skipping $container" >&2
       return "$LISTING_FAILURE"
     fi
+    if ! rm -f "$dh_listing_file"; then
+      dh_listing_file=""
+      echo "  ✗ Failed to remove Docker Hub tag listing snapshot; skipping $container" >&2
+      return "$LISTING_FAILURE"
+    fi
+    dh_listing_file=""
     mapfile -t dh_page_values <<< "$dh_page"
     dh_page_total="${dh_page_values[0]-}"
     # jq may normalize JSON spellings such as 1e0 to 1. The boundary contract
@@ -598,8 +653,20 @@ purge_dockerhub() {
     dh_listing_url="$dh_next"
   done
   for tag in "${dh_tags[@]}"; do
-    if is_valid_tag "$tag" "$valid_tags"; then dh_kept=$((dh_kept + 1)); continue; fi
+    if is_valid_tag "$tag" "$valid_tags"; then
+      dh_kept=$((dh_kept + 1))
+      continue
+    else
+      validation_status=$?
+      if [[ "$validation_status" -ne 1 ]]; then
+        echo "  ✗ Failed to classify Docker Hub tag; skipping $container" >&2
+        return "$PROCESSING_FAILURE"
+      fi
+    fi
     dh_candidates=$((dh_candidates + 1))
+    dh_obsolete_tags+=("$tag")
+  done
+  for tag in "${dh_obsolete_tags[@]}"; do
     if [[ "$DRY_RUN" == true ]]; then
       echo "    [DRY RUN] Would delete Docker Hub tag: $tag" >&2
     elif _cleanup_outdated_tags_delete dockerhub-tag "$dh_jwt" "$container" "$tag"; then
@@ -648,7 +715,7 @@ main() {
   # 16 is fail-closed when the listing required an orphan assessment but a
   # prior deletion failure or replay abort prevented that phase from running.
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
-  local containers_output container valid_tags valid_count result ghcr_status dh_result dh_status containers_discovered=true
+  local containers_output container valid_tags valid_count result ghcr_status dh_result dh_result_file dh_status containers_discovered=true
   local -a containers=()
   # shellcheck disable=SC2034 # parse_result_counters assigns this dynamic output destination.
   local kept obsolete orphans delete_failures dh_assessed dh_candidates dh_successful_deletes dh_delete_failures package_assessed skip_dockerhub
@@ -709,7 +776,16 @@ main() {
       continue
     fi
 
-    if dh_result=$(purge_dockerhub "$container" "$valid_tags"); then dh_status=0; else dh_status=$?; fi
+    if ! dh_result_file=$(mktemp); then
+      echo "  ✗ Failed to prepare Docker Hub cleanup result; skipping $container"
+      total_processing_failures=$((total_processing_failures + 1))
+      continue
+    fi
+    if purge_dockerhub "$container" "$valid_tags" > "$dh_result_file"; then dh_status=0; else dh_status=$?; fi
+    dh_result=$(<"$dh_result_file")
+    # The completed result is already in memory; a failed best-effort removal
+    # must not discard its accounting or hide the cleanup status.
+    rm -f "$dh_result_file" 2>/dev/null || true
     case "$dh_status" in
       0|"$DELETE_FAILURE")
         if parse_result_counters "$dh_result" "Docker Hub cleanup result" \

@@ -97,12 +97,21 @@ run_dockerhub_fixture() {
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            write_listing() {
+                local body="$1" output_file="" curl_arg previous=""
+                for curl_arg in "$@"; do
+                    if [[ "$previous" == "--output" ]]; then output_file="$curl_arg"; break; fi
+                    previous="$curl_arg"
+                done
+                [[ -n "$output_file" ]] || { echo "listing did not use --output" >&2; return 1; }
+                printf "%s" "$body" > "$output_file"
+            }
             curl() {
                 printf "%s\\n" "$*" >> "$DH_CURL_LOG"
                 case "$*" in
                     *"/users/login"*) printf "%s\\n" "{\"token\":\"fixture-jwt\"}" ;;
-                    *"page_size=100"*) printf "%s\\n" "$DH_PAGE_ONE" ;;
-                    *"page=2"*) printf "%s\\n" "$DH_PAGE_TWO" ;;
+                    *"page_size=100"*) write_listing "$DH_PAGE_ONE" "$@" ;;
+                    *"page=2"*) write_listing "$DH_PAGE_TWO" "$@" ;;
                     *"-X DELETE"*) printf '%s' "$DH_DELETE_HTTP_CODE" ;;
                     *) echo "unexpected curl request: $*" >&2; return 1 ;;
                 esac
@@ -259,12 +268,268 @@ run_dockerhub_fixture() {
     [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
 }
 
-@test "Docker Hub cleanup rejects a tag name containing NUL before deleting" {
-    run_dockerhub_fixture '{"count":1,"results":[{"name":"obsolete\\u0000"}],"next":null}' '' 204 false latest
+@test "Docker Hub cleanup rejects a listing with a literal NUL byte before deleting" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-literal-nul-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            emit_listing() {
+                printf "%s" "{\"count\":1,\"results\":[{\"name\":\"obso"
+                printf "\0"
+                printf "%s" "lete\"}],\"next\":null}"
+            }
+            curl() {
+                printf "%s\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do
+                            [[ "$previous" != "--output" ]] || output_file="$curl_arg"
+                            previous="$curl_arg"
+                        done
+                        if [[ -n "$output_file" ]]; then emit_listing > "$output_file"; else emit_listing; fi
+                        ;;
+                    *"-X DELETE"*) printf "%s" 204 ;;
+                    *) return 1 ;;
+                esac
+            }
+            purge_dockerhub app latest
+        '
 
     [[ "$status" -eq 10 ]]
     [[ "$output" == *"listing page was malformed"* ]]
-    [[ "$(<"$DH_CURL_LOG")" != *"-X DELETE"* ]]
+    [[ "$(<"$curl_log")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup refuses a declared listing body above the cap before deleting" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-declared-cap-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            curl() {
+                printf "%s\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        if [[ "$*" == *"--max-filesize $DOCKERHUB_LISTING_MAX_BYTES"* ]]; then return 63; fi
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
+                        printf "%s" "{\"count\":1,\"results\":[{\"name\":\"obsolete\"}],\"next\":null}" > "$output_file"
+                        ;;
+                    *"-X DELETE"*) printf "%s" 204 ;;
+                    *) return 1 ;;
+                esac
+            }
+            purge_dockerhub app latest
+        '
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"Failed to list Docker Hub tags"* ]]
+    [[ "$(<"$curl_log")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup removes a streamed listing body above the cap before deleting" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-streamed-cap-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            curl() {
+                printf "%s\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
+                        [[ -n "$output_file" ]] || return 1
+                        if [[ "$*" == *"--max-filesize $DOCKERHUB_LISTING_MAX_BYTES"* ]]; then
+                            head -c "$((DOCKERHUB_LISTING_MAX_BYTES + 1))" /dev/zero > "$output_file"
+                            return 63
+                        fi
+                        printf "%s" "{\"count\":1,\"results\":[{\"name\":\"obsolete\"}],\"next\":null}" > "$output_file"
+                        ;;
+                    *"-X DELETE"*) printf "%s" 204 ;;
+                    *) return 1 ;;
+                esac
+            }
+            purge_dockerhub app latest
+        '
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"Failed to list Docker Hub tags"* ]]
+    [[ "$(<"$curl_log")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup accepts a listing exactly at the cap" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=true bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            DOCKERHUB_LISTING_MAX_BYTES=128
+            curl() {
+                case "$*" in
+                    *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
+                        body="{\"count\":1,\"results\":[{\"name\":\"obsolete\"}],\"next\":null}"
+                        printf "%s%*s" "$body" "$((DOCKERHUB_LISTING_MAX_BYTES - ${#body}))" "" > "$output_file"
+                        ;;
+                    *) return 1 ;;
+                esac
+            }
+            purge_dockerhub app latest
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"1|1|0|0"* ]]
+}
+
+@test "Docker Hub cleanup refuses a cap hit on a later page before deleting earlier candidates" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-later-cap-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            curl() {
+                printf "%s\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
+                        printf "%s" "{\"count\":2,\"results\":[{\"name\":\"obsolete\"}],\"next\":\"https://hub.docker.com/v2/repositories/test-user/app/tags?page=2\"}" > "$output_file"
+                        ;;
+                    *"page=2"*) return 63 ;;
+                    *"-X DELETE"*) printf "%s" 204 ;;
+                    *) return 1 ;;
+                esac
+            }
+            purge_dockerhub app latest
+        '
+
+    [[ "$status" -eq 10 ]]
+    [[ "$(<"$curl_log")" == *"page=2"* ]]
+    [[ "$(<"$curl_log")" != *"-X DELETE"* ]]
+}
+
+@test "Docker Hub cleanup refuses before its first request when the shared budget is exhausted" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-budget-first-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=true CURL_LOG="$curl_log" bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            DOCKERHUB_REQUESTS_REMAINING=0
+            curl() { printf "%s\n" "$*" >> "$CURL_LOG"; return 1; }
+            purge_dockerhub app latest
+        '
+
+    [[ "$status" -eq 11 ]]
+    [[ "$output" == *"request budget exhausted"* ]]
+    [[ ! -s "$curl_log" ]]
+}
+
+@test "Docker Hub cleanup refuses between listing pages when the shared budget is exhausted" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-budget-pages-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=true CURL_LOG="$curl_log" bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            DOCKERHUB_REQUESTS_REMAINING=2
+            curl() {
+                printf "%s\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
+                        printf "%s" "{\"count\":2,\"results\":[{\"name\":\"obsolete\"}],\"next\":\"https://hub.docker.com/v2/repositories/test-user/app/tags?page=2\"}" > "$output_file"
+                        ;;
+                    *) return 1 ;;
+                esac
+            }
+            purge_dockerhub app latest
+        '
+
+    [[ "$status" -eq 10 ]]
+    [[ "$output" == *"request budget exhausted"* ]]
+    [[ "$(grep -c -- '/tags' "$curl_log")" -eq 1 ]]
+}
+
+@test "Docker Hub cleanup refuses between DELETEs when the shared budget is exhausted" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-budget-deletes-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
+            DOCKERHUB_REQUESTS_REMAINING=3
+            curl() {
+                printf "%s\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
+                        printf "%s" "{\"count\":2,\"results\":[{\"name\":\"obsolete-one\"},{\"name\":\"obsolete-two\"}],\"next\":null}" > "$output_file"
+                        ;;
+                    *"-X DELETE"*) printf "%s" 204 ;;
+                    *) return 1 ;;
+                esac
+            }
+            purge_dockerhub app latest
+        '
+
+    [[ "$status" -eq 12 ]]
+    [[ "$output" == *"1|2|1|1"* ]]
+    [[ "$(grep -c -- '-X DELETE' "$curl_log")" -eq 1 ]]
+}
+
+@test "Docker Hub request allowance is shared across containers in main" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-shared-budget-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=true CURL_LOG="$curl_log" bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            DOCKERHUB_REQUESTS_REMAINING=2
+            build_valid_tags() { printf "%s\n" latest; }
+            purge_ghcr() { printf "%s\n" "0|0|0|0"; }
+            curl() {
+                printf "%s\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
+                        printf "%s" "{\"count\":1,\"results\":[{\"name\":\"latest\"}],\"next\":null}" > "$output_file"
+                        ;;
+                    *) return 1 ;;
+                esac
+            }
+            main first second
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"request budget exhausted"* ]]
+    [[ "$(grep -c -- '/users/login' "$curl_log")" -eq 1 ]]
 }
 
 @test "Docker Hub cleanup rejects duplicate names across pages before deleting" {
@@ -311,12 +576,17 @@ run_dockerhub_fixture() {
                     *"/users/login"*) printf "%s\\n" "{\"token\":\"fixture-jwt\"}" ;;
                     *"/tags?"*)
                         page=1
+                        output_file=""
+                        previous=""
                         for curl_arg in "$@"; do
+                            if [[ "$previous" == "--output" ]]; then output_file="$curl_arg"; fi
                             case "$curl_arg" in *page_size=100*) page=1 ;; *page=*) page="${curl_arg##*page=}" ;; esac
+                            previous="$curl_arg"
                         done
                         if [[ "$page" -gt "$MAX_PAGES" ]]; then next=null; else next="\"https://hub.docker.com/v2/repositories/test-user/app/tags?page=$((page + 1))\""; fi
+                        [[ -n "$output_file" ]] || return 1
                         printf "{\"count\":%s,\"results\":[{\"name\":\"tag%s\"}],\"next\":%s}\\n" \
-                            "$((MAX_PAGES + 1))" "$page" "$next"
+                            "$((MAX_PAGES + 1))" "$page" "$next" > "$output_file"
                         ;;
                     *) echo "unexpected curl request: $*" >&2; return 1 ;;
                 esac
@@ -344,12 +614,17 @@ run_dockerhub_fixture() {
                     *"/users/login"*) printf "%s\\n" "{\"token\":\"fixture-jwt\"}" ;;
                     *"/tags?"*)
                         page=1
+                        output_file=""
+                        previous=""
                         for curl_arg in "$@"; do
+                            if [[ "$previous" == "--output" ]]; then output_file="$curl_arg"; fi
                             case "$curl_arg" in *page_size=100*) page=1 ;; *page=*) page="${curl_arg##*page=}" ;; esac
+                            previous="$curl_arg"
                         done
                         if [[ "$page" -eq "$MAX_PAGES" ]]; then next=null; else next="\"https://hub.docker.com/v2/repositories/test-user/app/tags?page=$((page + 1))\""; fi
+                        [[ -n "$output_file" ]] || return 1
                         printf "{\"count\":%s,\"results\":[{\"name\":\"tag%s\"}],\"next\":%s}\\n" \
-                            "$MAX_PAGES" "$page" "$next"
+                            "$MAX_PAGES" "$page" "$next" > "$output_file"
                         ;;
                     *) echo "unexpected curl request: $*" >&2; return 1 ;;
                 esac
@@ -1098,6 +1373,14 @@ run_orphan_phase_completion_case() {
     local valid_tags
     valid_tags=$(make_valid_tags "2.334.0" "latest" "buildcache")
     is_valid_tag "2.334.0" "$valid_tags"
+}
+
+@test "is_valid_tag: grep status 2 is preserved rather than treated as obsolete" {
+    grep() { return 2; }
+
+    run is_valid_tag "latest" "latest"
+
+    [[ "$status" -eq 2 ]]
 }
 
 @test "is_valid_tag: unknown tag returns invalid" {
