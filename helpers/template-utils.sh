@@ -15,6 +15,8 @@ _TEMPLATE_UTILS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source logging if available
 if [[ -f "$_TEMPLATE_UTILS_DIR/logging.sh" ]]; then
+    # shellcheck source=helpers/logging.sh
+    # shellcheck disable=SC1091 # Source path is intentionally computed at runtime.
     source "$_TEMPLATE_UTILS_DIR/logging.sh"
 else
     log_info()    { echo "INFO: $*" >&2; }
@@ -67,23 +69,60 @@ expand_template() {
         fi
     done
 
-    # Process template line by line
-    while IFS= read -r line; do
-        local matched=false
-        local i
-        for i in "${!_marker_names[@]}"; do
-            if [[ "$line" == *"@@${_marker_names[$i]}@@"* ]]; then
-                # Replace marker line with content (if non-empty)
-                if [[ -n "${_marker_content[$i]}" ]]; then
-                    printf '%s' "${_marker_content[$i]}"
-                fi
-                matched=true
+    # Process template line by line.  Preserve the reader's status as well as
+    # the loop's, so an I/O failure after opening the template cannot yield a
+    # silently truncated artifact.  Every write is checked explicitly because
+    # callers commonly invoke this function where errexit is suppressed.
+    local -a _template_pipeline_status=()
+    if {
+        cat -- "$template" | while :; do
+            local _terminated=false
+            if IFS= read -r line; then
+                _terminated=true
+            elif [[ -n "$line" ]]; then
+                :
+            else
                 break
             fi
+            local matched=false
+            local i
+            for i in "${!_marker_names[@]}"; do
+                if [[ "$line" == *"@@${_marker_names[$i]}@@"* ]]; then
+                    # Replace marker line with content (if non-empty)
+                    if [[ -n "${_marker_content[$i]}" ]]; then
+                        if ! printf '%s' "${_marker_content[$i]}"; then
+                            log_error "expand_template: failed to write marker @@${_marker_names[$i]}@@ from template: $template"
+                            return 1
+                        fi
+                    fi
+                    matched=true
+                    break
+                fi
+            done
+            if [[ "$matched" != "true" ]]; then
+                if [[ "$_terminated" == "true" ]]; then
+                    if ! printf '%s\n' "$line"; then
+                        log_error "expand_template: failed to write passthrough line (no marker) from template: $template"
+                        return 1
+                    fi
+                else
+                    if ! printf '%s' "$line"; then
+                        log_error "expand_template: failed to write passthrough line (no marker) from template: $template"
+                        return 1
+                    fi
+                fi
+            fi
         done
-        if [[ "$matched" != "true" ]]; then
-            printf '%s\n' "$line"
+        _template_pipeline_status=("${PIPESTATUS[@]}")
+    }; then
+        if [[ "${_template_pipeline_status[1]}" -ne 0 ]]; then
+            return 1
         fi
-    done < "$template"
-    return 0
+        # Once the loop stops early after a consumer failure, cat may report
+        # SIGPIPE; report only the consumer's write diagnosis, not a read error.
+        if [[ "${_template_pipeline_status[0]}" -ne 0 ]]; then
+            log_error "expand_template: failed to read template: $template"
+            return 1
+        fi
+    fi
 }
