@@ -28,6 +28,8 @@ setup() {
   # Lineage dir under $TEST_TEMP_DIR for isolation
   export LINEAGE_DIR="$TEST_TEMP_DIR/.build-lineage"
   mkdir -p "$LINEAGE_DIR"
+  export TMPDIR="$TEST_TEMP_DIR/tmp"
+  mkdir -p "$TMPDIR"
 
   # Stub bin dir on PATH
   mkdir -p "$TEST_TEMP_DIR/bin"
@@ -41,6 +43,7 @@ setup() {
 teardown() {
   teardown_temp_dir
   export PATH="$ORIGINAL_PATH"
+  unset BASH_ENV
 }
 
 # Write a stub gh that returns no attestations
@@ -68,6 +71,65 @@ _write_stub_curl_empty() {
 exit 0
 STUB
   chmod +x "$TEST_TEMP_DIR/bin/curl"
+}
+
+# Fail only enrichment publication; collect_lines also uses mv to publish its
+# completed enumeration and must remain successful for this test.
+_write_stub_mv_fail_enrich_temp() {
+  export REAL_MV
+  REAL_MV="$(command -v mv)"
+  cat > "$TEST_TEMP_DIR/bin/mv" <<'STUB'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    */.enrich-tmp.*)
+      echo "simulated mv failure" >&2
+      exit 73
+      ;;
+  esac
+done
+exec "$REAL_MV" "$@"
+STUB
+  chmod +x "$TEST_TEMP_DIR/bin/mv"
+}
+
+_write_stub_find_partial_failure() {
+  cat > "$TEST_TEMP_DIR/bin/find" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$1/first-1.0.0.json"
+echo "simulated find failure" >&2
+exit 71
+STUB
+  chmod +x "$TEST_TEMP_DIR/bin/find"
+}
+
+_write_stub_rm_fail_enumeration_cleanup() {
+  export REAL_RM
+  REAL_RM="$(command -v rm)"
+  cat > "$TEST_TEMP_DIR/bin/rm" <<'STUB'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    "$TMPDIR"/enrich-lineage-files.*.tmp.*)
+      ;;
+    "$TMPDIR"/enrich-lineage-files.*)
+      echo "simulated enumeration cleanup failure" >&2
+      exit 72
+      ;;
+  esac
+done
+exec "$REAL_RM" "$@"
+STUB
+  chmod +x "$TEST_TEMP_DIR/bin/rm"
+}
+
+# Make the enumeration file disappear immediately before mapfile reads it.
+_write_bash_env_remove_enumeration_file_before_read() {
+  local fixture="$TEST_TEMP_DIR/enumeration-file-disappears-before-read.bash"
+  cat > "$fixture" <<'FIXTURE'
+trap 'if [[ "$BASH_COMMAND" == '\''mapfile -t lineage_files < "$lineage_files_file"'\'' && "$lineage_files_file" == "$TMPDIR"/enrich-lineage-files.* && -e "$lineage_files_file" ]]; then trap - DEBUG; command -p rm -f -- "$lineage_files_file"; : > "$TEST_TEMP_DIR/enumeration-file-disappeared-before-read"; fi' DEBUG
+FIXTURE
+  export BASH_ENV="$fixture"
 }
 
 # Create a minimal lineage file in LINEAGE_DIR
@@ -108,6 +170,57 @@ _run_enrich() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"::notice::"* ]]
   [[ "$output" == *"Enriched 0"* ]]
+}
+
+@test "read-only lineage dir: exits 0 as an empty no-op" {
+  chmod a-w "$LINEAGE_DIR"
+
+  _run_enrich
+
+  chmod u+w "$LINEAGE_DIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Enriched 0 lineage files (0 skipped, 0 errors)"* ]]
+}
+
+@test "find failure after output reports an error and does not claim a complete pass" {
+  _write_lineage "first-1.0.0.json" "first" "1.0.0"
+  _write_stub_find_partial_failure
+
+  _run_enrich
+
+  [ "$status" -eq 71 ]
+  [[ "$output" == *"simulated find failure"* ]]
+  [[ "$output" == *"::error::Failed to enumerate lineage files"* ]]
+  [[ "$output" != *"Enriched "* ]]
+  [ "$(jq -r 'has("multi_arch_index_digest")' "$LINEAGE_DIR/first-1.0.0.json")" = "false" ]
+}
+
+@test "find failure survives an enumeration cleanup failure" {
+  _write_lineage "first-1.0.0.json" "first" "1.0.0"
+  _write_stub_find_partial_failure
+  _write_stub_rm_fail_enumeration_cleanup
+
+  _run_enrich
+
+  [ "$status" -eq 71 ]
+  [[ "$output" == *"simulated find failure"* ]]
+  [[ "$output" == *"simulated enumeration cleanup failure"* ]]
+  [[ "$output" == *"::warning::Could not remove lineage enumeration file"* ]]
+  [[ "$output" == *"::error::Failed to enumerate lineage files"* ]]
+  [[ "$output" != *"Enriched "* ]]
+}
+
+@test "enumeration file disappearing before read reports an error and does not enrich records" {
+  _write_lineage "unreadable-1.0.0.json" "unreadable" "1.0.0"
+  _write_bash_env_remove_enumeration_file_before_read
+
+  _run_enrich
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error::Failed to open lineage enumeration file"* ]]
+  [[ "$output" != *"Enriched "* ]]
+  [ "$(jq -r 'has("multi_arch_index_digest")' "$LINEAGE_DIR/unreadable-1.0.0.json")" = "false" ]
+  [ -f "$TEST_TEMP_DIR/enumeration-file-disappeared-before-read" ]
 }
 
 # -----------------------------------------------------------------------
@@ -307,6 +420,19 @@ JSON
   [ "$status" -eq 0 ]
   run jq -e 'has("multi_arch_index_digest")' "$LINEAGE_DIR/zzz-good-2.0.0.json"
   [ "$status" -eq 0 ]
+}
+
+@test "failed replacement counts as an error and removes the enrichment temporary file" {
+  _write_lineage "mv-failure-1.0.0.json" "mv-failure" "1.0.0"
+  _write_stub_mv_fail_enrich_temp
+
+  _run_enrich
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Failed to enrich mv-failure-1.0.0.json: could not replace lineage file"* ]]
+  [[ "$output" == *"Enriched 0 lineage files (0 skipped, 1 errors)"* ]]
+  [ "$(jq -r 'has("multi_arch_index_digest")' "$LINEAGE_DIR/mv-failure-1.0.0.json")" = "false" ]
+  [ "$(find "$LINEAGE_DIR" -name '.enrich-tmp.*' -type f | wc -l)" -eq 0 ]
 }
 
 # -----------------------------------------------------------------------

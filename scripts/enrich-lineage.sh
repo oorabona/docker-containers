@@ -58,6 +58,9 @@ source "${PROJECT_ROOT}/helpers/attestation-utils.sh"
 # shellcheck source=../helpers/lineage-utils.sh
 # shellcheck disable=SC1091
 source "${PROJECT_ROOT}/helpers/lineage-utils.sh"
+# shellcheck source=../helpers/collect-lines.sh
+# shellcheck disable=SC1091
+source "${PROJECT_ROOT}/helpers/collect-lines.sh"
 
 # ---------------------------------------------------------------------------
 # Constants: files to skip (not container lineage files)
@@ -65,6 +68,14 @@ source "${PROJECT_ROOT}/helpers/lineage-utils.sh"
 # Pattern matches: *.sbom.json  *.changelog.json  *.history.json  ext-*.json
 _is_skippable_file() {
     is_lineage_sidecar "$1"
+}
+
+# collect_lines invokes this producer in an `if` condition, where Bash suppresses
+# errexit. Return the pipeline status explicitly so a failed find never publishes
+# a partial enumeration.
+_list_lineage_files() {
+    find "$LINEAGE_DIR" -maxdepth 1 -name '*.json' -type f | sort
+    return "$?"
 }
 
 # ---------------------------------------------------------------------------
@@ -80,7 +91,37 @@ if [[ ! -d "$LINEAGE_DIR" ]]; then
 fi
 
 # Collect all *.json files in the lineage dir (non-recursive; lineage files are flat)
-while IFS= read -r lineage_file; do
+lineage_files_file=$(mktemp "${TMPDIR:-/tmp}/enrich-lineage-files.XXXXXX") || {
+    echo "::error::Could not create lineage enumeration file in ${TMPDIR:-/tmp}" >&2
+    exit 1
+}
+if collect_lines "$lineage_files_file" -- _list_lineage_files; then
+    :
+else
+    enumeration_status=$?
+    if ! rm -f "$lineage_files_file"; then
+        echo "::warning::Could not remove lineage enumeration file $lineage_files_file" >&2
+    fi
+    echo "::error::Failed to enumerate lineage files in $LINEAGE_DIR" >&2
+    exit "$enumeration_status"
+fi
+
+declare -a lineage_files
+if mapfile -t lineage_files < "$lineage_files_file"; then
+    :
+else
+    read_status=$?
+    if ! rm -f "$lineage_files_file"; then
+        echo "::warning::Could not remove lineage enumeration file $lineage_files_file" >&2
+    fi
+    echo "::error::Failed to open lineage enumeration file $lineage_files_file" >&2
+    exit "$read_status"
+fi
+if ! rm -f "$lineage_files_file"; then
+    echo "::warning::Could not remove lineage enumeration file $lineage_files_file" >&2
+fi
+
+for lineage_file in "${lineage_files[@]}"; do
     basename_file="$(basename "$lineage_file")"
 
     # Skip non-lineage files
@@ -155,7 +196,6 @@ while IFS= read -r lineage_file; do
     # --- Merge fields into lineage file (atomic write) ---
     # Build the update expression as a single jq call to avoid multiple reads
     tmp_file=$(mktemp "${LINEAGE_DIR}/.enrich-tmp.XXXXXX")
-    update_ok=0
 
     if jq \
         --argjson multi_arch_digests "$multi_arch_digests" \
@@ -174,16 +214,20 @@ while IFS= read -r lineage_file; do
             attestation_id:            $attestation_id,
             attestation_url:           $attestation_url
         }' "$lineage_file" > "$tmp_file" 2>/dev/null; then
-        mv -f "$tmp_file" "$lineage_file"
-        update_ok=1
+        if mv -f "$tmp_file" "$lineage_file"; then
+            enriched=$((enriched + 1))
+        else
+            rm -f "$tmp_file" 2>/dev/null || true
+            echo "::warning::Failed to enrich $basename_file: could not replace lineage file" >&2
+            errors=$((errors + 1))
+            continue
+        fi
     else
         rm -f "$tmp_file" 2>/dev/null || true
         echo "::warning::Failed to enrich $basename_file: jq merge failed" >&2
         errors=$((errors + 1))
     fi
 
-    [[ "$update_ok" -eq 1 ]] && enriched=$((enriched + 1))
-
-done < <(find "$LINEAGE_DIR" -maxdepth 1 -name '*.json' -type f 2>/dev/null | sort)
+done
 
 echo "::notice::Enriched $enriched lineage files ($skipped skipped, $errors errors)"
