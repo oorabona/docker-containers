@@ -75,7 +75,15 @@ expand_template() {
     # callers commonly invoke this function where errexit is suppressed.
     local -a _template_pipeline_status=()
     if {
-        cat -- "$template" | while IFS= read -r line || [[ -n "$line" ]]; do
+        cat -- "$template" | while :; do
+            local _terminated=false
+            if IFS= read -r line; then
+                _terminated=true
+            elif [[ -n "$line" ]]; then
+                :
+            else
+                break
+            fi
             local matched=false
             local i
             for i in "${!_marker_names[@]}"; do
@@ -92,15 +100,27 @@ expand_template() {
                 fi
             done
             if [[ "$matched" != "true" ]]; then
-                if ! printf '%s\n' "$line"; then
-                    log_error "expand_template: failed to write passthrough line (no marker) from template: $template"
-                    return 1
+                if [[ "$_terminated" == "true" ]]; then
+                    if ! printf '%s\n' "$line"; then
+                        log_error "expand_template: failed to write passthrough line (no marker) from template: $template"
+                        return 1
+                    fi
+                else
+                    if ! printf '%s' "$line"; then
+                        log_error "expand_template: failed to write passthrough line (no marker) from template: $template"
+                        return 1
+                    fi
                 fi
             fi
         done
         _template_pipeline_status=("${PIPESTATUS[@]}")
     }; then
-        if [[ "${_template_pipeline_status[0]}" -ne 0 || "${_template_pipeline_status[1]}" -ne 0 ]]; then
+        if [[ "${_template_pipeline_status[1]}" -ne 0 ]]; then
+            return 1
+        fi
+        # Once the loop stops early after a consumer failure, cat may report
+        # SIGPIPE; report only the consumer's write diagnosis, not a read error.
+        if [[ "${_template_pipeline_status[0]}" -ne 0 ]]; then
             log_error "expand_template: failed to read template: $template"
             return 1
         fi

@@ -97,7 +97,8 @@ with open('$file', 'w') as f:
 #
 # RED before fix: `[[ -n "" ]] && printf ...` → [[]] exits 1, && short-
 # circuits, last exit status of loop body = 1.  Function returned 1.
-# GREEN after fix: success path ends with an explicit `return 0`.
+# GREEN after fix: the final compound `if` has no failure branch to run, so
+# the function falls through with status 0.
 # ---------------------------------------------------------------------------
 @test "expand_template: EMPTY replacement on last-line marker → exit 0 [was RED]" {
     local tpl="$TEST_TEMP_DIR/Dockerfile.template"
@@ -203,15 +204,44 @@ with open('$file', 'w') as f:
     [[ "$output" == *"content"* ]]
 }
 
-@test "expand_template: unterminated final line is emitted" {
+@test "expand_template: preserves an unterminated final passthrough line byte-for-byte" {
     local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    local generated="$TEST_TEMP_DIR/generated"
+    local expected="$TEST_TEMP_DIR/expected"
     printf '%s' $'ARG VERSION\n# @@BLOCK_A@@\nunterminated final line' > "$tpl"
 
-    run expand_template "$tpl" "BLOCK_A" ""
+    expand_template "$tpl" "BLOCK_A" $'expanded marker\n' > "$generated"
+    printf '%s' $'ARG VERSION\nexpanded marker\nunterminated final line' > "$expected"
 
-    [ "$status" -eq 0 ]
-    echo "$output" | grep -Fqx 'ARG VERSION'
-    echo "$output" | grep -Fqx 'unterminated final line'
+    cmp -s "$expected" "$generated"
+}
+
+@test "expand_template: marker on unterminated final line uses replacement bytes" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    local generated="$TEST_TEMP_DIR/generated"
+    local expected="$TEST_TEMP_DIR/expected"
+    printf '%s' $'ARG VERSION\n# @@BLOCK_A@@' > "$tpl"
+
+    expand_template "$tpl" "BLOCK_A" "replacement without newline" > "$generated"
+    printf '%s' $'ARG VERSION\nreplacement without newline' > "$expected"
+
+    cmp -s "$expected" "$generated"
+}
+
+@test "expand_template: preserves terminated blank passthrough records" {
+    local tpl="$TEST_TEMP_DIR/Dockerfile.template"
+    local generated="$TEST_TEMP_DIR/generated"
+    local expected="$TEST_TEMP_DIR/expected"
+
+    printf '%s' $'# @@BLOCK_A@@\na\n\n' > "$tpl"
+    expand_template "$tpl" "BLOCK_A" "" > "$generated"
+    printf '%s' $'a\n\n' > "$expected"
+    cmp -s "$expected" "$generated"
+
+    printf '%s' $'# @@BLOCK_A@@\n\n' > "$tpl"
+    expand_template "$tpl" "BLOCK_A" "" > "$generated"
+    printf '%s' $'\n' > "$expected"
+    cmp -s "$expected" "$generated"
 }
 
 # ---------------------------------------------------------------------------
@@ -229,6 +259,7 @@ with open('$file', 'w') as f:
     [ "$status" -ne 0 ]
     [[ "$output" == *"@@BLOCK_A@@"* ]]
     [[ "$output" == *"$tpl"* ]]
+    [[ "$output" != *"failed to read template"* ]]
 }
 
 @test "expand_template: marker write to /dev/full returns non-zero under if" {
@@ -253,7 +284,7 @@ with open('$file', 'w') as f:
     [[ "$output" == *"@@BLOCK_A@@"* ]]
 }
 
-@test "expand_template: marker write failure emits no marker or later content" {
+@test "expand_template: marker write failure returns non-zero and emits no later content" {
     local tpl="$TEST_TEMP_DIR/Dockerfile.template"
     local generated="$TEST_TEMP_DIR/generated"
     local marker_content=$'A_CONTENT\n'
@@ -261,18 +292,19 @@ with open('$file', 'w') as f:
     local position expected
 
     for position in first middle last; do
+        expected="$TEST_TEMP_DIR/expected-$position"
         case "$position" in
             first)
                 printf '%s' $'# @@BLOCK_A@@\n# @@BLOCK_B@@\nafter\n' > "$tpl"
-                expected=""
+                printf '%s' 'MARKER_PREFIX' > "$expected"
                 ;;
             middle)
                 printf '%s' $'before\n# @@BLOCK_A@@\n# @@BLOCK_B@@\nafter\n' > "$tpl"
-                expected=$'before\n'
+                printf '%s' $'before\nMARKER_PREFIX' > "$expected"
                 ;;
             last)
                 printf '%s' $'before\n# @@BLOCK_B@@\n# @@BLOCK_A@@\n' > "$tpl"
-                expected=$'before\nB_CONTENT\n'
+                printf '%s' $'before\nB_CONTENT\nMARKER_PREFIX' > "$expected"
                 ;;
         esac
 
@@ -281,6 +313,7 @@ with open('$file', 'w') as f:
             marker_content="$4"
             printf() {
                 if [[ "$1" == "%s" && "$2" == "$marker_content" ]]; then
+                    builtin printf "%s" "MARKER_PREFIX"
                     return 1
                 fi
                 builtin printf "$@"
@@ -292,14 +325,17 @@ with open('$file', 'w') as f:
         ' bash "$HELPERS_DIR/template-utils.sh" "$tpl" "$generated" "$marker_content" "$second_content"
 
         [ "$status" -eq 1 ]
-        [ "$(<"$generated")" = "${expected%$'\n'}" ]
-        ! grep -Fq '@@' "$generated"
+        cmp -s "$expected" "$generated"
+        ! grep -Fq 'after' "$generated"
+        [[ "$output" == *"failed to write marker @@BLOCK_A@@"* ]]
+        [[ "$output" != *"failed to read template"* ]]
     done
 }
 
-@test "expand_template: passthrough write failure emits nothing later" {
+@test "expand_template: passthrough write failure returns non-zero and emits no later content" {
     local tpl="$TEST_TEMP_DIR/Dockerfile.template"
     local generated="$TEST_TEMP_DIR/generated"
+    local expected="$TEST_TEMP_DIR/expected"
 
     printf '%s' $'# @@BLOCK_A@@\nfailed\nafter\n' > "$tpl"
 
@@ -307,6 +343,7 @@ with open('$file', 'w') as f:
         source "$1"
         printf() {
             if [[ "$1" == "%s\\n" && "$2" == "failed" ]]; then
+                builtin printf "%s" "PASSTHROUGH_PREFIX"
                 return 1
             fi
             builtin printf "$@"
@@ -318,8 +355,11 @@ with open('$file', 'w') as f:
     ' bash "$HELPERS_DIR/template-utils.sh" "$tpl" "$generated"
 
     [ "$status" -eq 1 ]
-    [ ! -s "$generated" ]
+    printf '%s' 'PASSTHROUGH_PREFIX' > "$expected"
+    cmp -s "$expected" "$generated"
     ! grep -Fq 'after' "$generated"
+    [[ "$output" == *"failed to write passthrough line (no marker)"* ]]
+    [[ "$output" != *"failed to read template"* ]]
 }
 
 @test "expand_template: empty marker content succeeds and emits later lines" {
@@ -343,6 +383,7 @@ with open('$file', 'w') as f:
     [ "$status" -ne 0 ]
     [[ "$output" == *"passthrough line (no marker)"* ]]
     [[ "$output" == *"$tpl"* ]]
+    [[ "$output" != *"failed to read template"* ]]
 }
 
 @test "expand_template: template redirection failure returns non-zero" {
