@@ -338,6 +338,7 @@ jobs:
           # the other opt-ins declare no flavour and leave these empty.
           flavor: ${{ matrix.build.flavor }}
           build_flavor: ${{ matrix.build.build_flavor }}
+          is_latest_version: ${{ matrix.build.is_latest_version }}
           variant: ${{ matrix.build.variant }}
           dockerfile: ${{ matrix.build.dockerfile }}
           platform: linux/amd64
@@ -1251,6 +1252,7 @@ jobs:
           tag: ${{ matrix.build.tag }}
           flavor: ${{ matrix.build.flavor }}
           build_flavor: ${{ matrix.build.build_flavor }}
+          is_latest_version: ${{ matrix.build.is_latest_version }}
           variant: ${{ matrix.build.variant }}
           dockerfile: ${{ matrix.build.dockerfile }}
           platform: ${{ matrix.platform }}
@@ -1638,6 +1640,7 @@ jobs:
           FULL_VERSION: ${{ matrix.build.full_version }}
           VARIANT: ${{ matrix.build.variant }}
           FLAVOR: ${{ matrix.build.flavor }}
+          BUILD_FLAVOR: ${{ matrix.build.build_flavor }}
           IS_DEFAULT: ${{ matrix.build.is_default }}
           IS_LATEST_VERSION: ${{ matrix.build.is_latest_version }}
           CELL_OS: ${{ matrix.build.os }}
@@ -1664,7 +1667,7 @@ jobs:
             # The Windows manifest path owns the variant alias only.
             if [[ "${IS_LATEST_VERSION}" == "true" ]]; then
               rolling_suffixes=$(./scripts/list-cell-rolling-tag-suffixes.sh \
-                "windows-manifest" "$TAG" "$CELL_OS" "$VARIANT" "$FLAVOR" "$IS_DEFAULT")
+                "windows-manifest" "$TAG" "$CELL_OS" "$VARIANT" "$FLAVOR" "$IS_DEFAULT" "$BUILD_FLAVOR")
               while IFS= read -r latest_tag; do
                 [[ -z "$latest_tag" ]] && continue
                 rolling_ref="ghcr.io/$GITHUB_USERNAME/$CONTAINER:$latest_tag"
@@ -1697,6 +1700,7 @@ jobs:
           FULL_VERSION: ${{ matrix.build.full_version }}
           VARIANT: ${{ matrix.build.variant }}
           FLAVOR: ${{ matrix.build.flavor }}
+          BUILD_FLAVOR: ${{ matrix.build.build_flavor }}
           IS_DEFAULT: ${{ matrix.build.is_default }}
           IS_LATEST_VERSION: ${{ matrix.build.is_latest_version }}
           CELL_OS: ${{ matrix.build.os }}
@@ -1718,7 +1722,7 @@ jobs:
             # The Windows manifest path owns the variant alias only.
             if [[ "${IS_LATEST_VERSION}" == "true" ]]; then
               rolling_suffixes=$(./scripts/list-cell-rolling-tag-suffixes.sh \
-                "windows-manifest" "$TAG" "$CELL_OS" "$VARIANT" "$FLAVOR" "$IS_DEFAULT")
+                "windows-manifest" "$TAG" "$CELL_OS" "$VARIANT" "$FLAVOR" "$IS_DEFAULT" "$BUILD_FLAVOR")
               while IFS= read -r latest_tag; do
                 [[ -z "$latest_tag" ]] && continue
                 echo "::notice::Creating Windows Docker Hub rolling tag: docker.io/$DOCKERHUB_USERNAME/$CONTAINER:$latest_tag"

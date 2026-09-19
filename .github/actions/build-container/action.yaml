@@ -20,6 +20,10 @@ inputs:
     description: Build-time flavor selector (e.g. base/dev) passed as --build-flavor to make
     required: false
     default: ''
+  is_latest_version:
+    description: Whether this cell belongs to the latest retained version and may publish rolling aliases
+    required: false
+    default: ''
   variant:
     description: Variant name (for logging/identification)
     required: false
@@ -962,7 +966,9 @@ runs:
         PLATFORM_SUFFIX: ${{ steps.check-build.outputs.platform_suffix }}
         VARIANT: ${{ inputs.variant }}
         FLAVOR: ${{ steps.check-build.outputs.flavor }}
+        BUILD_FLAVOR: ${{ inputs.build_flavor }}
         IS_DEFAULT: ${{ steps.check-build.outputs.is_default }}
+        IS_LATEST_VERSION: ${{ inputs.is_latest_version }}
         RUNNER_OS_VALUE: ${{ runner.os }}
         DOCKERHUB_PUSH_SUCCEEDED: ${{ steps.push-dockerhub.outputs.success }}
       run: |
@@ -971,7 +977,9 @@ runs:
         platform_suffix="$PLATFORM_SUFFIX"
         variant="$VARIANT"
         flavor="$FLAVOR"
+        build_flavor="$BUILD_FLAVOR"
         is_default="$IS_DEFAULT"
+        is_latest_version="$IS_LATEST_VERSION"
         runner_os="$RUNNER_OS_VALUE"
         dockerhub_push_succeeded="$DOCKERHUB_PUSH_SUCCEEDED"
 
@@ -998,9 +1006,9 @@ runs:
 
         # Windows flavor aliases are single-arch and owned by this action.
         # Linux aliases and Windows variant aliases are published elsewhere.
-        if [[ "$runner_os" == "Windows" ]]; then
+        if [[ "$runner_os" == "Windows" && "$is_latest_version" == "true" ]]; then
           rolling_suffixes=$(./scripts/list-cell-rolling-tag-suffixes.sh \
-            "windows-action" "$current_tag" "windows" "$variant" "$flavor" "$is_default")
+            "windows-action" "$current_tag" "windows" "$variant" "$flavor" "$is_default" "$build_flavor")
           while IFS= read -r latest_tag; do
             [[ -z "$latest_tag" ]] && continue
             echo "::notice::Creating Windows rolling tag: ghcr.io/$image_name:$latest_tag"
