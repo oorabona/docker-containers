@@ -582,12 +582,12 @@ compute_local_build_tag_suffixes() {
     local is_default="$4"
     local routing_suffix
 
-    printf '%s\n' "$tag"
+    printf '%s\n' "$tag" || return $?
     [[ "$tag" != "latest" ]] || return 0
 
     if [[ "$is_default" == "true" ]]; then
         printf 'latest\n'
-        return 0
+        return $?
     fi
 
     routing_suffix="${variant:-$flavor}"

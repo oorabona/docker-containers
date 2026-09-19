@@ -1185,6 +1185,32 @@ setup_fallback_test() {
 #   (c) non-default with both keys            → versioned + variant rolling alias (both registries)
 #   (d) tag == "latest"                       → only versioned refs, no rolling latest
 
+@test "compute_cell_tags: a failed local latest-suffix write discards the suffix file" {
+    # /dev/full fails the first producer write. Override printf only for the
+    # literal second (default latest) suffix, so the versioned suffix succeeds
+    # before the producer fails through its public compute_cell_tags caller.
+    run --separate-stderr bash -c '
+        export TMPDIR="$2/local-build-tag-suffixes"
+        mkdir -p "$TMPDIR"
+        source "$1/helpers/collect-lines.sh"
+        source "$1/helpers/variant-utils.sh"
+        printf() {
+            if [[ "$1" == '\''latest\n'\'' ]]; then
+                return 1
+            fi
+            builtin printf "$@"
+        }
+        compute_cell_tags "2.3.1" "" "true" "docker.io/o/p" "ghcr.io/o/p" > "$2/producer-output"
+        producer_status=$?
+        find "$TMPDIR" -mindepth 1 -print -quit | grep -q . && exit 2
+        exit "$producer_status"
+    ' _ "$ORIG_DIR" "$TEST_DIR"
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" != *"expected tag, os, variant, flavor, is_default, and build_flavor"* ]]
+    [[ "$stderr" != *"cell tag routing:"* ]]
+}
+
 @test "compute_cell_tags: an emission that fails is not reported as a full tag set" {
     # The mutation this catches: dropping `return "$_emit_status"`, or the
     # `|| _emit_status=$?` on either printf. Without them the cleanup `rm` is the
