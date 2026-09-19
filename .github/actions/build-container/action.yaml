@@ -588,6 +588,13 @@ runs:
           echo "::notice::Build skipped for $container:$current_tag (image already published with matching digest)"
         fi
 
+    - name: Record disk space after build (Windows)
+      if: ${{ always() && steps.check-build.outputs.needs_build == 'true' && runner.os == 'Windows' }}
+      shell: pwsh
+      run: |
+        $free = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
+        Write-Host "::notice::Disk space after build: $free GB"
+
     # A `docker buildx build --load` leaves the built image in two places at
     # once: BuildKit's own build cache AND the local Docker daemon's image
     # store. Trivy's scan then makes a THIRD copy, re-exporting the

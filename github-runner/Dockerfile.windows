@@ -33,7 +33,9 @@ RUN if (-not $env:PWSH_VERSION) { throw 'PWSH_VERSION is required' }; \
 
 # Install PowerShell 7 via MSI
 RUN Invoke-WebRequest -Uri ('https://github.com/PowerShell/PowerShell/releases/download/v' + $env:PWSH_VERSION + '/PowerShell-' + $env:PWSH_VERSION + '-win-x64.msi') -OutFile C:\pwsh.msi; \
-    Start-Process msiexec.exe -Wait -ArgumentList '/i', 'C:\pwsh.msi', '/quiet', '/norestart'; \
+    $installer = Start-Process -Wait -PassThru -FilePath msiexec.exe -ArgumentList '/i', 'C:\pwsh.msi', '/quiet', '/norestart'; \
+    # 3010 is a successful install awaiting reboot; /norestart prevents reboot-initiated 1641. \
+    if ($installer.ExitCode -notin 0, 3010) { throw ('PowerShell MSI failed with exit code ' + $installer.ExitCode) }; \
     Remove-Item C:\pwsh.msi -Force
 
 # Install Git for Windows
@@ -42,7 +44,9 @@ RUN $p = $env:GIT_VERSION -split '\.windows\.'; \
     $rev = if ($p.Length -gt 1) { $p[1] } else { '1' }; \
     $suf = if ($rev -eq '1') { '' } else { '.' + $rev }; \
     Invoke-WebRequest -Uri ('https://github.com/git-for-windows/git/releases/download/v' + $env:GIT_VERSION + '/Git-' + $num + $suf + '-64-bit.exe') -OutFile C:\git-installer.exe; \
-    Start-Process C:\git-installer.exe -Wait -ArgumentList '/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS', '/COMPONENTS=ext,ext\shellhere,ext\guihere,gitlfs,assoc,assoc_sh'; \
+    $installer = Start-Process -Wait -PassThru -FilePath C:\git-installer.exe -ArgumentList '/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS', '/COMPONENTS=ext,ext\shellhere,ext\guihere,gitlfs,assoc,assoc_sh'; \
+    # Inno Setup documents 0 as the only completed-install exit code. \
+    if ($installer.ExitCode -ne 0) { throw ('Git for Windows installer failed with exit code ' + $installer.ExitCode) }; \
     Remove-Item C:\git-installer.exe -Force
 
 # Install jq
@@ -100,7 +104,9 @@ RUN if (-not $env:PWSH_VERSION) { throw 'PWSH_VERSION is required' }; \
 
 # Install PowerShell 7 via MSI
 RUN Invoke-WebRequest -Uri ('https://github.com/PowerShell/PowerShell/releases/download/v' + $env:PWSH_VERSION + '/PowerShell-' + $env:PWSH_VERSION + '-win-x64.msi') -OutFile C:\pwsh.msi; \
-    Start-Process msiexec.exe -Wait -ArgumentList '/i', 'C:\pwsh.msi', '/quiet', '/norestart'; \
+    $installer = Start-Process -Wait -PassThru -FilePath msiexec.exe -ArgumentList '/i', 'C:\pwsh.msi', '/quiet', '/norestart'; \
+    # 3010 is a successful install awaiting reboot; /norestart prevents reboot-initiated 1641. \
+    if ($installer.ExitCode -notin 0, 3010) { throw ('PowerShell MSI failed with exit code ' + $installer.ExitCode) }; \
     Remove-Item C:\pwsh.msi -Force
 
 # Install Git for Windows
@@ -109,7 +115,9 @@ RUN $p = $env:GIT_VERSION -split '\.windows\.'; \
     $rev = if ($p.Length -gt 1) { $p[1] } else { '1' }; \
     $suf = if ($rev -eq '1') { '' } else { '.' + $rev }; \
     Invoke-WebRequest -Uri ('https://github.com/git-for-windows/git/releases/download/v' + $env:GIT_VERSION + '/Git-' + $num + $suf + '-64-bit.exe') -OutFile C:\git-installer.exe; \
-    Start-Process C:\git-installer.exe -Wait -ArgumentList '/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS', '/COMPONENTS=ext,ext\shellhere,ext\guihere,gitlfs,assoc,assoc_sh'; \
+    $installer = Start-Process -Wait -PassThru -FilePath C:\git-installer.exe -ArgumentList '/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS', '/COMPONENTS=ext,ext\shellhere,ext\guihere,gitlfs,assoc,assoc_sh'; \
+    # Inno Setup documents 0 as the only completed-install exit code. \
+    if ($installer.ExitCode -ne 0) { throw ('Git for Windows installer failed with exit code ' + $installer.ExitCode) }; \
     Remove-Item C:\git-installer.exe -Force
 
 # Install jq
@@ -164,11 +172,15 @@ RUN $expected = 'e0b8ea16494b4a79c68da26773131562aefecc8d87f1923c24d579c7a72e057
       Write-Error ('vs_BuildTools.exe digest mismatch: got ' + $actual + ', expected ' + $expected); \
       exit 1; \
     }; \
-    Start-Process -Wait -FilePath C:\vs_buildtools.exe -ArgumentList \
+    $installer = Start-Process -Wait -PassThru -FilePath C:\vs_buildtools.exe -ArgumentList \
       '--quiet', '--wait', '--norestart', \
       '--add', 'Microsoft.VisualStudio.Workload.VCTools', \
       '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', \
       '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.26100'; \
+    # 3010 is a successful install awaiting reboot; --norestart leaves it pending. \
+    if ($installer.ExitCode -notin 0, 3010) { \
+      throw ('vs_BuildTools.exe failed with exit code ' + $installer.ExitCode); \
+    }; \
     Remove-Item C:\vs_buildtools.exe -Force; \
     Remove-Item -Recurse -Force 'C:\ProgramData\Package Cache' -ErrorAction SilentlyContinue
 
