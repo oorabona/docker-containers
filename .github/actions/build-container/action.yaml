@@ -381,40 +381,6 @@ runs:
 
         $after = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
         Write-Host "::notice::Disk space after cleanup: $after GB (freed $([math]::Round($after - $before, 1)) GB)"
-        Write-Host '::group::Docker disk usage after cleanup'
-        function Invoke-DockerDiagnostic {
-          param(
-            [string]$Description,
-            [scriptblock]$Command,
-            [scriptblock]$OnSuccess
-          )
-          $output = @(& $Command)
-          $exitCode = $LASTEXITCODE
-          if ($exitCode -eq 0) {
-            & $OnSuccess $output
-          } else {
-            Write-Host "::warning::Could not measure $Description: failed with exit code $exitCode"
-          }
-          # GitHub checks the script-scope native exit code after this block.
-          $script:LASTEXITCODE = 0
-        }
-        Invoke-DockerDiagnostic -Description 'Docker disk usage after cleanup (docker system df -v)' -Command { docker system df -v } -OnSuccess {
-          param($output)
-          $output | ForEach-Object { Write-Host $_ }
-        }
-        Invoke-DockerDiagnostic -Description 'dangling images after cleanup (docker image ls --filter dangling=true --quiet)' -Command { docker image ls --filter dangling=true --quiet } -OnSuccess {
-          param($output)
-          Write-Host "::notice::Dangling images after cleanup: $($output.Count)"
-        }
-        Invoke-DockerDiagnostic -Description 'stopped containers after cleanup (docker container ls --all --filter status=exited --quiet)' -Command { docker container ls --all --filter status=exited --quiet } -OnSuccess {
-          param($output)
-          Write-Host "::notice::Stopped containers after cleanup: $($output.Count)"
-        }
-        Invoke-DockerDiagnostic -Description "build cache entries after cleanup (docker builder du --format '{{.ID}}')" -Command { docker builder du --format '{{.ID}}' } -OnSuccess {
-          param($output)
-          Write-Host "::notice::Build cache entries after cleanup: $($output.Count)"
-        }
-        Write-Host '::endgroup::'
 
     - name: Build container
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
@@ -628,40 +594,6 @@ runs:
       run: |
         $free = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
         Write-Host "::notice::Disk space after build: $free GB"
-        Write-Host '::group::Docker disk usage after build'
-        function Invoke-DockerDiagnostic {
-          param(
-            [string]$Description,
-            [scriptblock]$Command,
-            [scriptblock]$OnSuccess
-          )
-          $output = @(& $Command)
-          $exitCode = $LASTEXITCODE
-          if ($exitCode -eq 0) {
-            & $OnSuccess $output
-          } else {
-            Write-Host "::warning::Could not measure $Description: failed with exit code $exitCode"
-          }
-          # GitHub checks the script-scope native exit code after this block.
-          $script:LASTEXITCODE = 0
-        }
-        Invoke-DockerDiagnostic -Description 'Docker disk usage after build (docker system df -v)' -Command { docker system df -v } -OnSuccess {
-          param($output)
-          $output | ForEach-Object { Write-Host $_ }
-        }
-        Invoke-DockerDiagnostic -Description 'dangling images after build (docker image ls --filter dangling=true --quiet)' -Command { docker image ls --filter dangling=true --quiet } -OnSuccess {
-          param($output)
-          Write-Host "::notice::Dangling images after build: $($output.Count)"
-        }
-        Invoke-DockerDiagnostic -Description 'stopped containers after build (docker container ls --all --filter status=exited --quiet)' -Command { docker container ls --all --filter status=exited --quiet } -OnSuccess {
-          param($output)
-          Write-Host "::notice::Stopped containers after build: $($output.Count)"
-        }
-        Invoke-DockerDiagnostic -Description "build cache entries after build (docker builder du --format '{{.ID}}')" -Command { docker builder du --format '{{.ID}}' } -OnSuccess {
-          param($output)
-          Write-Host "::notice::Build cache entries after build: $($output.Count)"
-        }
-        Write-Host '::endgroup::'
 
     # A `docker buildx build --load` leaves the built image in two places at
     # once: BuildKit's own build cache AND the local Docker daemon's image
