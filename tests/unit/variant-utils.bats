@@ -72,6 +72,18 @@ teardown() {
     [[ "$stderr" == *"list_cell_rolling_aliases: command not found"* ]]
 }
 
+@test "sourcing variant-utils revokes an inherited routing API export" {
+    list_cell_rolling_aliases() { echo "stale body"; }
+    export -f list_cell_rolling_aliases
+    source "$ORIG_DIR/helpers/variant-utils.sh"
+
+    run -127 --separate-stderr bash -c 'list_cell_rolling_aliases 1.0.0 linux v f false base'
+
+    [ "$status" -eq 127 ]
+    [[ "$stderr" == *"list_cell_rolling_aliases: command not found"* ]]
+    [[ "$stderr" != *"_validate_cell_tag_route"* ]]
+}
+
 # --- Helper to create a postgres-like variants.yaml ---
 
 create_postgres_variants() {

@@ -1110,13 +1110,16 @@ latest_per_major_versions() {
 }
 
 # Routing APIs are source-only: source helpers/variant-utils.sh, then call
-# them in that shell.  Do not export list_cell_rolling_aliases,
+# them in that shell.  Sourcing this file revokes any inherited export of the
+# nine routing functions defined above: list_cell_rolling_aliases,
 # _list_cell_publisher_rolling_aliases, list_cell_publisher_rolling_aliases,
 # cell_manifest_publisher_for_os, _list_cell_tag_rolling_aliases,
 # compute_cell_tag_suffixes, compute_cell_publisher_tag_suffixes,
-# compute_local_build_tag_suffixes, or compute_cell_tags.  They respectively
-# resolve rolling aliases, publisher ownership, and local cell tag routing;
-# none has a supported child-shell contract.
+# compute_local_build_tag_suffixes, and compute_cell_tags.  Keep this list in
+# sync with the routing functions when adding or renaming one.  They resolve
+# rolling aliases, publisher ownership, and local cell tag routing; none has a
+# supported child-shell contract.
+export -n -f list_cell_rolling_aliases list_cell_publisher_rolling_aliases _list_cell_publisher_rolling_aliases _list_cell_tag_rolling_aliases compute_cell_tag_suffixes compute_cell_publisher_tag_suffixes compute_cell_tags compute_local_build_tag_suffixes cell_manifest_publisher_for_os
 export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
 export -f variant_property default_variant base_suffix version_retention
 export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_container_builds list_variant_tags
