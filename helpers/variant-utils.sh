@@ -291,7 +291,7 @@ variant_image_tag() {
 #
 # This deliberately models the producers, not cleanup's broader keep-set:
 #   Linux manifest:      default -> latest; non-default -> latest-<variant>
-#   Windows action:      default -> latest; non-default -> latest-<flavor>
+#   Windows action:      default -> latest; unambiguous non-default -> latest-<flavor>
 #   Windows manifest:    non-default -> latest-<variant>
 #
 # An alias shared by the Windows variant and flavor inputs has one owner. The
@@ -299,7 +299,7 @@ variant_image_tag() {
 # latest-* publisher. Callers pass a publisher identifier to ask for their
 # share; they never choose an alias naming rule.
 #
-# Usage: list_cell_rolling_aliases <tag> <os> <variant> <flavor> <is_default>
+# Usage: list_cell_rolling_aliases <tag> <os> <variant> <flavor> <is_default> <build_flavor>
 # Output: <publisher><TAB><tag suffix>, one per line.
 _cell_routing_error() {
     printf 'cell tag routing: %s\n' "$1" >&2
@@ -341,8 +341,8 @@ _emit_cell_rolling_alias() {
 }
 
 list_cell_rolling_aliases() {
-    if [[ "$#" -ne 5 ]]; then
-        _cell_routing_error "expected tag, os, variant, flavor, and is_default"
+    if [[ "$#" -ne 6 ]]; then
+        _cell_routing_error "expected tag, os, variant, flavor, is_default, and build_flavor"
         return 1
     fi
     local tag="$1"
@@ -350,41 +350,111 @@ list_cell_rolling_aliases() {
     local variant="$3"
     local flavor="$4"
     local is_default="$5"
+    local build_flavor="$6"
+    local publisher
+    local _aliases_file
+    local _resolve_status
 
     _validate_cell_tag_route "$@" || return 1
+
+    _aliases_file=$(mktemp "${TMPDIR:-/tmp}/cell-rolling-aliases.XXXXXX") || return 1
+    if [[ "$os" == "windows" ]]; then
+        # Preserve producer order, but buffer every result so an undecidable
+        # action alias cannot leave a full-set caller with a partial result.
+        for publisher in windows-manifest windows-action; do
+            if _list_cell_publisher_rolling_aliases "$publisher" "$tag" "$os" "$variant" "$flavor" "$is_default" "$build_flavor" >> "$_aliases_file"; then
+                :
+            else
+                _resolve_status=$?
+                rm -f "$_aliases_file"
+                return "$_resolve_status"
+            fi
+        done
+    else
+        if _list_cell_publisher_rolling_aliases "linux-manifest" "$tag" "$os" "$variant" "$flavor" "$is_default" "$build_flavor" >> "$_aliases_file"; then
+            :
+        else
+            _resolve_status=$?
+            rm -f "$_aliases_file"
+            return "$_resolve_status"
+        fi
+    fi
+
+    local suffix
+    while IFS= read -r suffix; do
+        printf '%s\n' "$suffix" || _resolve_status=$?
+    done < "$_aliases_file"
+    rm -f "$_aliases_file"
+    return "${_resolve_status:-0}"
+}
+
+# Resolve the rolling aliases owned by one publisher.  This is the only
+# publisher-aware ownership rule: a publisher may fail only for an alias it
+# could itself emit.
+_list_cell_publisher_rolling_aliases() {
+    local publisher="$1"
+    local tag="$2"
+    local os="$3"
+    local variant="$4"
+    local flavor="$5"
+    local is_default="$6"
+    local build_flavor="$7"
+
+    _validate_cell_tag_route "$tag" "$os" "$variant" "$flavor" "$is_default" "$build_flavor" || return 1
     [[ "$tag" != "latest" ]] || return 0
 
     if [[ "$is_default" == "true" ]]; then
-        if [[ "$os" == "windows" ]]; then
+        if [[ "$os" == "windows" && "$publisher" == "windows-action" ]]; then
             _emit_cell_rolling_alias "windows-action" "latest"
-        else
+        elif [[ "$os" == "linux" && "$publisher" == "linux-manifest" ]]; then
             _emit_cell_rolling_alias "linux-manifest" "latest"
         fi
         return 0
     fi
 
-    if [[ "$os" == "windows" ]]; then
-        # Keep the full-set listing in producer order: the workflow's variant
-        # alias first, then the action's flavor alias.
-        if [[ -n "$variant" && "$variant" != "$flavor" ]]; then
-            _emit_cell_rolling_alias "windows-manifest" "latest-${variant}" || return 1
+    if [[ "$os" == "windows" && "$publisher" == "windows-action" ]]; then
+        # A distinct variant means a flavor can be shared by multiple cells.
+        # Its bare alias is therefore owned only by the explicitly declared
+        # base build flavor; an absent declaration is not safe to infer.
+        if [[ -n "$variant" && "$variant" != "$flavor" && -n "$flavor" ]]; then
+            case "$build_flavor" in
+                base)
+                    _emit_cell_rolling_alias "windows-action" "latest-${flavor}"
+                    return $?
+                    ;;
+                dev)
+                    return 0
+                    ;;
+                "")
+                    _cell_routing_error "cannot route undecidable alias latest-${flavor} for cell variant ${variant}: build_flavor is required"
+                    return 1
+                    ;;
+                *)
+                    _cell_routing_error "cannot route alias latest-${flavor} for cell variant ${variant}: unknown build_flavor ${build_flavor}; expected base or dev"
+                    return 1
+                    ;;
+            esac
+        elif [[ -n "$flavor" ]]; then
+            _emit_cell_rolling_alias "windows-action" "latest-${flavor}"
         fi
-        if [[ -n "$flavor" ]]; then
-            _emit_cell_rolling_alias "windows-action" "latest-${flavor}" || return 1
-        fi
-    elif [[ -n "$variant" ]]; then
+    elif [[ "$os" == "windows" && "$publisher" == "windows-manifest" && -n "$variant" && "$variant" != "$flavor" ]]; then
+        _emit_cell_rolling_alias "windows-manifest" "latest-${variant}"
+    elif [[ "$os" == "linux" && "$publisher" == "linux-manifest" && -n "$variant" ]]; then
         _emit_cell_rolling_alias "linux-manifest" "latest-${variant}"
     fi
 }
 
 # List only the rolling aliases owned by one publisher.
-# Usage: list_cell_publisher_rolling_aliases <publisher> <tag> <os> <variant> <flavor> <is_default>
+# Usage: list_cell_publisher_rolling_aliases <publisher> <tag> <os> <variant> <flavor> <is_default> <build_flavor>
 list_cell_publisher_rolling_aliases() {
+    if [[ "$#" -ne 7 ]]; then
+        _cell_routing_error "expected publisher, tag, os, variant, flavor, is_default, and build_flavor"
+        return 1
+    fi
     local publisher="$1"
     local _aliases_file
     local _collect_status
     local _emit_status=0
-    shift
 
     case "$publisher" in
         linux-manifest|windows-manifest|windows-action) ;;
@@ -392,7 +462,7 @@ list_cell_publisher_rolling_aliases() {
     esac
 
     _aliases_file=$(mktemp "${TMPDIR:-/tmp}/cell-publisher-rolling-aliases.XXXXXX") || return 1
-    if collect_lines "$_aliases_file" -- list_cell_rolling_aliases "$@"; then
+    if collect_lines "$_aliases_file" -- _list_cell_publisher_rolling_aliases "$@"; then
         :
     else
         _collect_status=$?
@@ -432,7 +502,7 @@ _list_cell_tag_rolling_aliases() (
 # This full-set view is for non-publisher callers; publisher paths must use
 # list_cell_publisher_rolling_aliases so that each ref has one writer.
 #
-# Usage: compute_cell_tag_suffixes <tag> <os> <variant> <flavor> <is_default>
+# Usage: compute_cell_tag_suffixes <tag> <os> <variant> <flavor> <is_default> [build_flavor]
 # Output: one unique tag suffix per line (e.g. "18-alpine", "latest", "latest-vector").
 compute_cell_tag_suffixes() {
     local tag="$1"
@@ -442,7 +512,7 @@ compute_cell_tag_suffixes() {
     local _emit_status=0
 
     _aliases_file=$(mktemp "${TMPDIR:-/tmp}/cell-tag-suffixes.XXXXXX") || return 1
-    if collect_lines "$_aliases_file" -- _list_cell_tag_rolling_aliases "$@"; then
+    if collect_lines "$_aliases_file" -- _list_cell_tag_rolling_aliases "$1" "$2" "$3" "$4" "$5" "${6:-}"; then
         :
     else
         _collect_status=$?
@@ -460,7 +530,7 @@ compute_cell_tag_suffixes() {
 
 # Compute the versioned suffix plus only the rolling aliases owned by one
 # publisher.  Registry writers must use this ownership view.
-# Usage: compute_cell_publisher_tag_suffixes <publisher> <tag> <os> <variant> <flavor> <is_default>
+# Usage: compute_cell_publisher_tag_suffixes <publisher> <tag> <os> <variant> <flavor> <is_default> [build_flavor]
 compute_cell_publisher_tag_suffixes() {
     local tag="$2"
     local suffix
@@ -469,7 +539,7 @@ compute_cell_publisher_tag_suffixes() {
     local _emit_status=0
 
     _aliases_file=$(mktemp "${TMPDIR:-/tmp}/cell-publisher-tag-suffixes.XXXXXX") || return 1
-    if collect_lines "$_aliases_file" -- list_cell_publisher_rolling_aliases "$@"; then
+    if collect_lines "$_aliases_file" -- list_cell_publisher_rolling_aliases "$1" "$2" "$3" "$4" "$5" "$6" "${7:-}"; then
         :
     else
         _collect_status=$?
@@ -1032,6 +1102,6 @@ latest_per_major_versions() {
 export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
 export -f variant_property default_variant base_suffix version_retention
 export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_container_builds list_variant_tags
-export -f always_all_versions list_cell_rolling_aliases list_cell_publisher_rolling_aliases cell_manifest_publisher_for_os _list_cell_tag_rolling_aliases
+export -f always_all_versions list_cell_rolling_aliases _list_cell_publisher_rolling_aliases list_cell_publisher_rolling_aliases cell_manifest_publisher_for_os _list_cell_tag_rolling_aliases
 export -f compute_local_build_tag_suffixes
 export -f compute_cell_tag_suffixes compute_cell_publisher_tag_suffixes compute_cell_tags compute_expand_retained_map latest_per_major_versions

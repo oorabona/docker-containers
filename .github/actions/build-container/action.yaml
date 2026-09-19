@@ -17,7 +17,11 @@ inputs:
     required: false
     default: ''
   build_flavor:
-    description: Build-time flavor selector (e.g. base/dev) passed as --build-flavor to make
+    description: Build-time flavor selector passed as --build-flavor to make (e.g. base/dev); a Windows cell publishing a shared flavor's rolling alias must declare base or dev
+    required: false
+    default: ''
+  is_latest_version:
+    description: Whether this cell belongs to the latest retained version and may publish rolling aliases
     required: false
     default: ''
   variant:
@@ -110,6 +114,25 @@ runs:
             source ./helpers/logging.sh
             safe_push=$(_escape_gha_command "$PUSH")
             printf '::error::Invalid push input %s; expected true or false\n' "$safe_push" >&2
+            exit 1
+            ;;
+        esac
+
+    - name: Validate Windows publishing latest-version input
+      if: runner.os == 'Windows' && inputs.push == 'true' && github.event_name != 'pull_request'
+      shell: bash
+      env:
+        IS_LATEST_VERSION: ${{ inputs.is_latest_version }}
+      run: |
+        set -euo pipefail
+        case "$IS_LATEST_VERSION" in
+          true|false) ;;
+          *)
+            # Use the repository's workflow-command escaper before logging an
+            # arbitrary caller value.
+            source ./helpers/logging.sh
+            safe_is_latest_version=$(_escape_gha_command "$IS_LATEST_VERSION")
+            printf '::error::Invalid is_latest_version input %s; expected true or false\n' "$safe_is_latest_version" >&2
             exit 1
             ;;
         esac
@@ -306,6 +329,23 @@ runs:
         echo "is_default=$local_is_default" >> $GITHUB_OUTPUT
         echo "dockerfile=$dockerfile" >> $GITHUB_OUTPUT
         echo "platform_suffix=$platform_suffix" >> $GITHUB_OUTPUT
+
+    - name: Validate Windows rolling alias routing
+      if: ${{ runner.os == 'Windows' && inputs.push == 'true' && github.event_name != 'pull_request' && steps.check-build.outputs.needs_build == 'true' && inputs.is_latest_version == 'true' }}
+      shell: bash
+      env:
+        CURRENT_TAG: ${{ steps.check-build.outputs.current_tag }}
+        FLAVOR: ${{ steps.check-build.outputs.flavor }}
+        IS_DEFAULT: ${{ steps.check-build.outputs.is_default }}
+        VARIANT: ${{ inputs.variant }}
+        BUILD_FLAVOR: ${{ inputs.build_flavor }}
+      run: |
+        set -euo pipefail
+        if ! ./scripts/list-cell-rolling-tag-suffixes.sh \
+          "windows-action" "$CURRENT_TAG" "windows" "$VARIANT" "$FLAVOR" "$IS_DEFAULT" "$BUILD_FLAVOR" > /dev/null; then
+          echo "::error::Windows rolling-alias routing refused before publication"
+          exit 1
+        fi
 
     - name: Run container prebuild (if exists)
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
@@ -962,7 +1002,9 @@ runs:
         PLATFORM_SUFFIX: ${{ steps.check-build.outputs.platform_suffix }}
         VARIANT: ${{ inputs.variant }}
         FLAVOR: ${{ steps.check-build.outputs.flavor }}
+        BUILD_FLAVOR: ${{ inputs.build_flavor }}
         IS_DEFAULT: ${{ steps.check-build.outputs.is_default }}
+        IS_LATEST_VERSION: ${{ inputs.is_latest_version }}
         RUNNER_OS_VALUE: ${{ runner.os }}
         DOCKERHUB_PUSH_SUCCEEDED: ${{ steps.push-dockerhub.outputs.success }}
       run: |
@@ -971,7 +1013,9 @@ runs:
         platform_suffix="$PLATFORM_SUFFIX"
         variant="$VARIANT"
         flavor="$FLAVOR"
+        build_flavor="$BUILD_FLAVOR"
         is_default="$IS_DEFAULT"
+        is_latest_version="$IS_LATEST_VERSION"
         runner_os="$RUNNER_OS_VALUE"
         dockerhub_push_succeeded="$DOCKERHUB_PUSH_SUCCEEDED"
 
@@ -998,9 +1042,9 @@ runs:
 
         # Windows flavor aliases are single-arch and owned by this action.
         # Linux aliases and Windows variant aliases are published elsewhere.
-        if [[ "$runner_os" == "Windows" ]]; then
+        if [[ "$runner_os" == "Windows" && "$is_latest_version" == "true" ]]; then
           rolling_suffixes=$(./scripts/list-cell-rolling-tag-suffixes.sh \
-            "windows-action" "$current_tag" "windows" "$variant" "$flavor" "$is_default")
+            "windows-action" "$current_tag" "windows" "$variant" "$flavor" "$is_default" "$build_flavor")
           while IFS= read -r latest_tag; do
             [[ -z "$latest_tag" ]] && continue
             echo "::notice::Creating Windows rolling tag: ghcr.io/$image_name:$latest_tag"
