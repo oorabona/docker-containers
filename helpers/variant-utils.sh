@@ -418,8 +418,21 @@ _list_cell_publisher_rolling_aliases() {
         # base build flavor; an absent declaration is not safe to infer.
         if [[ -n "$variant" && "$variant" != "$flavor" && -n "$flavor" ]]; then
             case "$build_flavor" in
-                base) _emit_cell_rolling_alias "windows-action" "latest-${flavor}" ;;
-                "") _cell_routing_error "cannot route undecidable alias latest-${flavor} for cell variant ${variant}: build_flavor is required" ;;
+                base)
+                    _emit_cell_rolling_alias "windows-action" "latest-${flavor}"
+                    return $?
+                    ;;
+                dev)
+                    return 0
+                    ;;
+                "")
+                    _cell_routing_error "cannot route undecidable alias latest-${flavor} for cell variant ${variant}: build_flavor is required"
+                    return 1
+                    ;;
+                *)
+                    _cell_routing_error "cannot route alias latest-${flavor} for cell variant ${variant}: unknown build_flavor ${build_flavor}"
+                    return 1
+                    ;;
             esac
         elif [[ -n "$flavor" ]]; then
             _emit_cell_rolling_alias "windows-action" "latest-${flavor}"

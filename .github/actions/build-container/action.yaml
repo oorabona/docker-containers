@@ -330,6 +330,23 @@ runs:
         echo "dockerfile=$dockerfile" >> $GITHUB_OUTPUT
         echo "platform_suffix=$platform_suffix" >> $GITHUB_OUTPUT
 
+    - name: Validate Windows rolling alias routing
+      if: ${{ runner.os == 'Windows' && inputs.push == 'true' && github.event_name != 'pull_request' && steps.check-build.outputs.needs_build == 'true' && inputs.is_latest_version == 'true' }}
+      shell: bash
+      env:
+        CURRENT_TAG: ${{ steps.check-build.outputs.current_tag }}
+        FLAVOR: ${{ steps.check-build.outputs.flavor }}
+        IS_DEFAULT: ${{ steps.check-build.outputs.is_default }}
+        VARIANT: ${{ inputs.variant }}
+        BUILD_FLAVOR: ${{ inputs.build_flavor }}
+      run: |
+        set -euo pipefail
+        if ! ./scripts/list-cell-rolling-tag-suffixes.sh \
+          "windows-action" "$CURRENT_TAG" "windows" "$VARIANT" "$FLAVOR" "$IS_DEFAULT" "$BUILD_FLAVOR" > /dev/null; then
+          echo "::error::Windows rolling-alias routing refused before publication"
+          exit 1
+        fi
+
     - name: Run container prebuild (if exists)
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
       shell: bash

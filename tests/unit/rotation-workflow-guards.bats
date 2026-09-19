@@ -300,6 +300,52 @@ EOF
     [ "$validation_index" -lt "$first_expensive_index" ]
 }
 
+@test "build-container validates Windows rolling alias routing before the build" {
+    local routing_if routing_env routing_run check_build_index routing_index build_index
+
+    run yq -r '.runs.steps[] | select(.name == "Validate Windows rolling alias routing") | .if' \
+        "$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    [ "$status" -eq 0 ]
+    routing_if="$output"
+    [[ "$routing_if" == *"runner.os"* ]]
+    [[ "$routing_if" == *"Windows"* ]]
+    [[ "$routing_if" == *"inputs.push"* ]]
+    [[ "$routing_if" == *"github.event_name"* ]]
+    [[ "$routing_if" == *"needs_build"* ]]
+    [[ "$routing_if" == *"is_latest_version"* ]]
+
+    run yq -r '.runs.steps[] | select(.name == "Validate Windows rolling alias routing") | [.env.CURRENT_TAG, .env.FLAVOR, .env.IS_DEFAULT, .env.VARIANT, .env.BUILD_FLAVOR] | @tsv' \
+        "$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    [ "$status" -eq 0 ]
+    routing_env="$output"
+    [ "$routing_env" = $'${{ steps.check-build.outputs.current_tag }}\t${{ steps.check-build.outputs.flavor }}\t${{ steps.check-build.outputs.is_default }}\t${{ inputs.variant }}\t${{ inputs.build_flavor }}' ]
+
+    run yq -r '.runs.steps[] | select(.name == "Validate Windows rolling alias routing") | .run' \
+        "$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    [ "$status" -eq 0 ]
+    routing_run="$output"
+    [[ "$routing_run" == *"list-cell-rolling-tag-suffixes.sh"* ]]
+    [[ "$routing_run" == *'"windows-action"'* ]]
+
+    run yq -r '.runs.steps | to_entries | map(select(.value.name == "Check if build is needed and get version")) | .[0].key' \
+        "$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    [ "$status" -eq 0 ]
+    check_build_index="$output"
+
+    run yq -r '.runs.steps | to_entries | map(select(.value.name == "Validate Windows rolling alias routing")) | .[0].key' \
+        "$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    [ "$status" -eq 0 ]
+    routing_index="$output"
+
+    run yq -r '.runs.steps | to_entries | map(select(.value.name == "Build container")) | .[0].key' \
+        "$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    [ "$status" -eq 0 ]
+    build_index="$output"
+
+    [ "$routing_index" -gt "$check_build_index" ]
+    [ "$routing_index" -lt "$build_index" ]
+}
+
 @test "rotation schedules three daily runs with enough room for a long run" {
     run yq -r '.on.schedule | length' "$PROJECT_ROOT/.github/workflows/rotation.yaml"
 

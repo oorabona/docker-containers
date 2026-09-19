@@ -3,6 +3,8 @@
 # Unit tests for helpers/variant-utils.sh
 # Tests variant resolution, tag construction, and version mapping
 
+bats_require_minimum_version 1.5.0
+
 setup() {
     TEST_DIR=$(mktemp -d)
     ORIG_DIR="$PWD"
@@ -1370,6 +1372,33 @@ setup_fallback_test() {
         [[ "$stderr" == *"cell tag routing:"* ]]
         [[ "$stderr" != *"unbound variable"* ]]
     done
+}
+
+@test "windows-action rolling aliases: dev build_flavor emits no bare flavor alias" {
+    run "$ORIG_DIR/scripts/list-cell-rolling-tag-suffixes.sh" \
+        "windows-action" "2.337.0-windows-ltsc2022-dev" "windows" \
+        "windows-ltsc2022-dev" "windows-ltsc2022" "false" "dev"
+
+    [ "$status" -eq 0 ]
+    [ "$(grep -cxF "latest-windows-ltsc2022" <<< "$output" || true)" -eq 0 ]
+}
+
+@test "windows-action rolling aliases: unknown build_flavor is refused" {
+    run --separate-stderr "$ORIG_DIR/scripts/list-cell-rolling-tag-suffixes.sh" \
+        "windows-action" "2.337.0-windows-ltsc2022-dev" "windows" \
+        "windows-ltsc2022-dev" "windows-ltsc2022" "false" "release"
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"release"* ]]
+}
+
+@test "windows-action rolling aliases: base build_flavor owns the bare flavor alias" {
+    run "$ORIG_DIR/scripts/list-cell-rolling-tag-suffixes.sh" \
+        "windows-action" "2.337.0-windows-ltsc2022-dev" "windows" \
+        "windows-ltsc2022-dev" "windows-ltsc2022" "false" "base"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "latest-windows-ltsc2022" ]
 }
 
 @test "list_cell_rolling_aliases rejects an unrecognised OS and noncanonical boolean" {
