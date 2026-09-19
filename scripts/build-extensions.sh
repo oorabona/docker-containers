@@ -1212,7 +1212,7 @@ _reuse_ref_is_multiarch() {
     return 1
 }
 
-# Build, tag, and optionally push a list of extensions. Exits 1 if any fail.
+# Build, tag, and optionally push a list of extensions. Returns 1 if any fail.
 # Args: config_file major_ver container_dir push ext1 [ext2 ...]
 build_tag_push_extensions() {
     local config_file="$1" major_ver="$2" container_dir="$3" do_push="$4"
@@ -1341,15 +1341,16 @@ build_tag_push_extensions() {
             # build_extension returns:
             #   0  — success (build + push, or local build)
             #   1  — build phase failure after retries (cause is ambiguous)
-            #   2  — push failure (infra/auth/network; only on BUILD_PLATFORM path)
+            #   2  — infrastructure or unclassified failure (including a push
+            #        failure on the BUILD_PLATFORM path)
             local _build_rc=0
             build_extension "$ext" "$config_file" "$major_ver" "$container_dir" "$version" || _build_rc=$?
 
             if [[ "$_build_rc" -eq 2 ]]; then
-                # Push failure (infra/auth/network) is FATAL for ALL versions —
+                # Infrastructure or unclassified failure is FATAL for ALL versions —
                 # ceiling AND non-ceiling. It must never be silently excluded
                 # from the version set.
-                log_error "$ext $version push failed (infra error) — fatal regardless of ceiling"
+                log_error "$ext $version build could not complete due to an infrastructure or unclassified failure — fatal regardless of ceiling"
                 _record_rotation_build_status infra
                 failed+=("$ext@$version")
                 continue
@@ -1494,6 +1495,7 @@ build_tag_push_extensions() {
             log_success "All extensions built locally"
         fi
     fi
+    return 0
 }
 
 # File-backed memoisation for resolve_version_set.

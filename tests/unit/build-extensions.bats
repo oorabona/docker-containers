@@ -375,6 +375,87 @@ _setup_default_mocks() {
 }
 
 # ---------------------------------------------------------------------------
+# build_tag_push_extensions rc=2 caller contract
+# ---------------------------------------------------------------------------
+
+@test "caller reports zero build attempts as infrastructure without claiming a push" {
+    local build_marker="$TEST_TEMP_DIR/build-ran"
+    export EXT_BUILD_RETRIES=0
+
+    _resolve_cached() {
+        _RESOLVED_VERSION_SET_JSON='["1.2.3"]'
+        return 0
+    }
+    _image_needs_build() { return 0; }
+    build_ext_image() {
+        : > "$build_marker"
+        return 99
+    }
+
+    run build_tag_push_extensions "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" false pgvector
+
+    [ "$status" -eq 1 ]
+    [ ! -e "$build_marker" ]
+    assert_output_contains "build_ext_image made no attempts for pgvector 1.2.3 — treating it as infrastructure"
+    assert_output_contains "pgvector 1.2.3 build could not complete due to an infrastructure or unclassified failure — fatal regardless of ceiling"
+    assert_output_not_contains "pgvector 1.2.3 push failed"
+}
+
+@test "caller reports an unexpected build leaf code as infrastructure without claiming a push" {
+    export EXT_BUILD_RETRIES=1
+
+    _resolve_cached() {
+        _RESOLVED_VERSION_SET_JSON='["1.2.3"]'
+        return 0
+    }
+    _image_needs_build() { return 0; }
+    build_ext_image() { return 99; }
+
+    run build_tag_push_extensions "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" false pgvector
+
+    [ "$status" -eq 1 ]
+    assert_output_contains "at least one attempt was infrastructure or unclassified"
+    assert_output_contains "pgvector 1.2.3 build could not complete due to an infrastructure or unclassified failure — fatal regardless of ceiling"
+    assert_output_not_contains "pgvector 1.2.3 push failed"
+}
+
+@test "caller keeps infrastructure failures fatal for non-ceiling and ceiling versions" {
+    export EXT_BUILD_RETRIES=1
+
+    _resolve_cached() {
+        _RESOLVED_VERSION_SET_JSON='["1.0.0","1.2.3"]'
+        return 0
+    }
+    _image_needs_build() { return 0; }
+    build_ext_image() { return 99; }
+
+    run build_tag_push_extensions "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" false pgvector
+
+    [ "$status" -eq 1 ]
+    assert_output_contains "pgvector 1.0.0 build could not complete due to an infrastructure or unclassified failure — fatal regardless of ceiling"
+    assert_output_contains "pgvector 1.2.3 build could not complete due to an infrastructure or unclassified failure — fatal regardless of ceiling"
+}
+
+@test "buildx push leaf retains its specific push failure message" {
+    export BUILD_PLATFORM=linux/amd64
+    export REPO_OWNER=test-owner
+    docker() {
+        if [[ "$1" == buildx && "$2" == build ]]; then
+            return 0
+        fi
+        if [[ "$1" == push ]]; then
+            return 1
+        fi
+        return 99
+    }
+
+    run build_ext_image pgvector 1.2.3 https://example.invalid/pgvector "$MAJOR_VER" "$EXT_DOCKERFILE" "$CONTAINER_DIR/extensions"
+
+    [ "$status" -eq 2 ]
+    assert_output_contains "Docker push failed for pgvector 1.2.3 (pg17) — infra/auth/network error"
+}
+
+# ---------------------------------------------------------------------------
 # 8-case truth table
 # ---------------------------------------------------------------------------
 
