@@ -742,6 +742,34 @@ EOF
     unset GITHUB_REPOSITORY_OWNER
 }
 
+@test "build_container: omitted variant falls back to flavor, not ambient VARIANT" {
+    export MULTIPLATFORM_SUPPORTED="false"
+    export GITHUB_REPOSITORY_OWNER="myowner"
+    export VARIANT="ambient"
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+echo "ARGS: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    create_mock_container "testcontainer" "1.0.0"
+    source_build_script
+
+    cd "$TEST_TEMP_DIR"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "base"
+
+    [ "$status" -eq 0 ]
+    grep -q ':latest-base' "$TEST_TEMP_DIR/docker_calls.log"
+    ! grep -q ':latest-ambient' "$TEST_TEMP_DIR/docker_calls.log"
+
+    unset GITHUB_REPOSITORY_OWNER
+    unset VARIANT
+}
+
 @test "build_container refuses the build when compute_cell_tags sees a short suffix enumeration [catches untagged partial build]" {
     export MULTIPLATFORM_SUPPORTED="false"
     export GITHUB_REPOSITORY_OWNER="myowner"

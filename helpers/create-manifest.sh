@@ -145,7 +145,7 @@ create_registry_manifest() {
     local fail_on_error="${3:-true}"
 
     local tag_args version_specific_tag_args
-    tag_args=$(_compute_tag_args "$target_image")
+    tag_args=$(_compute_tag_args "$target_image") || return $?
     version_specific_tag_args=$(_compute_version_specific_tag_args "$target_image" 2>/dev/null) || true
 
     # Try multi-arch manifest first (amd64 + arm64).
