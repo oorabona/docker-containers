@@ -577,8 +577,8 @@ jobs:
           # merge-extension-manifests (stage B) fuses them into multi-arch manifests.
           ARCH_SUFFIX: ${{ matrix.arch }}
           BUILD_PLATFORM: ${{ matrix.platform }}
-          # supply-chain: as written, same-repo PRs publish only PR-scoped tags, so they
-          # do not overwrite canonical production-consumed refs by accident. A PR author
+          # supply-chain: resolver-backed Stage B targets on same-repo PRs are PR-scoped,
+          # so they do not overwrite canonical production-consumed refs by accident. A PR author
           # who changes the executed script is outside what this suffix constrains.
           # On push/dispatch (master) PR_TAG_SUFFIX is empty → canonical refs published.
           # The registry build-cache flow is asymmetric: a same-repo PR imports the

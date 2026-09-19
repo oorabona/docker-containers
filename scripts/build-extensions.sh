@@ -2396,6 +2396,7 @@ finalize_multiarch_manifests() {
             # BG-1: Non-resolver extension (single configured version).
             # When FORCE=true: always create fresh manifest (skip reuse check).
             # Otherwise: use ext_ref_resolve to probe for existing manifest (canonical-first, PR-scoped fallback).
+            local _nr_target=""
             if [[ "${FORCE:-false}" != "true" ]]; then
                 local _nr_multiarch_rc=0 _nr_resolved_ref
                 _nr_resolved_ref=$(ext_ref_resolve "$ext" "$ceiling" "$major_ver" "") || _nr_multiarch_rc=$?
@@ -2412,6 +2413,9 @@ finalize_multiarch_manifests() {
                                 ;;
                             1)
                                 log_warning "$ext $ceiling pg${major_ver}: reused manifest is not multi-arch — re-creating from per-arch legs"
+                                # An existing incomplete resolved manifest is recreated at its resolved target.
+                                # On a pull request that target may be canonical; publication ownership is #1880.
+                                _nr_target="$_nr_resolved_ref"
                                 # Fall through to the CREATE path below.
                                 ;;
                             *)
@@ -2422,7 +2426,7 @@ finalize_multiarch_manifests() {
                         esac
                         ;;
                     2)
-                        log_error "$ext $ceiling pg${major_ver}: transient registry probe error on non-resolver ref — fail closed"
+                        log_error "$ext $ceiling pg${major_ver}: source reference resolution failed on non-resolver ref — fail closed"
                         _failed=true
                         continue
                         ;;
@@ -2431,23 +2435,36 @@ finalize_multiarch_manifests() {
             # rc 1 → absent, or FORCE=true, or single-arch reuse → fall through to create.
 
             # Resolve per-arch source refs via ext_ref_resolve.
-            local _nr_src_amd64 _nr_src_arm64
-            _nr_src_amd64=$(ext_ref_resolve "$ext" "$ceiling" "$major_ver" "amd64") || true
-            _nr_src_arm64=$(ext_ref_resolve "$ext" "$ceiling" "$major_ver" "arm64") || true
-            local _nr_target
-            _nr_target=$(ext_ref_resolve "$ext" "$ceiling" "$major_ver" "" 2>/dev/null) || true
-            # When both arch refs are absent (normal case: imagetools create hasn't run yet),
-            # fall back to the computed scoped refs.
-            if [[ -z "$_nr_src_amd64" ]]; then
-                local _nr_image
-                _nr_image=$(ext_image_name "$ext" "$ceiling" "$major_ver") || { _failed=true; continue; }
-                _nr_src_amd64=$(_scoped_tag "$(_arch_suffix_tag "$_nr_image" "amd64")")
-            fi
-            if [[ -z "$_nr_src_arm64" ]]; then
-                local _nr_image
-                _nr_image=$(ext_image_name "$ext" "$ceiling" "$major_ver") || { _failed=true; continue; }
-                _nr_src_arm64=$(_scoped_tag "$(_arch_suffix_tag "$_nr_image" "arm64")")
-            fi
+            local _nr_src_amd64 _nr_src_arm64 _nr_amd64_rc=0 _nr_arm64_rc=0
+            _nr_src_amd64=$(ext_ref_resolve "$ext" "$ceiling" "$major_ver" "amd64") || _nr_amd64_rc=$?
+            case "$_nr_amd64_rc" in
+                1)
+                    log_error "$ext $ceiling pg${major_ver}: amd64 per-arch source ref absent — fail closed"
+                    _failed=true
+                    continue
+                    ;;
+                2)
+                    log_error "$ext $ceiling pg${major_ver}: source reference resolution failed on amd64 per-arch source ref — fail closed"
+                    _failed=true
+                    continue
+                    ;;
+            esac
+            _nr_src_arm64=$(ext_ref_resolve "$ext" "$ceiling" "$major_ver" "arm64") || _nr_arm64_rc=$?
+            case "$_nr_arm64_rc" in
+                1)
+                    log_error "$ext $ceiling pg${major_ver}: arm64 per-arch source ref absent — fail closed"
+                    _failed=true
+                    continue
+                    ;;
+                2)
+                    log_error "$ext $ceiling pg${major_ver}: source reference resolution failed on arm64 per-arch source ref — fail closed"
+                    _failed=true
+                    continue
+                    ;;
+            esac
+
+            # An absent probe or FORCE selects the configured scoped target;
+            # a target resolved above remains selected for repair.
             if [[ -z "$_nr_target" ]]; then
                 local _nr_image
                 _nr_image=$(ext_image_name "$ext" "$ceiling" "$major_ver") || { _failed=true; continue; }

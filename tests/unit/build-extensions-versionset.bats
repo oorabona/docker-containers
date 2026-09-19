@@ -43,6 +43,38 @@ _capture_rotation_build_status() {
     return "$rc"
 }
 
+_prepare_nonresolver_probe_finalization() {
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    ext_config() {
+        case "$2" in
+            version) echo "0.8.0" ;;
+            repo) echo "https://github.com/pgvector/pgvector" ;;
+            *) echo "" ;;
+        esac
+    }
+    list_extensions_by_priority() { echo "pgvector"; }
+    ext_image_name() { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+    _consolidate_version_duration_file() { return 0; }
+
+    docker() {
+        if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'create' ]]; then
+            printf 'IMAGETOOLS_CREATE %s\n' "$*" >> "$create_log"
+        fi
+        return 0
+    }
+
+    export -f ext_config list_extensions_by_priority ext_image_name
+    export -f _consolidate_version_duration_file docker
+}
+
 # ---------------------------------------------------------------------------
 # Rotation producer state: a build phase exhausted after retries is distinct
 # from push and resolver failures, which remain infra.  These tests exercise
@@ -14467,9 +14499,9 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# MG: non-resolver ext whose plain ref EXISTS but imagetools inspect reports
-# single-arch (only linux/amd64) — the path must NOT silently reuse; it must
-# log the "not multi-arch" warning and reach the CREATE path.
+# MG: in a PR, a non-resolver ext whose canonical plain ref EXISTS but
+# imagetools inspect reports single-arch (only linux/amd64) must repair that
+# canonical target, rather than silently reusing it or creating a PR target.
 #
 # RED against old code: the old `0) ... continue` blindly reused any present
 # manifest without inspecting it, so a single-arch legacy tag was never
@@ -14478,7 +14510,7 @@ EOF
 # GREEN after fix: `_reuse_ref_is_multiarch` returns 1 → fall-through to
 # imagetools create.
 # ---------------------------------------------------------------------------
-@test "non-resolver ext with single-arch existing manifest → re-creates from per-arch legs" {
+@test "PR context, non-resolver single-arch canonical manifest → repairs canonical target" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/mg_imagetools.log"
@@ -14495,6 +14527,7 @@ EOF
 
     run bash -c "
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX='-pr42'
         export imagetools_log='${imagetools_log}'
         cd '${sd}'
         source ./build-extensions.sh
@@ -14584,6 +14617,157 @@ EOF
         echo "FAIL: imagetools create call does not reference -arm64 source. Got: $call"
         false
     }
+    [[ "$call" == *'-t ghcr.io/test/ext-pgvector:pg18-0.8.0 '* ]] || {
+        echo "FAIL: imagetools create must repair the canonical target. Got: $call"
+        false
+    }
+    [[ "$call" != *'-t ghcr.io/test/ext-pgvector:pg18-0.8.0-pr42 '* ]] || {
+        echo "FAIL: imagetools create incorrectly targeted the PR-scoped tag. Got: $call"
+        false
+    }
+}
+
+@test "non-resolver per-arch probe error fails closed without imagetools create" {
+    local probe_arch
+    for probe_arch in amd64 arm64; do
+        local create_log="$TEST_TEMP_DIR/${probe_arch}-error-create.log"
+        rm -f "$create_log"
+        _prepare_nonresolver_probe_finalization
+
+        ext_ref_resolve() {
+            case "$4" in
+                '') return 1 ;;
+                "$probe_arch")
+                    printf 'simulated transient %s probe failure\n' "$probe_arch" >&2
+                    return 2
+                    ;;
+                *) printf 'ghcr.io/test/ext-%s:pg%s-%s-%s' "$1" "$3" "$2" "$4" ;;
+            esac
+        }
+        export -f ext_ref_resolve
+
+        run finalize_multiarch_manifests "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+        [ "$status" -eq 1 ] || {
+            echo "FAIL: ${probe_arch} probe error must fail finalization. Got status $status"
+            false
+        }
+        [[ "$output" == *"source reference resolution failed on ${probe_arch} per-arch source ref — fail closed"* ]] || {
+            echo "FAIL: ${probe_arch} probe error was not logged as indeterminate. Got: $output"
+            false
+        }
+        [ ! -e "$create_log" ] || {
+            echo "FAIL: ${probe_arch} probe error ran imagetools create. Got: $(cat "$create_log")"
+            false
+        }
+    done
+}
+
+# Push/dispatch coverage remains separate from the PR exception above: an
+# existing single-arch canonical target must be repaired using exactly the
+# canonical reference selected by ext_ref_resolve.
+@test "push context, non-resolver single-arch canonical manifest repairs selected canonical target" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local imagetools_log="$tmpd/push_single_arch_imagetools.log"
+
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX=''
+        export imagetools_log='${imagetools_log}'
+        cd '${sd}'
+        source ./build-extensions.sh
+        export ROOT_DIR='${tmpd}'
+
+        ext_config() {
+            case \"\$1:\$2\" in
+                pgvector:version) echo '0.8.0' ;;
+                pgvector:repo)    echo 'https://github.com/pgvector/pgvector' ;;
+                *)                echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/computed-ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        ext_ref_resolve() {
+            case \"\${4:-}\" in
+                '') printf '%s' 'ghcr.io/test/selected-canonical-pgvector:pg18-0.8.0' ;;
+                amd64) printf '%s' 'ghcr.io/test/ext-pgvector:pg18-0.8.0-amd64' ;;
+                arm64) printf '%s' 'ghcr.io/test/ext-pgvector:pg18-0.8.0-arm64' ;;
+            esac
+        }
+        export -f ext_ref_resolve
+
+        docker() {
+            if [[ \"\${1:-}\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'inspect' ]]; then
+                printf 'linux/amd64\\n'
+                return 0
+            fi
+            if [[ \"\${1:-}\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CREATE \${*}\" >> \"\$imagetools_log\"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
+    "
+
+    [ "$status" -eq 0 ]
+    [ -f "$imagetools_log" ]
+    local call
+    call=$(cat "$imagetools_log")
+    [ "$call" = "IMAGETOOLS_CREATE buildx imagetools create -t ghcr.io/test/selected-canonical-pgvector:pg18-0.8.0 ghcr.io/test/ext-pgvector:pg18-0.8.0-amd64 ghcr.io/test/ext-pgvector:pg18-0.8.0-arm64" ] || {
+        echo "FAIL: push repair must use the exact selected canonical target. Got: $call"
+        false
+    }
+}
+
+@test "non-resolver per-arch absent probe fails closed without imagetools create" {
+    local probe_arch
+    for probe_arch in amd64 arm64; do
+        local create_log="$TEST_TEMP_DIR/${probe_arch}-absent-create.log"
+        rm -f "$create_log"
+        _prepare_nonresolver_probe_finalization
+
+        ext_ref_resolve() {
+            case "$4" in
+                '') return 1 ;;
+                "$probe_arch") return 1 ;;
+                *) printf 'ghcr.io/test/ext-%s:pg%s-%s-%s' "$1" "$3" "$2" "$4" ;;
+            esac
+        }
+        export -f ext_ref_resolve
+
+        run finalize_multiarch_manifests "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+        [ "$status" -eq 1 ] || {
+            echo "FAIL: absent ${probe_arch} source must fail finalization. Got status $status"
+            false
+        }
+        [[ "$output" == *"${probe_arch} per-arch source ref absent — fail closed"* ]] || {
+            echo "FAIL: absent ${probe_arch} source was not logged. Got: $output"
+            false
+        }
+        [ ! -e "$create_log" ] || {
+            echo "FAIL: absent ${probe_arch} source ran imagetools create. Got: $(cat "$create_log")"
+            false
+        }
+    done
 }
 
 # ---------------------------------------------------------------------------
