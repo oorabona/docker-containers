@@ -68,13 +68,6 @@ _arch_suffix_tag() {
 # a rollback/audit convenience. Master never imports a PR-scoped cache ref.
 # Forks are excluded at the job if: clause so only trusted same-repo PRs write
 # to the GHCR namespace.
-# Exception: when a trusted same-repository pull request resolves a canonical
-# manifest that inspection proves does not cover both linux/amd64 and
-# linux/arm64 (a single architecture manifest or a partial multi-platform
-# index — must re-create), Stage B repairs that canonical target in place.
-# This deliberately accepts canonical mutation in that state: leaving the
-# production-consumed canonical manifest without both
-# required platforms, whether single architecture or a partial index, is worse.
 #
 # Examples (PR_TAG_SUFFIX=-pr42):
 #   _scoped_tag "ghcr.io/owner/ext-ts:pg18-2.27.1"  => "ghcr.io/owner/ext-ts:pg18-2.27.1-pr42"
@@ -2418,6 +2411,8 @@ finalize_multiarch_manifests() {
                                 ;;
                             1)
                                 log_warning "$ext $ceiling pg${major_ver}: reused manifest is not multi-arch — re-creating from per-arch legs"
+                                # An existing incomplete resolved manifest is recreated at its resolved target.
+                                # On a pull request that target may be canonical; publication ownership is #1880.
                                 _nr_target="$_nr_resolved_ref"
                                 # Fall through to the CREATE path below.
                                 ;;
