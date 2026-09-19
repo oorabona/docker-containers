@@ -381,6 +381,27 @@ runs:
 
         $after = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
         Write-Host "::notice::Disk space after cleanup: $after GB (freed $([math]::Round($after - $before, 1)) GB)"
+        Write-Host '::group::Docker disk usage after cleanup'
+        docker system df -v | ForEach-Object { Write-Host $_ }
+        $danglingImages = @(docker image ls --filter dangling=true --quiet).Count
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "::notice::Dangling images after cleanup: $danglingImages"
+        } else {
+          Write-Host "::warning::Could not measure dangling images after cleanup: docker image ls --filter dangling=true --quiet failed with exit code $LASTEXITCODE"
+        }
+        $stoppedContainers = @(docker container ls --all --filter status=exited --quiet).Count
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "::notice::Stopped containers after cleanup: $stoppedContainers"
+        } else {
+          Write-Host "::warning::Could not measure stopped containers after cleanup: docker container ls --all --filter status=exited --quiet failed with exit code $LASTEXITCODE"
+        }
+        $buildCache = @(docker builder du --format '{{.ID}}').Count
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "::notice::Build cache entries after cleanup: $buildCache"
+        } else {
+          Write-Host "::warning::Could not measure build cache entries after cleanup: docker builder du --format '{{.ID}}' failed with exit code $LASTEXITCODE"
+        }
+        Write-Host '::endgroup::'
 
     - name: Build container
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
@@ -587,6 +608,34 @@ runs:
           echo "image_loaded=false" >> $GITHUB_OUTPUT
           echo "::notice::Build skipped for $container:$current_tag (image already published with matching digest)"
         fi
+
+    - name: Record disk space after build (Windows)
+      if: ${{ always() && steps.check-build.outputs.needs_build == 'true' && runner.os == 'Windows' }}
+      shell: pwsh
+      run: |
+        $free = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
+        Write-Host "::notice::Disk space after build: $free GB"
+        Write-Host '::group::Docker disk usage after build'
+        docker system df -v | ForEach-Object { Write-Host $_ }
+        $danglingImages = @(docker image ls --filter dangling=true --quiet).Count
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "::notice::Dangling images after build: $danglingImages"
+        } else {
+          Write-Host "::warning::Could not measure dangling images after build: docker image ls --filter dangling=true --quiet failed with exit code $LASTEXITCODE"
+        }
+        $stoppedContainers = @(docker container ls --all --filter status=exited --quiet).Count
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "::notice::Stopped containers after build: $stoppedContainers"
+        } else {
+          Write-Host "::warning::Could not measure stopped containers after build: docker container ls --all --filter status=exited --quiet failed with exit code $LASTEXITCODE"
+        }
+        $buildCache = @(docker builder du --format '{{.ID}}').Count
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "::notice::Build cache entries after build: $buildCache"
+        } else {
+          Write-Host "::warning::Could not measure build cache entries after build: docker builder du --format '{{.ID}}' failed with exit code $LASTEXITCODE"
+        }
+        Write-Host '::endgroup::'
 
     # A `docker buildx build --load` leaves the built image in two places at
     # once: BuildKit's own build cache AND the local Docker daemon's image
