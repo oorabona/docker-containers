@@ -17,7 +17,7 @@ inputs:
     required: false
     default: ''
   build_flavor:
-    description: Build-time flavor selector (e.g. base/dev) passed as --build-flavor to make
+    description: Build-time flavor selector passed as --build-flavor to make (e.g. base/dev); a Windows cell publishing a shared flavor's rolling alias must declare base or dev
     required: false
     default: ''
   is_latest_version:

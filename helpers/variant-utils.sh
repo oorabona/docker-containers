@@ -430,7 +430,7 @@ _list_cell_publisher_rolling_aliases() {
                     return 1
                     ;;
                 *)
-                    _cell_routing_error "cannot route alias latest-${flavor} for cell variant ${variant}: unknown build_flavor ${build_flavor}"
+                    _cell_routing_error "cannot route alias latest-${flavor} for cell variant ${variant}: unknown build_flavor ${build_flavor}; expected base or dev"
                     return 1
                     ;;
             esac
