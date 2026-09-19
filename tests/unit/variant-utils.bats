@@ -1323,12 +1323,13 @@ setup_fallback_test() {
 }
 
 @test "list_cell_publisher_rolling_aliases: a failed alias write returns failure" {
-    run bash -c '
+    run --separate-stderr bash -c '
         source "$1"
-        list_cell_publisher_rolling_aliases linux-manifest 18-alpine-vector linux vector alpine false '' > /dev/full 2>/dev/null
+        list_cell_publisher_rolling_aliases linux-manifest 18-alpine-vector linux vector alpine false "" > /dev/full
     ' _ "$ORIG_DIR/helpers/variant-utils.sh"
 
     [ "$status" -ne 0 ]
+    [[ "$stderr" != *"expected publisher, tag, os, variant, flavor, is_default, and build_flavor"* ]]
 }
 
 @test "list_cell_publisher_rolling_aliases rejects an unrecognised publisher" {
@@ -1408,7 +1409,7 @@ setup_fallback_test() {
 @test "compute_cell_tag_suffixes: a failed suffix write returns failure" {
     run bash -c '
         source "$1"
-        compute_cell_tag_suffixes 18-alpine-vector linux vector alpine false '' > /dev/full 2>/dev/null
+        compute_cell_tag_suffixes 18-alpine-vector linux vector alpine false "" > /dev/full 2>/dev/null
     ' _ "$ORIG_DIR/helpers/variant-utils.sh"
 
     [ "$status" -ne 0 ]

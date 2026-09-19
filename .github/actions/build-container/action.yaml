@@ -118,6 +118,25 @@ runs:
             ;;
         esac
 
+    - name: Validate Windows publishing latest-version input
+      if: runner.os == 'Windows' && inputs.push == 'true' && github.event_name != 'pull_request'
+      shell: bash
+      env:
+        IS_LATEST_VERSION: ${{ inputs.is_latest_version }}
+      run: |
+        set -euo pipefail
+        case "$IS_LATEST_VERSION" in
+          true|false) ;;
+          *)
+            # Use the repository's workflow-command escaper before logging an
+            # arbitrary caller value.
+            source ./helpers/logging.sh
+            safe_is_latest_version=$(_escape_gha_command "$IS_LATEST_VERSION")
+            printf '::error::Invalid is_latest_version input %s; expected true or false\n' "$safe_is_latest_version" >&2
+            exit 1
+            ;;
+        esac
+
     - name: Log in to GitHub Container Registry
       if: runner.os != 'Windows'
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0

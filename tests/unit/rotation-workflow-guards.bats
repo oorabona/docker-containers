@@ -254,6 +254,52 @@ EOF
     [[ "$validation" == *'Invalid push input'* ]]
 }
 
+@test "build-container requires latest-version classification for Windows publishing" {
+    local validation_if latest_version_input validation push_validation_index validation_index first_expensive_index
+
+    run yq -r '.runs.steps[] | select(.name == "Validate Windows publishing latest-version input") | .if' \
+        "$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    [ "$status" -eq 0 ]
+    validation_if="$output"
+    [[ "$validation_if" == *"runner.os"* ]]
+    [[ "$validation_if" == *"Windows"* ]]
+    [[ "$validation_if" == *"inputs.push"* ]]
+    [[ "$validation_if" == *"true"* ]]
+    [[ "$validation_if" == *"github.event_name"* ]]
+    [ "$validation_if" = "runner.os == 'Windows' && inputs.push == 'true' && github.event_name != 'pull_request'" ]
+
+    run yq -r '.runs.steps[] | select(.name == "Validate Windows publishing latest-version input") | .env.IS_LATEST_VERSION' \
+        "$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    [ "$status" -eq 0 ]
+    latest_version_input="$output"
+    [ "$latest_version_input" = '${{ inputs.is_latest_version }}' ]
+
+    run yq -r '.runs.steps[] | select(.name == "Validate Windows publishing latest-version input") | .run' \
+        "$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    [ "$status" -eq 0 ]
+    validation="$output"
+    [[ "$validation" == *$'case "$IS_LATEST_VERSION" in\n  true|false) ;;'* ]]
+    [[ "$validation" == *'Invalid is_latest_version input'* ]]
+
+    run yq -r '.runs.steps | to_entries | map(select(.value.name == "Validate push input")) | .[0].key' \
+        "$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    [ "$status" -eq 0 ]
+    push_validation_index="$output"
+
+    run yq -r '.runs.steps | to_entries | map(select(.value.name == "Validate Windows publishing latest-version input")) | .[0].key' \
+        "$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    [ "$status" -eq 0 ]
+    validation_index="$output"
+
+    run yq -r '.runs.steps | to_entries | map(select(.value.name | test("Login|Buildx|Build container"))) | .[0].key' \
+        "$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    [ "$status" -eq 0 ]
+    first_expensive_index="$output"
+
+    [ "$validation_index" -gt "$push_validation_index" ]
+    [ "$validation_index" -lt "$first_expensive_index" ]
+}
+
 @test "rotation schedules three daily runs with enough room for a long run" {
     run yq -r '.on.schedule | length' "$PROJECT_ROOT/.github/workflows/rotation.yaml"
 
