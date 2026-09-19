@@ -5,12 +5,12 @@
 # they pass their identifier and cell attributes here, then publish only the
 # suffixes this script returns. The versioned cell tag is intentionally omitted.
 #
-# Usage: list-cell-rolling-tag-suffixes.sh <publisher> <tag> <os> <variant> <flavor> <is_default>
+# Usage: list-cell-rolling-tag-suffixes.sh <publisher> <tag> <os> <variant> <flavor> <is_default> <build_flavor>
 
 set -euo pipefail
 
-if [[ "$#" -ne 6 ]]; then
-    printf 'Usage: %s <publisher> <tag> <os> <variant> <flavor> <is_default>\n' "${0##*/}" >&2
+if [[ "$#" -ne 7 ]]; then
+    printf 'Usage: %s <publisher> <tag> <os> <variant> <flavor> <is_default> <build_flavor>\n' "${0##*/}" >&2
     exit 2
 fi
 
@@ -25,8 +25,9 @@ os="$3"
 variant="$4"
 flavor="$5"
 is_default="$6"
+build_flavor="$7"
 
-if ! suffixes=$(list_cell_publisher_rolling_aliases "$publisher" "$tag" "$os" "$variant" "$flavor" "$is_default"); then
+if ! suffixes=$(list_cell_publisher_rolling_aliases "$publisher" "$tag" "$os" "$variant" "$flavor" "$is_default" "$build_flavor"); then
     printf 'Could not enumerate rolling tag suffixes\n' >&2
     exit 1
 fi

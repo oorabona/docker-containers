@@ -3,7 +3,7 @@
 # Consolidates manifest logic used by auto-build.yaml and recreate-manifests.yaml
 #
 # Requires env vars: TAG, VERSION, FULL_VERSION, VARIANT, IS_DEFAULT, IS_LATEST_VERSION
-# Optional cell routing env vars: CELL_OS (defaults to linux), FLAVOR (defaults empty)
+# Optional cell routing env vars: CELL_OS (defaults to linux), FLAVOR and BUILD_FLAVOR (default empty)
 #
 # Usage:
 #   source helpers/create-manifest.sh
@@ -74,7 +74,7 @@ _compute_tag_args() {
     # the alias name and its owner; this publisher only requests its share.
     if [[ "${IS_LATEST_VERSION:-}" == "true" ]]; then
         local routing_suffixes suffix
-        if ! routing_suffixes=$(list_cell_publisher_rolling_aliases "linux-manifest" "$TAG" "${CELL_OS:-linux}" "${VARIANT:-}" "${FLAVOR:-}" "${IS_DEFAULT:-false}"); then
+        if ! routing_suffixes=$(list_cell_publisher_rolling_aliases "linux-manifest" "$TAG" "${CELL_OS:-linux}" "${VARIANT:-}" "${FLAVOR:-}" "${IS_DEFAULT:-false}" "${BUILD_FLAVOR:-}"); then
             printf 'Could not enumerate rolling manifest tag suffixes\n' >&2
             return 1
         fi

@@ -3,6 +3,8 @@
 # Unit tests for helpers/variant-utils.sh
 # Tests variant resolution, tag construction, and version mapping
 
+bats_require_minimum_version 1.5.0
+
 setup() {
     TEST_DIR=$(mktemp -d)
     ORIG_DIR="$PWD"
@@ -1310,46 +1312,107 @@ setup_fallback_test() {
 #   (c) variants route by variant; Windows can also route by flavor
 #   (d) tag already == "latest"         → only versioned suffix, no alias
 
-@test "list_cell_publisher_rolling_aliases: a failed producer returns failure without a partial alias set" {
-    list_cell_rolling_aliases() {
+@test "list_cell_publisher_rolling_aliases: a failed resolver returns failure without a partial alias set" {
+    _list_cell_publisher_rolling_aliases() {
         printf 'linux-manifest\tlatest-vector\n'
         return 23
     }
 
-    run list_cell_publisher_rolling_aliases "linux-manifest" "18-alpine-vector" "linux" "vector" "alpine" "false"
+    run list_cell_publisher_rolling_aliases "linux-manifest" "18-alpine-vector" "linux" "vector" "alpine" "false" ""
 
     [ "$status" -eq 23 ]
     [ -z "$output" ]
 }
 
 @test "list_cell_publisher_rolling_aliases: a failed alias write returns failure" {
-    run bash -c '
+    run --separate-stderr bash -c '
         source "$1"
-        list_cell_publisher_rolling_aliases linux-manifest 18-alpine-vector linux vector alpine false > /dev/full 2>/dev/null
+        list_cell_publisher_rolling_aliases linux-manifest 18-alpine-vector linux vector alpine false "" > /dev/full
     ' _ "$ORIG_DIR/helpers/variant-utils.sh"
 
     [ "$status" -ne 0 ]
+    [[ "$stderr" != *"expected publisher, tag, os, variant, flavor, is_default, and build_flavor"* ]]
 }
 
 @test "list_cell_publisher_rolling_aliases rejects an unrecognised publisher" {
-    run list_cell_publisher_rolling_aliases "linux-manfiest" "18-alpine-vector" "linux" "vector" "alpine" "false"
+    run list_cell_publisher_rolling_aliases "linux-manfiest" "18-alpine-vector" "linux" "vector" "alpine" "false" ""
 
     [ "$status" -ne 0 ]
     [[ "$output" == *"unrecognised publisher"* ]]
 }
 
+@test "list_cell_publisher_rolling_aliases refuses a missing build_flavor independently of nounset" {
+    local nounset stdout_file stderr_file stdout stderr invocation_status
+    for nounset in disabled enabled; do
+        stdout_file=$(mktemp "$BATS_TEST_TMPDIR/publisher-arity.stdout.XXXXXX")
+        stderr_file=$(mktemp "$BATS_TEST_TMPDIR/publisher-arity.stderr.XXXXXX")
+        if [[ "$nounset" == "enabled" ]]; then
+            if bash -u -c '
+                source "$1"
+                list_cell_publisher_rolling_aliases windows-action 2.337.0-windows-ltsc2022-dev windows windows-ltsc2022-dev windows-ltsc2022 false
+            ' _ "$ORIG_DIR/helpers/variant-utils.sh" >"$stdout_file" 2>"$stderr_file"; then
+                invocation_status=0
+            else
+                invocation_status=$?
+            fi
+        elif bash -c '
+            source "$1"
+            list_cell_publisher_rolling_aliases windows-action 2.337.0-windows-ltsc2022-dev windows windows-ltsc2022-dev windows-ltsc2022 false
+        ' _ "$ORIG_DIR/helpers/variant-utils.sh" >"$stdout_file" 2>"$stderr_file"; then
+            invocation_status=0
+        else
+            invocation_status=$?
+        fi
+        stdout=$(<"$stdout_file")
+        stderr=$(<"$stderr_file")
+        rm -f "$stdout_file" "$stderr_file"
+
+        [ "$invocation_status" -ne 0 ]
+        [ -z "$stdout" ]
+        [[ "$stderr" == *"cell tag routing:"* ]]
+        [[ "$stderr" != *"unbound variable"* ]]
+    done
+}
+
+@test "windows-action rolling aliases: dev build_flavor emits no bare flavor alias" {
+    run "$ORIG_DIR/scripts/list-cell-rolling-tag-suffixes.sh" \
+        "windows-action" "2.337.0-windows-ltsc2022-dev" "windows" \
+        "windows-ltsc2022-dev" "windows-ltsc2022" "false" "dev"
+
+    [ "$status" -eq 0 ]
+    [ "$(grep -cxF "latest-windows-ltsc2022" <<< "$output" || true)" -eq 0 ]
+}
+
+@test "windows-action rolling aliases: unknown build_flavor is refused" {
+    run --separate-stderr "$ORIG_DIR/scripts/list-cell-rolling-tag-suffixes.sh" \
+        "windows-action" "2.337.0-windows-ltsc2022-dev" "windows" \
+        "windows-ltsc2022-dev" "windows-ltsc2022" "false" "release"
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"release"* ]]
+}
+
+@test "windows-action rolling aliases: base build_flavor owns the bare flavor alias" {
+    run "$ORIG_DIR/scripts/list-cell-rolling-tag-suffixes.sh" \
+        "windows-action" "2.337.0-windows-ltsc2022-dev" "windows" \
+        "windows-ltsc2022-dev" "windows-ltsc2022" "false" "base"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "latest-windows-ltsc2022" ]
+}
+
 @test "list_cell_rolling_aliases rejects an unrecognised OS and noncanonical boolean" {
-    run list_cell_rolling_aliases "18-alpine-vector" "darwin" "vector" "alpine" "false"
+    run list_cell_rolling_aliases "18-alpine-vector" "darwin" "vector" "alpine" "false" ""
     [ "$status" -ne 0 ]
     [[ "$output" == *"unrecognised OS"* ]]
 
-    run list_cell_rolling_aliases "18-alpine-vector" "linux" "vector" "alpine" "TRUE"
+    run list_cell_rolling_aliases "18-alpine-vector" "linux" "vector" "alpine" "TRUE" ""
     [ "$status" -ne 0 ]
     [[ "$output" == *"is_default must be true or false"* ]]
 }
 
 @test "list_cell_rolling_aliases rejects an invalid composed Docker tag" {
-    run list_cell_rolling_aliases "18-alpine-vector" "linux" $'vector\nsecond-record' "alpine" "false"
+    run list_cell_rolling_aliases "18-alpine-vector" "linux" $'vector\nsecond-record' "alpine" "false" ""
 
     [ "$status" -ne 0 ]
     [[ "$output" == *"composed alias is not a valid Docker tag"* ]]
@@ -1357,7 +1420,7 @@ setup_fallback_test() {
 
 @test "compute_cell_publisher_tag_suffixes includes the versioned ref and only its aliases" {
     run compute_cell_publisher_tag_suffixes "windows-manifest" \
-        "2.337.0-windows-ltsc2022-dev" "windows" "windows-ltsc2022-dev" "windows-ltsc2022" "false"
+        "2.337.0-windows-ltsc2022-dev" "windows" "windows-ltsc2022-dev" "windows-ltsc2022" "false" "dev"
 
     [ "$status" -eq 0 ]
     [ "$output" = $'2.337.0-windows-ltsc2022-dev\nlatest-windows-ltsc2022-dev' ]
@@ -1366,7 +1429,7 @@ setup_fallback_test() {
 @test "compute_cell_tag_suffixes: a failed alias pipeline stage returns failure without the versioned prefix" {
     cut() { return 23; }
 
-    run compute_cell_tag_suffixes "18-alpine-vector" "linux" "vector" "alpine" "false"
+    run compute_cell_tag_suffixes "18-alpine-vector" "linux" "vector" "alpine" "false" ""
 
     [ "$status" -eq 23 ]
     [[ "$output" != *"18-alpine-vector"* ]]
@@ -1375,14 +1438,14 @@ setup_fallback_test() {
 @test "compute_cell_tag_suffixes: a failed suffix write returns failure" {
     run bash -c '
         source "$1"
-        compute_cell_tag_suffixes 18-alpine-vector linux vector alpine false > /dev/full 2>/dev/null
+        compute_cell_tag_suffixes 18-alpine-vector linux vector alpine false "" > /dev/full 2>/dev/null
     ' _ "$ORIG_DIR/helpers/variant-utils.sh"
 
     [ "$status" -ne 0 ]
 }
 
 @test "compute_cell_tag_suffixes: (a) no-routing-key non-default → versioned only" {
-    run compute_cell_tag_suffixes "2.3.1" "linux" "" "" "false"
+    run compute_cell_tag_suffixes "2.3.1" "linux" "" "" "false" ""
     [ "$status" -eq 0 ]
     # Exactly 1 line
     [ "$(echo "$output" | wc -l)" -eq 1 ]
@@ -1394,7 +1457,7 @@ setup_fallback_test() {
 }
 
 @test "compute_cell_tag_suffixes: (b) a default cell gets bare latest and no variant alias" {
-    run compute_cell_tag_suffixes "1.0.0-base" "linux" "base" "base" "true"
+    run compute_cell_tag_suffixes "1.0.0-base" "linux" "base" "base" "true" "base"
     [ "$status" -eq 0 ]
     # Exactly 2 lines
     [ "$(echo "$output" | wc -l)" -eq 2 ]
@@ -1404,7 +1467,7 @@ setup_fallback_test() {
     [ "$(echo "$output" | sed -n '2p')" = "latest" ]
     ! grep -qxF "latest-base" <<< "$output"
 
-    run compute_cell_tag_suffixes "1.0.0-base" "windows" "windows-ltsc2022-base" "windows-ltsc2022" "true"
+    run compute_cell_tag_suffixes "1.0.0-base" "windows" "windows-ltsc2022-base" "windows-ltsc2022" "true" "base"
     [ "$status" -eq 0 ]
     [ "$output" = $'1.0.0-base\nlatest' ]
     ! grep -qxF "latest-windows-ltsc2022-base" <<< "$output"
@@ -1412,7 +1475,7 @@ setup_fallback_test() {
 }
 
 @test "compute_cell_tag_suffixes: (c) Linux non-default routes by variant, not flavor" {
-    run compute_cell_tag_suffixes "18-alpine-vector" "linux" "vector" "alpine" "false"
+    run compute_cell_tag_suffixes "18-alpine-vector" "linux" "vector" "alpine" "false" ""
     [ "$status" -eq 0 ]
     # Exactly 2 lines
     [ "$(echo "$output" | wc -l)" -eq 2 ]
@@ -1427,22 +1490,44 @@ setup_fallback_test() {
 }
 
 @test "compute_cell_tag_suffixes: (d) tag==latest → single line, no alias added" {
-    run compute_cell_tag_suffixes "latest" "linux" "vector" "alpine" "false"
+    run compute_cell_tag_suffixes "latest" "linux" "vector" "alpine" "false" ""
     [ "$status" -eq 0 ]
     # Exactly 1 line — the versioned "latest" suffix with no additional rolling alias
     [ "$(echo "$output" | wc -l)" -eq 1 ]
     [ "$(echo "$output" | sed -n '1p')" = "latest" ]
 }
 
-@test "compute_cell_tag_suffixes: Windows non-default emits independent variant and flavor aliases" {
-    run compute_cell_tag_suffixes "2.337.0-windows-ltsc2022-dev" "windows" "windows-ltsc2022-dev" "windows-ltsc2022" "false"
+@test "compute_cell_tag_suffixes: a Windows dev cell emits only its variant alias" {
+    run compute_cell_tag_suffixes "2.337.0-windows-ltsc2022-dev" "windows" "windows-ltsc2022-dev" "windows-ltsc2022" "false" "dev"
 
     [ "$status" -eq 0 ]
-    [ "$output" = $'2.337.0-windows-ltsc2022-dev\nlatest-windows-ltsc2022-dev\nlatest-windows-ltsc2022' ]
+    [ "$output" = $'2.337.0-windows-ltsc2022-dev\nlatest-windows-ltsc2022-dev' ]
+}
+
+@test "compute_cell_tag_suffixes: an undeclared Windows build flavor returns no partial suffixes" {
+    local stdout_file stderr_file stdout status
+    stdout_file=$(mktemp "$BATS_TEST_TMPDIR/undecidable-suffixes.stdout.XXXXXX")
+    stderr_file=$(mktemp "$BATS_TEST_TMPDIR/undecidable-suffixes.stderr.XXXXXX")
+    if compute_cell_tag_suffixes "2.337.0-windows-ltsc2022-dev" "windows" "windows-ltsc2022-dev" "windows-ltsc2022" "false" "" >"$stdout_file" 2>"$stderr_file"; then
+        status=0
+    else
+        status=$?
+    fi
+    stdout=$(<"$stdout_file")
+    rm -f "$stdout_file" "$stderr_file"
+
+    [ "$status" -ne 0 ] || {
+        echo "ASSERTION FAILED: the full-set view must refuse an undecidable action alias" >&2
+        return 1
+    }
+    [ -z "$stdout" ] || {
+        echo "ASSERTION FAILED: the full-set view must not emit partial suffixes before refusing" >&2
+        return 1
+    }
 }
 
 @test "compute_cell_tag_suffixes: emits an equal Windows variant and flavor suffix once" {
-    run compute_cell_tag_suffixes "2.337.0-windows-ltsc2022" "windows" "windows-ltsc2022" "windows-ltsc2022" "false"
+    run compute_cell_tag_suffixes "2.337.0-windows-ltsc2022" "windows" "windows-ltsc2022" "windows-ltsc2022" "false" ""
 
     [ "$status" -eq 0 ]
     [ "$output" = $'2.337.0-windows-ltsc2022\nlatest-windows-ltsc2022' ]
@@ -1454,7 +1539,7 @@ setup_fallback_test() {
     export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
     hash -r
 
-    local container matrix cells_file cell tag os variant flavor is_default is_latest_version suffixes expected_suffixes checked=0
+    local container matrix cells_file cell tag os variant flavor build_flavor is_default is_latest_version suffixes expected_suffixes checked=0
     for container in github-runner postgres; do
         matrix=$(list_build_matrix "$ORIG_DIR/$container" "" true)
         cells_file=$(mktemp "$BATS_TEST_TMPDIR/variant-utils-cells.XXXXXX")
@@ -1467,9 +1552,10 @@ setup_fallback_test() {
             os=$(jq -r '.os' <<< "$cell")
             variant=$(jq -r '.variant' <<< "$cell")
             flavor=$(jq -r '.flavor' <<< "$cell")
+            build_flavor=$(jq -r '.build_flavor' <<< "$cell")
             is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
             is_latest_version=$(jq -r 'if .is_latest_version then "true" else "false" end' <<< "$cell")
-            suffixes=$(compute_cell_tag_suffixes "$tag" "$os" "$variant" "$flavor" "$is_default")
+            suffixes=$(compute_cell_tag_suffixes "$tag" "$os" "$variant" "$flavor" "$is_default" "$build_flavor")
 
             [[ "$is_latest_version" == "true" ]] || continue
 
@@ -1479,7 +1565,7 @@ setup_fallback_test() {
             elif [[ -n "$variant" ]]; then
                 expected_suffixes+=$'\nlatest-'"$variant"
             fi
-            if [[ "$os" == "windows" && "$is_default" != "true" && -n "$flavor" && "$flavor" != "$variant" ]]; then
+            if [[ "$os" == "windows" && "$is_default" != "true" && -n "$flavor" && "$flavor" != "$variant" && "$build_flavor" == "base" ]]; then
                 expected_suffixes+=$'\nlatest-'"$flavor"
             fi
 
