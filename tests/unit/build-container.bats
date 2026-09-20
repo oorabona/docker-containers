@@ -596,6 +596,54 @@ EOF
     [ "${validated_inputs[0]}" = "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh" ]
 }
 
+setup_github_runner_renderer_fixture() {
+    local repo_root="$PROJECT_ROOT"
+    mkdir -p "$TEST_TEMP_DIR/github-runner" "$TEST_TEMP_DIR/helpers"
+    cp "$repo_root/github-runner/config.yaml" \
+        "$repo_root/github-runner/generate-dockerfile.sh" \
+        "$repo_root/github-runner/Dockerfile.linux" \
+        "$TEST_TEMP_DIR/github-runner/"
+    cp "$repo_root/helpers/logging.sh" \
+        "$repo_root/helpers/template-utils.sh" \
+        "$repo_root/helpers/generate-utils.sh" \
+        "$repo_root/helpers/collect-lines.sh" \
+        "$TEST_TEMP_DIR/helpers/"
+    printf '%s\n' 'FROM scratch' '# @@BASE_IMAGE@@' > "$TEST_TEMP_DIR/github-runner/Dockerfile.other"
+
+    PROJECT_ROOT="$TEST_TEMP_DIR"
+}
+
+@test "github-runner renderer declaration validates all six local inputs" {
+    source_build_script
+    setup_github_runner_renderer_fixture
+    local -a validated_inputs=()
+    _renderer_skip_eligible "github-runner" validated_inputs
+
+    [ "${#validated_inputs[@]}" -eq 6 ]
+    [ "${validated_inputs[5]}" = "$TEST_TEMP_DIR/github-runner/Dockerfile.linux" ]
+}
+
+@test "github-runner Dockerfile.linux moves a pre-render digest for another caller template" {
+    source_build_script
+    setup_github_runner_renderer_fixture
+    local -a validated_inputs=()
+    _renderer_skip_eligible "github-runner" validated_inputs
+
+    cd "$TEST_TEMP_DIR/github-runner"
+    run compute_build_digest \
+        "Dockerfile.other" "ubuntu-2404" "config.yaml" "ubuntu-2404" "base" "1.0.0" \
+        "${validated_inputs[@]}"
+    [ "$status" -eq 0 ]
+    local before="$output"
+
+    printf '%s\n' '# digest-input mutation' >> Dockerfile.linux
+    run compute_build_digest \
+        "Dockerfile.other" "ubuntu-2404" "config.yaml" "ubuntu-2404" "base" "1.0.0" \
+        "${validated_inputs[@]}"
+    [ "$status" -eq 0 ]
+    [ "$before" != "$output" ]
+}
+
 @test "missing or malformed renderer declarations never probe the skip path and label the generated Dockerfile" {
     mkdir -p "$TEST_TEMP_DIR/templatecontainer" "$TEST_TEMP_DIR/generated" "$TEST_TEMP_DIR/bin"
     printf '%s\n' 'FROM scratch' '# @@MARKER@@' > "$TEST_TEMP_DIR/templatecontainer/Dockerfile"

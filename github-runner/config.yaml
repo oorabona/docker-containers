@@ -12,6 +12,7 @@ build_digest:
       - helpers/template-utils.sh
       - helpers/generate-utils.sh
       - helpers/collect-lines.sh
+      - github-runner/Dockerfile.linux
 build_args:
   UBUNTU_2404_BASE: "ubuntu:24.04"
   DEBIAN_TRIXIE_BASE: "ghcr.io/oorabona/debian:trixie"
