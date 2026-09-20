@@ -417,25 +417,62 @@ distros:
 EOF
     echo '# renderer v1' > generate-dockerfile.sh
 
-    run compute_build_digest "Dockerfile" "" "config.yaml" "ubuntu-2404" "base" "" "generate-dockerfile.sh"
+    run compute_build_digest "Dockerfile" "" "config.yaml" "ubuntu-2404" "base" "1.0.0" "generate-dockerfile.sh"
     [ "$status" -eq 0 ]
     local initial="$output"
 
     sed -i 's/\[curl\]/[curl, jq]/' config.yaml
-    run compute_build_digest "Dockerfile" "" "config.yaml" "ubuntu-2404" "base" "" "generate-dockerfile.sh"
+    run compute_build_digest "Dockerfile" "" "config.yaml" "ubuntu-2404" "base" "1.0.0" "generate-dockerfile.sh"
     [ "$status" -eq 0 ]
     [ "$initial" != "$output" ]
     initial="$output"
 
     sed -i 's/ca-certificates/ca-certificates, tzdata/' config.yaml
-    run compute_build_digest "Dockerfile" "" "config.yaml" "ubuntu-2404" "base" "" "generate-dockerfile.sh"
+    run compute_build_digest "Dockerfile" "" "config.yaml" "ubuntu-2404" "base" "1.0.0" "generate-dockerfile.sh"
     [ "$status" -eq 0 ]
     [ "$initial" != "$output" ]
     initial="$output"
 
-    run compute_build_digest "Dockerfile" "" "config.yaml" "ubuntu-2404" "dev" "" "generate-dockerfile.sh"
+    run compute_build_digest "Dockerfile" "" "config.yaml" "debian-12" "base" "1.0.0" "generate-dockerfile.sh"
     [ "$status" -eq 0 ]
     [ "$initial" != "$output" ]
+    initial="$output"
+
+    run compute_build_digest "Dockerfile" "" "config.yaml" "debian-12" "dev" "1.0.0" "generate-dockerfile.sh"
+    [ "$status" -eq 0 ]
+    [ "$initial" != "$output" ]
+}
+
+@test "generic renderer version changes the digest even when the tag is unchanged" {
+    echo 'FROM scratch' > Dockerfile
+    echo '# renderer' > generate-dockerfile.sh
+    cat > config.yaml <<'EOF'
+distros:
+  base: {}
+EOF
+
+    run compute_build_digest "Dockerfile" "base" "config.yaml" "base" "base" "1.0.0" "generate-dockerfile.sh"
+    [ "$status" -eq 0 ]
+    local first="$output"
+
+    # The caller's tag is intentionally absent from this API: only version changes.
+    run compute_build_digest "Dockerfile" "base" "config.yaml" "base" "base" "2.0.0" "generate-dockerfile.sh"
+    [ "$status" -eq 0 ]
+    [ "$first" != "$output" ]
+}
+
+@test "render digest serialization pins the surviving renderer arguments" {
+    echo 'FROM scratch' > Dockerfile
+    echo '# renderer' > generate-dockerfile.sh
+    cat > config.yaml <<'EOF'
+distros:
+  base: {}
+EOF
+
+    run compute_build_digest "Dockerfile" "base" "config.yaml" "base" "base" "1.0.0" "generate-dockerfile.sh"
+    [ "$status" -eq 0 ]
+    # Regenerated after removing the orphaned pg_major render-argument record.
+    [ "$output" = "bb1d18b414823277ea5439be690e17cb831e77456cd1c86462127ba8d69c9efe" ]
 }
 
 @test "github-runner and web-shell generator-consumed package edits change digests" {
@@ -445,7 +482,7 @@ EOF
 
     cd github-runner
     run compute_build_digest \
-        "Dockerfile.linux" "ubuntu-2404" "config.yaml" "ubuntu-2404" "base" "" \
+        "Dockerfile.linux" "ubuntu-2404" "config.yaml" "ubuntu-2404" "base" "1.0.0" \
         "$ORIG_DIR/github-runner/generate-dockerfile.sh" \
         "$ORIG_DIR/helpers/logging.sh" "$ORIG_DIR/helpers/template-utils.sh" \
         "$ORIG_DIR/helpers/generate-utils.sh" "$ORIG_DIR/helpers/collect-lines.sh"
@@ -453,7 +490,7 @@ EOF
     local github_runner_before="$output"
     yq -i '.flavors.base.packages.apt += ["digest-test"]' config.yaml
     run compute_build_digest \
-        "Dockerfile.linux" "ubuntu-2404" "config.yaml" "ubuntu-2404" "base" "" \
+        "Dockerfile.linux" "ubuntu-2404" "config.yaml" "ubuntu-2404" "base" "1.0.0" \
         "$ORIG_DIR/github-runner/generate-dockerfile.sh" \
         "$ORIG_DIR/helpers/logging.sh" "$ORIG_DIR/helpers/template-utils.sh" \
         "$ORIG_DIR/helpers/generate-utils.sh" "$ORIG_DIR/helpers/collect-lines.sh"
@@ -462,7 +499,7 @@ EOF
 
     cd "$TEST_DIR/web-shell"
     run compute_build_digest \
-        "Dockerfile" "ubuntu" "config.yaml" "ubuntu" "" "" \
+        "Dockerfile" "ubuntu" "config.yaml" "ubuntu" "" "1.0.0" \
         "$ORIG_DIR/web-shell/generate-dockerfile.sh" \
         "$ORIG_DIR/helpers/logging.sh" "$ORIG_DIR/helpers/template-utils.sh" \
         "$ORIG_DIR/helpers/generate-utils.sh"
@@ -470,7 +507,7 @@ EOF
     local web_shell_before="$output"
     yq -i '.distros.ubuntu.packages.core += ["digest-test"]' config.yaml
     run compute_build_digest \
-        "Dockerfile" "ubuntu" "config.yaml" "ubuntu" "" "" \
+        "Dockerfile" "ubuntu" "config.yaml" "ubuntu" "" "1.0.0" \
         "$ORIG_DIR/web-shell/generate-dockerfile.sh" \
         "$ORIG_DIR/helpers/logging.sh" "$ORIG_DIR/helpers/template-utils.sh" \
         "$ORIG_DIR/helpers/generate-utils.sh"

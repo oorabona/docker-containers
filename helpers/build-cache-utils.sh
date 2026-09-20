@@ -47,7 +47,7 @@ _digest_read_file() {
 #   3. config.yaml with build_args → simple container with versioned args
 #   4. None of the above → Dockerfile-only
 #
-# Usage: compute_build_digest <dockerfile> <flavor> [render_config render_flavor render_build_flavor render_pg_major render_source...]
+# Usage: compute_build_digest <dockerfile> <flavor> [render_config render_flavor render_build_flavor render_version render_source...]
 # Returns: 64-char hex SHA256 digest
 #
 # Note: CUSTOM_BUILD_ARGS is included in the digest if set.
@@ -63,7 +63,7 @@ compute_build_digest() {
     local render_config="${3:-}"
     local render_flavor="${4:-}"
     local render_build_flavor="${5:-}"
-    local render_pg_major="${6:-}"
+    local render_version="${6:-}"
     if [[ "$#" -ge 6 ]]; then
         shift 6
     else
@@ -316,9 +316,9 @@ compute_build_digest() {
         _digest_log "  digest input: render build_flavor=$render_build_flavor"
 
         digest_record_types+=("RENDER_ARG")
-        digest_record_names+=("pg_major")
-        digest_record_values+=("$render_pg_major")
-        _digest_log "  digest input: render pg_major=$render_pg_major"
+        digest_record_names+=("version")
+        digest_record_values+=("$render_version")
+        _digest_log "  digest input: render version=$render_version"
 
         local render_source render_source_content
         for render_source in "${render_sources[@]}"; do

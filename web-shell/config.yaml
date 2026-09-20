@@ -3,6 +3,15 @@
 
 base_image: "ghcr.io/oorabona/debian:${DEBIAN_TAG}"
 
+# This complete, local, side-effect-free input set permits a pre-render skip.
+build_digest:
+  pre_render_skip:
+    inputs:
+      - web-shell/generate-dockerfile.sh
+      - helpers/logging.sh
+      - helpers/template-utils.sh
+      - helpers/generate-utils.sh
+
 build_args:
   ALPINE_BASE: "alpine"
   ROCKY_BASE: "rockylinux"

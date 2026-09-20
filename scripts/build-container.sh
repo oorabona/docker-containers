@@ -409,7 +409,47 @@ _emit_build_lineage() {
     log_info "Build lineage: $lineage_file"
 }
 
-# Build container function
+# A template may use the pre-render cache decision only when its config opts in
+# with a complete list of the local files its renderer reads or sources.  A
+# missing, malformed, or unreadable declaration is deliberately ineligible.
+_renderer_skip_eligible() {
+    local container="$1"
+    local config="$PROJECT_ROOT/$container/config.yaml"
+    local input_count input input_type
+
+    [[ -f "$config" ]] || return 1
+    [[ "$(yq -r '.build_digest.pre_render_skip.inputs | tag' "$config" 2>/dev/null)" == "!!seq" ]] || return 1
+    if ! input_count=$(yq -r '.build_digest.pre_render_skip.inputs | length' "$config" 2>/dev/null); then
+        return 1
+    fi
+    [[ "$input_count" =~ ^[1-9][0-9]*$ ]] || return 1
+
+    while IFS= read -r input; do
+        [[ -n "$input" && "$input" != "null" && "$input" != /* && "$input" != *".."* ]] || return 1
+        [[ -f "$PROJECT_ROOT/$input" ]] || return 1
+    done < <(yq -r '.build_digest.pre_render_skip.inputs[]' "$config" 2>/dev/null) || return 1
+
+    while IFS= read -r input_type; do
+        [[ "$input_type" == "!!str" ]] || return 1
+    done < <(yq -r '.build_digest.pre_render_skip.inputs[] | tag' "$config" 2>/dev/null) || return 1
+}
+
+# Public wrapper: once a generated Dockerfile has been materialised, every
+# result from the implementation returns through this single cleanup point.
+build_container() {
+    local _generated_dockerfile=""
+    local _build_status
+
+    if _build_container_impl "$@"; then
+        _build_status=0
+    else
+        _build_status=$?
+    fi
+    [[ -z "$_generated_dockerfile" ]] || rm -f "$_generated_dockerfile"
+    return "$_build_status"
+}
+
+# Build container implementation
 # Usage: build_container <container> <version> <tag> [flavor] [dockerfile] [build_flavor] [is_default] [variant] [os]
 # flavor:       distro name from variants.yaml (e.g. ubuntu-2404)
 # build_flavor: the value passed as --build-arg FLAVOR (e.g. base, dev)
@@ -418,7 +458,7 @@ _emit_build_lineage() {
 #               Caller computes via variant_property <dir> <variant_name> "default"
 # variant/os:   cell attributes used by compute_cell_tags for rolling-alias routing.
 # If dockerfile is provided, uses -f <dockerfile> instead of default Dockerfile
-build_container() {
+_build_container_impl() {
     local container="$1"
     local version="$2"
     local tag="$3"
@@ -460,69 +500,58 @@ build_container() {
     # Reset BUILD_DIGEST so each variant computes its own.
     unset BUILD_DIGEST
 
-    # Compute the digest from the marker-bearing template and its declared
-    # render inputs before deciding whether the registry image can be reused.
-    # Generation remains after that decision, so a cache hit runs no renderer.
+    # A renderer must explicitly declare its complete local input set before it
+    # may influence a pre-render skip.  PostgreSQL has no such set: its render
+    # can consult version sets and a registry, so it rebuilds every time.
     local is_template=false
+    local renderer_skip_eligible=false
     local digest_render_config=""
     local digest_render_flavor=""
     local digest_render_build_flavor=""
-    local digest_render_pg_major=""
+    local digest_render_version=""
     local -a digest_render_sources=()
     if has_template_markers "$dockerfile"; then
         is_template=true
-        if [[ -f "$PROJECT_ROOT/$container/extensions/config.yaml" ]]; then
-            digest_render_config="$PROJECT_ROOT/$container/extensions/config.yaml"
-            digest_render_flavor="${flavor:-base}"
-            # _prepare_build_args runs after the cache decision.  Derive the
-            # same leading major that it will pass to generate_dockerfile.
-            digest_render_pg_major="${version%%[^0-9]*}"
-            digest_render_sources=(
-                "$PROJECT_ROOT/helpers/extension-utils.sh"
-                "$PROJECT_ROOT/helpers/logging.sh"
-                "$PROJECT_ROOT/helpers/gha.sh"
-                "$PROJECT_ROOT/helpers/validate-extensions-schema.sh"
-                "$PROJECT_ROOT/helpers/template-utils.sh"
-                "$PROJECT_ROOT/helpers/version-set-resolver.sh"
-            )
-        elif [[ -x "$PROJECT_ROOT/$container/generate-dockerfile.sh" ]]; then
+        if [[ -x "$PROJECT_ROOT/$container/generate-dockerfile.sh" ]] && _renderer_skip_eligible "$container"; then
+            renderer_skip_eligible=true
             digest_render_config="$PROJECT_ROOT/$container/config.yaml"
             digest_render_flavor="${flavor:-}"
             digest_render_build_flavor="${build_flavor:-}"
-            digest_render_sources=(
-                "$PROJECT_ROOT/$container/generate-dockerfile.sh"
-                "$PROJECT_ROOT/helpers/logging.sh"
-                "$PROJECT_ROOT/helpers/template-utils.sh"
-                "$PROJECT_ROOT/helpers/generate-utils.sh"
-            )
-            [[ "$container" == "github-runner" ]] && \
-                digest_render_sources+=("$PROJECT_ROOT/helpers/collect-lines.sh")
+            digest_render_version="$version"
+            local declared_render_source
+            while IFS= read -r declared_render_source; do
+                digest_render_sources+=("$PROJECT_ROOT/$declared_render_source")
+            done < <(yq -r '.build_digest.pre_render_skip.inputs[]' "$digest_render_config")
         fi
     fi
 
     local build_digest
-    if build_digest=$(compute_build_digest \
-        "$dockerfile" "$flavor" \
-        "$digest_render_config" "$digest_render_flavor" \
-        "$digest_render_build_flavor" "$digest_render_pg_major" \
-        "${digest_render_sources[@]}"); then
-        :
-    else
-        log_error "Build digest computation failed for $container:$tag; refusing to build or publish"
-        return 1
+    # Marker-free Dockerfiles and eligible renderers can calculate a complete
+    # local digest before the skip probe.  Other renderers calculate it only
+    # after generation, for the label rather than a registry decision.
+    if [[ "$is_template" == "false" || "$renderer_skip_eligible" == "true" ]]; then
+        if build_digest=$(compute_build_digest \
+            "$dockerfile" "$flavor" \
+            "$digest_render_config" "$digest_render_flavor" \
+            "$digest_render_build_flavor" \
+            "$digest_render_version" "${digest_render_sources[@]}"); then
+            :
+        else
+            log_error "Build digest computation failed for $container:$tag; refusing to build or publish"
+            return 1
+        fi
+        if [[ -z "$build_digest" ]]; then
+            log_error "Build digest is empty for $container:$tag; refusing to build or publish"
+            return 1
+        fi
+        BUILD_DIGEST="$build_digest"
+        export BUILD_DIGEST
     fi
-    if [[ -z "$build_digest" ]]; then
-        log_error "Build digest is empty for $container:$tag; refusing to build or publish"
-        return 1
-    fi
-    # Kept for the lineage writer's existing public contract; the skip check
-    # and label below use build_digest explicitly rather than reading this.
-    BUILD_DIGEST="$build_digest"
-    export BUILD_DIGEST
 
-    # Smart rebuild detection: skip if image exists with matching digest
-    # SKIP_EXISTING_BUILDS is set by the build-container action based on rebuild_mode
-    if [[ "${SKIP_EXISTING_BUILDS:-false}" == "true" ]]; then
+    # Smart rebuild detection: a renderer is probed only when its declaration
+    # proves that the pre-render digest determines its output.
+    if [[ "${SKIP_EXISTING_BUILDS:-false}" == "true" && \
+          ( "$is_template" == "false" || "$renderer_skip_eligible" == "true" ) ]]; then
         if should_skip_build "$ghcr_image:$tag" "$dockerfile" "$flavor" "false" "$build_digest"; then
             local should_skip_status=0
         else
@@ -547,8 +576,6 @@ build_container() {
         esac
     fi
 
-    _resolve_platforms
-    _configure_cache "ghcr.io/$github_username/$container:buildcache"
     _prepare_build_args "$version" "$build_flavor" || {
         log_error "build arg preparation failed (invalid build_args/cache config); aborting build"
         return 1
@@ -587,7 +614,6 @@ build_container() {
     # Fix A2: _resolve_base_image is called AFTER this block so that template-driven
     # containers (web-shell, github-runner) have their per-flavor Dockerfile generated
     # before the base-image resolution reads the concrete FROM line.
-    local _generated_dockerfile=""
     if [[ "$is_template" == "true" ]]; then
         _generated_dockerfile=$(mktemp "${TMPDIR:-/tmp}/Dockerfile.${container}.XXXXXX") || {
             log_error "Failed to create temp file for generated Dockerfile"
@@ -620,11 +646,33 @@ build_container() {
         fi
 
         if [[ "$_gen_ok" != "true" ]]; then
-            rm -f "$_generated_dockerfile"
             return 1
         fi
         dockerfile="$_generated_dockerfile"
+
+        # This renderer was deliberately not eligible for a pre-render skip.
+        # Its generated Dockerfile is now the authoritative label input.
+        if [[ "$renderer_skip_eligible" != "true" ]]; then
+            if build_digest=$(compute_build_digest "$dockerfile" "$flavor"); then
+                :
+            else
+                log_error "Build digest computation failed for $container:$tag; refusing to build or publish"
+                return 1
+            fi
+            if [[ -z "$build_digest" ]]; then
+                log_error "Build digest is empty for $container:$tag; refusing to build or publish"
+                return 1
+            fi
+            BUILD_DIGEST="$build_digest"
+            export BUILD_DIGEST
+        fi
     fi
+
+    # Cache configuration can invoke Docker.  Keep it after generation and
+    # post-render digest validation so a failed label digest reaches neither
+    # Docker nor the lineage writer.
+    _resolve_platforms
+    _configure_cache "ghcr.io/$github_username/$container:buildcache"
 
     # Fix A2: resolve base image AFTER template generation so the correct per-flavor
     # FROM line (from the generated Dockerfile) is visible.  For monolithic containers
@@ -632,7 +680,10 @@ build_container() {
     # is still read — no behavior change for monolithic path.
     local _rbi_generated=0
     [[ -n "$_generated_dockerfile" ]] && _rbi_generated=1
-    _resolve_base_image "$dockerfile" "$version" "label_args" "$_rbi_generated"
+    if ! _resolve_base_image "$dockerfile" "$version" "label_args" "$_rbi_generated"; then
+        log_error "base image resolution failed for $container:$tag; refusing to build"
+        return 1
+    fi
 
     # Pre-build context hook: download external artifacts needed by the Dockerfile
     # (e.g., github-runner downloads the runner agent tarball via gh CLI)
@@ -685,7 +736,6 @@ build_container() {
                 $tag_args \
                 . || {
                 log_error "Build failed for $container:$tag"
-                [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
                 return 1
             }
         else
@@ -701,7 +751,6 @@ build_container() {
                 $tag_args \
                 . || {
                 log_error "Build failed for $container:$tag"
-                [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
                 return 1
             }
         fi
@@ -723,7 +772,6 @@ build_container() {
             $tag_args \
             . || {
             log_error "Build failed for $container:$tag"
-            [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
             return 1
         }
 
@@ -746,12 +794,6 @@ build_container() {
         log_info "[DRY-RUN] Would write lineage: .build-lineage/${container}-${tag}.json"
     fi
 
-    # Cleanup generated Dockerfile
-    # NOTE: Using if/fi instead of [[ ]] && to avoid non-zero exit code when variable is empty
-    # (same fix as CUSTOM_BUILD_ARGS - last statement in function affects return value under set -e)
-    if [[ -n "$_generated_dockerfile" ]]; then
-        rm -f "$_generated_dockerfile"
-    fi
 }
 
 # Build all variants for a container
@@ -893,6 +935,8 @@ get_container_variant_tags() {
 # Export functions for use by make script
 export -f check_multiplatform_support
 export -f build_container
+export -f _build_container_impl
+export -f _renderer_skip_eligible
 export -f build_container_variants
 export -f container_has_variants
 export -f get_container_variant_tags

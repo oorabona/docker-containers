@@ -51,7 +51,9 @@ Markers must be on their own line — the engine replaces entire lines. Generato
 
 ### Build digest stability
 
-For a marker-bearing Dockerfile, `compute_build_digest()` hashes the template, the renderer's actual config file (the container `config.yaml`, or `extensions/config.yaml` for PostgreSQL), render arguments, and the renderer code it sources — never a transient generated Dockerfile. The container `config.yaml` is covered in full only on this marker-bearing path; marker-free containers retain their declared per-flavor inputs. This keeps cache decisions on declared pre-expansion inputs without running a generator to decide a cache hit.
+For a marker-bearing Dockerfile, a pre-render cache decision is available only when `config.yaml` explicitly declares a complete, side-effect-free local input set at `build_digest.pre_render_skip.inputs`. Eligible renderers hash the template, the full container config, render arguments (`flavor`, `build_flavor`, and generic `version`), and every declared renderer source; a malformed or missing declaration is not eligible. PostgreSQL declares no such set because its renderer can consult version sets and a registry: it generates first, labels from the generated Dockerfile, and rebuilds every time. Marker-free containers retain their declared per-flavor inputs.
+
+Generic callers normally use a tag per version, and digest comparison is per tag, so the generic `version` record closes a contract gap rather than a reachable stale hit.
 
 ## Consequences
 

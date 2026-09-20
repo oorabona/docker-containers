@@ -211,6 +211,27 @@ emit_test_lineage() {
     [ -z "$output" ]
 }
 
+@test "an exported build_container calls its exported implementation in a child shell" {
+    export -nf build_container _build_container_impl _renderer_skip_eligible 2>/dev/null || :
+    unset -f build_container _build_container_impl _renderer_skip_eligible
+    source_build_script
+    _build_container_impl() { printf '%s\n' 'child implementation called'; }
+
+    run bash -c '
+        build_container_export=$(env -0 | grep -z "^BASH_FUNC_build_container%%=" | tr -d "\\000")
+        implementation_export=$(env -0 | grep -z "^BASH_FUNC__build_container_impl%%=" | tr -d "\\000")
+        eligibility_export=$(env -0 | grep -z "^BASH_FUNC__renderer_skip_eligible%%=" | tr -d "\\000")
+        [[ -n "$build_container_export" && -n "$implementation_export" && -n "$eligibility_export" ]]
+        env -i PATH="$PATH" "$build_container_export" "$implementation_export" "$eligibility_export" bash -c "
+            declare -F _renderer_skip_eligible >/dev/null
+            build_container
+        "
+    '
+
+    [ "$status" -eq 0 ]
+    [ "$output" = 'child implementation called' ]
+}
+
 # =============================================================================
 # build_container_variants no-variants status tests
 # =============================================================================
@@ -464,15 +485,22 @@ EOF
     unset SKIP_EXISTING_BUILDS
 }
 
-@test "build_container computes the same template digest before either skip-mode path" {
+@test "eligible renderer skips a matching label without running its generator" {
     export MULTIPLATFORM_SUPPORTED="false"
     mkdir -p "$TEST_TEMP_DIR/templatecontainer" "$TEST_TEMP_DIR/generated"
     cat > "$TEST_TEMP_DIR/templatecontainer/Dockerfile" <<'EOF'
 FROM scratch
 # @@PACKAGES@@
 EOF
+    cat > "$TEST_TEMP_DIR/templatecontainer/config.yaml" <<'EOF'
+build_digest:
+  pre_render_skip:
+    inputs:
+      - templatecontainer/generate-dockerfile.sh
+EOF
     cat > "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh" <<'EOF'
 #!/usr/bin/env bash
+echo generator >> "$TEST_TEMP_DIR/generator-calls"
 printf '%s\n' 'FROM scratch'
 EOF
     chmod +x "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
@@ -480,7 +508,10 @@ EOF
     mkdir -p "$TEST_TEMP_DIR/bin"
     cat > "$TEST_TEMP_DIR/bin/docker" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+printf '%s\n' "$*" >> "$TEST_TEMP_DIR/docker_calls.log"
+if [[ "$*" == *"imagetools inspect"* ]]; then
+    printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+fi
 EOF
     chmod +x "$TEST_TEMP_DIR/bin/docker"
     export PATH="$TEST_TEMP_DIR/bin:$PATH"
@@ -493,25 +524,109 @@ EOF
     _prepare_build_args() { _BUILD_ARGS=""; }
     collect_lines() { printf '%s\n' "docker.io/test/templatecontainer:1.0.0" > "$1"; }
     _resolve_base_image() { :; }
-    compute_build_digest() {
-        printf '%s\n' "$1" >> "$TEST_TEMP_DIR/digest-paths"
-        printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    }
+    compute_build_digest() { printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; }
     export -f _resolve_platforms _configure_cache _prepare_build_args collect_lines _resolve_base_image compute_build_digest
 
     cd "$TEST_TEMP_DIR"
-    : > "$TEST_TEMP_DIR/digest-paths"
-    run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
-    [ "$status" -eq 0 ]
-
     export SKIP_EXISTING_BUILDS="true"
     run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
     [ "$status" -eq 0 ]
     unset SKIP_EXISTING_BUILDS
 
-    [ "$(wc -l < "$TEST_TEMP_DIR/digest-paths" | tr -d ' ')" -eq 2 ]
-    [ "$(sort -u "$TEST_TEMP_DIR/digest-paths" | wc -l | tr -d ' ')" -eq 1 ]
-    grep -qx 'templatecontainer/Dockerfile' "$TEST_TEMP_DIR/digest-paths"
+    [ -z "$(find "$TEST_TEMP_DIR/generated" -type f -print -quit)" ]
+    [ ! -e "$TEST_TEMP_DIR/generator-calls" ]
+    [ ! -s "$TEST_TEMP_DIR/docker_calls.log" ] || ! grep -q 'buildx build' "$TEST_TEMP_DIR/docker_calls.log"
+}
+
+@test "empty successful digest is fatal before Docker for eligible renderers in both skip modes" {
+    mkdir -p "$TEST_TEMP_DIR/templatecontainer" "$TEST_TEMP_DIR/generated" "$TEST_TEMP_DIR/bin"
+    printf '%s\n' 'FROM scratch' '# @@MARKER@@' > "$TEST_TEMP_DIR/templatecontainer/Dockerfile"
+    cat > "$TEST_TEMP_DIR/templatecontainer/config.yaml" <<'EOF'
+build_digest:
+  pre_render_skip:
+    inputs: [templatecontainer/generate-dockerfile.sh]
+EOF
+    printf '%s\n' '#!/usr/bin/env bash' 'printf "FROM scratch\\n"' > "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
+    chmod +x "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$TEST_TEMP_DIR/docker_calls.log"' > "$TEST_TEMP_DIR/bin/docker"
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    source_build_script
+    PROJECT_ROOT="$TEST_TEMP_DIR"; TMPDIR="$TEST_TEMP_DIR/generated"
+    compute_build_digest() { :; }
+    export -f compute_build_digest
+    cd "$TEST_TEMP_DIR"
+
+    local skip_mode
+    for skip_mode in true false; do
+        SKIP_EXISTING_BUILDS="$skip_mode" run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"Build digest is empty for templatecontainer:1.0.0; refusing to build or publish"* ]]
+    done
+    [ ! -s "$TEST_TEMP_DIR/docker_calls.log" ]
+    [ -z "$(find "$TEST_TEMP_DIR/generated" -type f -print -quit)" ]
+}
+
+@test "missing or malformed renderer declarations never probe the skip path and label the generated Dockerfile" {
+    mkdir -p "$TEST_TEMP_DIR/templatecontainer" "$TEST_TEMP_DIR/generated" "$TEST_TEMP_DIR/bin"
+    printf '%s\n' 'FROM scratch' '# @@MARKER@@' > "$TEST_TEMP_DIR/templatecontainer/Dockerfile"
+    printf '%s\n' '#!/usr/bin/env bash' 'echo generated >> "$TEST_TEMP_DIR/generator-calls"' 'printf "FROM generated\\n"' > "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
+    chmod +x "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$TEST_TEMP_DIR/docker_calls.log"' > "$TEST_TEMP_DIR/bin/docker"
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    source_build_script
+    PROJECT_ROOT="$TEST_TEMP_DIR"; TMPDIR="$TEST_TEMP_DIR/generated"
+    should_skip_build() { echo called >> "$TEST_TEMP_DIR/skip-calls"; return 0; }
+    compute_build_digest() { printf '%s\n' "$1" >> "$TEST_TEMP_DIR/digest-paths"; printf '%s\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; }
+    _resolve_platforms() { _PLATFORMS="linux/amd64"; }; _configure_cache() { _CACHE_ARGS=""; _RUNTIME_INFO=test; }; _prepare_build_args() { _BUILD_ARGS=""; }; collect_lines() { printf '%s\n' 'docker.io/test/templatecontainer:1.0.0' > "$1"; }; _resolve_base_image() { :; }
+    export -f should_skip_build compute_build_digest _resolve_platforms _configure_cache _prepare_build_args collect_lines _resolve_base_image
+    cd "$TEST_TEMP_DIR"
+
+    local skip_mode
+    for skip_mode in true false; do
+        SKIP_EXISTING_BUILDS="$skip_mode" run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
+        [ "$status" -eq 0 ]
+    done
+    cat > "$TEST_TEMP_DIR/templatecontainer/config.yaml" <<'EOF'
+build_digest:
+  pre_render_skip:
+    inputs: [templatecontainer/not-a-renderer-source.sh]
+EOF
+    SKIP_EXISTING_BUILDS=true run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
+    [ "$status" -eq 0 ]
+    [ ! -e "$TEST_TEMP_DIR/skip-calls" ]
+    [ "$(wc -l < "$TEST_TEMP_DIR/generator-calls" | tr -d ' ')" -eq 3 ]
+    grep -q 'buildx build' "$TEST_TEMP_DIR/docker_calls.log"
+    ! grep -qx 'templatecontainer/Dockerfile' "$TEST_TEMP_DIR/digest-paths"
+    grep -q '/Dockerfile.templatecontainer.' "$TEST_TEMP_DIR/digest-paths"
+    [ -z "$(find "$TEST_TEMP_DIR/generated" -type f -print -quit)" ]
+}
+
+@test "empty post-render digest is fatal and cleans up for non-eligible renderers in both skip modes" {
+    mkdir -p "$TEST_TEMP_DIR/templatecontainer" "$TEST_TEMP_DIR/generated" "$TEST_TEMP_DIR/bin"
+    printf '%s\n' 'FROM scratch' '# @@MARKER@@' > "$TEST_TEMP_DIR/templatecontainer/Dockerfile"
+    printf '%s\n' '#!/usr/bin/env bash' 'printf "FROM generated\\n"' > "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
+    chmod +x "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$TEST_TEMP_DIR/docker_calls.log"' > "$TEST_TEMP_DIR/bin/docker"
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    source_build_script
+    PROJECT_ROOT="$TEST_TEMP_DIR"; TMPDIR="$TEST_TEMP_DIR/generated"
+    should_skip_build() { echo called >> "$TEST_TEMP_DIR/skip-calls"; return 0; }
+    compute_build_digest() { :; }
+    export -f should_skip_build compute_build_digest
+    cd "$TEST_TEMP_DIR"
+
+    local skip_mode
+    for skip_mode in true false; do
+        SKIP_EXISTING_BUILDS="$skip_mode" run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"Build digest is empty for templatecontainer:1.0.0; refusing to build or publish"* ]]
+    done
+    [ ! -e "$TEST_TEMP_DIR/skip-calls" ]
+    [ ! -s "$TEST_TEMP_DIR/docker_calls.log" ]
+    [ -z "$(find "$TEST_TEMP_DIR/generated" -type f -print -quit)" ]
 }
 
 # =============================================================================
