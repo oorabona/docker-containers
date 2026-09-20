@@ -382,11 +382,14 @@ EOF
 
     source_build_script
 
-    # Run from mock container dir
-    cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "1.0.0" "1.0.0" "" "testcontainer/Dockerfile"
+    export PROJECT_ROOT="$TEST_TEMP_DIR"
+
+    # The three-argument production form resolves its default Dockerfile from the container directory.
+    cd "$TEST_TEMP_DIR/testcontainer"
+    run build_container "testcontainer" "1.0.0" "1.0.0"
 
     # Check docker was called with correct platform
+    [ "$status" -eq 0 ]
     [ -f "$TEST_TEMP_DIR/docker_calls.log" ]
     grep -q "linux/arm64" "$TEST_TEMP_DIR/docker_calls.log"
 }
@@ -790,7 +793,7 @@ EOF
     export -f variant_property
 
     cd "$TEST_TEMP_DIR"
-    # Call with 4 positional args only (no 7th is_default) — mirrors `./make build --flavor base`
+    # Call with 5 positional args (no 7th is_default) — the fifth selects the fixture Dockerfile.
     run build_container "testcontainer" "1.0.0" "1.0.0" "base" "testcontainer/Dockerfile"
 
     [ "$status" -eq 0 ]
@@ -825,7 +828,7 @@ EOF
     export -f variant_property
 
     cd "$TEST_TEMP_DIR"
-    # Call with 4 positional args only (no 7th is_default) — mirrors `./make build --flavor vector`
+    # Call with 5 positional args (no 7th is_default) — the fifth selects the fixture Dockerfile.
     run build_container "testcontainer" "1.0.0" "1.0.0" "vector" "testcontainer/Dockerfile"
 
     [ "$status" -eq 0 ]
