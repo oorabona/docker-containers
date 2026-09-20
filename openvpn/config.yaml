@@ -7,7 +7,7 @@ base_image_cache:
     tags: ["latest"]
 build_args:
   OS_VERSION: "latest"
-  EASYRSA_VERSION: "3.2.6"
+  EASYRSA_VERSION: "3.2.7"
   # Pinned EasyRSA release-signing key fingerprint (primary). SINGLE SOURCE OF TRUTH:
   # consumed as a --build-arg by the Dockerfile bake (exactly-one-key + fingerprint
   # assertion) AND read by the GPG key-lifecycle monitor (scripts/check-gpg-keys.sh).
