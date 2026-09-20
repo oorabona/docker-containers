@@ -57,6 +57,11 @@ compute_build_digest() {
     local dockerfile="$1"
     local flavor="${2:-}"
 
+    command -v yq >/dev/null 2>&1 || {
+        log_error "  yq is required for build digest inputs but was not found in PATH."
+        return 1
+    }
+
     local -a digest_inputs=()
 
     # --- Input 1: Dockerfile content ---
@@ -94,14 +99,9 @@ compute_build_digest() {
 
         # Extract extension list from flavor file, get version for each
         local extensions
-        if command -v yq &>/dev/null; then
-            if ! extensions=$(yq -r '.extensions[]' "flavors/${flavor}.yaml" 2>/dev/null); then
-                log_error "  digest input: failed to parse extensions from flavors/${flavor}.yaml"
-                return 1
-            fi
-        else
-            log_warning "  yq not available, falling back to raw flavor file content"
-            extensions=""
+        if ! extensions=$(yq -r '.extensions[]' "flavors/${flavor}.yaml" 2>/dev/null); then
+            log_error "  digest input: failed to parse extensions from flavors/${flavor}.yaml"
+            return 1
         fi
 
         if [[ -n "$extensions" ]]; then
@@ -113,13 +113,9 @@ compute_build_digest() {
             local ext
             for ext in $extensions; do
                 local version
-                if command -v yq &>/dev/null; then
-                    if ! version=$(yq -r ".extensions.${ext}.version // \"unknown\"" "extensions/config.yaml" 2>/dev/null); then
-                        log_error "  digest input: failed to query extension '$ext' in extensions/config.yaml"
-                        return 1
-                    fi
-                else
-                    version="unknown"
+                if ! version=$(yq -r ".extensions.${ext}.version // \"unknown\"" "extensions/config.yaml" 2>/dev/null); then
+                    log_error "  digest input: failed to query extension '$ext' in extensions/config.yaml"
+                    return 1
                 fi
                 if [[ "$version" == "unknown" ]]; then
                     log_warning "  extension '$ext' listed in flavors/${flavor}.yaml but not found in extensions/config.yaml"
@@ -168,17 +164,9 @@ compute_build_digest() {
         _digest_log "  digest type: terraform-style (variants.yaml + config.yaml)"
 
         local args
-        if command -v yq &>/dev/null; then
-            if ! args=$(yq -r ".versions[].variants[] | select(.flavor == \"$flavor\") | .build_args_include[]" variants.yaml 2>/dev/null); then
-                log_error "  digest input: failed to query build args from variants.yaml"
-                return 1
-            fi
-        else
-            log_warning "  yq not available, falling back to raw variants.yaml content"
-            local variants_content
-            _digest_read_file variants.yaml variants_content || return 1
-            digest_inputs+=("FILE:variants=$variants_content")
-            args=""
+        if ! args=$(yq -r ".versions[].variants[] | select(.flavor == \"$flavor\") | .build_args_include[]" variants.yaml 2>/dev/null); then
+            log_error "  digest input: failed to query build args from variants.yaml"
+            return 1
         fi
 
         if [[ -z "$args" ]]; then
@@ -194,13 +182,9 @@ compute_build_digest() {
             local arg
             for arg in $args; do
                 local value
-                if command -v yq &>/dev/null; then
-                    if ! value=$(yq -r ".build_args.${arg} // \"unknown\"" "config.yaml" 2>/dev/null); then
-                        log_error "  digest input: failed to query build arg '$arg' in config.yaml"
-                        return 1
-                    fi
-                else
-                    value="unknown"
+                if ! value=$(yq -r ".build_args.${arg} // \"unknown\"" "config.yaml" 2>/dev/null); then
+                    log_error "  digest input: failed to query build arg '$arg' in config.yaml"
+                    return 1
                 fi
                 if [[ "$value" == "unknown" ]]; then
                     log_warning "  build arg '$arg' not found in config.yaml for flavor '$flavor'"
@@ -222,28 +206,21 @@ compute_build_digest() {
         _digest_log "  digest type: simple (config.yaml build_args)"
 
         local arg_pairs=""
-        if command -v yq &>/dev/null; then
-            local keys
-            if ! keys=$(yq -r '.build_args | keys | .[]' "config.yaml" 2>/dev/null); then
-                log_error "  digest input: failed to query build arg keys from config.yaml"
+        local keys
+        if ! keys=$(yq -r '.build_args | keys | .[]' "config.yaml" 2>/dev/null); then
+            log_error "  digest input: failed to query build arg keys from config.yaml"
+            return 1
+        fi
+        local key
+        for key in $keys; do
+            local value
+            if ! value=$(yq -r ".build_args.${key}" "config.yaml" 2>/dev/null); then
+                log_error "  digest input: failed to query build arg '$key' in config.yaml"
                 return 1
             fi
-            local key
-            for key in $keys; do
-                local value
-                if ! value=$(yq -r ".build_args.${key}" "config.yaml" 2>/dev/null); then
-                    log_error "  digest input: failed to query build arg '$key' in config.yaml"
-                    return 1
-                fi
-                arg_pairs+="${key}=${value}"$'\n'
-                _digest_log "  digest input: ${key}=${value}"
-            done
-        else
-            log_warning "  yq not available, falling back to raw config.yaml content"
-            local config_content
-            _digest_read_file config.yaml config_content || return 1
-            digest_inputs+=("FILE:config=$config_content")
-        fi
+            arg_pairs+="${key}=${value}"$'\n'
+            _digest_log "  digest input: ${key}=${value}"
+        done
 
         if [[ -n "$arg_pairs" ]]; then
             local sorted_arg_pairs
@@ -312,36 +289,22 @@ compute_build_digest() {
 
 # Helper: check if any variant in variants.yaml has build_args_include entries
 _has_build_args_include() {
-    if command -v yq &>/dev/null; then
-        yq '.' variants.yaml &>/dev/null || return 2
-        yq -e '.versions[].variants[] | select(.build_args_include | length > 0)' variants.yaml &>/dev/null
-        local status=$?
-        [[ "$status" -le 1 ]] && return "$status"
-        return 2
-    else
-        grep -q 'build_args_include' variants.yaml 2>/dev/null
-        local status=$?
-        [[ "$status" -le 1 ]] && return "$status"
-        return 2
-    fi
+    yq '.' variants.yaml &>/dev/null || return 2
+    yq -e '.versions[].variants[] | select(.build_args_include | length > 0)' variants.yaml &>/dev/null
+    local status=$?
+    [[ "$status" -le 1 ]] && return "$status"
+    return 2
 }
 
 # Helper: check if config.yaml has non-empty build_args
 _has_build_args() {
-    if command -v yq &>/dev/null; then
-        local count
-        yq '.' config.yaml &>/dev/null || return 2
-        if ! count=$(yq -r '.build_args | length' "config.yaml" 2>/dev/null); then
-            return 2
-        fi
-        [[ "$count" =~ ^[0-9]+$ ]] || return 2
-        [[ "$count" -gt 0 ]]
-    else
-        grep -q 'build_args:' config.yaml 2>/dev/null
-        local status=$?
-        [[ "$status" -le 1 ]] && return "$status"
+    local count
+    yq '.' config.yaml &>/dev/null || return 2
+    if ! count=$(yq -r '.build_args | length' "config.yaml" 2>/dev/null); then
         return 2
     fi
+    [[ "$count" =~ ^[0-9]+$ ]] || return 2
+    [[ "$count" -gt 0 ]]
 }
 
 # Check if an image exists in registry with matching digest
@@ -385,25 +348,22 @@ get_digest_label_args() {
 
 # Full check: should we skip this build?
 # Usage: should_skip_build <image> <dockerfile> <flavor> [force_rebuild]
-# Returns: 0 if should skip, 1 if should build
-# Sets BUILD_DIGEST variable for use in build
+# Returns: 0 if should skip, 1 if should build, 2 if the digest cannot be computed
+# Sets BUILD_DIGEST variable for use in build on statuses 0 and 1; unsets it on 2
 should_skip_build() {
     local image="$1"
     local dockerfile="$2"
     local flavor="${3:-}"
     local force_rebuild="${4:-false}"
 
-    # Always build if force_rebuild is set
+    BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$flavor") || { unset BUILD_DIGEST; return 2; }
+    export BUILD_DIGEST
+
+    # Always build if force_rebuild is set, after establishing provenance.
     if [[ "$force_rebuild" == "true" ]]; then
         log_info "Force rebuild requested"
-        BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$flavor")
-        export BUILD_DIGEST
         return 1  # Should build
     fi
-
-    # Compute digest
-    BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$flavor")
-    export BUILD_DIGEST
 
     # Check if rebuild needed
     if image_needs_rebuild "$image" "$BUILD_DIGEST"; then

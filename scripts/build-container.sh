@@ -464,10 +464,27 @@ build_container() {
     # SKIP_EXISTING_BUILDS is set by the build-container action based on rebuild_mode
     if [[ "${SKIP_EXISTING_BUILDS:-false}" == "true" ]]; then
         if should_skip_build "$ghcr_image:$tag" "$dockerfile" "$flavor" "false"; then
-            log_success "⏭️  Skipping $container:$tag - image exists with matching digest"
-            return 0
+            local should_skip_status=0
+        else
+            local should_skip_status=$?
         fi
-        log_info "Build digest: $BUILD_DIGEST"
+        case "$should_skip_status" in
+            0)
+                log_success "⏭️  Skipping $container:$tag - image exists with matching digest"
+                return 0
+                ;;
+            1)
+                log_info "Build digest: $BUILD_DIGEST"
+                ;;
+            2)
+                log_error "Build digest computation failed for $container:$tag; refusing to build or publish"
+                return 1
+                ;;
+            *)
+                log_error "Unexpected build skip status $should_skip_status for $container:$tag; refusing to build or publish"
+                return 1
+                ;;
+        esac
     fi
 
     _resolve_platforms
@@ -574,7 +591,19 @@ build_container() {
     # Compute build digest AFTER template expansion so the digest captures
     # all config.yaml data (packages, install commands) embedded in the generated Dockerfile
     if [[ -z "${BUILD_DIGEST:-}" ]]; then
-        BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$flavor")
+        if BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$flavor"); then
+            :
+        else
+            local build_digest_status=$?
+            log_error "Build digest computation failed (status $build_digest_status) for $container:$tag; refusing to build or publish"
+            [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
+            return 1
+        fi
+    fi
+    if [[ -z "${BUILD_DIGEST:-}" ]]; then
+        log_error "Build digest is empty for $container:$tag; refusing to build or publish"
+        [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
+        return 1
     fi
     label_args+=" --label $BUILD_DIGEST_LABEL=$BUILD_DIGEST"
 

@@ -384,7 +384,7 @@ EOF
 
     # Run from mock container dir
     cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "1.0.0" "1.0.0"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "" "testcontainer/Dockerfile"
 
     # Check docker was called with correct platform
     [ -f "$TEST_TEMP_DIR/docker_calls.log" ]
@@ -409,10 +409,100 @@ EOF
     source_build_script
 
     cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "1.0.0" "1.0.0"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "" "testcontainer/Dockerfile"
 
     [ -f "$TEST_TEMP_DIR/docker_calls.log" ]
     grep -q "linux/amd64" "$TEST_TEMP_DIR/docker_calls.log"
+}
+
+@test "build_container refuses an uncomputable digest without invoking docker in either skip mode" {
+    export MULTIPLATFORM_SUPPORTED="false"
+
+    mkdir -p "$TEST_TEMP_DIR/bin" "$TEST_TEMP_DIR/flavors"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+echo "ARGS: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    cat > "$TEST_TEMP_DIR/flavors/vector.yaml" <<'EOF'
+name: vector
+extensions:
+  - pgvector
+EOF
+    echo "FROM postgres:17" > "$TEST_TEMP_DIR/Dockerfile"
+    create_mock_container "testcontainer" "1.0.0"
+    source_build_script
+
+    compute_build_digest() { return 17; }
+    _resolve_platforms() { _PLATFORMS="linux/amd64"; }
+    _configure_cache() { _CACHE_ARGS=""; _RUNTIME_INFO="test"; }
+    _prepare_build_args() { _BUILD_ARGS=""; }
+    collect_lines() { printf '%s\n' "docker.io/test/testcontainer:1.0.0" > "$1"; }
+    _resolve_base_image() { :; }
+    export -f compute_build_digest _resolve_platforms _configure_cache _prepare_build_args collect_lines _resolve_base_image
+    : > "$TEST_TEMP_DIR/docker_calls.log"
+
+    cd "$TEST_TEMP_DIR"
+    export SKIP_EXISTING_BUILDS="true"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "vector"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Build digest computation failed for testcontainer:1.0.0; refusing to build or publish"* ]]
+
+    export SKIP_EXISTING_BUILDS="false"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "vector"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Build digest computation failed"* ]]
+
+    [ ! -s "$TEST_TEMP_DIR/docker_calls.log" ]
+    ! grep -qE -- "--label ${BUILD_DIGEST_LABEL}=( |$)" "$TEST_TEMP_DIR/docker_calls.log"
+    unset SKIP_EXISTING_BUILDS
+}
+
+@test "build_container removes a generated Dockerfile when digest computation fails or is empty" {
+    export MULTIPLATFORM_SUPPORTED="false"
+    mkdir -p "$TEST_TEMP_DIR/templatecontainer" "$TEST_TEMP_DIR/generated"
+    cat > "$TEST_TEMP_DIR/templatecontainer/Dockerfile" <<'EOF'
+FROM scratch
+# @@PACKAGES@@
+EOF
+    cat > "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'FROM scratch'
+EOF
+    chmod +x "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
+
+    source_build_script
+    PROJECT_ROOT="$TEST_TEMP_DIR"
+    TMPDIR="$TEST_TEMP_DIR/generated"
+    _resolve_platforms() { _PLATFORMS="linux/amd64"; }
+    _configure_cache() { _CACHE_ARGS=""; _RUNTIME_INFO="test"; }
+    _prepare_build_args() { _BUILD_ARGS=""; }
+    collect_lines() { printf '%s\n' "docker.io/test/templatecontainer:1.0.0" > "$1"; }
+    _resolve_base_image() { :; }
+    compute_build_digest() {
+        printf '%s\n' "$1" > "$TEST_TEMP_DIR/generated-path"
+        [[ "$DIGEST_MODE" == "failure" ]] && return 17
+    }
+    export -f _resolve_platforms _configure_cache _prepare_build_args collect_lines _resolve_base_image compute_build_digest
+
+    cd "$TEST_TEMP_DIR"
+    export DIGEST_MODE="failure"
+    run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
+    [ "$status" -ne 0 ]
+    local failed_generated
+    failed_generated=$(<"$TEST_TEMP_DIR/generated-path")
+    [ ! -e "$failed_generated" ]
+
+    export DIGEST_MODE="empty"
+    run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
+    [ "$status" -ne 0 ]
+    local empty_generated
+    empty_generated=$(<"$TEST_TEMP_DIR/generated-path")
+    [ ! -e "$empty_generated" ]
+    unset DIGEST_MODE
 }
 
 # =============================================================================
@@ -436,7 +526,7 @@ EOF
     source_build_script
 
     cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "2.5.0" "2.5.0"
+    run build_container "testcontainer" "2.5.0" "2.5.0" "" "testcontainer/Dockerfile"
 
     grep -q "VERSION=2.5.0" "$TEST_TEMP_DIR/docker_calls.log"
 }
@@ -459,7 +549,7 @@ EOF
     source_build_script
 
     cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "1.0.0" "1.0.0"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "" "testcontainer/Dockerfile"
 
     grep -q "NPROC=8" "$TEST_TEMP_DIR/docker_calls.log"
 
@@ -484,7 +574,7 @@ EOF
     source_build_script
 
     cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "1.0.0" "1.0.0"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "" "testcontainer/Dockerfile"
 
     grep -q "\-\-no-cache" "$TEST_TEMP_DIR/docker_calls.log"
 
@@ -514,7 +604,7 @@ EOF
     source_build_script
 
     cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "1.0.0" "1.0.0"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "" "testcontainer/Dockerfile"
 
     grep -q "cache-from" "$TEST_TEMP_DIR/docker_calls.log"
     grep -q "buildcache" "$TEST_TEMP_DIR/docker_calls.log"
@@ -543,7 +633,7 @@ EOF
     source_build_script
 
     cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "1.0.0" "1.0.0"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "" "testcontainer/Dockerfile"
 
     # Still READS the shared cache (fast builds)...
     grep -q "cache-from" "$TEST_TEMP_DIR/docker_calls.log"
@@ -577,7 +667,7 @@ EOF
     source_build_script
 
     cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "1.0.0" "1.0.0"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "" "testcontainer/Dockerfile"
 
     # Check both registries are tagged
     grep -q "ghcr.io/myowner/testcontainer:1.0.0" "$TEST_TEMP_DIR/docker_calls.log"
@@ -604,7 +694,7 @@ EOF
     source_build_script
 
     cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "1.0.0" "latest"
+    run build_container "testcontainer" "1.0.0" "latest" "" "testcontainer/Dockerfile"
 
     # Should have :latest tag
     grep -q ":latest" "$TEST_TEMP_DIR/docker_calls.log"
@@ -698,7 +788,7 @@ EOF
 
     cd "$TEST_TEMP_DIR"
     # Call with 4 positional args only (no 7th is_default) — mirrors `./make build --flavor base`
-    run build_container "testcontainer" "1.0.0" "1.0.0" "base"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "base" "testcontainer/Dockerfile"
 
     [ "$status" -eq 0 ]
 
@@ -733,7 +823,7 @@ EOF
 
     cd "$TEST_TEMP_DIR"
     # Call with 4 positional args only (no 7th is_default) — mirrors `./make build --flavor vector`
-    run build_container "testcontainer" "1.0.0" "1.0.0" "vector"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "vector" "testcontainer/Dockerfile"
 
     [ "$status" -eq 0 ]
 
