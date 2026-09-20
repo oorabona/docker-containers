@@ -47,22 +47,41 @@ _digest_read_file() {
 #   3. config.yaml with build_args → simple container with versioned args
 #   4. None of the above → Dockerfile-only
 #
-# Usage: compute_build_digest <dockerfile> <flavor>
-# Returns: 12-char hex SHA256 prefix
+# Usage: compute_build_digest <dockerfile> <flavor> [render_config render_flavor render_build_flavor render_pg_major render_source...]
+# Returns: 64-char hex SHA256 digest
 #
 # Note: CUSTOM_BUILD_ARGS is included in the digest if set.
 # Do not pass secrets via CUSTOM_BUILD_ARGS — they will be hashed
 # and logged when DIGEST_DEBUG=1.
+#
+# The optional render inputs are supplied only by build-container.sh for a
+# marker-bearing Dockerfile.  Omitting them means the caller is not rendering
+# a template (as is still the case for push-container.sh).
 compute_build_digest() {
     local dockerfile="$1"
     local flavor="${2:-}"
+    local render_config="${3:-}"
+    local render_flavor="${4:-}"
+    local render_build_flavor="${5:-}"
+    local render_pg_major="${6:-}"
+    if [[ "$#" -ge 6 ]]; then
+        shift 6
+    else
+        set --
+    fi
+    local -a render_sources=("$@")
 
     command -v yq >/dev/null 2>&1 || {
         log_error "  yq is required for build digest inputs but was not found in PATH."
         return 1
     }
 
-    local -a digest_inputs=()
+    # Keep fields in separate arrays until they are emitted.  Bash variables
+    # cannot hold NUL, which is precisely why assembly into one string is not
+    # safe here.
+    local -a digest_record_types=()
+    local -a digest_record_names=()
+    local -a digest_record_values=()
 
     # --- Input 1: Dockerfile content ---
     if [[ ! -f "$dockerfile" ]]; then
@@ -71,7 +90,9 @@ compute_build_digest() {
     fi
     local dockerfile_content
     _digest_read_file "$dockerfile" dockerfile_content || return 1
-    digest_inputs+=("FILE:Dockerfile=$dockerfile_content")
+    digest_record_types+=("FILE")
+    digest_record_names+=("Dockerfile")
+    digest_record_values+=("$dockerfile_content")
     _digest_log "  digest input: Dockerfile (${#dockerfile_content} bytes)"
 
     # A file a Dockerfile bind-mounts is a build input this digest does not see.
@@ -94,7 +115,9 @@ compute_build_digest() {
         # Add flavor file content
         local flavor_content
         _digest_read_file "flavors/${flavor}.yaml" flavor_content || return 1
-        digest_inputs+=("FILE:flavor=$flavor_content")
+        digest_record_types+=("FILE")
+        digest_record_names+=("flavor")
+        digest_record_values+=("$flavor_content")
         _digest_log "  digest input: flavors/${flavor}.yaml"
 
         # Extract extension list from flavor file, get version for each
@@ -109,7 +132,8 @@ compute_build_digest() {
                 log_error "  digest input: extensions/config.yaml not found"
                 return 1
             fi
-            local ext_pairs=""
+            local -a extension_names=()
+            local -a extension_values=()
             local ext
             for ext in $extensions; do
                 local version
@@ -120,16 +144,26 @@ compute_build_digest() {
                 if [[ "$version" == "unknown" ]]; then
                     log_warning "  extension '$ext' listed in flavors/${flavor}.yaml but not found in extensions/config.yaml"
                 fi
-                ext_pairs+="${ext}=${version}"$'\n'
+                extension_names+=("$ext")
+                extension_values+=("$version")
                 _digest_log "  digest input: ${ext}=${version}"
             done
-            # Sort for determinism
-            local sorted_ext_pairs
-            if ! sorted_ext_pairs=$(printf '%s' "$ext_pairs" | sort); then
+            # Sort names, not name=value text: a value may contain a newline.
+            local sorted_extension_names
+            if ! sorted_extension_names=$(printf '%s\n' "${extension_names[@]}" | sort); then
                 log_error "  digest input: failed to sort extension versions"
                 return 1
             fi
-            digest_inputs+=("$sorted_ext_pairs")
+            local sorted_extension_name extension_index
+            while IFS= read -r sorted_extension_name || [[ -n "$sorted_extension_name" ]]; do
+                for extension_index in "${!extension_names[@]}"; do
+                    [[ "${extension_names[$extension_index]}" == "$sorted_extension_name" ]] || continue
+                    break
+                done
+                digest_record_types+=("EXTENSION_VERSION")
+                digest_record_names+=("$sorted_extension_name")
+                digest_record_values+=("${extension_values[$extension_index]}")
+            done <<< "$sorted_extension_names"
         fi
 
     else
@@ -178,7 +212,8 @@ compute_build_digest() {
                 log_error "  digest input: config.yaml not found for declared build args"
                 return 1
             fi
-            local arg_pairs=""
+            local -a arg_names=()
+            local -a arg_values=()
             local arg
             for arg in $args; do
                 local value
@@ -189,23 +224,34 @@ compute_build_digest() {
                 if [[ "$value" == "unknown" ]]; then
                     log_warning "  build arg '$arg' not found in config.yaml for flavor '$flavor'"
                 fi
-                arg_pairs+="${arg}=${value}"$'\n'
+                arg_names+=("$arg")
+                arg_values+=("$value")
                 _digest_log "  digest input: ${arg}=${value}"
             done
-            # Sort for determinism
-            local sorted_arg_pairs
-            if ! sorted_arg_pairs=$(printf '%s' "$arg_pairs" | sort); then
+            # Sort names, not name=value text: a value may contain a newline.
+            local sorted_arg_names
+            if ! sorted_arg_names=$(printf '%s\n' "${arg_names[@]}" | sort); then
                 log_error "  digest input: failed to sort build args"
                 return 1
             fi
-            digest_inputs+=("$sorted_arg_pairs")
+            local sorted_arg_name arg_index
+            while IFS= read -r sorted_arg_name || [[ -n "$sorted_arg_name" ]]; do
+                for arg_index in "${!arg_names[@]}"; do
+                    [[ "${arg_names[$arg_index]}" == "$sorted_arg_name" ]] || continue
+                    break
+                done
+                digest_record_types+=("BUILD_ARG")
+                digest_record_names+=("$sorted_arg_name")
+                digest_record_values+=("${arg_values[$arg_index]}")
+            done <<< "$sorted_arg_names"
         fi
 
         elif [[ "$has_config_build_args" -eq 0 ]]; then
         # TYPE 3: Simple container — all build_args from config.yaml
         _digest_log "  digest type: simple (config.yaml build_args)"
 
-        local arg_pairs=""
+        local -a arg_names=()
+        local -a arg_values=()
         local keys
         if ! keys=$(yq -r '.build_args | keys | .[]' "config.yaml" 2>/dev/null); then
             log_error "  digest input: failed to query build arg keys from config.yaml"
@@ -218,17 +264,27 @@ compute_build_digest() {
                 log_error "  digest input: failed to query build arg '$key' in config.yaml"
                 return 1
             fi
-            arg_pairs+="${key}=${value}"$'\n'
+            arg_names+=("$key")
+            arg_values+=("$value")
             _digest_log "  digest input: ${key}=${value}"
         done
 
-        if [[ -n "$arg_pairs" ]]; then
-            local sorted_arg_pairs
-            if ! sorted_arg_pairs=$(printf '%s' "$arg_pairs" | sort); then
+        if [[ "${#arg_names[@]}" -gt 0 ]]; then
+            local sorted_arg_names
+            if ! sorted_arg_names=$(printf '%s\n' "${arg_names[@]}" | sort); then
                 log_error "  digest input: failed to sort build args"
                 return 1
             fi
-            digest_inputs+=("$sorted_arg_pairs")
+            local sorted_arg_name arg_index
+            while IFS= read -r sorted_arg_name || [[ -n "$sorted_arg_name" ]]; do
+                for arg_index in "${!arg_names[@]}"; do
+                    [[ "${arg_names[$arg_index]}" == "$sorted_arg_name" ]] || continue
+                    break
+                done
+                digest_record_types+=("BUILD_ARG")
+                digest_record_names+=("$sorted_arg_name")
+                digest_record_values+=("${arg_values[$arg_index]}")
+            done <<< "$sorted_arg_names"
         fi
 
         else
@@ -237,9 +293,48 @@ compute_build_digest() {
         fi
     fi
 
+    # A marker-bearing Dockerfile is labelled from declared pre-expansion
+    # inputs, never from a generated temporary file.  The caller selects the
+    # renderer and provides exactly the config, arguments, and sourced helper
+    # files used for that render.
+    if [[ -n "$render_config" ]]; then
+        local render_config_content
+        _digest_read_file "$render_config" render_config_content || return 1
+        digest_record_types+=("FILE")
+        digest_record_names+=("render-config")
+        digest_record_values+=("$render_config_content")
+        _digest_log "  digest input: $render_config"
+
+        digest_record_types+=("RENDER_ARG")
+        digest_record_names+=("flavor")
+        digest_record_values+=("$render_flavor")
+        _digest_log "  digest input: render flavor=$render_flavor"
+
+        digest_record_types+=("RENDER_ARG")
+        digest_record_names+=("build_flavor")
+        digest_record_values+=("$render_build_flavor")
+        _digest_log "  digest input: render build_flavor=$render_build_flavor"
+
+        digest_record_types+=("RENDER_ARG")
+        digest_record_names+=("pg_major")
+        digest_record_values+=("$render_pg_major")
+        _digest_log "  digest input: render pg_major=$render_pg_major"
+
+        local render_source render_source_content
+        for render_source in "${render_sources[@]}"; do
+            _digest_read_file "$render_source" render_source_content || return 1
+            digest_record_types+=("FILE")
+            digest_record_names+=("renderer:$(basename "$render_source")")
+            digest_record_values+=("$render_source_content")
+            _digest_log "  digest input: $render_source"
+        done
+    fi
+
     # --- Input: CUSTOM_BUILD_ARGS (if set) ---
     if [[ -n "${CUSTOM_BUILD_ARGS:-}" ]]; then
-        digest_inputs+=("CUSTOM_BUILD_ARGS=${CUSTOM_BUILD_ARGS}")
+        digest_record_types+=("CUSTOM_BUILD_ARGS")
+        digest_record_names+=("")
+        digest_record_values+=("$CUSTOM_BUILD_ARGS")
         _digest_log "  digest input: CUSTOM_BUILD_ARGS=${CUSTOM_BUILD_ARGS}"
     fi
 
@@ -264,18 +359,29 @@ compute_build_digest() {
             log_error "  digest input: invalid hash for $last_rebuild_path"
             return 1
         fi
-        digest_inputs+=("LAST_REBUILD.md=$last_rebuild_hash")
+        digest_record_types+=("LAST_REBUILD")
+        digest_record_names+=("LAST_REBUILD.md")
+        digest_record_values+=("$last_rebuild_hash")
         _digest_log "  digest input: LAST_REBUILD.md=$last_rebuild_hash"
     fi
 
     # --- Compute hash ---
-    local concatenated
-    if ! concatenated=$(printf '%s\n' "${digest_inputs[@]}"); then
-        log_error "  digest input: failed to assemble digest inputs"
-        return 1
-    fi
     local full_digest
-    if ! full_digest=$(printf '%s' "$concatenated" | sha256sum); then
+    if ! full_digest=$(
+        {
+            # This literal is deliberately part of the hashed stream.  Every
+            # following input is a typed, NUL-framed record: type, name,
+            # value, record end.  No Bash-held field can spell a separator.
+            printf '%s\0' 'digest-v2'
+            local record_index
+            for record_index in "${!digest_record_types[@]}"; do
+                printf '%s\0%s\0%s\0' \
+                    "${digest_record_types[$record_index]}" \
+                    "${digest_record_names[$record_index]}" \
+                    "${digest_record_values[$record_index]}"
+            done
+        } | sha256sum
+    ); then
         log_error "  digest computation: sha256sum failed"
         return 1
     fi
@@ -284,7 +390,7 @@ compute_build_digest() {
         log_error "  digest computation: sha256sum returned an invalid hash"
         return 1
     fi
-    printf '%s\n' "${full_digest:0:12}"
+    printf '%s\n' "$full_digest"
 }
 
 # Helper: check if any variant in variants.yaml has build_args_include entries
@@ -347,7 +453,7 @@ get_digest_label_args() {
 }
 
 # Full check: should we skip this build?
-# Usage: should_skip_build <image> <dockerfile> <flavor> [force_rebuild]
+# Usage: should_skip_build <image> <dockerfile> <flavor> [force_rebuild] [precomputed_digest]
 # Returns: 0 if should skip, 1 if should build, 2 if the digest cannot be computed
 # Sets BUILD_DIGEST variable for use in build on statuses 0 and 1; unsets it on 2
 should_skip_build() {
@@ -355,8 +461,14 @@ should_skip_build() {
     local dockerfile="$2"
     local flavor="${3:-}"
     local force_rebuild="${4:-false}"
+    local precomputed_digest="${5:-}"
 
-    BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$flavor") || { unset BUILD_DIGEST; return 2; }
+    if [[ "$#" -ge 5 ]]; then
+        [[ -n "$precomputed_digest" ]] || { unset BUILD_DIGEST; return 2; }
+        BUILD_DIGEST="$precomputed_digest"
+    else
+        BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$flavor") || { unset BUILD_DIGEST; return 2; }
+    fi
     export BUILD_DIGEST
 
     # Always build if force_rebuild is set, after establishing provenance.

@@ -464,7 +464,7 @@ EOF
     unset SKIP_EXISTING_BUILDS
 }
 
-@test "build_container removes a generated Dockerfile when digest computation fails or is empty" {
+@test "build_container computes the same template digest before either skip-mode path" {
     export MULTIPLATFORM_SUPPORTED="false"
     mkdir -p "$TEST_TEMP_DIR/templatecontainer" "$TEST_TEMP_DIR/generated"
     cat > "$TEST_TEMP_DIR/templatecontainer/Dockerfile" <<'EOF'
@@ -477,6 +477,14 @@ printf '%s\n' 'FROM scratch'
 EOF
     chmod +x "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
 
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
     source_build_script
     PROJECT_ROOT="$TEST_TEMP_DIR"
     TMPDIR="$TEST_TEMP_DIR/generated"
@@ -486,29 +494,24 @@ EOF
     collect_lines() { printf '%s\n' "docker.io/test/templatecontainer:1.0.0" > "$1"; }
     _resolve_base_image() { :; }
     compute_build_digest() {
-        printf '%s\n' "$1" > "$TEST_TEMP_DIR/generated-path"
-        [[ "$DIGEST_MODE" == "failure" ]] && return 17
-        return 0
+        printf '%s\n' "$1" >> "$TEST_TEMP_DIR/digest-paths"
+        printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     }
     export -f _resolve_platforms _configure_cache _prepare_build_args collect_lines _resolve_base_image compute_build_digest
 
     cd "$TEST_TEMP_DIR"
-    export DIGEST_MODE="failure"
+    : > "$TEST_TEMP_DIR/digest-paths"
     run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
-    [ "$status" -ne 0 ]
-    local failed_generated
-    failed_generated=$(<"$TEST_TEMP_DIR/generated-path")
-    [ ! -e "$failed_generated" ]
+    [ "$status" -eq 0 ]
 
-    export DIGEST_MODE="empty"
+    export SKIP_EXISTING_BUILDS="true"
     run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"Build digest is empty"* ]]
-    [[ "$output" != *"Build digest computation failed"* ]]
-    local empty_generated
-    empty_generated=$(<"$TEST_TEMP_DIR/generated-path")
-    [ ! -e "$empty_generated" ]
-    unset DIGEST_MODE
+    [ "$status" -eq 0 ]
+    unset SKIP_EXISTING_BUILDS
+
+    [ "$(wc -l < "$TEST_TEMP_DIR/digest-paths" | tr -d ' ')" -eq 2 ]
+    [ "$(sort -u "$TEST_TEMP_DIR/digest-paths" | wc -l | tr -d ' ')" -eq 1 ]
+    grep -qx 'templatecontainer/Dockerfile' "$TEST_TEMP_DIR/digest-paths"
 }
 
 # =============================================================================
@@ -863,7 +866,7 @@ EOF
     export -f compute_local_build_tag_suffixes
 
     cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "1.0.0" "1.0.0"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "" "testcontainer/Dockerfile"
 
     [ "$status" -ne 0 ]
     [[ "$output" == *"Could not enumerate image tags"* ]]

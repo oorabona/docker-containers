@@ -51,7 +51,7 @@ Markers must be on their own line — the engine replaces entire lines. Generato
 
 ### Build digest stability
 
-`compute_build_digest()` hashes `Dockerfile.template` + `config.yaml` — the stable inputs — not the transient generated Dockerfile. This keeps rebuild detection correct when only the generator output changes due to template expansion.
+For a marker-bearing Dockerfile, `compute_build_digest()` hashes the template, the renderer's actual config file (the container `config.yaml`, or `extensions/config.yaml` for PostgreSQL), render arguments, and the renderer code it sources — never a transient generated Dockerfile. The container `config.yaml` is covered in full only on this marker-bearing path; marker-free containers retain their declared per-flavor inputs. This keeps cache decisions on declared pre-expansion inputs without running a generator to decide a cache hit.
 
 ## Consequences
 

@@ -457,13 +457,73 @@ build_container() {
     local dockerhub_image="docker.io/$github_username/$container"
     local ghcr_image="ghcr.io/$github_username/$container"
 
-    # Reset BUILD_DIGEST so each variant computes its own
+    # Reset BUILD_DIGEST so each variant computes its own.
     unset BUILD_DIGEST
+
+    # Compute the digest from the marker-bearing template and its declared
+    # render inputs before deciding whether the registry image can be reused.
+    # Generation remains after that decision, so a cache hit runs no renderer.
+    local is_template=false
+    local digest_render_config=""
+    local digest_render_flavor=""
+    local digest_render_build_flavor=""
+    local digest_render_pg_major=""
+    local -a digest_render_sources=()
+    if has_template_markers "$dockerfile"; then
+        is_template=true
+        if [[ -f "$PROJECT_ROOT/$container/extensions/config.yaml" ]]; then
+            digest_render_config="$PROJECT_ROOT/$container/extensions/config.yaml"
+            digest_render_flavor="${flavor:-base}"
+            # _prepare_build_args runs after the cache decision.  Derive the
+            # same leading major that it will pass to generate_dockerfile.
+            digest_render_pg_major="${version%%[^0-9]*}"
+            digest_render_sources=(
+                "$PROJECT_ROOT/helpers/extension-utils.sh"
+                "$PROJECT_ROOT/helpers/logging.sh"
+                "$PROJECT_ROOT/helpers/gha.sh"
+                "$PROJECT_ROOT/helpers/validate-extensions-schema.sh"
+                "$PROJECT_ROOT/helpers/template-utils.sh"
+                "$PROJECT_ROOT/helpers/version-set-resolver.sh"
+            )
+        elif [[ -x "$PROJECT_ROOT/$container/generate-dockerfile.sh" ]]; then
+            digest_render_config="$PROJECT_ROOT/$container/config.yaml"
+            digest_render_flavor="${flavor:-}"
+            digest_render_build_flavor="${build_flavor:-}"
+            digest_render_sources=(
+                "$PROJECT_ROOT/$container/generate-dockerfile.sh"
+                "$PROJECT_ROOT/helpers/logging.sh"
+                "$PROJECT_ROOT/helpers/template-utils.sh"
+                "$PROJECT_ROOT/helpers/generate-utils.sh"
+            )
+            [[ "$container" == "github-runner" ]] && \
+                digest_render_sources+=("$PROJECT_ROOT/helpers/collect-lines.sh")
+        fi
+    fi
+
+    local build_digest
+    if build_digest=$(compute_build_digest \
+        "$dockerfile" "$flavor" \
+        "$digest_render_config" "$digest_render_flavor" \
+        "$digest_render_build_flavor" "$digest_render_pg_major" \
+        "${digest_render_sources[@]}"); then
+        :
+    else
+        log_error "Build digest computation failed for $container:$tag; refusing to build or publish"
+        return 1
+    fi
+    if [[ -z "$build_digest" ]]; then
+        log_error "Build digest is empty for $container:$tag; refusing to build or publish"
+        return 1
+    fi
+    # Kept for the lineage writer's existing public contract; the skip check
+    # and label below use build_digest explicitly rather than reading this.
+    BUILD_DIGEST="$build_digest"
+    export BUILD_DIGEST
 
     # Smart rebuild detection: skip if image exists with matching digest
     # SKIP_EXISTING_BUILDS is set by the build-container action based on rebuild_mode
     if [[ "${SKIP_EXISTING_BUILDS:-false}" == "true" ]]; then
-        if should_skip_build "$ghcr_image:$tag" "$dockerfile" "$flavor" "false"; then
+        if should_skip_build "$ghcr_image:$tag" "$dockerfile" "$flavor" "false" "$build_digest"; then
             local should_skip_status=0
         else
             local should_skip_status=$?
@@ -474,7 +534,7 @@ build_container() {
                 return 0
                 ;;
             1)
-                log_info "Build digest: $BUILD_DIGEST"
+                log_info "Build digest: $build_digest"
                 ;;
             2)
                 log_error "Build digest computation failed for $container:$tag; refusing to build or publish"
@@ -528,7 +588,7 @@ build_container() {
     # containers (web-shell, github-runner) have their per-flavor Dockerfile generated
     # before the base-image resolution reads the concrete FROM line.
     local _generated_dockerfile=""
-    if has_template_markers "$dockerfile"; then
+    if [[ "$is_template" == "true" ]]; then
         _generated_dockerfile=$(mktemp "${TMPDIR:-/tmp}/Dockerfile.${container}.XXXXXX") || {
             log_error "Failed to create temp file for generated Dockerfile"
             return 1
@@ -588,24 +648,7 @@ build_container() {
         }
     fi
 
-    # Compute build digest AFTER template expansion so the digest captures
-    # all config.yaml data (packages, install commands) embedded in the generated Dockerfile
-    if [[ -z "${BUILD_DIGEST:-}" ]]; then
-        if BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$flavor"); then
-            :
-        else
-            local build_digest_status=$?
-            log_error "Build digest computation failed (status $build_digest_status) for $container:$tag; refusing to build or publish"
-            [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
-            return 1
-        fi
-    fi
-    if [[ -z "${BUILD_DIGEST:-}" ]]; then
-        log_error "Build digest is empty for $container:$tag; refusing to build or publish"
-        [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
-        return 1
-    fi
-    label_args+=" --label $BUILD_DIGEST_LABEL=$BUILD_DIGEST"
+    label_args+=" --label $BUILD_DIGEST_LABEL=$build_digest"
 
     # Capture build timing
     local _build_start=$SECONDS

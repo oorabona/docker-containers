@@ -268,16 +268,16 @@ EOF
     [ "$d1" != "$d2" ]
 }
 
-@test "container with no config.yaml returns valid 12-char hex digest" {
+@test "container with no config.yaml returns valid 64-char hex digest" {
     echo "FROM alpine" > Dockerfile
 
     run compute_build_digest "Dockerfile" ""
     [ "$status" -eq 0 ]
     local d1="$output"
 
-    # Valid 12-char hex
-    [ "${#d1}" -eq 12 ]
-    [[ "$d1" =~ ^[0-9a-f]{12}$ ]]
+    # Valid full SHA-256 hex digest
+    [ "${#d1}" -eq 64 ]
+    [[ "$d1" =~ ^[0-9a-f]{64}$ ]]
 
     # Dockerfile change produces different digest
     echo "FROM alpine:3.18" > Dockerfile
@@ -322,6 +322,180 @@ EOF
     [ "$d1" == "$d2" ]
 }
 
+@test "distinct Dockerfile and build-arg boundaries produce different digests" {
+    cat > Dockerfile <<'EOF'
+FROM alpine
+EOF
+    cat > config.yaml <<'EOF'
+build_args:
+  PG_MAJOR: "18"
+EOF
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+    local split_input_digest="$output"
+
+    cat > Dockerfile <<'EOF'
+FROM alpine
+PG_MAJOR=18
+EOF
+    cat > config.yaml <<'EOF'
+build_args: {}
+EOF
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+
+    [ "$split_input_digest" != "$output" ]
+}
+
+@test "NUL record framing cannot be spelled by Dockerfile content" {
+    cat > Dockerfile <<'EOF'
+FROM alpine
+EOF
+    cat > config.yaml <<'EOF'
+build_args:
+  PG_MAJOR: "18"
+EOF
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+    local separate_record_digest="$output"
+
+    cat > Dockerfile <<'EOF'
+FROM alpine
+BUILD_ARG
+PG_MAJOR
+18
+EOF
+    cat > config.yaml <<'EOF'
+build_args: {}
+EOF
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+
+    [ "$separate_record_digest" != "$output" ]
+}
+
+@test "build-arg pair boundaries are distinct from newlines in a value" {
+    echo "FROM alpine" > Dockerfile
+    cat > config.yaml <<'EOF'
+build_args:
+  A: |-
+    1
+    B=2
+EOF
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+    local one_pair_digest="$output"
+
+    cat > config.yaml <<'EOF'
+build_args:
+  A: "1"
+  B: "2"
+EOF
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+
+    [ "$one_pair_digest" != "$output" ]
+}
+
+@test "template render config and arguments are digest inputs" {
+    cat > Dockerfile <<'EOF'
+FROM alpine
+# @@PACKAGES@@
+EOF
+    cat > config.yaml <<'EOF'
+flavors:
+  base:
+    packages:
+      apt: [curl]
+  dev:
+    packages:
+      apt: [curl, git]
+distros:
+  ubuntu-2404:
+    packages:
+      core: [ca-certificates]
+EOF
+    echo '# renderer v1' > generate-dockerfile.sh
+
+    run compute_build_digest "Dockerfile" "" "config.yaml" "ubuntu-2404" "base" "" "generate-dockerfile.sh"
+    [ "$status" -eq 0 ]
+    local initial="$output"
+
+    sed -i 's/\[curl\]/[curl, jq]/' config.yaml
+    run compute_build_digest "Dockerfile" "" "config.yaml" "ubuntu-2404" "base" "" "generate-dockerfile.sh"
+    [ "$status" -eq 0 ]
+    [ "$initial" != "$output" ]
+    initial="$output"
+
+    sed -i 's/ca-certificates/ca-certificates, tzdata/' config.yaml
+    run compute_build_digest "Dockerfile" "" "config.yaml" "ubuntu-2404" "base" "" "generate-dockerfile.sh"
+    [ "$status" -eq 0 ]
+    [ "$initial" != "$output" ]
+    initial="$output"
+
+    run compute_build_digest "Dockerfile" "" "config.yaml" "ubuntu-2404" "dev" "" "generate-dockerfile.sh"
+    [ "$status" -eq 0 ]
+    [ "$initial" != "$output" ]
+}
+
+@test "github-runner and web-shell generator-consumed package edits change digests" {
+    mkdir github-runner web-shell
+    cp "$ORIG_DIR/github-runner/Dockerfile.linux" "$ORIG_DIR/github-runner/config.yaml" github-runner/
+    cp "$ORIG_DIR/web-shell/Dockerfile" "$ORIG_DIR/web-shell/config.yaml" web-shell/
+
+    cd github-runner
+    run compute_build_digest \
+        "Dockerfile.linux" "ubuntu-2404" "config.yaml" "ubuntu-2404" "base" "" \
+        "$ORIG_DIR/github-runner/generate-dockerfile.sh" \
+        "$ORIG_DIR/helpers/logging.sh" "$ORIG_DIR/helpers/template-utils.sh" \
+        "$ORIG_DIR/helpers/generate-utils.sh" "$ORIG_DIR/helpers/collect-lines.sh"
+    [ "$status" -eq 0 ]
+    local github_runner_before="$output"
+    yq -i '.flavors.base.packages.apt += ["digest-test"]' config.yaml
+    run compute_build_digest \
+        "Dockerfile.linux" "ubuntu-2404" "config.yaml" "ubuntu-2404" "base" "" \
+        "$ORIG_DIR/github-runner/generate-dockerfile.sh" \
+        "$ORIG_DIR/helpers/logging.sh" "$ORIG_DIR/helpers/template-utils.sh" \
+        "$ORIG_DIR/helpers/generate-utils.sh" "$ORIG_DIR/helpers/collect-lines.sh"
+    [ "$status" -eq 0 ]
+    [ "$github_runner_before" != "$output" ]
+
+    cd "$TEST_DIR/web-shell"
+    run compute_build_digest \
+        "Dockerfile" "ubuntu" "config.yaml" "ubuntu" "" "" \
+        "$ORIG_DIR/web-shell/generate-dockerfile.sh" \
+        "$ORIG_DIR/helpers/logging.sh" "$ORIG_DIR/helpers/template-utils.sh" \
+        "$ORIG_DIR/helpers/generate-utils.sh"
+    [ "$status" -eq 0 ]
+    local web_shell_before="$output"
+    yq -i '.distros.ubuntu.packages.core += ["digest-test"]' config.yaml
+    run compute_build_digest \
+        "Dockerfile" "ubuntu" "config.yaml" "ubuntu" "" "" \
+        "$ORIG_DIR/web-shell/generate-dockerfile.sh" \
+        "$ORIG_DIR/helpers/logging.sh" "$ORIG_DIR/helpers/template-utils.sh" \
+        "$ORIG_DIR/helpers/generate-utils.sh"
+    [ "$status" -eq 0 ]
+    [ "$web_shell_before" != "$output" ]
+}
+
+@test "marker-free containers ignore unrelated config metadata" {
+    echo "FROM alpine" > Dockerfile
+    cat > config.yaml <<'EOF'
+build_args:
+  FOO: "1"
+metadata:
+  owner: one
+EOF
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+    local initial="$output"
+
+    sed -i 's/owner: one/owner: two/' config.yaml
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+    [ "$initial" = "$output" ]
+}
+
 # --- yq requirement ---
 
 @test "compute_build_digest refuses a missing yq with a named diagnostic" {
@@ -353,20 +527,22 @@ EOF
     done
 }
 
-@test "digest serialization preserves established postgres and terraform digests" {
+@test "digest serialization pins postgres and terraform v2 framing digests" {
+    # Regenerated for the digest-v2 NUL framing.  These fixtures deliberately
+    # make future unintended source-input or serialization churn visible.
     local -a cases=(
-        "postgres analytics 08a1a6eed3a1"
-        "postgres base 0ecd9b539d01"
-        "postgres distributed bf11af001fa2"
-        "postgres full 3e4292355445"
-        "postgres spatial e78ff2927cf3"
-        "postgres timeseries 2a4e0b2efb67"
-        "postgres vector eb885e90733d"
-        "terraform aws d2fd46498ae9"
-        "terraform azure 272ef51e54ef"
-        "terraform base d56522613b5c"
-        "terraform full b8fe5baa6290"
-        "terraform gcp 938f9817b6e1"
+        "postgres analytics f2888b5fcc8855fdbbcf43234129d7d79106950583f395c0fc9b6805164efa8d"
+        "postgres base 3ff1636477694c9b56a25c804e1344539608ade4f7f5b35921120e8c4bb49c8b"
+        "postgres distributed 3c114c2da79825836a3ecf7f11840a7d98a74ddc2c6ab7eea70f2e6158c75dd7"
+        "postgres full 5d89e824004b98a03398fc697911dd4e00624c3ac4a7c049d46f1a2841f378f2"
+        "postgres spatial 9ad4cf857bbf8d133e192b5621a83c1058ce19c39225698b50d9b5361d36311e"
+        "postgres timeseries 3218f2f26e28ae3e9a2f29b8fe19b9166e976f79f660276445b78a1853e39ca3"
+        "postgres vector 3126729d1d1ea68d77cc88983d77174e8dd9c412207d55ec5780c12db9002687"
+        "terraform aws 5411c51096e76b86e6a4777f510cd46ccddc0ab596a6a6cbf75bcf23c8f042b8"
+        "terraform azure f6a6f94428c46da0c51447fe94dae9aed858f5c3895a2594cc7452ff71445daf"
+        "terraform base efba7431da23fb1b4265b4cf8635d6066a4c15f23c54bf6a9cbebb82aebd821d"
+        "terraform full 5dd621e3c4663b9501dcc021049d58d64cb1562d77492578cb0c336531748db0"
+        "terraform gcp 1baf4b01fdfca4d4b3b4c896a2d81efe7f9cf6337db990cac8a983b31093f937"
     )
     local case container flavor expected
 
@@ -391,8 +567,7 @@ EOF
         run compute_build_digest "Dockerfile" "$flavor"
         [ "$status" -eq 0 ]
         digests[$flavor]="$output"
-        # Valid 12-char hex
-        [[ "$output" =~ ^[0-9a-f]{12}$ ]]
+        [[ "$output" =~ ^[0-9a-f]{64}$ ]]
     done
 
     # All flavors must produce different digests
@@ -412,7 +587,7 @@ EOF
         run compute_build_digest "Dockerfile" "$flavor"
         [ "$status" -eq 0 ]
         digests[$flavor]="$output"
-        [[ "$output" =~ ^[0-9a-f]{12}$ ]]
+        [[ "$output" =~ ^[0-9a-f]{64}$ ]]
     done
 
     # All 5 flavors must produce different digests
@@ -427,7 +602,7 @@ EOF
 
     run compute_build_digest "Dockerfile" ""
     [ "$status" -eq 0 ]
-    [[ "$output" =~ ^[0-9a-f]{12}$ ]]
+    [[ "$output" =~ ^[0-9a-f]{64}$ ]]
 }
 
 # --- Observability ---
@@ -534,7 +709,7 @@ EOF
 
     run compute_build_digest "Dockerfile" ""
     [ "$status" -eq 0 ]
-    [[ "$output" =~ ^[0-9a-f]{12}$ ]]
+    [[ "$output" =~ ^[0-9a-f]{64}$ ]]
     local digest_without="$output"
 
     # Running a second time without LAST_REBUILD.md must return same digest
