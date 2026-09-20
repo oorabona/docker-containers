@@ -290,6 +290,22 @@ _load_make_build_path() {
     ! grep -qxF 'latest-ubuntu-2404' "$suffixes_file"
 }
 
+@test "make: default variant reaches build_container as its seventh arg and selects the bare local alias" {
+    local recorded_args_file="$TEST_TEMP_DIR/recorded_args"
+    local suffixes_file="$TEST_TEMP_DIR/local_suffixes"
+    export _ARGS_FILE="$recorded_args_file"
+    export _SUFFIXES_FILE="$suffixes_file"
+    mkdir -p "$TEST_TEMP_DIR/fakecontainer"
+
+    _load_make_build_path
+    cd "$TEST_TEMP_DIR"
+    make build fakecontainer 1.0.0 1.0.0 --flavor ubuntu-2404 --variant ubuntu-2404-dev --is-default true
+
+    [ "$(sed -n '7p' "$recorded_args_file")" = "true" ]
+    grep -qxF 'latest' "$suffixes_file"
+    ! grep -qxF 'latest-ubuntu-2404-dev' "$suffixes_file"
+}
+
 @test "make: an ambient VARIANT does not replace an omitted --variant" {
     local recorded_args_file="$TEST_TEMP_DIR/recorded_args"
     local suffixes_file="$TEST_TEMP_DIR/local_suffixes"
@@ -305,7 +321,6 @@ _load_make_build_path() {
     [ -z "$(sed -n '8p' "$recorded_args_file")" ]
     grep -qxF 'latest-ubuntu-2404' "$suffixes_file"
     ! grep -qxF 'latest-ubuntu-2404-dev' "$suffixes_file"
-    unset VARIANT
 }
 
 # ---------------------------------------------------------------------------
