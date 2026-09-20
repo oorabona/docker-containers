@@ -127,7 +127,7 @@ That's it. The CI picks it up automatically on next push.
 
 - Docker Engine 20.10+ (or Podman)
 - Supported Bash baseline: 4.4+ — `mapfile -d` is used on the documented extension build path.
-- [yq](https://github.com/mikefarah/yq) (for variant containers and extension builds)
+- [Mike Farah's yq](https://github.com/mikefarah/yq)
 - [jq](https://jqlang.org/) (for extension builds)
 - `sha256sum` (for extension-build resolver cache identities). GNU coreutils
   provides it; on macOS, `brew install coreutils` and put its `libexec/gnubin`
