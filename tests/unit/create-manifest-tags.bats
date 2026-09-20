@@ -11,6 +11,26 @@ setup() {
   source "$ROOT_DIR/helpers/create-manifest.sh"
 }
 
+@test "create_registry_manifest returns a failed tag plan without publishing a fallback" {
+  local published_file="$BATS_TEST_TMPDIR/manifest-published"
+  export TAG="18-alpine-vector" VERSION="18" FULL_VERSION="18.3-alpine"
+  export VARIANT="vector" IS_DEFAULT="false" IS_LATEST_VERSION="true"
+
+  _compute_tag_args() {
+    printf 'simulated rolling alias enumeration failure\n' >&2
+    return 37
+  }
+  retry_with_backoff() {
+    printf '%s\n' "$*" >> "$published_file"
+  }
+
+  run create_registry_manifest "ghcr.io/example/postgres" "ghcr.io/example/postgres"
+
+  [ "$status" -eq 37 ]
+  [[ "$output" == *"simulated rolling alias enumeration failure"* ]]
+  [ ! -e "$published_file" ] || [ ! -s "$published_file" ]
+}
+
 # ── terraform: full-version tags, version.sh returns latest for every cell ──
 
 @test "terraform retained cell does NOT get a cross-version stripped tag" {

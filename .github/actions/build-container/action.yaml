@@ -597,6 +597,7 @@ runs:
         make_args=("build" "$container" "$build_version")
         [[ -n "$current_tag" ]] && make_args+=("$current_tag")
         [[ -n "$flavor" ]] && make_args+=("--flavor" "$flavor")
+        [[ -n "$variant" ]] && make_args+=("--variant" "$variant")
         [[ -n "$build_flavor" ]] && make_args+=("--build-flavor" "$build_flavor")
         [[ -n "$dockerfile" && "$dockerfile" != "Dockerfile" ]] && make_args+=("--dockerfile" "$dockerfile")
         # Thread the variant-name-based is_default so compute_cell_tags routes the

@@ -251,59 +251,61 @@ _export_stubs() {
 }
 
 # ---------------------------------------------------------------------------
-# 8. --is-default flag: parsed into IS_DEFAULT and threaded to build_container
+# 8. --is-default / --variant flags: parsed and threaded to build_container
 # ---------------------------------------------------------------------------
 
-@test "make: --is-default true sets IS_DEFAULT and is passed as 7th arg to build_container" {
-    # Inline the flag-parsing loop from make() and the flavored build_container
-    # call from do_buildx(), mirroring the file's inline-stub approach.
-    # Uses a temp file (not an exported function var) to survive the bats subshell.
-    local recorded_args_file="$TEST_TEMP_DIR/recorded_args"
+_load_make_build_path() {
+    # Evaluate only the production function definitions: sourcing ./make runs
+    # its top-level command dispatcher and needs a real Docker environment.
+    eval "$(awk '/^do_buildx\(\)/{found=1} found{print} found && /^}$/{exit}' "$PROJECT_ROOT/make")"
+    eval "$(awk '/^make\(\)/{found=1} found{print} found && /^}$/{exit}' "$PROJECT_ROOT/make")"
 
-    # Mirror the flag-parsing loop from make() + the single-flavor do_buildx path.
-    # build_container is stubbed inline to record its positional args to $recorded_args_file.
-    flavored_build() {
-        local FLAVOR="" DOCKERFILE="" BUILD_FLAVOR="" IS_DEFAULT=""
-        local positional_args=()
-        while [[ $# -gt 0 ]]; do
-            case "$1" in
-                --flavor)
-                    [[ -z "${2:-}" || "${2:-}" == --* ]] && { return 1; }
-                    FLAVOR="$2"; shift 2 ;;
-                --dockerfile)
-                    [[ -z "${2:-}" || "${2:-}" == --* ]] && { return 1; }
-                    DOCKERFILE="$2"; shift 2 ;;
-                --build-flavor)
-                    [[ -z "${2:-}" || "${2:-}" == --* ]] && { return 1; }
-                    BUILD_FLAVOR="$2"; shift 2 ;;
-                --is-default)
-                    [[ -z "${2:-}" || "${2:-}" == --* ]] && { return 1; }
-                    IS_DEFAULT="$2"; shift 2 ;;
-                *) positional_args+=("$1"); shift ;;
-            esac
-        done
-        [[ ${#positional_args[@]} -gt 0 ]] && set -- "${positional_args[@]}" || set --
-        local container=${1:-testcontainer}
-        local VERSION=${2:-1.0.0}
-        local TAG=${3:-1.0.0}
-        # Single-flavor build path (mirrors do_buildx when FLAVOR is set)
-        if [[ -n "${FLAVOR:-}" ]]; then
-            # Stub: record args to file instead of actually building
-            printf '%s\n' "$container" "$VERSION" "$TAG" "$FLAVOR" "${DOCKERFILE:-Dockerfile}" "${BUILD_FLAVOR:-}" "${IS_DEFAULT:-false}" > "$_ARGS_FILE"
-        fi
+    validate_target() { [[ "$1" == "fakecontainer" ]]; }
+    get_build_version() { printf '%s\n' '1.0.0'; }
+    log_info() { :; }
+    log_success() { :; }
+    log_error() { :; }
+    do_it() { do_buildx "$@"; }
+    build_container() {
+        printf '%s\n' "$@" > "$_ARGS_FILE"
+        compute_local_build_tag_suffixes "$3" "$8" "$4" "$7" > "$_SUFFIXES_FILE"
     }
-    export -f flavored_build
+
+    source "$PROJECT_ROOT/helpers/variant-utils.sh"
+}
+
+@test "make: explicit variant reaches build_container as its eighth arg and selects its local alias" {
+    local recorded_args_file="$TEST_TEMP_DIR/recorded_args"
+    local suffixes_file="$TEST_TEMP_DIR/local_suffixes"
     export _ARGS_FILE="$recorded_args_file"
+    export _SUFFIXES_FILE="$suffixes_file"
+    mkdir -p "$TEST_TEMP_DIR/fakecontainer"
 
-    run bash -c '
-        flavored_build testcontainer 1.0.0 1.0.0 --flavor ubuntu-2404-base --is-default true
-    '
-    [ "$status" -eq 0 ]
+    _load_make_build_path
+    cd "$TEST_TEMP_DIR"
+    make build fakecontainer 1.0.0 1.0.0 --flavor ubuntu-2404 --variant ubuntu-2404-dev --is-default false
 
-    # 7th positional arg recorded by build_container stub must be "true"
-    local seventh
-    seventh=$(sed -n '7p' "$recorded_args_file")
-    [ "$seventh" = "true" ]
+    [ "$(sed -n '8p' "$recorded_args_file")" = "ubuntu-2404-dev" ]
+    grep -qxF 'latest-ubuntu-2404-dev' "$suffixes_file"
+    ! grep -qxF 'latest-ubuntu-2404' "$suffixes_file"
+}
+
+@test "make: an ambient VARIANT does not replace an omitted --variant" {
+    local recorded_args_file="$TEST_TEMP_DIR/recorded_args"
+    local suffixes_file="$TEST_TEMP_DIR/local_suffixes"
+    export _ARGS_FILE="$recorded_args_file"
+    export _SUFFIXES_FILE="$suffixes_file"
+    export VARIANT="ubuntu-2404-dev"
+    mkdir -p "$TEST_TEMP_DIR/fakecontainer"
+
+    _load_make_build_path
+    cd "$TEST_TEMP_DIR"
+    make build fakecontainer 1.0.0 1.0.0 --flavor ubuntu-2404 --is-default false
+
+    [ -z "$(sed -n '8p' "$recorded_args_file")" ]
+    grep -qxF 'latest-ubuntu-2404' "$suffixes_file"
+    ! grep -qxF 'latest-ubuntu-2404-dev' "$suffixes_file"
+    unset VARIANT
 }
 
 # ---------------------------------------------------------------------------
@@ -324,10 +326,26 @@ _export_stubs() {
     echo "$do_buildx_fn" | grep -q '"${IS_DEFAULT:-}"'
 }
 
+@test "make script: --variant is local and reaches the single-flavor call as the eighth arg" {
+    local do_buildx_fn
+    do_buildx_fn=$(awk '/^do_buildx\(\)/{found=1} found{print} found && /^}$/{exit}' "$PROJECT_ROOT/make")
+    grep -q -- '--variant)' "$PROJECT_ROOT/make"
+    grep -q 'local variant=""' "$PROJECT_ROOT/make"
+    echo "$do_buildx_fn" | grep -q '"${variant:-}"'
+}
+
 @test "build-container action: threads --is-default into make_args" {
     local action="$PROJECT_ROOT/.github/actions/build-container/action.yaml"
     # Variant-name-based default lookup uses ${variant:-$flavor} not bare $flavor
     grep -qF 'variant_property "$container" "${variant:-$flavor}" "default"' "$action"
     # make_args append wires the flag through
     grep -q 'make_args+=("--is-default"' "$action"
+}
+
+@test "build-container action: parses its Build container step and appends a non-empty variant" {
+    local action="$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    local run_body
+    run_body=$(yq -r '.runs.steps[] | select(.name == "Build container") | .run' "$action")
+
+    [[ "$run_body" == *'[[ -n "$variant" ]] && make_args+=("--variant" "$variant")'* ]]
 }

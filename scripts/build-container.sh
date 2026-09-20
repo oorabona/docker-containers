@@ -426,7 +426,7 @@ build_container() {
     local dockerfile="${5:-Dockerfile}"
     local build_flavor="${6:-$flavor}"
     local is_default="${7:-}"
-    local variant="${8:-${VARIANT:-$flavor}}"
+    local variant="${8:-$flavor}"
     local os="${9:-linux}"
     [[ "${RUNNER_OS:-}" == "Windows" ]] && os="windows"
     # Self-heal (best-effort legacy-parity fallback for direct/6-arg callers):

@@ -57,6 +57,33 @@ teardown() {
     [ -z "$output" ]
 }
 
+@test "routing APIs work after sourcing but are unavailable in an unsourced child shell" {
+    run bash -c '
+        source "$1"
+        list_cell_rolling_aliases 18-alpine-vector linux vector alpine false ""
+    ' _ "$ORIG_DIR/helpers/variant-utils.sh"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'linux-manifest\tlatest-vector'* ]]
+
+    run -127 --separate-stderr bash -c 'list_cell_rolling_aliases 18-alpine-vector linux vector alpine false ""'
+
+    [ "$status" -eq 127 ]
+    [[ "$stderr" == *"list_cell_rolling_aliases: command not found"* ]]
+}
+
+@test "sourcing variant-utils revokes an inherited routing API export" {
+    list_cell_rolling_aliases() { echo "stale body"; }
+    export -f list_cell_rolling_aliases
+    source "$ORIG_DIR/helpers/variant-utils.sh"
+
+    run -127 --separate-stderr bash -c 'list_cell_rolling_aliases 1.0.0 linux v f false base'
+
+    [ "$status" -eq 127 ]
+    [[ "$stderr" == *"list_cell_rolling_aliases: command not found"* ]]
+    [[ "$stderr" != *"_validate_cell_tag_route"* ]]
+}
+
 # --- Helper to create a postgres-like variants.yaml ---
 
 create_postgres_variants() {
@@ -1170,6 +1197,32 @@ setup_fallback_test() {
 #   (c) non-default with both keys            → versioned + variant rolling alias (both registries)
 #   (d) tag == "latest"                       → only versioned refs, no rolling latest
 
+@test "compute_cell_tags: a failed local latest-suffix write discards the suffix file" {
+    # /dev/full fails the first producer write. Override printf only for the
+    # literal second (default latest) suffix, so the versioned suffix succeeds
+    # before the producer fails through its public compute_cell_tags caller.
+    run --separate-stderr bash -c '
+        export TMPDIR="$2/local-build-tag-suffixes"
+        mkdir -p "$TMPDIR"
+        source "$1/helpers/collect-lines.sh"
+        source "$1/helpers/variant-utils.sh"
+        printf() {
+            if [[ "$1" == '\''latest\n'\'' ]]; then
+                return 1
+            fi
+            builtin printf "$@"
+        }
+        compute_cell_tags "2.3.1" "" "true" "docker.io/o/p" "ghcr.io/o/p" > "$2/producer-output"
+        producer_status=$?
+        find "$TMPDIR" -mindepth 1 -print -quit | grep -q . && exit 2
+        exit "$producer_status"
+    ' _ "$ORIG_DIR" "$TEST_DIR"
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" != *"expected tag, os, variant, flavor, is_default, and build_flavor"* ]]
+    [[ "$stderr" != *"cell tag routing:"* ]]
+}
+
 @test "compute_cell_tags: an emission that fails is not reported as a full tag set" {
     # The mutation this catches: dropping `return "$_emit_status"`, or the
     # `|| _emit_status=$?` on either printf. Without them the cleanup `rm` is the
@@ -1324,14 +1377,25 @@ setup_fallback_test() {
     [ -z "$output" ]
 }
 
-@test "list_cell_publisher_rolling_aliases: a failed alias write returns failure" {
+@test "list_cell_publisher_rolling_aliases: a failed default-alias write returns failure" {
     run --separate-stderr bash -c '
         source "$1"
-        list_cell_publisher_rolling_aliases linux-manifest 18-alpine-vector linux vector alpine false "" > /dev/full
+        list_cell_publisher_rolling_aliases linux-manifest 18-alpine-base linux base alpine true base > /dev/full
     ' _ "$ORIG_DIR/helpers/variant-utils.sh"
 
     [ "$status" -ne 0 ]
     [[ "$stderr" != *"expected publisher, tag, os, variant, flavor, is_default, and build_flavor"* ]]
+}
+
+@test "list_cell_publisher_rolling_aliases: a failed default emitter returns its status without aliases" {
+    run bash -c '
+        source "$1"
+        _emit_cell_rolling_alias() { return 42; }
+        list_cell_publisher_rolling_aliases linux-manifest 18-alpine-base linux base alpine true base
+    ' _ "$ORIG_DIR/helpers/variant-utils.sh"
+
+    [ "$status" -eq 42 ]
+    [ -z "$output" ]
 }
 
 @test "list_cell_publisher_rolling_aliases rejects an unrecognised publisher" {
@@ -1418,6 +1482,16 @@ setup_fallback_test() {
     [[ "$output" == *"composed alias is not a valid Docker tag"* ]]
 }
 
+@test "list_cell_rolling_aliases rejects a non-ASCII Docker tag under en_US.utf8" {
+    run --separate-stderr env LC_ALL=en_US.utf8 bash -c '
+        source "$1"
+        list_cell_rolling_aliases "18-alpiné-vector" linux vector alpine false ""
+    ' _ "$ORIG_DIR/helpers/variant-utils.sh"
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"tag is not a valid Docker tag: 18-alpiné-vector"* ]]
+}
+
 @test "compute_cell_publisher_tag_suffixes includes the versioned ref and only its aliases" {
     run compute_cell_publisher_tag_suffixes "windows-manifest" \
         "2.337.0-windows-ltsc2022-dev" "windows" "windows-ltsc2022-dev" "windows-ltsc2022" "false" "dev"
@@ -1436,12 +1510,20 @@ setup_fallback_test() {
 }
 
 @test "compute_cell_tag_suffixes: a failed suffix write returns failure" {
-    run bash -c '
+    run --separate-stderr bash -c '
         source "$1"
-        compute_cell_tag_suffixes 18-alpine-vector linux vector alpine false "" > /dev/full 2>/dev/null
+        compute_cell_tag_suffixes 18-alpine-vector linux vector alpine false "" > /dev/full
     ' _ "$ORIG_DIR/helpers/variant-utils.sh"
 
     [ "$status" -ne 0 ]
+    [[ "$stderr" != *"expected tag, os, variant, flavor, is_default, and build_flavor"* ]]
+}
+
+@test "compute_cell_tag_suffixes refuses the old three-argument shape" {
+    run --separate-stderr compute_cell_tag_suffixes "18-alpine-vector" "vector" "alpine"
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"expected tag, os, variant, flavor, is_default, and build_flavor"* ]]
 }
 
 @test "compute_cell_tag_suffixes: (a) no-routing-key non-default → versioned only" {

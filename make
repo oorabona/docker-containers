@@ -432,7 +432,7 @@ do_buildx() {
     if [[ -n "${FLAVOR:-}" ]]; then
       # Single-flavor build (CI mode or explicit --flavor)
       log_info "Building $container with flavor: $FLAVOR${BUILD_FLAVOR:+ (build_flavor: $BUILD_FLAVOR)}"
-      build_container "$container" "$VERSION" "$TAG" "$FLAVOR" "${DOCKERFILE:-Dockerfile}" "${BUILD_FLAVOR:-}" "${IS_DEFAULT:-}"
+      build_container "$container" "$VERSION" "$TAG" "$FLAVOR" "${DOCKERFILE:-Dockerfile}" "${BUILD_FLAVOR:-}" "${IS_DEFAULT:-}" "${variant:-}"
     elif container_has_variants "$container"; then
       # Full variant expansion (local build)
       # VERSION may be a full version (e.g., "18.1-alpine") but variants.yaml
@@ -475,7 +475,10 @@ make() {
     shift
   fi
 
-  # Parse named args (--flavor, --dockerfile) from remaining args
+  # Parse named args (--flavor, --variant, --dockerfile) from remaining args
+  # Keep variant local to this invocation: it must arrive explicitly, not from
+  # an inherited environment variable.
+  local variant=""
   local positional_args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -497,6 +500,11 @@ make() {
       --is-default)
         [[ -z "${2:-}" || "${2:-}" == --* ]] && { log_error "--is-default requires a value"; return 1; }
         export IS_DEFAULT="$2"
+        shift 2
+        ;;
+      --variant)
+        [[ -z "${2:-}" || "${2:-}" == --* ]] && { log_error "--variant requires a value"; return 1; }
+        variant="$2"
         shift 2
         ;;
       *)

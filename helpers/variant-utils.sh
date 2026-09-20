@@ -307,7 +307,8 @@ _cell_routing_error() {
 }
 
 _is_valid_docker_tag() {
-    [[ "$1" =~ ^[[:alnum:]_][[:alnum:]_.-]{0,127}$ ]]
+    local LC_ALL=C
+    [[ "$1" =~ ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$ ]]
 }
 
 _validate_cell_tag_route() {
@@ -406,8 +407,10 @@ _list_cell_publisher_rolling_aliases() {
     if [[ "$is_default" == "true" ]]; then
         if [[ "$os" == "windows" && "$publisher" == "windows-action" ]]; then
             _emit_cell_rolling_alias "windows-action" "latest"
+            return $?
         elif [[ "$os" == "linux" && "$publisher" == "linux-manifest" ]]; then
             _emit_cell_rolling_alias "linux-manifest" "latest"
+            return $?
         fi
         return 0
     fi
@@ -502,9 +505,13 @@ _list_cell_tag_rolling_aliases() (
 # This full-set view is for non-publisher callers; publisher paths must use
 # list_cell_publisher_rolling_aliases so that each ref has one writer.
 #
-# Usage: compute_cell_tag_suffixes <tag> <os> <variant> <flavor> <is_default> [build_flavor]
+# Usage: compute_cell_tag_suffixes <tag> <os> <variant> <flavor> <is_default> <build_flavor>
 # Output: one unique tag suffix per line (e.g. "18-alpine", "latest", "latest-vector").
 compute_cell_tag_suffixes() {
+    if [[ "$#" -ne 6 ]]; then
+        _cell_routing_error "expected tag, os, variant, flavor, is_default, and build_flavor"
+        return 1
+    fi
     local tag="$1"
     local suffix
     local _aliases_file
@@ -520,7 +527,11 @@ compute_cell_tag_suffixes() {
         return "$_collect_status"
     fi
 
-    printf '%s\n' "$tag" || _emit_status=$?
+    printf '%s\n' "$tag" || {
+        _emit_status=$?
+        rm -f "$_aliases_file"
+        return "$_emit_status"
+    }
     while IFS= read -r suffix; do
         printf '%s\n' "$suffix" || _emit_status=$?
     done < "$_aliases_file"
@@ -571,12 +582,12 @@ compute_local_build_tag_suffixes() {
     local is_default="$4"
     local routing_suffix
 
-    printf '%s\n' "$tag"
+    printf '%s\n' "$tag" || return $?
     [[ "$tag" != "latest" ]] || return 0
 
     if [[ "$is_default" == "true" ]]; then
         printf 'latest\n'
-        return 0
+        return $?
     fi
 
     routing_suffix="${variant:-$flavor}"
@@ -1098,10 +1109,19 @@ latest_per_major_versions() {
     return "$failed"
 }
 
-# Export functions for use in other scripts
+# Routing APIs are source-only: source helpers/variant-utils.sh, then call
+# them in that shell.  Sourcing this file revokes any inherited export of the
+# nine routing functions defined above: list_cell_rolling_aliases,
+# _list_cell_publisher_rolling_aliases, list_cell_publisher_rolling_aliases,
+# cell_manifest_publisher_for_os, _list_cell_tag_rolling_aliases,
+# compute_cell_tag_suffixes, compute_cell_publisher_tag_suffixes,
+# compute_local_build_tag_suffixes, and compute_cell_tags.  Keep this list in
+# sync with the routing functions when adding or renaming one.  They resolve
+# rolling aliases, publisher ownership, and local cell tag routing; none has a
+# supported child-shell contract.
+export -n -f list_cell_rolling_aliases list_cell_publisher_rolling_aliases _list_cell_publisher_rolling_aliases _list_cell_tag_rolling_aliases compute_cell_tag_suffixes compute_cell_publisher_tag_suffixes compute_cell_tags compute_local_build_tag_suffixes cell_manifest_publisher_for_os
 export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
 export -f variant_property default_variant base_suffix version_retention
 export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_container_builds list_variant_tags
-export -f always_all_versions list_cell_rolling_aliases _list_cell_publisher_rolling_aliases list_cell_publisher_rolling_aliases cell_manifest_publisher_for_os _list_cell_tag_rolling_aliases
-export -f compute_local_build_tag_suffixes
-export -f compute_cell_tag_suffixes compute_cell_publisher_tag_suffixes compute_cell_tags compute_expand_retained_map latest_per_major_versions
+export -f always_all_versions
+export -f compute_expand_retained_map latest_per_major_versions
