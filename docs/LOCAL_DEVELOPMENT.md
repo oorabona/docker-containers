@@ -16,10 +16,13 @@ sudo apt-get install docker-compose-plugin
 
 # Basic tools
 sudo apt-get install git jq curl bash
-
-# Mike Farah's yq v4.52.5, pinned to match CI (Ubuntu's yq is kislyuk/yq, a jq wrapper)
-sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.52.5/yq_linux_amd64 -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
 ```
+
+[Mike Farah's yq](https://github.com/mikefarah/yq#install) is required for every build and push path.
+Install v4.52.4 or later, the version CI's Linux jobs use, by following the project's own instructions.
+
+> Ubuntu's `yq` package is [kislyuk/yq](https://github.com/kislyuk/yq), a `jq` wrapper. It cannot run
+> the `yq eval`, `strenv()` and `tag` queries this repository uses, so `make` fails with it installed.
 
 > NB: This also works with Podman, please refer to their installation guide.
 
