@@ -414,28 +414,45 @@ _emit_build_lineage() {
 # missing, malformed, or unreadable declaration is deliberately ineligible.
 _renderer_skip_eligible() {
     local container="$1"
+    local -n validated_inputs_out="$2"
     local config="$PROJECT_ROOT/$container/config.yaml"
-    local input_count input input_type
+    local declaration_rows
+    local input_count input input_type input_index expected_row_count
+    local -a rows=()
+
+    validated_inputs_out=()
 
     [[ -f "$config" ]] || return 1
-    [[ "$(yq -r '.build_digest.pre_render_skip.inputs | tag' "$config" 2>/dev/null)" == "!!seq" ]] || return 1
-    if ! input_count=$(yq -r '.build_digest.pre_render_skip.inputs | length' "$config" 2>/dev/null); then
+    # Capture the sequence metadata and entries in one yq invocation.  Keeping
+    # its status separate from the parsing below prevents partial output from
+    # being treated as a complete renderer declaration.
+    if ! declaration_rows=$(yq -r '
+        .build_digest.pre_render_skip.inputs |
+        [tag, length] + [.[] | tag] + [.[]] | .[]
+    ' "$config" 2>/dev/null); then
         return 1
     fi
-    [[ "$input_count" =~ ^[1-9][0-9]*$ ]] || return 1
+    mapfile -t rows <<< "$declaration_rows"
 
-    while IFS= read -r input; do
+    [[ "${rows[0]:-}" == "!!seq" ]] || return 1
+    input_count="${rows[1]:-}"
+    [[ "$input_count" =~ ^[1-9][0-9]*$ ]] || return 1
+    expected_row_count=$((2 + 2 * 10#$input_count))
+    (( ${#rows[@]} == expected_row_count )) || return 1
+
+    for ((input_index = 0; input_index < input_count; input_index++)); do
+        input_type="${rows[2 + input_index]}"
+        input="${rows[2 + input_count + input_index]}"
         [[ -n "$input" && "$input" != "null" && "$input" != /* && "$input" != *".."* ]] || return 1
         [[ -f "$PROJECT_ROOT/$input" ]] || return 1
-    done < <(yq -r '.build_digest.pre_render_skip.inputs[]' "$config" 2>/dev/null) || return 1
-
-    while IFS= read -r input_type; do
         [[ "$input_type" == "!!str" ]] || return 1
-    done < <(yq -r '.build_digest.pre_render_skip.inputs[] | tag' "$config" 2>/dev/null) || return 1
+        validated_inputs_out+=("$PROJECT_ROOT/$input")
+    done
 }
 
 # Public wrapper: once a generated Dockerfile has been materialised, every
-# result from the implementation returns through this single cleanup point.
+# result attempts its removal through this single cleanup point and reports a
+# failure to remove it.
 build_container() {
     local _generated_dockerfile=""
     local _build_status
@@ -445,7 +462,9 @@ build_container() {
     else
         _build_status=$?
     fi
-    [[ -z "$_generated_dockerfile" ]] || rm -f "$_generated_dockerfile"
+    if [[ -n "$_generated_dockerfile" ]] && ! rm -f "$_generated_dockerfile"; then
+        log_error "Failed to remove generated Dockerfile: $_generated_dockerfile"
+    fi
     return "$_build_status"
 }
 
@@ -512,16 +531,12 @@ _build_container_impl() {
     local -a digest_render_sources=()
     if has_template_markers "$dockerfile"; then
         is_template=true
-        if [[ -x "$PROJECT_ROOT/$container/generate-dockerfile.sh" ]] && _renderer_skip_eligible "$container"; then
+        if [[ -x "$PROJECT_ROOT/$container/generate-dockerfile.sh" ]] && _renderer_skip_eligible "$container" digest_render_sources; then
             renderer_skip_eligible=true
             digest_render_config="$PROJECT_ROOT/$container/config.yaml"
             digest_render_flavor="${flavor:-}"
             digest_render_build_flavor="${build_flavor:-}"
             digest_render_version="$version"
-            local declared_render_source
-            while IFS= read -r declared_render_source; do
-                digest_render_sources+=("$PROJECT_ROOT/$declared_render_source")
-            done < <(yq -r '.build_digest.pre_render_skip.inputs[]' "$digest_render_config")
         fi
     fi
 

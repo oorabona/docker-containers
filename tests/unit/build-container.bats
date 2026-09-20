@@ -506,6 +506,16 @@ EOF
     chmod +x "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
 
     mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/yq" <<'EOF'
+#!/usr/bin/env bash
+calls_file="$TEST_TEMP_DIR/yq-calls"
+calls=0
+[[ -f "$calls_file" ]] && calls=$(<"$calls_file")
+calls=$((calls + 1))
+printf '%s\n' "$calls" > "$calls_file"
+[[ "$calls" -eq 1 ]] || exit 74
+printf '%s\n' '!!seq' 1 '!!str' 'templatecontainer/generate-dockerfile.sh'
+EOF
     cat > "$TEST_TEMP_DIR/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TEST_TEMP_DIR/docker_calls.log"
@@ -513,7 +523,7 @@ if [[ "$*" == *"imagetools inspect"* ]]; then
     printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 fi
 EOF
-    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    chmod +x "$TEST_TEMP_DIR/bin/yq" "$TEST_TEMP_DIR/bin/docker"
     export PATH="$TEST_TEMP_DIR/bin:$PATH"
 
     source_build_script
@@ -533,6 +543,7 @@ EOF
     [ "$status" -eq 0 ]
     unset SKIP_EXISTING_BUILDS
 
+    [ "$(<"$TEST_TEMP_DIR/yq-calls")" -eq 1 ]
     [ -z "$(find "$TEST_TEMP_DIR/generated" -type f -print -quit)" ]
     [ ! -e "$TEST_TEMP_DIR/generator-calls" ]
     [ ! -s "$TEST_TEMP_DIR/docker_calls.log" ] || ! grep -q 'buildx build' "$TEST_TEMP_DIR/docker_calls.log"
@@ -565,6 +576,24 @@ EOF
     done
     [ ! -s "$TEST_TEMP_DIR/docker_calls.log" ]
     [ -z "$(find "$TEST_TEMP_DIR/generated" -type f -print -quit)" ]
+}
+
+@test "renderer eligibility carries the validated declared inputs" {
+    mkdir -p "$TEST_TEMP_DIR/templatecontainer"
+    printf '%s\n' 'renderer input' > "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
+    cat > "$TEST_TEMP_DIR/templatecontainer/config.yaml" <<'EOF'
+build_digest:
+  pre_render_skip:
+    inputs: [templatecontainer/generate-dockerfile.sh]
+EOF
+    source_build_script
+    PROJECT_ROOT="$TEST_TEMP_DIR"
+    local -a validated_inputs=()
+
+    _renderer_skip_eligible "templatecontainer" validated_inputs
+
+    [ "${#validated_inputs[@]}" -eq 1 ]
+    [ "${validated_inputs[0]}" = "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh" ]
 }
 
 @test "missing or malformed renderer declarations never probe the skip path and label the generated Dockerfile" {
@@ -601,6 +630,128 @@ EOF
     ! grep -qx 'templatecontainer/Dockerfile' "$TEST_TEMP_DIR/digest-paths"
     grep -q '/Dockerfile.templatecontainer.' "$TEST_TEMP_DIR/digest-paths"
     [ -z "$(find "$TEST_TEMP_DIR/generated" -type f -print -quit)" ]
+}
+
+@test "a failed renderer input enumeration takes the post-render path" {
+    mkdir -p "$TEST_TEMP_DIR/templatecontainer" "$TEST_TEMP_DIR/generated" "$TEST_TEMP_DIR/bin"
+    printf '%s\n' 'FROM scratch' '# @@MARKER@@' > "$TEST_TEMP_DIR/templatecontainer/Dockerfile"
+    cat > "$TEST_TEMP_DIR/templatecontainer/config.yaml" <<'EOF'
+build_digest:
+  pre_render_skip:
+    inputs: [templatecontainer/generate-dockerfile.sh]
+EOF
+    printf '%s\n' '#!/usr/bin/env bash' 'echo generated >> "$TEST_TEMP_DIR/generator-calls"' 'printf "FROM generated\n"' > "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
+    chmod +x "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
+    cat > "$TEST_TEMP_DIR/bin/yq" <<'EOF'
+#!/usr/bin/env bash
+# A complete declaration paired with a failed yq status must remain ineligible.
+printf '%s\n' '!!seq' 1 '!!str' 'templatecontainer/generate-dockerfile.sh'
+exit 73
+EOF
+    cat > "$TEST_TEMP_DIR/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$TEST_TEMP_DIR/docker-calls.log"
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/yq" "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    source_build_script
+    PROJECT_ROOT="$TEST_TEMP_DIR"; TMPDIR="$TEST_TEMP_DIR/generated"
+    should_skip_build() { echo called >> "$TEST_TEMP_DIR/skip-calls"; return 0; }
+    compute_build_digest() { printf '%s\n' "$1" >> "$TEST_TEMP_DIR/digest-paths"; printf '%s\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; }
+    _resolve_platforms() { _PLATFORMS="linux/amd64"; }; _configure_cache() { _CACHE_ARGS=""; _RUNTIME_INFO=test; }; _prepare_build_args() { _BUILD_ARGS=""; }; collect_lines() { printf '%s\n' 'docker.io/test/templatecontainer:1.0.0' > "$1"; }; _resolve_base_image() { :; }
+    export -f should_skip_build compute_build_digest _resolve_platforms _configure_cache _prepare_build_args collect_lines _resolve_base_image
+    cd "$TEST_TEMP_DIR"
+
+    SKIP_EXISTING_BUILDS=true run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
+
+    [ "$status" -eq 0 ]
+    [ ! -e "$TEST_TEMP_DIR/skip-calls" ]
+    [ "$(<"$TEST_TEMP_DIR/generator-calls")" = "generated" ]
+    grep -q '/Dockerfile.templatecontainer.' "$TEST_TEMP_DIR/digest-paths"
+}
+
+@test "a short renderer input enumeration takes the post-render path" {
+    mkdir -p "$TEST_TEMP_DIR/templatecontainer" "$TEST_TEMP_DIR/generated" "$TEST_TEMP_DIR/bin"
+    printf '%s\n' 'FROM scratch' '# @@MARKER@@' > "$TEST_TEMP_DIR/templatecontainer/Dockerfile"
+    cat > "$TEST_TEMP_DIR/templatecontainer/config.yaml" <<'EOF'
+build_digest:
+  pre_render_skip:
+    inputs: [templatecontainer/generate-dockerfile.sh]
+EOF
+    printf '%s\n' '#!/usr/bin/env bash' 'echo generated >> "$TEST_TEMP_DIR/generator-calls"' 'printf "FROM generated\n"' > "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
+    chmod +x "$TEST_TEMP_DIR/templatecontainer/generate-dockerfile.sh"
+    cat > "$TEST_TEMP_DIR/bin/yq" <<'EOF'
+#!/usr/bin/env bash
+# A successful but partial sequence result must not widen eligibility.
+printf '%s\n' '!!seq' 2 '!!str' 'templatecontainer/generate-dockerfile.sh'
+EOF
+    cat > "$TEST_TEMP_DIR/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$TEST_TEMP_DIR/docker-calls.log"
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/yq" "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    source_build_script
+    PROJECT_ROOT="$TEST_TEMP_DIR"; TMPDIR="$TEST_TEMP_DIR/generated"
+    should_skip_build() { echo called >> "$TEST_TEMP_DIR/skip-calls"; return 0; }
+    compute_build_digest() { printf '%s\n' "$1" >> "$TEST_TEMP_DIR/digest-paths"; printf '%s\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; }
+    _resolve_platforms() { _PLATFORMS="linux/amd64"; }; _configure_cache() { _CACHE_ARGS=""; _RUNTIME_INFO=test; }; _prepare_build_args() { _BUILD_ARGS=""; }; collect_lines() { printf '%s\n' 'docker.io/test/templatecontainer:1.0.0' > "$1"; }; _resolve_base_image() { :; }
+    export -f should_skip_build compute_build_digest _resolve_platforms _configure_cache _prepare_build_args collect_lines _resolve_base_image
+    cd "$TEST_TEMP_DIR"
+
+    SKIP_EXISTING_BUILDS=true run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
+
+    [ "$status" -eq 0 ]
+    [ ! -e "$TEST_TEMP_DIR/skip-calls" ]
+    [ "$(<"$TEST_TEMP_DIR/generator-calls")" = "generated" ]
+    grep -q '/Dockerfile.templatecontainer.' "$TEST_TEMP_DIR/digest-paths"
+}
+
+@test "a generated Dockerfile cleanup failure is reported without changing a successful build result" {
+    source_build_script
+    local generated_dockerfile="$TEST_TEMP_DIR/generated-Dockerfile"
+
+    _build_container_impl() {
+        _generated_dockerfile="$generated_dockerfile"
+        : > "$_generated_dockerfile"
+    }
+    rm() {
+        if [[ -n "${generated_dockerfile:-}" && "$*" == *"$generated_dockerfile"* ]]; then
+            return 1
+        fi
+        command rm "$@"
+    }
+
+    run build_container "unused" "1.0.0" "1.0.0"
+
+    [ "$status" -eq 0 ]
+    [ -f "$generated_dockerfile" ]
+    [[ "$output" == *"Failed to remove generated Dockerfile: $generated_dockerfile"* ]]
+}
+
+@test "a generated Dockerfile cleanup failure preserves a failed build result" {
+    source_build_script
+    local generated_dockerfile="$TEST_TEMP_DIR/generated-Dockerfile"
+
+    _build_container_impl() {
+        _generated_dockerfile="$generated_dockerfile"
+        : > "$_generated_dockerfile"
+        return 37
+    }
+    rm() {
+        if [[ -n "${generated_dockerfile:-}" && "$*" == *"$generated_dockerfile"* ]]; then
+            return 1
+        fi
+        command rm "$@"
+    }
+
+    run build_container "unused" "1.0.0" "1.0.0"
+
+    [ "$status" -eq 37 ]
+    [ -f "$generated_dockerfile" ]
+    [[ "$output" == *"Failed to remove generated Dockerfile: $generated_dockerfile"* ]]
 }
 
 @test "empty post-render digest is fatal and cleans up for non-eligible renderers in both skip modes" {

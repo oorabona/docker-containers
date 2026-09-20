@@ -54,9 +54,9 @@ _digest_read_file() {
 # Do not pass secrets via CUSTOM_BUILD_ARGS — they will be hashed
 # and logged when DIGEST_DEBUG=1.
 #
-# The optional render inputs are supplied only by build-container.sh for a
-# marker-bearing Dockerfile.  Omitting them means the caller is not rendering
-# a template (as is still the case for push-container.sh).
+# Supplying the optional render inputs selects pre-render hashing for an
+# eligible marker-bearing template.  Omitting them means either a marker-free
+# Dockerfile or an already-rendered Dockerfile is hashed after generation.
 compute_build_digest() {
     local dockerfile="$1"
     local flavor="${2:-}"
@@ -293,10 +293,10 @@ compute_build_digest() {
         fi
     fi
 
-    # A marker-bearing Dockerfile is labelled from declared pre-expansion
-    # inputs, never from a generated temporary file.  The caller selects the
-    # renderer and provides exactly the config, arguments, and sourced helper
-    # files used for that render.
+    # These inputs describe a pre-expansion render.  The caller selects the
+    # renderer and provides its config, arguments, and sourced helper files;
+    # a renderer without a declared input set is hashed from its generated
+    # Dockerfile instead.
     if [[ -n "$render_config" ]]; then
         local render_config_content
         _digest_read_file "$render_config" render_config_content || return 1
