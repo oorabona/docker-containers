@@ -855,7 +855,8 @@ EOF
     create_mock_container "testcontainer" "1.0.0"
     source_build_script
 
-    cd "$TEST_TEMP_DIR"
+    # Match make's pushd <container>: build_container resolves Dockerfile and context from here.
+    cd "$TEST_TEMP_DIR/testcontainer"
     run build_container "testcontainer" "1.0.0" "1.0.0" "base"
 
     [ "$status" -eq 0 ]
