@@ -485,6 +485,7 @@ EOF
     compute_build_digest() {
         printf '%s\n' "$1" > "$TEST_TEMP_DIR/generated-path"
         [[ "$DIGEST_MODE" == "failure" ]] && return 17
+        return 0
     }
     export -f _resolve_platforms _configure_cache _prepare_build_args collect_lines _resolve_base_image compute_build_digest
 
@@ -499,6 +500,8 @@ EOF
     export DIGEST_MODE="empty"
     run build_container "templatecontainer" "1.0.0" "1.0.0" "" "templatecontainer/Dockerfile"
     [ "$status" -ne 0 ]
+    [[ "$output" == *"Build digest is empty"* ]]
+    [[ "$output" != *"Build digest computation failed"* ]]
     local empty_generated
     empty_generated=$(<"$TEST_TEMP_DIR/generated-path")
     [ ! -e "$empty_generated" ]
