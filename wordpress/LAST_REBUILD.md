@@ -30,3 +30,10 @@ Build status will be available in GitHub Actions after merge.
 - Variant: 6.9.4-alpine, base ghcr.io/oorabona/php:latest
   Old digest: sha256:e889d058f3e84e46d3bfa252771edc5ae7c6559b4ae4b31a1977237b488ced13
   New digest: sha256:080dec22bbc7748d6591419da73c92f71db5af7aea5ab2c5153549bc0a0e0d59
+
+<!-- drift-content-hash: 96ac225c94000ff8 run:35717515683 -->
+## base-digest-drift (2026-09-22)
+
+- Variant: 6.9.4-alpine, base ghcr.io/oorabona/php:latest
+  Old digest: sha256:e889d058f3e84e46d3bfa252771edc5ae7c6559b4ae4b31a1977237b488ced13
+  New digest: sha256:96e1d42c367014d39c55866045dccb88a9f44f7adb318e4050b16ac22ff74294
