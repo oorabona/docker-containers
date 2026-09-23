@@ -14,7 +14,7 @@ on:
         type: string
         default: ''
       force_rebuild:
-        description: '[deprecated] Force rebuild even if up-to-date — use rebuild=all instead'
+        description: '[deprecated] For manual runs, selects rebuild=all when rebuild is none'
         required: false
         default: false
         type: boolean
@@ -1456,8 +1456,8 @@ jobs:
             echo "### ⏭️ Build skipped" >> $GITHUB_STEP_SUMMARY
 
             echo "**🎯 Smart Detection Results:**" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ Images already exist in all target registries" >> $GITHUB_STEP_SUMMARY
-            echo "- 📋 Tag \`$current_tag\` is up to date" >> $GITHUB_STEP_SUMMARY
+            echo "- 📋 The build step did not run for tag \`$current_tag\`" >> $GITHUB_STEP_SUMMARY
+            echo "- ℹ️ No image was built or pushed by this step" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -3929,7 +3929,7 @@ jobs:
             elif [ "${{ github.event_name }}" = "workflow_call" ]; then
               echo "- ✅ No containers needed building from workflow call" >> $GITHUB_STEP_SUMMARY
             else
-              echo "- ✅ All container images are up to date in registries" >> $GITHUB_STEP_SUMMARY
+              echo "- ℹ️ No containers were selected for this manual run" >> $GITHUB_STEP_SUMMARY
               echo "- 🔍 No new upstream versions detected" >> $GITHUB_STEP_SUMMARY
             fi
           elif [ "$bap_result" = "success" ] || [ "$bake_path_ok" = "true" ]; then
@@ -3938,13 +3938,13 @@ jobs:
             echo "**🎯 Smart Detection Features:**" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Automatic triggering** on container file changes" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Upstream version monitoring** for automatic updates" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ **Registry verification** to avoid duplicate builds" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Changed-file detection** selects affected containers" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Native multi-platform** builds (amd64 + arm64 on native runners)" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Multi-registry** publishing (GHCR + Docker Hub)" >> $GITHUB_STEP_SUMMARY
             echo "- ⏸️ **Security scanning** (temporarily disabled)" >> $GITHUB_STEP_SUMMARY
           elif [ "$bap_result" = "skipped" ]; then
             echo "### ⏭️ Builds were skipped" >> $GITHUB_STEP_SUMMARY
-            echo "All target images already exist and are up to date." >> $GITHUB_STEP_SUMMARY
+            echo "The build action reported that it did not run." >> $GITHUB_STEP_SUMMARY
           else
             echo "### ℹ️ Workflow completed in an unclassified state" >> $GITHUB_STEP_SUMMARY
           fi

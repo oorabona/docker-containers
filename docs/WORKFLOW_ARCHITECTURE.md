@@ -197,7 +197,7 @@ All located in `.github/actions/`:
 | `logging.sh` | Shared log/info/warn/error/debug output functions |
 | `variant-utils.sh` | Read variants.yaml, determine container variants/flavors |
 | `build-args-utils.sh` | Extract build arguments from config.yaml |
-| `build-cache-utils.sh` | Compute build digests, check registry for skip-rebuild |
+| `build-cache-utils.sh` | Compute build digests and their OCI label arguments |
 | `extension-utils.sh` | PostgreSQL extension image build helpers |
 | `registry-utils.sh` | Docker Hub and GHCR API query utilities |
 | `sbom-utils.sh` | SBOM generation (syft), package diffing, changelog, build history |

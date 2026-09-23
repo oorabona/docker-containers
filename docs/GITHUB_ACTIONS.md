@@ -334,7 +334,7 @@ Builds a specific container using the universal `make` script with enhanced erro
 
 **Inputs:**
 - `container`: Container name to build
-- `force_rebuild`: Force rebuild even if up-to-date
+- `force_rebuild`: Deprecated; use `rebuild=all` for manual auto-build runs
 - `dockerhub_username`, `dockerhub_token`, `github_token`: Registry credentials
 - `scan_vulnerabilities`: Enable Trivy security scanning (default: `true`)
 - `vulnerability_severity`: Comma-separated severities surfaced in SARIF + dashboard. Default `UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL`. **Advisory only** — Trivy runs `continue-on-error: true`; build is never blocked on findings.
@@ -438,7 +438,7 @@ Builds a specific container with optimizations and error handling.
 
 **Inputs:**
 - `container`: Container name to build
-- `force_rebuild`: Force rebuild even if up-to-date
+- `force_rebuild`: Deprecated; use `rebuild=all` for manual auto-build runs
 - `dockerhub_username`, `dockerhub_token`, `github_token`: Registry credentials
 
 **Features:**

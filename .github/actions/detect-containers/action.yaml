@@ -11,7 +11,7 @@ inputs:
     required: false
     default: ''
   force_rebuild:
-    description: '[deprecated] Force rebuild even if image exists — use rebuild=all instead'
+    description: '[deprecated] For manual runs, selects rebuild=all when rebuild is none'
     required: false
     default: 'false'
   rebuild:
