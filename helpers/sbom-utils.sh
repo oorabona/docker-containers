@@ -309,6 +309,11 @@ compare_sboms() (
         return 1
     fi
 
+    if [[ "$output_file" -ef "$new_sbom" || "$output_file" -ef "$old_sbom" ]]; then
+        log_error "Changelog output aliases an input SBOM: $output_file"
+        return 2
+    fi
+
     local new_validation_status=0
     if jq -en '([limit(2; inputs)] | length == 1 and (.[0] | type == "object") and (.[0].packages | type == "array"))' -- "$new_sbom" >/dev/null 2>&1; then
         :
@@ -342,11 +347,6 @@ compare_sboms() (
             return 1
             ;;
     esac
-
-    if [[ "$output_file" -ef "$new_sbom" || "$output_file" -ef "$old_sbom" ]]; then
-        log_error "Changelog output aliases an input SBOM: $output_file"
-        return 2
-    fi
 
     if [[ -d "$output_file" ]]; then
         log_error "Changelog output path is a directory: $output_file"

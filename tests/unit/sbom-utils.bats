@@ -105,7 +105,12 @@ write_packages_sbom() {
 write_validation_status_jq_stub() {
     cat > "$TEST_TEMP_DIR/bin/jq" <<'STUB'
 #!/usr/bin/env bash
-exit "${JQ_STUB_STATUS:?}"
+last_argument="${!#}"
+if [[ "$last_argument" == "${JQ_STUB_FAIL_PATH:?}" ]]; then
+    printf '%s\n' "$last_argument" >> "${JQ_STUB_CALL_LOG:?}"
+    exit "${JQ_STUB_STATUS:?}"
+fi
+exec "$SYSTEM_JQ" "$@"
 STUB
     chmod +x "$TEST_TEMP_DIR/bin/jq"
 }
@@ -441,18 +446,65 @@ JSON
     [ "$after_checksum" = "$before_checksum" ]
 }
 
+@test "compare_sboms rejects an output alias of the new SBOM when the old SBOM is missing" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local missing_old_sbom="$TEST_TEMP_DIR/missing-old.sbom.json"
+    local before_checksum after_checksum
+    write_sbom "$new_sbom"
+    before_checksum=$(sha256sum -- "$new_sbom")
+
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$2"' _ "$SBOM_UTILS" "$new_sbom" "$missing_old_sbom"
+    [ "$status" -eq 2 ] || return 1
+
+    after_checksum=$(sha256sum -- "$new_sbom")
+    [ "$after_checksum" = "$before_checksum" ]
+}
+
+@test "compare_sboms rejects an output alias of a malformed old SBOM without changing it" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    local before_checksum after_checksum
+    write_sbom "$new_sbom"
+    printf 'not-json\n' > "$old_sbom"
+    before_checksum=$(sha256sum -- "$old_sbom")
+
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$3"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom"
+    [ "$status" -eq 2 ] || return 1
+
+    after_checksum=$(sha256sum -- "$old_sbom")
+    [ "$after_checksum" = "$before_checksum" ]
+}
+
+@test "compare_sboms rejects an output alias of a malformed new SBOM" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    local before_checksum after_checksum
+    printf 'not-json\n' > "$new_sbom"
+    write_sbom "$old_sbom"
+    before_checksum=$(sha256sum -- "$new_sbom")
+
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$2"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom"
+    [ "$status" -eq 2 ] || return 1
+
+    after_checksum=$(sha256sum -- "$new_sbom")
+    [ "$after_checksum" = "$before_checksum" ]
+}
+
 @test "compare_sboms treats old-SBOM validation execution failures as operational failures" {
     local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
     local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
-    local jq_status
+    local jq_status jq_call_log="$TEST_TEMP_DIR/jq-calls.log"
     write_sbom "$new_sbom"
     write_sbom "$old_sbom"
     write_validation_status_jq_stub
 
     for jq_status in 2 127; do
-        run env JQ_STUB_STATUS="$jq_status" bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ \
+        : > "$jq_call_log"
+        run env JQ_STUB_STATUS="$jq_status" JQ_STUB_FAIL_PATH="$old_sbom" JQ_STUB_CALL_LOG="$jq_call_log" \
+            bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ \
             "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$TEST_TEMP_DIR/result-$jq_status.json"
         [ "$status" -eq 1 ] || return 1
+        [ "$(< "$jq_call_log")" = "$old_sbom" ] || return 1
     done
 }
 
