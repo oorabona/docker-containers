@@ -37,7 +37,7 @@ inputs:
     required: false
     default: 'linux/amd64'
   rebuild_mode:
-    description: 'Build mode: none=auto-detect, changed=targeted, all=build all containers, force=no-cache'
+    description: 'Rebuild mode chosen by the calling workflow, echoed in the step notice. Container selection happens in detect-containers and --no-cache is controlled by docker_no_cache.'
     required: false
     default: 'none'
   docker_no_cache:
@@ -92,7 +92,7 @@ outputs:
     description: Whether this build is the default variant (used for latest tag routing)
     value: ${{ steps.check-build.outputs.is_default }}
   image_loaded:
-    description: true when the build loaded the image locally; false only in a dry run or when the step failed
+    description: "'true' only when this build step loaded the image into the local daemon; any other value means no image was loaded."
     value: ${{ steps.build.outputs.image_loaded }}
   scan_passed:
     description: Whether security scan passed (or was skipped)
@@ -429,7 +429,6 @@ runs:
       env:
         BUILD_PLATFORM: ${{ inputs.platform }}
         GH_TOKEN: ${{ inputs.github_token }}
-        REBUILD_MODE: ${{ inputs.rebuild_mode }}
         DOCKER_NO_CACHE: ${{ inputs.docker_no_cache }}
         CONTAINER: ${{ inputs.container }}
         CURRENT_VERSION: ${{ steps.check-build.outputs.current_version }}
@@ -608,17 +607,16 @@ runs:
 
         # Check whether the built image was loaded into the local daemon.
         ghcr_image="ghcr.io/${{ github.repository_owner }}/$container:$current_tag"
-        if docker image inspect "$ghcr_image" &>/dev/null; then
+        if [[ "${DRY_RUN:-false}" == "true" ]]; then
+          echo "image_loaded=false" >> $GITHUB_OUTPUT
+          echo "::notice::Dry run built no image for $container:$current_tag"
+        elif docker image inspect "$ghcr_image" &>/dev/null; then
           echo "image_loaded=true" >> $GITHUB_OUTPUT
           echo "::notice::Build successful for $container:$current_tag"
         else
           echo "image_loaded=false" >> $GITHUB_OUTPUT
-          if [[ "${DRY_RUN:-false}" == "true" ]]; then
-            echo "::notice::Dry run built no image for $container:$current_tag"
-          else
-            echo "::error::Build reported success but $ghcr_image is not in the local daemon"
-            exit 1
-          fi
+          echo "::error::Build reported success but $ghcr_image is not in the local daemon"
+          exit 1
         fi
 
     - name: Record disk space after build (Windows)

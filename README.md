@@ -42,7 +42,7 @@ Upstream releases new version
         │
         ▼
   Build digest label          ← descriptive provenance
-  recorded on each image
+  recorded on matrix-built images only
         │
         ▼
   Multi-arch build           ← linux/amd64 + linux/arm64
@@ -58,7 +58,7 @@ Upstream releases new version
 
 **Key differentiators:**
 
-- **Build digest labels** — descriptive source-cache provenance in image labels and build lineage ([ADR-002](docs/adr/ADR-002-smart-rebuild-detection.md))
+- **Build digest labels** — matrix-built images carry descriptive source-cache provenance labels; Bake records OCI `containerimage.digest` (`sha256:`) as lineage `build_digest` ([ADR-002](docs/adr/ADR-002-smart-rebuild-detection.md))
 - **Declarative variants** — one Dockerfile, N flavors via `variants.yaml` ([ADR-003](docs/adr/ADR-003-variant-system.md))
 - **Build lineage tracking** — full provenance chain from source to published image ([ADR-004](docs/adr/ADR-004-build-lineage-tracking.md))
 - **Native multi-arch & multi-OS** — parallel `linux/amd64` + `linux/arm64` builds on dedicated runners with no emulation, plus `windows-ltsc2022` for the github-runner image ([ADR-001](docs/adr/ADR-001-multi-platform-native-runners.md))

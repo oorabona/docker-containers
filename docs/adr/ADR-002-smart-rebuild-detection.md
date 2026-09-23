@@ -30,4 +30,6 @@ master runs from 2026-09-18 through 2026-09-23, the skip never fired: roughly
 list while the label is on its per-architecture child. The digest also does not
 cover every copied build-context file, so a changed file selected by container
 detection could have been skipped. The digest remains a descriptive OCI image
-label and build-lineage field; it does not decide whether a build runs.
+label and build-lineage field; it is never compared with registry state to
+skip, reuse, or reject an image, and a failed or empty computation still
+refuses the build.

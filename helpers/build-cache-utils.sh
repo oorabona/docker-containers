@@ -246,7 +246,8 @@ compute_build_digest() {
     # --- Input: LAST_REBUILD.md (if present) ---
     # Including LAST_REBUILD.md in the digest ensures a drift-PR merge
     # (which appends a base-digest-drift section) changes the recorded label.
-    # The label is descriptive provenance and never controls whether a build runs.
+    # The digest is never compared with registry state to skip, reuse, or reject an
+    # image; a failed or empty computation still refuses the build.
     #
     # compute_build_digest is always called with cwd = container directory
     # (the make script does pushd <container> before invoking build_container).
