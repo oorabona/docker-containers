@@ -4446,40 +4446,46 @@ jobs:
 
             echo "::group::Processing SBOM for $container_tag"
 
-            # Validate source SBOM is well-formed JSON before any comparison.
+            # Validate source SBOM has JSON with an array .packages before comparison.
             # This disambiguates two failure modes that compare_sboms cannot distinguish:
             #   1. Source is malformed  → preserve cache (last-known-good), skip compare.
             #   2. Cache is malformed   → source is valid, replace cache to self-heal.
             cached_sbom=".build-lineage/${basename_file}"
-            compare_ok=true
+            append_history=true
+            replace_cache=true
             if ! jq -e '(.packages // empty | type) == "array"' < "$sbom_file" >/dev/null 2>&1; then
-              echo "::warning::Source SBOM for $container_tag is not valid SPDX (missing or non-array .packages) — preserving cached SBOM"
+              echo "::warning::Source SBOM for $container_tag is not valid JSON with an array .packages — preserving cached SBOM"
               sbom_failed=$((sbom_failed + 1))
-              compare_ok=false
+              append_history=false
+              replace_cache=false
             elif [[ ! -f "$cached_sbom" ]]; then
               echo "No previous SBOM for $container_tag — first build"
-              # compare_ok stays true; no compare to run; cp at end will create cache
+              # Both flags stay true; no compare to run; cp at end will create cache.
             else
               if compare_sboms "$sbom_file" "$cached_sbom" \
                     ".build-lineage/${container_tag}.changelog.json"; then
                 enrich_changelog ".build-lineage/${container_tag}.changelog.json" "$sbom_file" \
                   || echo "::warning::dependency freshness enrichment failed for $container_tag"
               else
-                # Source is valid JSON but compare failed — most likely cause is a
-                # malformed cached SBOM. Self-heal by replacing the cache; this lets
-                # the next build's compare have a clean baseline.
-                echo "::warning::compare_sboms failed with valid source for $container_tag — replacing cached SBOM to allow self-healing on next build"
+                compare_status=$?
                 sbom_failed=$((sbom_failed + 1))
                 # Stale changelog from previous build is invalid for this build — remove
                 # so append_build_history records a blank changes_summary instead of
                 # inheriting the previous build's diff.
                 rm -f ".build-lineage/${container_tag}.changelog.json"
-                compare_ok=true  # allow cp at end to overwrite the bad cache
+                append_history=true
+                if [[ "$compare_status" -eq 3 ]]; then
+                  echo "::warning::compare_sboms found malformed cached SBOM for $container_tag — replacing cached SBOM to self-heal"
+                  replace_cache=true
+                else
+                  echo "::warning::compare_sboms failed with status $compare_status for $container_tag — preserving cached SBOM"
+                  replace_cache=false
+                fi
               fi
             fi
 
-            # Extract summary and append to build history (only if compare succeeded or no prior SBOM)
-            if [[ "$compare_ok" == "true" ]]; then
+            # Append history when source processing may use this build's summary.
+            if [[ "$append_history" == "true" ]]; then
               summary=$(extract_sbom_summary "$sbom_file")
               lineage_file=".build-lineage/${container_tag}.json"
               append_build_history "$lineage_file" "$summary" \
@@ -4487,9 +4493,8 @@ jobs:
                 || { echo "::warning::Build history append failed for $container_tag"; sbom_failed=$((sbom_failed + 1)); }
             fi
 
-            # Replace cached SBOM with new one when compare_ok (source valid).
-            # When source is malformed, compare_ok=false preserves last-known-good.
-            if [[ "$compare_ok" == "true" ]]; then
+            # Preserve last-known-good cache except for successful comparison or status 3.
+            if [[ "$replace_cache" == "true" ]]; then
               cp "$sbom_file" "$cached_sbom"
             fi
 

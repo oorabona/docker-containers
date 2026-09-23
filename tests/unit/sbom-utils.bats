@@ -96,6 +96,20 @@ write_sbom() {
 JSON
 }
 
+write_packages_sbom() {
+    local path="$1"
+    local packages="$2"
+    "$SYSTEM_JQ" -n --argjson packages "$packages" '{packages: $packages}' > "$path"
+}
+
+write_validation_status_jq_stub() {
+    cat > "$TEST_TEMP_DIR/bin/jq" <<'STUB'
+#!/usr/bin/env bash
+exit "${JQ_STUB_STATUS:?}"
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/jq"
+}
+
 write_changelog() {
     local path="$1"
     cat > "$path" <<'JSON'
@@ -230,6 +244,150 @@ JSON
     [ "$status" -eq 0 ] || return 1
     [[ "$output" == *"if-failure-observed"* ]] || return 1
     [[ "$output" == *"or-failure-observed"* ]] || return 1
+}
+
+@test "compare_sboms keeps large package arrays out of argv" {
+    local arg_max name_length=1024 package_count serialized_size
+    local sbom="$TEST_TEMP_DIR/large.sbom.json"
+    local changelog="$TEST_TEMP_DIR/large.changelog.json"
+
+    arg_max=$(getconf ARG_MAX)
+    package_count=$(((arg_max + 131072) / (name_length + 50) + 1))
+    "$SYSTEM_JQ" -n --argjson count "$package_count" --argjson name_length "$name_length" '
+        {packages: [range(0; $count) |
+            {name: ("pkg-" + ("x" * $name_length) + tostring), versionInfo: "1.0.0",
+             externalRefs: [{referenceCategory: "PACKAGE-MANAGER", referenceType: "purl",
+                             referenceLocator: ("pkg:npm/pkg-" + tostring + "@1.0.0")}]}]}
+    ' > "$sbom"
+    serialized_size=$("$SYSTEM_JQ" -c '[.packages[] | {pkg_type: "npm", name, version: .versionInfo}]' "$sbom" | wc -c)
+    [ "$serialized_size" -gt "$arg_max" ] || return 1
+
+    run bash -c 'source "$1"; compare_sboms "$2" "$2" "$3"' _ "$SBOM_UTILS" "$sbom" "$changelog"
+    [ "$status" -eq 0 ] || return 1
+    "$SYSTEM_JQ" -e '.summary == {added: 0, removed: 0, updated: 0}' "$changelog" >/dev/null
+}
+
+@test "compare_sboms uses purl identity and updates only the changed ecosystem version" {
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local changelog="$TEST_TEMP_DIR/result.changelog.json"
+    local old_packages='[
+      {"name":"tar","versionInfo":"1.35","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:deb/debian/tar@1.35?arch=amd64"}]},
+      {"name":"tar","versionInfo":"6.2.1","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:npm/tar@6.2.1"}]},
+      {"name":"tar","versionInfo":"7.5.16","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:npm/tar@7.5.16"}]}
+    ]'
+    local new_packages='[
+      {"name":"tar","versionInfo":"1.35","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:deb/debian/tar@1.35?arch=amd64"}]},
+      {"name":"tar","versionInfo":"6.2.1","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:npm/tar@6.2.1"}]},
+      {"name":"tar","versionInfo":"7.5.17","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:npm/tar@7.5.17"}]}
+    ]'
+
+    write_packages_sbom "$old_sbom" "$old_packages"
+    write_packages_sbom "$new_sbom" "$old_packages"
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$changelog"
+    [ "$status" -eq 0 ] || return 1
+    "$SYSTEM_JQ" -e '.summary == {added: 0, removed: 0, updated: 0}' "$changelog" >/dev/null || return 1
+
+    write_packages_sbom "$new_sbom" "$new_packages"
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$changelog"
+    [ "$status" -eq 0 ] || return 1
+    "$SYSTEM_JQ" -e '.summary == {added: 0, removed: 0, updated: 1} and
+        .changes == [{type: "updated", name: "tar", pkg_type: "npm", from: "7.5.16", to: "7.5.17"}]' "$changelog" >/dev/null
+}
+
+@test "compare_sboms preserves package multiplicity" {
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local changelog="$TEST_TEMP_DIR/result.changelog.json"
+    local package='{"name":"a","versionInfo":"1","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:npm/a@1"}]}'
+
+    write_packages_sbom "$old_sbom" "[$package, $package]"
+    write_packages_sbom "$new_sbom" "[$package]"
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$changelog"
+    [ "$status" -eq 0 ] || return 1
+    "$SYSTEM_JQ" -e '.summary == {added: 0, removed: 1, updated: 0} and
+        .changes == [{type: "removed", name: "a", pkg_type: "npm", version: "1"}]' "$changelog" >/dev/null
+}
+
+@test "compare_sboms keeps purl qualifiers in package identity" {
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local changelog="$TEST_TEMP_DIR/result.changelog.json"
+    local old_package='{"name":"libc6","versionInfo":"2.36","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:deb/debian/libc6@2.36?arch=amd64"}]}'
+    local new_package='{"name":"libc6","versionInfo":"2.36","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:deb/debian/libc6@2.36?arch=arm64"}]}'
+
+    write_packages_sbom "$old_sbom" "[$old_package]"
+    write_packages_sbom "$new_sbom" "[$new_package]"
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$changelog"
+    [ "$status" -eq 0 ] || return 1
+    "$SYSTEM_JQ" -e '.summary == {added: 1, removed: 1, updated: 0} and
+        ([.changes[].type] | sort) == ["added", "removed"]' "$changelog" >/dev/null
+}
+
+@test "compare_sboms finds a purl after a non-purl package-manager reference" {
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local changelog="$TEST_TEMP_DIR/result.changelog.json"
+    local old_package='{"name":"a","versionInfo":"1","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"cpe23Type","referenceLocator":"cpe:2.3:a:vendor:a:1"},{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:npm/a@1"}]}'
+    local new_package='{"name":"a","versionInfo":"2","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"cpe23Type","referenceLocator":"cpe:2.3:a:vendor:a:2"},{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:npm/a@2"}]}'
+
+    write_packages_sbom "$old_sbom" "[$old_package]"
+    write_packages_sbom "$new_sbom" "[$new_package]"
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$changelog"
+    [ "$status" -eq 0 ] || return 1
+    "$SYSTEM_JQ" -e '.changes == [{type: "updated", name: "a", pkg_type: "npm", from: "1", to: "2"}]' "$changelog" >/dev/null
+}
+
+@test "compare_sboms reports purl-less version changes as removed plus added" {
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local changelog="$TEST_TEMP_DIR/result.changelog.json"
+
+    write_packages_sbom "$old_sbom" '[{"name":"a","versionInfo":"1"}]'
+    write_packages_sbom "$new_sbom" '[{"name":"a","versionInfo":"2"}]'
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$changelog"
+    [ "$status" -eq 0 ] || return 1
+    "$SYSTEM_JQ" -e '.summary == {added: 1, removed: 1, updated: 0} and
+        ([.changes[].type] | sort) == ["added", "removed"]' "$changelog" >/dev/null
+}
+
+@test "compare_sboms returns 3 only for malformed old SBOMs" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    write_sbom "$new_sbom"
+
+    printf 'not-json\n' > "$old_sbom"
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$TEST_TEMP_DIR/result.json"
+    [ "$status" -eq 3 ] || return 1
+
+    "$SYSTEM_JQ" -n '{packages: {not: "an array"}}' > "$old_sbom"
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$TEST_TEMP_DIR/result.json"
+    [ "$status" -eq 3 ]
+}
+
+@test "compare_sboms treats old-SBOM validation execution failures as operational failures" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    local jq_status
+    write_sbom "$new_sbom"
+    write_sbom "$old_sbom"
+    write_validation_status_jq_stub
+
+    for jq_status in 2 127; do
+        run env JQ_STUB_STATUS="$jq_status" bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ \
+            "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$TEST_TEMP_DIR/result-$jq_status.json"
+        [ "$status" -eq 1 ] || return 1
+    done
+}
+
+@test "compare_sboms reports an unwritable output path as an operational failure" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    write_sbom "$new_sbom"
+    write_sbom "$old_sbom"
+
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" /dev/full' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom"
+    [ "$status" -eq 1 ]
 }
 
 @test "extract_sbom_summary returns failure to if and || for invalid JSON" {
