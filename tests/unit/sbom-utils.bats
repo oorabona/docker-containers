@@ -365,6 +365,82 @@ JSON
     [ "$status" -eq 3 ]
 }
 
+@test "compare_sboms returns 3 for an empty old SBOM" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    write_sbom "$new_sbom"
+    : > "$old_sbom"
+
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$TEST_TEMP_DIR/result.json"
+
+    [ "$status" -eq 3 ]
+}
+
+@test "compare_sboms returns 3 for a whitespace-only old SBOM" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    write_sbom "$new_sbom"
+    printf ' \n\t\n' > "$old_sbom"
+
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$TEST_TEMP_DIR/result.json"
+
+    [ "$status" -eq 3 ]
+}
+
+@test "compare_sboms returns 3 for an old SBOM with two documents" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    write_sbom "$new_sbom"
+    printf '{"packages":[]}\n{"packages":[]}\n' > "$old_sbom"
+
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$TEST_TEMP_DIR/result.json"
+
+    [ "$status" -eq 3 ]
+}
+
+@test "compare_sboms returns 1 for a new SBOM with two documents" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    write_sbom "$old_sbom"
+    printf '{"packages":[]}\n{"packages":[]}\n' > "$new_sbom"
+
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$TEST_TEMP_DIR/result.json"
+
+    [ "$status" -eq 1 ]
+}
+
+@test "compare_sboms rejects an output path equal to the old SBOM without changing it" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    local before_checksum after_checksum
+    write_sbom "$new_sbom"
+    write_sbom "$old_sbom"
+    before_checksum=$(sha256sum -- "$old_sbom")
+
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$3"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom"
+    [ "$status" -eq 2 ] || return 1
+
+    after_checksum=$(sha256sum -- "$old_sbom")
+    [ "$after_checksum" = "$before_checksum" ]
+}
+
+@test "compare_sboms rejects an output symlink to the new SBOM without changing it" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
+    local output_file="$TEST_TEMP_DIR/output.json"
+    local before_checksum after_checksum
+    write_sbom "$new_sbom"
+    write_sbom "$old_sbom"
+    ln -s "$new_sbom" "$output_file"
+    before_checksum=$(sha256sum -- "$new_sbom")
+
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$old_sbom" "$output_file"
+    [ "$status" -eq 2 ] || return 1
+
+    after_checksum=$(sha256sum -- "$new_sbom")
+    [ "$after_checksum" = "$before_checksum" ]
+}
+
 @test "compare_sboms treats old-SBOM validation execution failures as operational failures" {
     local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
     local old_sbom="$TEST_TEMP_DIR/old.sbom.json"

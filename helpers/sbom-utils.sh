@@ -292,7 +292,8 @@ extract_sbom_summary() (
 # Usage: compare_sboms <new_sbom> <old_sbom> <output_file>
 # Output: JSON with added/removed/updated arrays + summary counts
 # Returns: 0 on success (including a missing old SBOM), 1 on operational or
-#          new-SBOM failures, 2 for invalid arguments, 3 for a malformed old SBOM.
+#          new-SBOM failures, 2 for invalid arguments or output aliases of an
+#          input SBOM, 3 for a malformed old SBOM.
 compare_sboms() (
     set -uo pipefail
     if [[ "$#" -ne 3 || -z "$1" || -z "$2" || -z "$3" ]]; then
@@ -307,13 +308,25 @@ compare_sboms() (
         log_error "New SBOM is not readable: $new_sbom"
         return 1
     fi
+
+    local new_validation_status=0
+    if jq -en '([limit(2; inputs)] | length == 1 and (.[0] | type == "object") and (.[0].packages | type == "array"))' -- "$new_sbom" >/dev/null 2>&1; then
+        :
+    else
+        new_validation_status=$?
+    fi
+    if [[ "$new_validation_status" -ne 0 ]]; then
+        log_error "New SBOM is malformed (must be one object with an array .packages): $new_sbom"
+        return 1
+    fi
+
     if [[ ! -f "$old_sbom" ]]; then
         log_warning "Old SBOM not found: $old_sbom — skipping comparison"
         return 0
     fi
 
     local old_validation_status=0
-    if jq -e '(.packages | type) == "array"' "$old_sbom" >/dev/null 2>&1; then
+    if jq -en '([limit(2; inputs)] | length == 1 and (.[0] | type == "object") and (.[0].packages | type == "array"))' -- "$old_sbom" >/dev/null 2>&1; then
         :
     else
         old_validation_status=$?
@@ -329,6 +342,11 @@ compare_sboms() (
             return 1
             ;;
     esac
+
+    if [[ "$output_file" -ef "$new_sbom" || "$output_file" -ef "$old_sbom" ]]; then
+        log_error "Changelog output aliases an input SBOM: $output_file"
+        return 2
+    fi
 
     if [[ -d "$output_file" ]]; then
         log_error "Changelog output path is a directory: $output_file"
