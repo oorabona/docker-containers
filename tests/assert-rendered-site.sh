@@ -22,7 +22,7 @@ case $# in
   *)
     echo "usage: $0 [--with-containers] <rendered-site-directory>" >&2
     echo "default: checks verify-page panels, supported top-level FAQPage JSON-LD roots, the Trivy anchor, and raw Liquid in index.html and verify-images/index.html; nested and context-aliased JSON-LD nodes are outside inspection. Extracted text excludes comments and script, style, template, and noscript contents, collapses whitespace, and concatenates document-order text nodes without element separators. It models neither CSS nor runtime JavaScript, so elements hidden by a stylesheet or by script are read." >&2
-    echo "--with-containers: additionally checks postgres and sslh container-page variants-table and raw-Liquid claims" >&2
+    echo "--with-containers: additionally checks the confirmed sslh dashboard pull command, postgres and sslh container-page variants-table and raw-Liquid claims" >&2
     exit 2
     ;;
 esac
@@ -353,11 +353,12 @@ if [[ ${WITH_CONTAINERS} == true ]]; then
   # docs/site/_data/containers.yml is generated and gitignored, so the required
   # check's dataless build renders no cards. Keep this positive control with the
   # data-backed assertions rather than letting it fail on every pull request.
-  postgres_pull_command=$(python3 "${EXTRACTOR}" attribute value --id pull-postgres "${DASHBOARD_PAGE}") \
-    || fail "could not read the value of #pull-postgres in ${DASHBOARD_PAGE}"
-  expected_postgres_pull_command_pattern='^docker pull ghcr\.io/oorabona/postgres:[^[:space:]]+$'
-  [[ ${postgres_pull_command} =~ ${expected_postgres_pull_command_pattern} ]] \
-    || fail "${DASHBOARD_PAGE} #pull-postgres must name ghcr.io/oorabona/postgres with a non-empty tag; found \"${postgres_pull_command}\""
+  # The control is sslh because postgres' publication is not confirmed until #1575.
+  sslh_pull_command=$(python3 "${EXTRACTOR}" attribute value --id pull-sslh "${DASHBOARD_PAGE}") \
+    || fail "could not read the value of #pull-sslh in ${DASHBOARD_PAGE}"
+  expected_sslh_pull_command_pattern='^docker pull ghcr\.io/oorabona/sslh:[^[:space:]]+$'
+  [[ ${sslh_pull_command} =~ ${expected_sslh_pull_command_pattern} ]] \
+    || fail "${DASHBOARD_PAGE} #pull-sslh must name ghcr.io/oorabona/sslh with a non-empty tag; found \"${sslh_pull_command}\""
 
   postgres_page="${SITE_DIR}/container/postgres/index.html"
   sslh_page="${SITE_DIR}/container/sslh/index.html"
