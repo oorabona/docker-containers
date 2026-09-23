@@ -37,7 +37,7 @@ inputs:
     required: false
     default: 'linux/amd64'
   rebuild_mode:
-    description: 'Build mode: none=auto-detect, changed=targeted, all=ignore digest, force=no-cache'
+    description: 'Rebuild mode chosen by the calling workflow; all and force are named in the step notice. Container selection happens in detect-containers and --no-cache is controlled by docker_no_cache.'
     required: false
     default: 'none'
   docker_no_cache:
@@ -92,7 +92,7 @@ outputs:
     description: Whether this build is the default variant (used for latest tag routing)
     value: ${{ steps.check-build.outputs.is_default }}
   image_loaded:
-    description: Whether the image was actually loaded into the Docker daemon (false if skipped or dry-run)
+    description: "'true' only when this build step loaded the image into the local daemon; any other value means no image was loaded."
     value: ${{ steps.build.outputs.image_loaded }}
   scan_passed:
     description: Whether security scan passed (or was skipped)
@@ -288,10 +288,10 @@ runs:
           echo "::notice::Building variant: $variant (tag: $current_tag, flavor: $flavor)"
         fi
 
-        # Determine if build is needed
+        # Every selected build cell is built.
         rebuild_mode="$INPUT_REBUILD_MODE"
         if [ "$rebuild_mode" = "all" ] || [ "$rebuild_mode" = "force" ]; then
-          echo "::notice::Rebuild mode '$rebuild_mode' — skipping digest check"
+          echo "::notice::Rebuild mode '$rebuild_mode' — build needed"
           needs_build=true
         elif [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
           echo "::notice::Code changes detected - build needed"
@@ -429,7 +429,6 @@ runs:
       env:
         BUILD_PLATFORM: ${{ inputs.platform }}
         GH_TOKEN: ${{ inputs.github_token }}
-        REBUILD_MODE: ${{ inputs.rebuild_mode }}
         DOCKER_NO_CACHE: ${{ inputs.docker_no_cache }}
         CONTAINER: ${{ inputs.container }}
         CURRENT_VERSION: ${{ steps.check-build.outputs.current_version }}
@@ -457,18 +456,6 @@ runs:
           echo "::group::Building $container:$current_tag (variant: $variant, dockerfile: $dockerfile) for $BUILD_PLATFORM"
         else
           echo "::group::Building $container:$current_tag (dockerfile: $dockerfile) for $BUILD_PLATFORM"
-        fi
-
-        # Derive SKIP_EXISTING_BUILDS from rebuild_mode
-        # - pull_request always skips digest check (build to validate, never push)
-        # - rebuild=all or rebuild=force → never skip (force a fresh build)
-        # - otherwise → skip if image already exists with matching digest
-        if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-          export SKIP_EXISTING_BUILDS="false"
-        elif [[ "$REBUILD_MODE" == "all" || "$REBUILD_MODE" == "force" ]]; then
-          export SKIP_EXISTING_BUILDS="false"
-        else
-          export SKIP_EXISTING_BUILDS="true"
         fi
 
         # Use GHCR cached base images if available (configured in config.yaml)
@@ -618,15 +605,18 @@ runs:
 
         echo "::endgroup::"
 
-        # Check if image was actually loaded into the daemon
-        # (skipped builds via SKIP_EXISTING_BUILDS leave no local image)
+        # Check whether the built image was loaded into the local daemon.
         ghcr_image="ghcr.io/${{ github.repository_owner }}/$container:$current_tag"
-        if docker image inspect "$ghcr_image" &>/dev/null; then
+        if [[ "${DRY_RUN:-false}" == "true" ]]; then
+          echo "image_loaded=false" >> $GITHUB_OUTPUT
+          echo "::notice::Dry run built no image for $container:$current_tag"
+        elif docker image inspect "$ghcr_image" &>/dev/null; then
           echo "image_loaded=true" >> $GITHUB_OUTPUT
           echo "::notice::Build successful for $container:$current_tag"
         else
           echo "image_loaded=false" >> $GITHUB_OUTPUT
-          echo "::notice::Build skipped for $container:$current_tag (image already published with matching digest)"
+          echo "::error::Build reported success but $ghcr_image is not in the local daemon"
+          exit 1
         fi
 
     - name: Record disk space after build (Windows)

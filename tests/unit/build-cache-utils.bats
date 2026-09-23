@@ -336,23 +336,6 @@ EOF
     [[ "$output" != *"cat:"* ]]
 }
 
-@test "should_skip_build returns 2 and unsets BUILD_DIGEST when digest computation fails" {
-    compute_build_digest() { return 17; }
-
-    local force_rebuild
-    for force_rebuild in false true; do
-        BUILD_DIGEST="stale"
-        if should_skip_build "example.invalid/image:tag" "Dockerfile" "" "$force_rebuild"; then
-            local status=0
-        else
-            local status=$?
-        fi
-
-        [ "$status" -eq 2 ]
-        [ -z "${BUILD_DIGEST+x}" ]
-    done
-}
-
 @test "digest serialization preserves established postgres and terraform digests" {
     local -a cases=(
         "postgres analytics 08a1a6eed3a1"
@@ -523,10 +506,8 @@ EOF
 # ---------------------------------------------------------------------------
 # Fix r10-1: LAST_REBUILD.md included in compute_build_digest
 #
-# Regression guard: modifying LAST_REBUILD.md must change the digest, so that
-# should_skip_build returns false after a drift PR modifies the file.
-# Without this fix, smart-skip would match the pre-PR digest and skip the
-# rebuild, leaving base digest unchanged → infinite drift-PR loop.
+# Regression guard: modifying LAST_REBUILD.md must change the descriptive
+# build-digest label recorded after a drift PR modifies the file.
 # ---------------------------------------------------------------------------
 
 @test "LAST_REBUILD.md absent — digest is stable (baseline)" {

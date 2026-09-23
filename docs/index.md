@@ -64,7 +64,7 @@ All containers include `version.sh` scripts that:
 ### Build Process
 - **Multi-platform**: amd64 + arm64 support
 - **Security scanning**: Trivy vulnerability detection
-- **Registry verification**: Prevents duplicate builds
+- **Change-based build detection**: Selects affected containers
 - **Retry logic**: Handles transient failures
 
 ### Branch Protection

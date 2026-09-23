@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build cache utilities for smart rebuild detection
-# Computes build digests and checks registry to avoid unnecessary rebuilds
+# Build digest utilities for descriptive image labels
+# Computes source-cache build digests for image labels and lineage; never checks a registry.
 
 set -euo pipefail
 
@@ -244,11 +244,10 @@ compute_build_digest() {
     fi
 
     # --- Input: LAST_REBUILD.md (if present) ---
-    # Including LAST_REBUILD.md in the digest ensures that any drift-PR merge
-    # (which appends a base-digest-drift section) invalidates the cached digest,
-    # forcing should_skip_build to return false and trigger a fresh rebuild.
-    # Without this, smart-skip would match the old digest and skip the build,
-    # leaving the base digest unchanged and causing an infinite drift-PR loop.
+    # Including LAST_REBUILD.md in the digest ensures a drift-PR merge
+    # (which appends a base-digest-drift section) changes the recorded label.
+    # The digest is never compared with registry state to skip, reuse, or reject an
+    # image; a failed or empty computation still refuses the build.
     #
     # compute_build_digest is always called with cwd = container directory
     # (the make script does pushd <container> before invoking build_container).
@@ -307,38 +306,6 @@ _has_build_args() {
     [[ "$count" -gt 0 ]]
 }
 
-# Check if an image exists in registry with matching digest
-# Usage: image_needs_rebuild <image> <expected_digest>
-# Returns: 0 if rebuild needed (image missing or digest mismatch), 1 if skip OK
-image_needs_rebuild() {
-    local image="$1"
-    local expected_digest="$2"
-
-    # Check if image exists in registry
-    if ! docker manifest inspect "$image" &>/dev/null; then
-        log_info "Image not in registry: $image"
-        return 0  # Needs rebuild
-    fi
-
-    # Image exists, check digest label
-    # Note: docker manifest inspect doesn't include labels, need to pull config
-    local stored_digest
-    stored_digest=$(docker buildx imagetools inspect "$image" --format '{{index .Config.Labels "'"$BUILD_DIGEST_LABEL"'"}}' 2>/dev/null || echo "")
-
-    if [[ -z "$stored_digest" ]]; then
-        log_info "No build digest label found on: $image"
-        return 0  # Needs rebuild (no digest to compare)
-    fi
-
-    if [[ "$stored_digest" != "$expected_digest" ]]; then
-        log_info "Digest mismatch for $image: stored=$stored_digest expected=$expected_digest"
-        return 0  # Needs rebuild
-    fi
-
-    log_success "Digest match for $image - skipping rebuild"
-    return 1  # Skip rebuild
-}
-
 # Get build args for adding digest label
 # Usage: get_digest_label_args <digest>
 get_digest_label_args() {
@@ -346,39 +313,10 @@ get_digest_label_args() {
     echo "--label $BUILD_DIGEST_LABEL=$digest"
 }
 
-# Full check: should we skip this build?
-# Usage: should_skip_build <image> <dockerfile> <flavor> [force_rebuild]
-# Returns: 0 if should skip, 1 if should build, 2 if the digest cannot be computed
-# Sets BUILD_DIGEST variable for use in build on statuses 0 and 1; unsets it on 2
-should_skip_build() {
-    local image="$1"
-    local dockerfile="$2"
-    local flavor="${3:-}"
-    local force_rebuild="${4:-false}"
-
-    BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$flavor") || { unset BUILD_DIGEST; return 2; }
-    export BUILD_DIGEST
-
-    # Always build if force_rebuild is set, after establishing provenance.
-    if [[ "$force_rebuild" == "true" ]]; then
-        log_info "Force rebuild requested"
-        return 1  # Should build
-    fi
-
-    # Check if rebuild needed
-    if image_needs_rebuild "$image" "$BUILD_DIGEST"; then
-        return 1  # Should build
-    fi
-
-    return 0  # Should skip
-}
-
 # Export functions
 export -f compute_build_digest
 export -f _digest_log
 export -f _has_build_args_include
 export -f _has_build_args
-export -f image_needs_rebuild
 export -f get_digest_label_args
-export -f should_skip_build
 export BUILD_DIGEST_LABEL

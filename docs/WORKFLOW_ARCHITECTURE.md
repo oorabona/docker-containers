@@ -104,7 +104,7 @@ This document describes the complete CI/CD architecture: version detection, mult
 
 **Key features:**
 - Native multi-platform builds (separate amd64/arm64 runners, no QEMU)
-- Smart rebuild detection via build digest labels
+- Descriptive build digest labels and lineage tracking
 - Registry cache (`--cache-from/--cache-to type=registry`)
 - Build lineage tracking (base image digest, build args, timestamps)
 - `skip_extensions` input: skip extension compilation, reuse existing GHCR extension images
@@ -197,7 +197,7 @@ All located in `.github/actions/`:
 | `logging.sh` | Shared log/info/warn/error/debug output functions |
 | `variant-utils.sh` | Read variants.yaml, determine container variants/flavors |
 | `build-args-utils.sh` | Extract build arguments from config.yaml |
-| `build-cache-utils.sh` | Compute build digests, check registry for skip-rebuild |
+| `build-cache-utils.sh` | Compute build digests and their OCI label arguments |
 | `extension-utils.sh` | PostgreSQL extension image build helpers |
 | `registry-utils.sh` | Docker Hub and GHCR API query utilities |
 | `sbom-utils.sh` | SBOM generation (syft), package diffing, changelog, build history |
@@ -259,7 +259,7 @@ Every build produces a `.build-lineage/<container>.json` artifact:
 
 This enables:
 - Reproducible builds (exact base image pinning)
-- Smart rebuild detection (skip if digest matches)
+- Build digest labels and lineage fields
 - Dashboard version mismatch detection
 - Audit trail for container provenance
 

@@ -72,7 +72,7 @@ Run `./make list` for the live list. See each `<container>/README.md` for usage.
 ### Version Discovery
 - Each container has `version.sh` for upstream version detection
 - Scripts must output JSON for automation
-- See ADR-002 for smart rebuild detection
+- Build digest labels are descriptive provenance; ADR-002 records the superseded skip decision
 
 ### Multi-Distro Containers
 - `web-shell` and `github-runner` use the template+generator pattern (see ADR-006)
