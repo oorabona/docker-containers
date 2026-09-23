@@ -418,7 +418,7 @@ EOF
     grep -q "linux/amd64" "$TEST_TEMP_DIR/docker_calls.log"
 }
 
-@test "build_container refuses an uncomputable digest without invoking docker in either skip mode" {
+@test "build_container refuses an uncomputable digest without invoking docker" {
     export MULTIPLATFORM_SUPPORTED="false"
 
     mkdir -p "$TEST_TEMP_DIR/bin" "$TEST_TEMP_DIR/flavors"
@@ -449,19 +449,41 @@ EOF
     : > "$TEST_TEMP_DIR/docker_calls.log"
 
     cd "$TEST_TEMP_DIR"
-    export SKIP_EXISTING_BUILDS="true"
     run build_container "testcontainer" "1.0.0" "1.0.0" "vector"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"Build digest computation failed for testcontainer:1.0.0; refusing to build or publish"* ]]
-
-    export SKIP_EXISTING_BUILDS="false"
-    run build_container "testcontainer" "1.0.0" "1.0.0" "vector"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"Build digest computation failed"* ]]
+    [[ "$output" == *"Build digest computation failed (status 17) for testcontainer:1.0.0; refusing to build or publish"* ]]
 
     [ ! -s "$TEST_TEMP_DIR/docker_calls.log" ]
     ! grep -qE -- "--label ${BUILD_DIGEST_LABEL}=( |$)" "$TEST_TEMP_DIR/docker_calls.log"
+}
+
+@test "build_container never inspects a registry before building" {
+    export MULTIPLATFORM_SUPPORTED="false"
+    export SKIP_EXISTING_BUILDS="true"
+
+    docker() {
+        printf 'ARGS: %s\n' "$*" >> "$TEST_TEMP_DIR/docker_calls.log"
+    }
+    export -f docker
+    export DOCKER="docker"
+
+    create_mock_container "testcontainer" "1.0.0"
+    source_build_script
+    _resolve_base_image() { :; }
+    export -f _resolve_base_image
+
+    cd "$TEST_TEMP_DIR"
+    run build_container "testcontainer" "1.0.0" "1.0.0" "" "testcontainer/Dockerfile"
+
+    [ "$status" -eq 0 ]
+    [ -s "$TEST_TEMP_DIR/docker_calls.log" ]
+    unset DOCKER
     unset SKIP_EXISTING_BUILDS
+    if grep -q 'ARGS: manifest inspect' "$TEST_TEMP_DIR/docker_calls.log" || \
+        grep -q 'ARGS: buildx imagetools inspect' "$TEST_TEMP_DIR/docker_calls.log"; then
+        echo "registry inspection was called before the build" >&2
+        return 1
+    fi
 }
 
 @test "build_container removes a generated Dockerfile when digest computation fails or is empty" {

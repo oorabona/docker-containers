@@ -104,7 +104,7 @@ This document describes the complete CI/CD architecture: version detection, mult
 
 **Key features:**
 - Native multi-platform builds (separate amd64/arm64 runners, no QEMU)
-- Smart rebuild detection via build digest labels
+- Descriptive build digest labels and lineage tracking
 - Registry cache (`--cache-from/--cache-to type=registry`)
 - Build lineage tracking (base image digest, build args, timestamps)
 - `skip_extensions` input: skip extension compilation, reuse existing GHCR extension images
@@ -259,7 +259,7 @@ Every build produces a `.build-lineage/<container>.json` artifact:
 
 This enables:
 - Reproducible builds (exact base image pinning)
-- Smart rebuild detection (skip if digest matches)
+- Build digest labels and lineage fields
 - Dashboard version mismatch detection
 - Audit trail for container provenance
 

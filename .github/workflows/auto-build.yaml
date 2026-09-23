@@ -19,7 +19,7 @@ on:
         default: false
         type: boolean
       rebuild:
-        description: 'Build mode: none=auto-detect, changed=targeted, all=ignore digest, force=no-cache, sync=copy GHCR→DockerHub'
+        description: 'Build mode: none=auto-detect, changed=targeted, all=build all containers, force=no-cache, sync=copy GHCR→DockerHub'
         required: false
         type: string
         default: 'none'
@@ -145,7 +145,7 @@ on:
         default: false
         type: boolean
       rebuild:
-        description: 'Build mode: none=auto-detect, changed=targeted, all=ignore digest, force=no-cache, sync=copy GHCR→DockerHub'
+        description: 'Build mode: none=auto-detect, changed=targeted, all=build all containers, force=no-cache, sync=copy GHCR→DockerHub'
         required: false
         type: choice
         options: ['none', 'changed', 'all', 'force', 'sync']
@@ -223,8 +223,6 @@ env:
   DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
   # Resolve effective rebuild mode (backward compat: force_rebuild=true → rebuild=all)
   REBUILD_MODE: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
-  # Skip digest check unless rebuild=all or rebuild=force or force_rebuild=true
-  SKIP_EXISTING_BUILDS: ${{ (inputs.rebuild == 'all' || inputs.rebuild == 'force' || inputs.force_rebuild == true) && 'false' || 'true' }}
   # Pass --no-cache to docker build when rebuild=force
   DOCKER_NO_CACHE: ${{ inputs.rebuild == 'force' && 'true' || 'false' }}
   SCOPE_VERSIONS: ${{ github.event.inputs.scope_versions || inputs.scope_versions || '' }}

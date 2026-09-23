@@ -15,7 +15,7 @@ inputs:
     required: false
     default: 'false'
   rebuild:
-    description: 'Build mode: none=auto-detect, changed=targeted, all=ignore digest, force=no-cache'
+    description: 'Build mode: none=auto-detect, changed=targeted, all=build all containers, force=no-cache'
     required: false
     default: 'none'
   scope:

@@ -460,33 +460,6 @@ build_container() {
     # Reset BUILD_DIGEST so each variant computes its own
     unset BUILD_DIGEST
 
-    # Smart rebuild detection: skip if image exists with matching digest
-    # SKIP_EXISTING_BUILDS is set by the build-container action based on rebuild_mode
-    if [[ "${SKIP_EXISTING_BUILDS:-false}" == "true" ]]; then
-        if should_skip_build "$ghcr_image:$tag" "$dockerfile" "$flavor" "false"; then
-            local should_skip_status=0
-        else
-            local should_skip_status=$?
-        fi
-        case "$should_skip_status" in
-            0)
-                log_success "⏭️  Skipping $container:$tag - image exists with matching digest"
-                return 0
-                ;;
-            1)
-                log_info "Build digest: $BUILD_DIGEST"
-                ;;
-            2)
-                log_error "Build digest computation failed for $container:$tag; refusing to build or publish"
-                return 1
-                ;;
-            *)
-                log_error "Unexpected build skip status $should_skip_status for $container:$tag; refusing to build or publish"
-                return 1
-                ;;
-        esac
-    fi
-
     _resolve_platforms
     _configure_cache "ghcr.io/$github_username/$container:buildcache"
     _prepare_build_args "$version" "$build_flavor" || {
