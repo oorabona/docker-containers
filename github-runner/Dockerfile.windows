@@ -3,8 +3,7 @@
 #
 # No Chocolatey — all tools installed via direct download for reliability.
 #
-# Build:
-#   docker build --build-arg VERSION=2.332.0 --target base -f Dockerfile.windows .
+# This file is built on a Windows host by `./make build github-runner <version>`, which passes PWSH_VERSION, GIT_VERSION, and JQ_VERSION from config.yaml.
 
 # Tool versions (pinned for reproducibility)
 ARG PWSH_VERSION

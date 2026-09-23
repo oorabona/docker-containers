@@ -31,19 +31,28 @@ teardown() {
 
 @test "GitHub runner Windows variants route every base and dev cell to its Dockerfile" {
     local version variant expected actual
-    local cells_checked=0
+    local versions base_count dev_count
+
+    versions=$(list_versions "$RUNNER_DIR")
+    [[ -n "$versions" ]] || {
+        echo "No GitHub runner versions found"
+        return 1
+    }
 
     while IFS= read -r version; do
         [[ -z "$version" ]] && continue
+        base_count=0
+        dev_count=0
+
         while IFS= read -r variant; do
             case "$variant" in
                 windows-ltsc2022-base)
-                    expected="Dockerfile.windows"
+                    base_count=$((base_count + 1))
                     ;;
                 windows-ltsc2022-dev)
-                    expected="Dockerfile.windows-dev"
+                    dev_count=$((dev_count + 1))
                     ;;
-                windows-ltsc2022-*)
+                windows-*)
                     echo "Unexpected Windows variant in $version: $variant"
                     return 1
                     ;;
@@ -51,18 +60,61 @@ teardown() {
                     continue
                     ;;
             esac
-
-            actual=$(variant_property "$RUNNER_DIR" "$variant" "dockerfile" "$version")
-            [[ "$actual" == "$expected" ]] || {
-                echo "Expected $version/$variant to use $expected, got $actual"
-                return 1
-            }
-            cells_checked=$((cells_checked + 1))
         done < <(list_variants "$RUNNER_DIR" "$version")
-    done < <(list_versions "$RUNNER_DIR")
 
-    [[ "$cells_checked" -gt 0 ]] || {
-        echo "No Windows variant cells found"
+        [[ "$base_count" -eq 1 ]] || {
+            echo "Expected exactly one windows-ltsc2022-base variant in $version, found $base_count"
+            return 1
+        }
+        [[ "$dev_count" -eq 1 ]] || {
+            echo "Expected exactly one windows-ltsc2022-dev variant in $version, found $dev_count"
+            return 1
+        }
+
+        expected="Dockerfile.windows"
+        actual=$(variant_property "$RUNNER_DIR" "windows-ltsc2022-base" "dockerfile" "$version")
+        [[ "$actual" == "$expected" ]] || {
+            echo "Expected $version/windows-ltsc2022-base to use $expected, got $actual"
+            return 1
+        }
+
+        expected="Dockerfile.windows-dev"
+        actual=$(variant_property "$RUNNER_DIR" "windows-ltsc2022-dev" "dockerfile" "$version")
+        [[ "$actual" == "$expected" ]] || {
+            echo "Expected $version/windows-ltsc2022-dev to use $expected, got $actual"
+            return 1
+        }
+    done <<< "$versions"
+}
+
+# The legacy Windows builder runs every stage before --target, so a second stage
+# in the dev file reintroduces the unused-stage build that exhausted runner disk (#1869).
+@test "GitHub runner Windows Dockerfiles each contain only their expected FROM instruction" {
+    local dockerfile expected from_count actual
+
+    dockerfile="$RUNNER_DIR/Dockerfile.windows"
+    expected="FROM mcr.microsoft.com/windows/servercore:ltsc2022 AS base"
+    from_count=$(grep -Ec '^FROM .*' "$dockerfile")
+    [[ "$from_count" -eq 1 ]] || {
+        echo "Expected exactly one FROM instruction in $dockerfile, found $from_count"
+        return 1
+    }
+    actual=$(grep -Ex '^FROM .*' "$dockerfile")
+    [[ "$actual" == "$expected" ]] || {
+        echo "Expected $dockerfile to contain '$expected', got '$actual'"
+        return 1
+    }
+
+    dockerfile="$RUNNER_DIR/Dockerfile.windows-dev"
+    expected="FROM mcr.microsoft.com/windows/server:ltsc2022 AS dev"
+    from_count=$(grep -Ec '^FROM .*' "$dockerfile")
+    [[ "$from_count" -eq 1 ]] || {
+        echo "Expected exactly one FROM instruction in $dockerfile, found $from_count"
+        return 1
+    }
+    actual=$(grep -Ex '^FROM .*' "$dockerfile")
+    [[ "$actual" == "$expected" ]] || {
+        echo "Expected $dockerfile to contain '$expected', got '$actual'"
         return 1
     }
 }
