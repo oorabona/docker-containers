@@ -17,9 +17,9 @@ Linux runners share a single `Dockerfile.linux` template with `@@MARKER@@` place
 
 Supported distros: `ubuntu-2404`, `debian-trixie`, `windows-ltsc2022`. Flavors: `base` (runner + git/curl/jq) and `dev` (adds build toolchain + Tauri/WebKit deps). Language runtimes (Rust, Node, Python) are **not** pre-installed — they are pulled by `setup-*` actions and cached in `RUNNER_TOOL_CACHE`.
 
-### Windows uses a standalone Dockerfile
+### Windows uses standalone Dockerfiles
 
-Single distro (`ltsc2022`) doesn't justify template complexity. `Dockerfile.windows` uses a `FLAVOR` build-arg for the base/dev split. Built on `windows-latest` GitHub-hosted runners with the same `build-container` composite action as Linux — no separate Windows action.
+Single distro (`ltsc2022`) doesn't justify template complexity. `Dockerfile.windows` builds the ServerCore base image and `Dockerfile.windows-dev` builds the full Windows Server development image. Both are built on `windows-latest` GitHub-hosted runners with the same `build-container` composite action as Linux — no separate Windows action.
 
 ### Semi-ephemeral model
 

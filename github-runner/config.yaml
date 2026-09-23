@@ -33,7 +33,7 @@ dependency_sources:
     monitor: false
     lifecycle: untracked
     reason: "Base image fallback, not a version to track"
-# Used by build system for Linux variants; Windows uses Dockerfile.windows directly
+# Used by the build system for Linux variants; Windows variants use their dedicated Dockerfiles directly.
 generate_dockerfile: true
 dockerfile_generator: generate-dockerfile.sh
 # Base image cache for Docker Hub rate limiting
@@ -41,8 +41,8 @@ dockerfile_generator: generate-dockerfile.sh
 base_image_cache:
   - source: library/ubuntu
     tags: ["24.04"]
-# NOTE: windows/server cannot be cached via skopeo (MCR auth required)
-# Dev stage pulls directly from MCR during build
+# NOTE: Windows images cannot be cached via skopeo (MCR auth required)
+# Windows variants pull their MCR base images directly during build
 
 # Distro definitions for generate-dockerfile.sh
 # Each distro declares its base image, package manager, user setup, and package groups
@@ -96,4 +96,4 @@ flavors:
         - libwebkit2gtk-4.1-dev
         - libayatana-appindicator3-dev
         - librsvg2-dev
-    windows_packages: [] # VS Build Tools workload handled in Dockerfile.windows
+    windows_packages: [] # VS Build Tools workload handled in Dockerfile.windows-dev
