@@ -573,9 +573,9 @@ runs:
             # own trigger-path exclusions. Without this, a per-container README
             # bundled into a wider diff (e.g. via the coverage-checkpoint
             # baseline window) wrongly queues that container for a rebuild.
-            # LAST_REBUILD.md is the one exception: it's an explicit drift-rebuild
-            # selection marker the detector keeps as a trigger; its content is
-            # also hashed into the recorded build-digest label.
+            # LAST_REBUILD.md is a drift-rebuild selection marker the detector keeps
+            # for every build engine. Matrix builds also hash its content into their
+            # descriptive build-digest label; bake builds only use it for selection.
             case "$file" in
               */LAST_REBUILD.md) ;;
               *.md|*/README*|*/LICENSE*|*/CHANGELOG*|*/docs/*|*/tests/*)

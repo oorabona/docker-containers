@@ -37,7 +37,7 @@ inputs:
     required: false
     default: 'linux/amd64'
   rebuild_mode:
-    description: 'Rebuild mode chosen by the calling workflow, echoed in the step notice. Container selection happens in detect-containers and --no-cache is controlled by docker_no_cache.'
+    description: 'Rebuild mode chosen by the calling workflow; all and force are named in the step notice. Container selection happens in detect-containers and --no-cache is controlled by docker_no_cache.'
     required: false
     default: 'none'
   docker_no_cache:
