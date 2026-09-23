@@ -56,7 +56,7 @@ versions:
         suffix: "-windows-ltsc2022-dev"
         flavor: windows-ltsc2022
         build_flavor: dev
-        dockerfile: Dockerfile.windows
+        dockerfile: Dockerfile.windows-dev
         description: "Windows Server 2022 runner — dev flavor (VS Build Tools)"
         os: windows
   - tag: 2.336.0
@@ -97,7 +97,7 @@ versions:
         suffix: "-windows-ltsc2022-dev"
         flavor: windows-ltsc2022
         build_flavor: dev
-        dockerfile: Dockerfile.windows
+        dockerfile: Dockerfile.windows-dev
         description: "Windows Server 2022 runner — dev flavor (VS Build Tools)"
         os: windows
   - tag: 2.335.1
@@ -138,6 +138,6 @@ versions:
         suffix: "-windows-ltsc2022-dev"
         flavor: windows-ltsc2022
         build_flavor: dev
-        dockerfile: Dockerfile.windows
+        dockerfile: Dockerfile.windows-dev
         description: "Windows Server 2022 runner — dev flavor (VS Build Tools)"
         os: windows

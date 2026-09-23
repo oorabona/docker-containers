@@ -1,0 +1,137 @@
+# GitHub Actions self-hosted runner — Windows ltsc2022 dev
+# Full Windows Server image with VS Build Tools and SDK (rc.exe needs USER32.dll).
+#
+# No Chocolatey — all tools installed via direct download for reliability.
+#
+# This file is built on a Windows host by `./make build github-runner <version>`, which passes PWSH_VERSION, GIT_VERSION, and JQ_VERSION from config.yaml.
+
+# Tool versions (pinned for reproducibility)
+ARG PWSH_VERSION
+ARG GIT_VERSION
+ARG JQ_VERSION
+
+# =============================================================================
+# Stage: dev — Full Windows Server (rc.exe needs USER32.dll from full OS)
+# =============================================================================
+FROM mcr.microsoft.com/windows/server:ltsc2022 AS dev
+
+ARG VERSION
+ARG PWSH_VERSION
+ARG GIT_VERSION
+ARG JQ_VERSION
+
+SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+# Validate required build args
+RUN if (-not $env:PWSH_VERSION) { throw 'PWSH_VERSION is required' }; \
+    if (-not $env:GIT_VERSION) { throw 'GIT_VERSION is required' }; \
+    if (-not $env:JQ_VERSION) { throw 'JQ_VERSION is required' }
+
+# Install PowerShell 7 via MSI
+RUN Invoke-WebRequest -Uri ('https://github.com/PowerShell/PowerShell/releases/download/v' + $env:PWSH_VERSION + '/PowerShell-' + $env:PWSH_VERSION + '-win-x64.msi') -OutFile C:\pwsh.msi; \
+    $installer = Start-Process -Wait -PassThru -FilePath msiexec.exe -ArgumentList '/i', 'C:\pwsh.msi', '/quiet', '/norestart'; \
+    # 3010 is a successful install awaiting reboot; /norestart prevents reboot-initiated 1641. \
+    if ($installer.ExitCode -notin 0, 3010) { throw ('PowerShell MSI failed with exit code ' + $installer.ExitCode) }; \
+    Remove-Item C:\pwsh.msi -Force
+
+# Install Git for Windows
+RUN $p = $env:GIT_VERSION -split '\.windows\.'; \
+    $num = $p[0]; \
+    $rev = if ($p.Length -gt 1) { $p[1] } else { '1' }; \
+    $suf = if ($rev -eq '1') { '' } else { '.' + $rev }; \
+    Invoke-WebRequest -Uri ('https://github.com/git-for-windows/git/releases/download/v' + $env:GIT_VERSION + '/Git-' + $num + $suf + '-64-bit.exe') -OutFile C:\git-installer.exe; \
+    $installer = Start-Process -Wait -PassThru -FilePath C:\git-installer.exe -ArgumentList '/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS', '/COMPONENTS=ext,ext\shellhere,ext\guihere,gitlfs,assoc,assoc_sh'; \
+    # Inno Setup documents 0 as the only completed-install exit code. \
+    if ($installer.ExitCode -ne 0) { throw ('Git for Windows installer failed with exit code ' + $installer.ExitCode) }; \
+    Remove-Item C:\git-installer.exe -Force
+
+# Install jq
+RUN Invoke-WebRequest -Uri ('https://github.com/jqlang/jq/releases/download/jq-' + $env:JQ_VERSION + '/jq-windows-amd64.exe') -OutFile 'C:\Windows\System32\jq.exe'
+
+SHELL ["pwsh", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+# Add tools to PATH + enable long paths
+RUN $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
+    [System.Environment]::SetEnvironmentVariable('Path', ($machPath + ';C:\Program Files\Git\bin;C:\Program Files\Git\cmd'), 'Machine'); \
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1; \
+    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User'); \
+    git config --system core.longpaths true
+
+ENV RUNNER_DISABLE_AUTO_UPDATE=1
+
+# Create user
+RUN net user runneradmin /add /Y; \
+    net localgroup administrators runneradmin /add
+
+WORKDIR C:\\actions-runner
+
+# Runner agent
+COPY runner.zip runner.zip
+RUN Expand-Archive -Path runner.zip -DestinationPath . -Force; \
+    Remove-Item runner.zip
+
+COPY entrypoint.ps1 C:\\entrypoint.ps1
+
+# VS Build Tools 2022 + Windows 11 SDK — pinned fixed-version bootstrapper.
+#
+# `aka.ms/vs/17/release/vs_buildtools.exe` floats: it serves whatever 17.x is
+# current, so two builds of the same commit installed different tooling. Measured
+# on 2026-08-09, it redirected to the same product GUID as the pin below but a
+# different build.
+#
+# Microsoft's release-history page publishes a fixed-version bootstrapper per
+# release, and each installs that exact release rather than the latest. The hash
+# segment of the URL is the file's own SHA-256 — verified: the 4459960-byte
+# download hashes to the value already in its path — so the URL carries its
+# integrity check and the assertion below restates it where a reader will see it.
+#
+# Bumping this means taking the next bootstrapper URL from the release history
+# and updating both the URL and the assertion.
+# The digest is a literal rather than an ARG: a Dockerfile ARG reaches the shell
+# through parser substitution, not as $env:, so an ARG here would compare against
+# an empty string and fail every build.
+RUN $expected = 'e0b8ea16494b4a79c68da26773131562aefecc8d87f1923c24d579c7a72e0575'; \
+    Invoke-WebRequest -Uri 'https://download.visualstudio.microsoft.com/download/pr/f7f5ecbc-83ca-4cf0-bdb2-aaf70efb6d97/e0b8ea16494b4a79c68da26773131562aefecc8d87f1923c24d579c7a72e0575/vs_BuildTools.exe' -OutFile C:\vs_buildtools.exe; \
+    $actual = (Get-FileHash -Path C:\vs_buildtools.exe -Algorithm SHA256).Hash.ToLower(); \
+    if ($actual -ne $expected) { \
+      Write-Error ('vs_BuildTools.exe digest mismatch: got ' + $actual + ', expected ' + $expected); \
+      exit 1; \
+    }; \
+    $installer = Start-Process -Wait -PassThru -FilePath C:\vs_buildtools.exe -ArgumentList \
+      '--quiet', '--wait', '--norestart', \
+      '--add', 'Microsoft.VisualStudio.Workload.VCTools', \
+      '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', \
+      '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.26100'; \
+    # 3010 is a successful install awaiting reboot; --norestart leaves it pending. \
+    if ($installer.ExitCode -notin 0, 3010) { \
+      throw ('vs_BuildTools.exe failed with exit code ' + $installer.ExitCode); \
+    }; \
+    Remove-Item C:\vs_buildtools.exe -Force; \
+    Remove-Item -Recurse -Force 'C:\ProgramData\Package Cache' -ErrorAction SilentlyContinue
+
+# Add MSVC + SDK tools to PATH (rc.exe, cl.exe, link.exe)
+# (the VS installer Package Cache is purged in the install layer above)
+# No double quotes — pwsh -Command from Docker SHELL breaks on embedded double quotes
+RUN $vsBase = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'; \
+    $msvcVer = (Get-ChildItem $vsBase -Directory | Sort-Object Name -Descending | Select-Object -First 1).Name; \
+    $sdkBin = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'; \
+    $msvcBin = $vsBase + '\' + $msvcVer + '\bin\Hostx64\x64'; \
+    Write-Host ('MSVC: ' + $msvcBin); \
+    Write-Host ('SDK:  ' + $sdkBin); \
+    $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
+    [System.Environment]::SetEnvironmentVariable('Path', ($machPath + ';' + $msvcBin + ';' + $sdkBin), 'Machine'); \
+    # Two lines, both true of this image: the toolset directory that was found,
+    # and the bootstrapper digest that produced it. The Windows SDK is not here
+    # because it is pinned by the component id in the install arguments above —
+    # restating it would put an assertion where the rest of the file holds
+    # observations.
+    Set-Content -Path C:\build-versions.txt -Encoding ascii -Value @( ('msvc_toolset=' + $msvcVer), 'vs_buildtools=e0b8ea16494b4a79c68da26773131562aefecc8d87f1923c24d579c7a72e0575' )
+
+LABEL org.opencontainers.image.description="GitHub Actions self-hosted runner (Windows ltsc2022 — dev)"
+LABEL org.opencontainers.image.source="https://github.com/oorabona/docker-containers"
+LABEL com.github.runner.version="${VERSION}"
+LABEL com.github.runner.flavor="dev"
+LABEL com.github.runner.distro="windows-ltsc2022"
+
+USER runneradmin
+ENTRYPOINT ["pwsh", "-File", "C:\\entrypoint.ps1"]

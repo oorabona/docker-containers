@@ -49,11 +49,11 @@ generate_one() {
 
     validate_distro "$CONFIG" "$distro" || exit 1
 
-    # Reject Windows — it has its own standalone Dockerfile
+    # Reject Windows — its base and dev variants have standalone Dockerfiles
     local pkg_manager
     pkg_manager=$(distro_property "$CONFIG" "$distro" "pkg_manager")
     if [[ "$pkg_manager" == "none" ]]; then
-        log_error "Distro $distro uses pkg_manager=none (Windows) — use Dockerfile.windows instead"
+        log_error "Distro $distro uses pkg_manager=none (Windows) — use Dockerfile.windows or Dockerfile.windows-dev instead"
         exit 1
     fi
 
