@@ -384,8 +384,9 @@ main() {
                     failed_list+=("$specific_container")
                     ;;
                 2)
-                    ((skipped_containers++))
-                    skipped_list+=("$specific_container")
+                    log_error "Explicitly requested container is missing $specific_container/version.sh"
+                    ((failed_containers++))
+                    failed_list+=("$specific_container")
                     ;;
             esac
         fi
