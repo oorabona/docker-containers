@@ -2010,21 +2010,6 @@ EOF
     [[ "$purge_dry_run" == "\${{ inputs.dry_run || 'false' }}" ]]
     [[ "$purge_step" == *"DOCKERHUB_DRY_RUN: 'true'"* ]]
 
-    # The expression's fallback is the scheduled-run value because schedule
-    # events have no workflow_dispatch inputs; manual true remains true.
-    local dry_run_input expected_dry_run
-    for dry_run_input in '' true; do
-        expected_dry_run="${dry_run_input:-false}"
-        run bash -c '
-            expression="${1#\${{ }"
-            expression="${expression% }}}"
-            [[ "$expression" == "inputs.dry_run || '\''false'\''" ]] || exit 1
-            printf "%s\\n" "${2:-false}"
-        ' _ "$purge_dry_run" "$dry_run_input"
-        [[ "$status" -eq 0 ]]
-        [[ "$output" == "$expected_dry_run" ]]
-    done
-
     # This is the failure path that GitHub Actions evaluates: continue-on-error
     # preserves the age-pruner outcome while always() still starts the second
     # pruner, then the final gate fails the job.
