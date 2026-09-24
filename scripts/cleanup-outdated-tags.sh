@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Purge container images whose tags are not in the current valid build set.
 # Required env vars: GH_TOKEN, OWNER
-# Optional env vars: DRY_RUN (default: false; exactly true or false).
+# Optional env vars: DRY_RUN (default: false; exactly true or false);
+# DOCKERHUB_DRY_RUN (default: plan-only; deletes only when exactly false). The
+# workflow sets this to true until #1574 gives tag planning one owner.
 #
 # Usage: cleanup-outdated-tags.sh [container]
 # With an argument, process exactly one package. Multiple package names need a
@@ -89,6 +91,7 @@ _cleanup_outdated_tags_delete() {
     dockerhub-tag)
       local dh_jwt="$2" container="$3" tag="$4"
       local dh_namespace_path dh_container_path dh_tag_path dh_http_status
+      [[ "${DOCKERHUB_DRY_RUN-}" == false ]] || { echo "cleanup deletion refused: DOCKERHUB_DRY_RUN must be false" >&2; return 64; }
       if ! dh_namespace_path=$(dockerhub_path_segment "$DOCKERHUB_USERNAME") \
         || ! dh_container_path=$(dockerhub_path_segment "$container") \
         || ! dh_tag_path=$(dockerhub_path_segment "$tag"); then
@@ -676,7 +679,7 @@ _purge_dockerhub() {
     dh_obsolete_tags+=("$tag")
   done
   for tag in "${dh_obsolete_tags[@]}"; do
-    if [[ "$DRY_RUN" == true ]]; then
+    if [[ "$DRY_RUN" == true || "${DOCKERHUB_DRY_RUN-}" != false ]]; then
       echo "    [DRY RUN] Would delete Docker Hub tag: $tag" >&2
     elif _cleanup_outdated_tags_delete dockerhub-tag "$dh_jwt" "$container" "$tag"; then
       echo "    ✓ Deleted Docker Hub tag: $tag" >&2
