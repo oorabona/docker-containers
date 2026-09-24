@@ -1798,24 +1798,26 @@ GHEOF
     [[ "$output" == *"🚨 [postgres]"* ]]
 }
 
-@test "multi-document FAILED_ALLOWLIST uses job evidence and rejects another container" {
+@test "multi-document FAILED_ALLOWLIST fails closed despite another container's failed job" {
     export COMMIT_SUBJECT="deps(php): bump to 8.3"
     export FAILED_ALLOWLIST=$'["other"]\n["also-other"]'
     export FAILED_JOBS_JSON='[{"name":"Build postgres:18.2","id":1}]'
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
     [ "$status" -eq 1 ]
-    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed (expected one JSON array) — skipping dep-attributed open"* ]]
+    [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
 }
 
-@test "multi-document FAILED_ALLOWLIST uses job evidence and attributes the detected container" {
+@test "multi-document FAILED_ALLOWLIST fails closed despite the detected container's failed job" {
     export COMMIT_SUBJECT="deps(php): bump to 8.3"
     export FAILED_ALLOWLIST=$'["other"]\n["also-other"]'
     export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed (expected one JSON array) — skipping dep-attributed open"* ]]
+    [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
 }
 
 @test "FAILED_JOBS_JSON with two arrays is not valid failure evidence" {
@@ -1866,67 +1868,70 @@ GHEOF
     [[ "$output" == *"- Build php:8.3"* ]]
 }
 
-@test "malformed FAILED_ALLOWLIST uses failing-job evidence and rejects another container" {
+@test "malformed FAILED_ALLOWLIST fails closed despite another container's failed job" {
     export COMMIT_SUBJECT="deps(php): bump to 8.3"
     export FAILED_ALLOWLIST='{bad'
     export FAILED_JOBS_JSON='[{"name":"Build postgres:18.2","id":1}]'
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
     [ "$status" -eq 1 ]
-    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed (expected one JSON array) — skipping dep-attributed open"* ]]
     [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
 }
 
-@test "malformed FAILED_ALLOWLIST uses failing-job evidence and attributes the detected container" {
+@test "malformed FAILED_ALLOWLIST fails closed despite the detected container's failed job" {
     export COMMIT_SUBJECT="deps(php): bump to 8.3"
     export FAILED_ALLOWLIST='{bad'
     export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed (expected one JSON array) — skipping dep-attributed open"* ]]
+    [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
 }
 
-@test "null FAILED_ALLOWLIST uses failing-job evidence and rejects another container" {
+@test "null FAILED_ALLOWLIST fails closed despite another container's failed job" {
     export COMMIT_SUBJECT="deps(php): bump to 8.3"
     export FAILED_ALLOWLIST='null'
     export FAILED_JOBS_JSON='[{"name":"Build postgres:18.2","id":1}]'
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
     [ "$status" -eq 1 ]
-    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed (expected one JSON array) — skipping dep-attributed open"* ]]
     [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
 }
 
-@test "null FAILED_ALLOWLIST uses failing-job evidence and attributes the detected container" {
+@test "null FAILED_ALLOWLIST fails closed despite the detected container's failed job" {
     export COMMIT_SUBJECT="deps(php): bump to 8.3"
     export FAILED_ALLOWLIST='null'
     export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed (expected one JSON array) — skipping dep-attributed open"* ]]
+    [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
 }
 
-@test "string FAILED_ALLOWLIST uses failing-job evidence and rejects another container" {
+@test "string FAILED_ALLOWLIST fails closed despite another container's failed job" {
     export COMMIT_SUBJECT="deps(php): bump to 8.3"
     export FAILED_ALLOWLIST='"php"'
     export FAILED_JOBS_JSON='[{"name":"Build postgres:18.2","id":1}]'
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
     [ "$status" -eq 1 ]
-    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed (expected one JSON array) — skipping dep-attributed open"* ]]
     [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
 }
 
-@test "string FAILED_ALLOWLIST uses failing-job evidence and attributes the detected container" {
+@test "string FAILED_ALLOWLIST fails closed despite the detected container's failed job" {
     export COMMIT_SUBJECT="deps(php): bump to 8.3"
     export FAILED_ALLOWLIST='"php"'
     export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed (expected one JSON array) — skipping dep-attributed open"* ]]
+    [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
 }
 
 @test "FAILED_ALLOWLIST valid empty array remains an authoritative empty failure set" {

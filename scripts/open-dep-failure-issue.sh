@@ -11,8 +11,8 @@
 # Exit codes:
 #   0  — issue created or commented successfully (or DRY_RUN printed)
 #   1  — auto-detect found no dependency failure attributable to the detected container
-#        (including no dep bump detected); the required-variable `:?` guards above also exit 1
-#   2  — invalid CLI argument
+#        (including no dep bump detected)
+#   2  — missing required env var
 #   3  — gh CLI / issue-operation failure (create failed, comment failed, number unparseable)
 #        Callers: rc=1 → "no dep-bump" (info); rc=3 → "gh op failed" (warning); neither
 #        gates the generic issue — that is decided solely by issue_mode from the checkpoint job.
@@ -1251,10 +1251,13 @@ main() {
     #   FAILED_ALLOWLIST unset/empty, FAILED_JOBS_JSON empty/not an array → return 1 (no-op; no attribution evidence).
     #   FAILED_ALLOWLIST set, valid JSON array, container present → proceed normally.
     #   FAILED_ALLOWLIST set, valid JSON array, container absent  → return 1 (no-op, same as no-dep-bump).
-    #   FAILED_ALLOWLIST set, malformed/not an array              → notice, then use FAILED_JOBS_JSON evidence.
+    #   FAILED_ALLOWLIST set, malformed/not an array              → notice, return 1 (no-op).
     local use_failed_job_evidence=false
-    if [[ -n "${FAILED_ALLOWLIST:-}" ]] && \
-        printf '%s' "$FAILED_ALLOWLIST" | is_single_json_array; then
+    if [[ -n "${FAILED_ALLOWLIST:-}" ]]; then
+        if ! printf '%s' "$FAILED_ALLOWLIST" | is_single_json_array; then
+            log_info "::notice::FAILED_ALLOWLIST is malformed (expected one JSON array) — skipping dep-attributed open"
+            exit 1
+        fi
         if ! printf '%s' "$FAILED_ALLOWLIST" \
             | jq -se --arg c "$container" '.[0] | index($c) != null' \
             >/dev/null 2>&1; then
@@ -1262,15 +1265,12 @@ main() {
             exit 1
         fi
     else
-        if [[ -n "${FAILED_ALLOWLIST:-}" ]]; then
-            log_info "::notice::FAILED_ALLOWLIST is malformed (expected a JSON array); using failing-job evidence for detected container [${container}]"
-        fi
         use_failed_job_evidence=true
     fi
 
     if [[ "$use_failed_job_evidence" == "true" ]]; then
         # workflow_dispatch/workflow_call runs do not provide the checkpoint
-        # allowlist, and malformed allowlists are not authoritative. Attribute a dep failure only when a failing job name names
+        # allowlist. Attribute a dep failure only when a failing job name names
         # this detected container.  A colon-bearing name uses the word before
         # its first colon; otherwise accept the non-variant build-job form.
         if [[ -z "$FAILED_JOBS_JSON" ]] || \
