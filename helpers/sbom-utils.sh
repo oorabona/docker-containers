@@ -290,8 +290,10 @@ extract_sbom_summary() (
 
 # Compare two SBOMs and produce changelog JSON
 # Usage: compare_sboms <new_sbom> <old_sbom> <output_file>
-# Output: JSON with added/removed/updated arrays + summary counts
-# Returns: 0 on success (including a missing old SBOM), 1 on operational or
+# Output: JSON with added/removed/updated arrays + summary counts, written only when
+#         both SBOMs are present.
+# Returns: 0 on success; a missing old SBOM logs a warning, returns 0, and leaves
+#          output_file untouched; 1 on operational or
 #          new-SBOM failures, 2 for invalid arguments or output aliases of an
 #          input SBOM, 3 for a malformed old SBOM.
 compare_sboms() (

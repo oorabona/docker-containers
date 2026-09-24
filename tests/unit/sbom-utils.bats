@@ -392,6 +392,21 @@ JSON
     [ "$status" -eq 3 ]
 }
 
+@test "compare_sboms leaves output untouched when the old SBOM is missing" {
+    local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
+    local missing_old_sbom="$TEST_TEMP_DIR/missing-old.sbom.json"
+    local output_file="$TEST_TEMP_DIR/result.json"
+    local expected_output="$TEST_TEMP_DIR/expected-result.json"
+    write_sbom "$new_sbom"
+    printf 'sentinel changelog content\n' > "$output_file"
+    cp -- "$output_file" "$expected_output"
+
+    run bash -c 'source "$1"; compare_sboms "$2" "$3" "$4"' _ "$SBOM_UTILS" "$new_sbom" "$missing_old_sbom" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    cmp -s -- "$output_file" "$expected_output"
+}
+
 @test "compare_sboms returns 3 for an old SBOM with two documents" {
     local new_sbom="$TEST_TEMP_DIR/new.sbom.json"
     local old_sbom="$TEST_TEMP_DIR/old.sbom.json"
