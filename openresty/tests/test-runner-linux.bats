@@ -17,7 +17,8 @@
 # The build system tags as <container>:<version>; for the smoke test we
 # accept any locally-built tag that starts with "openresty:" (or the GHCR form).
 _find_image() {
-    # Deterministic image resolution — fail-closed on no image or ambiguity.
+    # Deterministic image resolution — fail-closed except for an empty reachable
+    # store without an explicit override, which lets setup skip this smoke suite.
     # $OPENRESTY_IMAGE is the explicit override: local runs and CI SHOULD set it
     # (a tracked follow-up will wire it in the upstream workflow).
     if [[ -n "${OPENRESTY_IMAGE:-}" ]]; then
@@ -68,7 +69,7 @@ _find_image() {
 
     if [[ "$count" -eq 0 ]]; then
         echo "ERROR: no built openresty image found (run ./make build openresty, or set OPENRESTY_IMAGE)" >&2
-        return 1
+        return 3
     fi
 
     if [[ "$count" -gt 1 ]]; then
@@ -93,6 +94,9 @@ setup() {
         :
     else
         local resolver_status=$?
+        if [[ "$resolver_status" -eq 3 ]]; then
+            skip "no built openresty image found; set OPENRESTY_IMAGE or run ./make build openresty"
+        fi
         return "$resolver_status"
     fi
     CONTAINER_ID=""
