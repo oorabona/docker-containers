@@ -434,13 +434,14 @@ do_buildx() {
       log_info "Building $container with flavor: $FLAVOR${BUILD_FLAVOR:+ (build_flavor: $BUILD_FLAVOR)}"
       build_container "$container" "$VERSION" "$TAG" "$FLAVOR" "${DOCKERFILE:-Dockerfile}" "${BUILD_FLAVOR:-}" "${IS_DEFAULT:-}" "${variant:-}"
     elif container_has_variants "$container"; then
-      # Full variant expansion (local build)
-      # VERSION may be a full version (e.g., "18.1-alpine") but variants.yaml
-      # uses major version tags (e.g., "18"). Resolve before calling.
-      local major_ver
-      major_ver=$(resolve_major_version "$PWD" "$VERSION")
-      log_info "Container $container has variants - building all variants for version $major_ver..."
-      build_container_variants "$container" "$major_ver"
+      # Full variant expansion always uses an exact declared build-cell tag.
+      local declared_version
+      if ! declared_version=$(resolve_declared_version "$PWD" "$VERSION"); then
+        log_error "Could not resolve declared version for $container: $VERSION"
+        return 1
+      fi
+      log_info "Container $container has variants - building all variants for declared version $declared_version..."
+      build_container_variants "$container" "$declared_version"
     else
       # Simple container (no variants)
       build_container "$container" "$VERSION" "$TAG"

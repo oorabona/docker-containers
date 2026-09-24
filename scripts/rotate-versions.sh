@@ -8,13 +8,13 @@
 #   new_version    The new version tag to add / replace
 #   major_line     (optional) Numeric major line (e.g. "6").
 #                  When set AND retention_strategy==latest_per_major, only
-#                  the versions[].tag matching "^<major_line>." is updated.
+#                  the declared versions[].tag for that major is updated.
 #                  Also honoured via MAJOR_LINE env var (arg wins over env).
 #
 # Algorithm:
 #   1. Detect retention_strategy.
 #      - latest_per_major with major_line: single-line update path (updates
-#        only the matching major entry, leaves all other entries untouched).
+#        only the resolved declared entry, leaves all other entries untouched).
 #      - latest_per_major without major_line: full re-resolution via
 #        latest_per_major_versions helper.
 #   2. count-based: read build.version_retention (exit 2 if absent/zero).
@@ -199,9 +199,8 @@ if [[ "$strategy" == "latest_per_major" ]]; then
 
     # ── Single-line update path ──────────────────────────────────────────────
     # When major_line is provided (from upstream-monitor's per-major PR flow),
-    # update ONLY the versions[].tag entry whose tag starts with "<major_line>.".
-    # All other entries are left untouched.  This prevents a 6.x PR from
-    # accidentally overwriting the 7.x entry (or vice-versa).
+    # update ONLY the exact declared versions[].tag entry for that major.
+    # All other entries are left untouched, including declarations with suffixes.
     if [[ -n "$major_line" ]]; then
         # Validate: major_line must be a non-empty integer
         if [[ ! "$major_line" =~ ^[0-9]+$ ]]; then
@@ -209,20 +208,16 @@ if [[ "$strategy" == "latest_per_major" ]]; then
             exit 1
         fi
 
-        # Check that a matching entry actually exists in versions[]
-        existing_count=$(ML="$major_line" yq -r \
-            '[.versions[] | select(.tag | test("^" + strenv(ML) + "\\."))] | length' \
-            "$variants_file" 2>/dev/null || echo "0")
-        if [[ "$existing_count" -eq 0 ]]; then
-            echo "::warning::rotate-versions.sh: no versions[] entry matching ${major_line}.x found in $variants_file — skipping" >&2
+        if ! declared_tag=$(resolve_declared_version "$container_dir" "$major_line"); then
+            echo "::warning::rotate-versions.sh: no unambiguous declared tag for major ${major_line} in $variants_file — skipping" >&2
             exit 0
         fi
 
         # Replace only the matching entry's tag value.
-        ML="$major_line" NV="$new_version" yq -i \
-            '(.versions[] | select(.tag | test("^" + strenv(ML) + "\\.")) | .tag) = strenv(NV)' \
+        DT="$declared_tag" NV="$new_version" yq -i \
+            '(.versions[] | select(.tag == strenv(DT)) | .tag) = strenv(NV)' \
             "$variants_file"
-        echo "✅ Updated $variants_file: ${major_line}.x line → $new_version" >&2
+        echo "✅ Updated $variants_file: declared tag $declared_tag → $new_version" >&2
         exit 0
     fi
 

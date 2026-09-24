@@ -1705,6 +1705,23 @@ EOF
 # rotate-versions.sh — MAJOR_LINE single-line update path
 # ----------------------------------------------------------------
 
+@test "rotate MAJOR_LINE resolves an exact declared tag with a suffix" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+
+    mkdir -p myapp
+    cat > myapp/variants.yaml <<'EOF'
+build:
+  retention_strategy: latest_per_major
+  retained_majors: [17]
+versions:
+  - tag: 17-alpine
+EOF
+
+    run scripts/rotate-versions.sh myapp 17.11-alpine 17
+    [ "$status" -eq 0 ]
+    [ "$(yq -r '.versions[0].tag' myapp/variants.yaml)" = "17.11-alpine" ]
+}
+
 @test "rotate MAJOR_LINE=6: updates only the 6.x entry, leaves 7.x untouched" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi

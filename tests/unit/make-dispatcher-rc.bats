@@ -364,3 +364,69 @@ _load_make_build_path() {
 
     [[ "$run_body" == *'[[ -n "$variant" ]] && make_args+=("--variant" "$variant")'* ]]
 }
+
+@test "public make build resolves a major selector to all declared variants" {
+    local root="$TEST_TEMP_DIR/public-make"
+    local build_log="$root/build.log"
+    mkdir -p "$root"/{helpers,scripts,postgres}
+    cp "$PROJECT_ROOT/make" "$root/make"
+    cp "$PROJECT_ROOT/helpers/variant-utils.sh" "$PROJECT_ROOT/helpers/collect-lines.sh" "$root/helpers/"
+    chmod +x "$root/make"
+    touch "$root/postgres/Dockerfile"
+
+    cat > "$root/postgres/variants.yaml" <<'EOF'
+versions:
+  - tag: 17.11-alpine
+    variants:
+      - name: base
+      - name: one
+      - name: two
+      - name: three
+      - name: four
+      - name: five
+      - name: six
+EOF
+    cat > "$root/helpers/logging.sh" <<'EOF'
+log_error() { :; }
+log_warning() { :; }
+log_info() { :; }
+log_success() { :; }
+log_help() { :; }
+EOF
+    cat > "$root/helpers/registry-utils.sh" <<'EOF'
+list_containers() { printf '%s\n' postgres; }
+has_dockerfile() { [[ -f "$1/Dockerfile" ]]; }
+EOF
+    : > "$root/helpers/version-utils.sh"
+    : > "$root/helpers/sbom-utils.sh"
+    : > "$root/helpers/dependency-graph.sh"
+    cat > "$root/scripts/check-version.sh" <<'EOF'
+get_build_version() { printf '%s\n' "$2"; }
+EOF
+    cat > "$root/scripts/build-container.sh" <<'EOF'
+source "$PROJECT_ROOT/helpers/variant-utils.sh"
+container_has_variants() { [[ -f variants.yaml ]]; }
+build_container_variants() {
+    local container="$1" declared_tag="$2" variant
+    while IFS= read -r variant; do
+        printf '%s:%s\n' "$declared_tag" "$variant" >> "$BUILD_LOG"
+    done < <(list_variants "$PWD" "$declared_tag")
+}
+EOF
+    : > "$root/scripts/push-container.sh"
+
+    run env BUILD_LOG="$build_log" bash -c 'cd "$1" && ./make build postgres 17' _ "$root"
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$build_log" | tr -d ' ')" -eq 7 ]
+    grep -qxF '17.11-alpine:base' "$build_log"
+
+    : > "$build_log"
+    run env BUILD_LOG="$build_log" bash -c 'cd "$1" && ./make build postgres 99' _ "$root"
+    [ "$status" -ne 0 ]
+    [ ! -s "$build_log" ]
+
+    printf '%s\n' '  - tag: 17.10-alpine' >> "$root/postgres/variants.yaml"
+    run env BUILD_LOG="$build_log" bash -c 'cd "$1" && ./make build postgres 17' _ "$root"
+    [ "$status" -ne 0 ]
+    [ ! -s "$build_log" ]
+}

@@ -39,18 +39,22 @@ for container_dir in "$PROJECT_ROOT"/*/; do
 
         # Get versions that have non-base variants
         versions_needing_extensions=""
-        while IFS= read -r major_version; do
-            [[ -z "$major_version" ]] && continue
+        while IFS= read -r declared_version; do
+            [[ -z "$declared_version" ]] && continue
+            if ! major_version=$(declared_version_major "$declared_version"); then
+                echo "::error::Container $container has a declared tag without a numeric major: $declared_version" >&2
+                exit 1
+            fi
 
             has_extension_variants=false
             while IFS= read -r variant; do
                 [[ -z "$variant" ]] && continue
-                flavor=$(variant_property "$container_dir" "$variant" "flavor" "$major_version")
+                flavor=$(variant_property "$container_dir" "$variant" "flavor" "$declared_version")
                 if [[ "$flavor" != "base" ]]; then
                     has_extension_variants=true
                     break
                 fi
-            done < <(list_variants "$container_dir" "$major_version")
+            done < <(list_variants "$container_dir" "$declared_version")
 
             if [[ "$has_extension_variants" == "true" ]]; then
                 versions_needing_extensions="$versions_needing_extensions $major_version"

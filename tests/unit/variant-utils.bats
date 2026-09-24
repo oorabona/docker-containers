@@ -226,6 +226,42 @@ EOF
     [ "$output" = "99.0-alpine" ]
 }
 
+# --- resolve_declared_version (requires real yq) ---
+
+@test "declared_version_major extracts the leading numeric major" {
+    run declared_version_major "17.11-alpine"
+    [ "$status" -eq 0 ]
+    [ "$output" = "17" ]
+}
+
+@test "resolve_declared_version returns an exact declaration or one major match" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"${TEST_DIR}"/bin:}"
+    hash -r
+    mkdir -p pg
+    printf '%s\n' 'versions:' '  - tag: 17.11-alpine' > pg/variants.yaml
+
+    run resolve_declared_version pg 17.11-alpine
+    [ "$status" -eq 0 ]
+    [ "$output" = "17.11-alpine" ]
+    run resolve_declared_version pg 17
+    [ "$status" -eq 0 ]
+    [ "$output" = "17.11-alpine" ]
+}
+
+@test "resolve_declared_version fails for an unknown or ambiguous major" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"${TEST_DIR}"/bin:}"
+    hash -r
+    mkdir -p pg
+    printf '%s\n' 'versions:' '  - tag: 17.11-alpine' '  - tag: 17.10-alpine' > pg/variants.yaml
+
+    run resolve_declared_version pg 99
+    [ "$status" -ne 0 ]
+    run resolve_declared_version pg 17
+    [ "$status" -ne 0 ]
+}
+
 # --- variant_image_tag (requires real yq) ---
 
 @test "variant_image_tag: base variant → 18-alpine (no suffix)" {

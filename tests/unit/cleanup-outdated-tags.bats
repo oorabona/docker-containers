@@ -73,6 +73,29 @@ make_valid_tags() {
     printf '%s\n' "$@"
 }
 
+# Existing Docker Hub fixture tests exercise pagination, request accounting, and
+# DELETE handling. Give otherwise-valid fixture entries a known index digest so
+# those tests continue to reach the behavior they target; null/missing digest
+# behavior is covered by the authority tests below.
+with_known_dockerhub_digests() {
+    local listing="$1" normalized
+    if normalized=$(jq -ce -s --arg digest 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' '
+        if (length == 1 and (.[0] | type == "object") and (.[0].results | type == "array")) then
+            .[0].results |= map(
+                if type == "object" and has("name") and (has("digest") | not)
+                then .digest = $digest
+                else .
+                end)
+            | .[0]
+        else empty
+        end
+    ' <<< "$listing"); then
+        printf '%s\n' "$normalized"
+    else
+        printf '%s' "$listing"
+    fi
+}
+
 run_dockerhub_fixture() {
     local page_one="$1"
     local page_two="$2"
@@ -81,6 +104,9 @@ run_dockerhub_fixture() {
     local valid_tags="$5"
     local dockerhub_dry_run="${6-false}"
     local -a environment=(env)
+
+    page_one=$(with_known_dockerhub_digests "$page_one")
+    [[ -z "$page_two" ]] || page_two=$(with_known_dockerhub_digests "$page_two")
 
     if [[ "$dockerhub_dry_run" == unset ]]; then
         environment+=(-u DOCKERHUB_DRY_RUN)
@@ -126,6 +152,128 @@ run_dockerhub_fixture() {
             }
             purge_dockerhub app "$DH_VALID_TAGS"
         '
+}
+
+run_dockerhub_authority_case() {
+    local dockerhub_result="$1"
+    local ghcr_versions="$2"
+    local ghcr_listing_fails="${3-false}"
+    local ghcr_version_count
+    ghcr_version_count=$(jq -er 'length' <<< "$ghcr_versions")
+
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        DH_RESULT="$dockerhub_result" \
+        GHCR_VERSIONS="$ghcr_versions" \
+        GHCR_VERSION_COUNT="$ghcr_version_count" \
+        GHCR_LISTING_FAILS="$ghcr_listing_fails" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DOCKERHUB_USERNAME=test-user \
+        DOCKERHUB_TOKEN=test-password \
+        DRY_RUN=true \
+        DOCKERHUB_DRY_RUN=true \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf "%s\\n" latest; }
+            purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
+            gh() {
+                if [[ "$*" == *"/versions"* ]]; then
+                    [[ "$GHCR_LISTING_FAILS" != true ]] || return 1
+                    printf "%s\\n" "$GHCR_VERSIONS"
+                else
+                    printf "%s\\n" "{\"version_count\":$GHCR_VERSION_COUNT}"
+                fi
+            }
+            curl() {
+                case "$*" in
+                    *"/users/login"*) printf "%s\\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do
+                            [[ "$previous" != "--output" ]] || output_file="$curl_arg"
+                            previous="$curl_arg"
+                        done
+                        [[ -n "$output_file" ]] || return 1
+                        printf "%s" "$DH_RESULT" > "$output_file"
+                        ;;
+                    *) echo "unexpected curl request: $*" >&2; return 1 ;;
+                esac
+            }
+            main app
+        '
+}
+
+@test "Docker Hub authority keeps an undeclared tag whose digest GHCR still publishes" {
+    local digest='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    local dockerhub_result
+    dockerhub_result=$(jq -cn --arg digest "$digest" '{count: 1, results: [{name: "2", digest: $digest}], next: null}')
+    local ghcr_versions
+    ghcr_versions=$(jq -cn --arg digest "$digest" '[{id: 1, name: $digest, metadata: {container: {tags: ["2-amd64"]}}}]')
+
+    run_dockerhub_authority_case "$dockerhub_result" "$ghcr_versions"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *"Would delete Docker Hub tag: 2"* ]]
+    [[ "$output" == *"kept_by_ghcr_digest=1, candidates=0"* ]]
+}
+
+@test "Docker Hub authority plans an undeclared tag absent from GHCR" {
+    local dockerhub_digest='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    local ghcr_digest='sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    local dockerhub_result ghcr_versions
+    dockerhub_result=$(jq -cn --arg digest "$dockerhub_digest" '{count: 1, results: [{name: "1-alpine", digest: $digest}], next: null}')
+    ghcr_versions=$(jq -cn --arg digest "$ghcr_digest" '[{id: 1, name: $digest, metadata: {container: {tags: ["legacy-amd64"]}}}]')
+
+    run_dockerhub_authority_case "$dockerhub_result" "$ghcr_versions"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Would delete Docker Hub tag: 1-alpine"* ]]
+    [[ "$output" == *"candidates=1"* ]]
+}
+
+@test "Docker Hub authority keeps an undeclared tag with a null or missing digest" {
+    local ghcr_digest='sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    local dockerhub_result ghcr_versions
+    ghcr_versions=$(jq -cn --arg digest "$ghcr_digest" '[{id: 1, name: $digest, metadata: {container: {tags: ["latest"]}}}]')
+
+    for dockerhub_result in \
+        '{"count":1,"results":[{"name":"obsolete","digest":null}],"next":null}' \
+        '{"count":1,"results":[{"name":"obsolete"}],"next":null}'; do
+        run_dockerhub_authority_case "$dockerhub_result" "$ghcr_versions"
+
+        [[ "$status" -eq 0 ]]
+        [[ "$output" != *"Would delete Docker Hub tag: obsolete"* ]]
+        [[ "$output" == *"candidates=0"* ]]
+    done
+}
+
+@test "a failing GHCR digest authority listing skips the Docker Hub plan" {
+    local digest='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    local dockerhub_result ghcr_versions
+    dockerhub_result=$(jq -cn --arg digest "$digest" '{count: 1, results: [{name: "obsolete", digest: $digest}], next: null}')
+    ghcr_versions='[]'
+
+    run_dockerhub_authority_case "$dockerhub_result" "$ghcr_versions" true
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"Docker Hub cleanup skipped: GHCR digest authority listing failed"* ]]
+    [[ "$output" != *"Docker Hub cleanup for app"* ]]
+    [[ "$output" == *"Registry listing failures: 1"* ]]
+}
+
+@test "Docker Hub authority keeps a declared tag regardless of digest" {
+    local digest='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    local dockerhub_result ghcr_versions
+    dockerhub_result=$(jq -cn --arg digest "$digest" '{count: 1, results: [{name: "latest", digest: $digest}], next: null}')
+    ghcr_versions='[]'
+
+    run_dockerhub_authority_case "$dockerhub_result" "$ghcr_versions"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *"Would delete Docker Hub tag: latest"* ]]
+    [[ "$output" == *"candidates=0"* ]]
 }
 
 @test "Docker Hub cleanup plans obsolete tags unless DOCKERHUB_DRY_RUN is false" {
@@ -253,7 +401,7 @@ run_dockerhub_fixture() {
 
 @test "Docker Hub cleanup rejects every invalid entry before classifying or deleting" {
     local results listing
-    for results in '[null]' '[{}]' '[{"name":42}]' '[{"name":"not/a-tag"}]'; do
+    for results in '[null]' '[{}]' '[{"name":42}]' '[{"name":"not/a-tag"}]' '[{"name":"obsolete","digest":"sha256:not-a-digest"}]'; do
         listing=$(jq -cn --argjson results "$results" '{count: 1, results: $results, next: null}')
         run_dockerhub_fixture "$listing" '' 204 false latest
         [[ "$status" -eq 10 ]]
@@ -478,14 +626,14 @@ run_dockerhub_fixture() {
         DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=true bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
-            DOCKERHUB_LISTING_MAX_BYTES=128
+            DOCKERHUB_LISTING_MAX_BYTES=256
             curl() {
                 case "$*" in
                     *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
                     *"page_size=100"*)
                         output_file="" previous=""
                         for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
-                        body="{\"count\":1,\"results\":[{\"name\":\"obsolete\"}],\"next\":null}"
+                        body="{\"count\":1,\"results\":[{\"name\":\"obsolete\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}],\"next\":null}"
                         printf "%s%*s" "$body" "$((DOCKERHUB_LISTING_MAX_BYTES - ${#body}))" "" > "$output_file"
                         ;;
                     *) return 1 ;;
@@ -591,7 +739,7 @@ run_dockerhub_fixture() {
                     *"page_size=100"*)
                         output_file="" previous=""
                         for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
-                        printf "%s" "{\"count\":2,\"results\":[{\"name\":\"obsolete-one\"},{\"name\":\"obsolete-two\"}],\"next\":null}" > "$output_file"
+                        printf "%s" "{\"count\":2,\"results\":[{\"name\":\"obsolete-one\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},{\"name\":\"obsolete-two\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}],\"next\":null}" > "$output_file"
                         ;;
                     *"-X DELETE"*) printf "%s" 204 ;;
                     *) return 1 ;;
@@ -616,6 +764,7 @@ run_dockerhub_fixture() {
             DOCKERHUB_REQUESTS_REMAINING=2
             build_valid_tags() { printf "%s\n" latest; }
             purge_ghcr() { printf "%s\n" "0|0|0|0"; }
+            list_tagged_ghcr_digests() { :; }
             curl() {
                 printf "%s\n" "$*" >> "$CURL_LOG"
                 case "$*" in
@@ -727,7 +876,7 @@ run_dockerhub_fixture() {
                         done
                         if [[ "$page" -eq "$MAX_PAGES" ]]; then next=null; else next="\"https://hub.docker.com/v2/repositories/test-user/app/tags?page=$((page + 1))\""; fi
                         [[ -n "$output_file" ]] || return 1
-                        printf "{\"count\":%s,\"results\":[{\"name\":\"tag%s\"}],\"next\":%s}\\n" \
+                        printf "{\"count\":%s,\"results\":[{\"name\":\"tag%s\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}],\"next\":%s}\\n" \
                             "$MAX_PAGES" "$page" "$next" > "$output_file"
                         ;;
                     *) echo "unexpected curl request: $*" >&2; return 1 ;;
@@ -760,6 +909,7 @@ run_dockerhub_fixture() {
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
             purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
+            list_tagged_ghcr_digests() { :; }
             purge_dockerhub() {
                 case "$1" in
                     stale) printf "%s\\n" "1|2|1|1"; return 12 ;;
@@ -1809,6 +1959,7 @@ run_orphan_phase_completion_case() {
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" "latest"; }
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
+            list_tagged_ghcr_digests() { :; }
             for expectation in success:0:complete:success listing:10:incomplete:failure processing:11:incomplete:failure delete:12:complete:failure post-complete:13:complete:failure uninterpretable:14:incomplete:failure protection:15:incomplete:failure incomplete-delete:16:incomplete:failure unexpected:99:incomplete:failure; do
                 name=${expectation%%:*}; remainder=${expectation#*:}; stub_ghcr_status=${remainder%%:*}; remainder=${remainder#*:}; assessment=${remainder%%:*}; expected_run=${remainder#*:}
                 : > "$DOCKERHUB_CALLS"
@@ -2197,6 +2348,7 @@ EOF
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
             purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
+            list_tagged_ghcr_digests() { :; }
             purge_dockerhub() { printf "%s\\n" "1|0|0|0" stray; }
             main stale
         '
@@ -2216,6 +2368,7 @@ EOF
                     set -euo pipefail
                     source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
                     build_valid_tags() { printf "%s\\n" latest; }
+                    list_tagged_ghcr_digests() { :; }
                     case "$CONSUMER" in
                       ghcr-complete)
                         purge_ghcr() { printf "%s\\n" "$RESULT_COUNTER|0|0|0"; return 13; }
@@ -2545,6 +2698,7 @@ run_invalid_build_case() {
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
             purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
+            list_tagged_ghcr_digests() { :; }
             purge_dockerhub() { printf "%s\\n" "0|0|0|0"; }
             main stale
         '

@@ -3,7 +3,8 @@
 # Required env vars: GH_TOKEN, OWNER
 # Optional env vars: DRY_RUN (default: false; exactly true or false);
 # DOCKERHUB_DRY_RUN (default: plan-only; deletes only when exactly false). The
-# workflow sets this to true until #1574 gives tag planning one owner.
+# Docker Hub plans only until the operator enables it; candidates are tags
+# neither declared nor still published on GHCR.
 #
 # Usage: cleanup-outdated-tags.sh [container]
 # With an argument, process exactly one package. Multiple package names need a
@@ -509,14 +510,64 @@ purge_ghcr() {
   [[ "$delete_failures" -eq 0 ]] || return "$DELETE_FAILURE"
 }
 
+# Re-read GHCR after its cleanup pass: Docker Hub keeps a tag when its index
+# digest still has any GHCR tag, independently of the current build keep-set.
+# This is deliberately a separate listing because purge_ghcr runs in a command
+# substitution subshell and cannot safely return its source snapshot.
+list_tagged_ghcr_digests() {
+  local container="$1" versions package_metadata version_count reported_version_count validation_error
+
+  if ! versions=$(gh api -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+      "/users/${OWNER}/packages/container/${container}/versions" --paginate); then
+    echo "  ✗ Failed to list GHCR versions for Docker Hub authority; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+  if ! versions=$(jq -ce -s '
+    select(length > 0)
+    | if all(.[]; type == "array") then [.[][]]
+      else error("GHCR package-versions response must contain JSON arrays")
+      end
+  ' <<< "$versions"); then
+    echo "  ✗ GHCR version listing for Docker Hub authority was not a JSON array; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+  if ! version_count=$(jq -er 'length' <<< "$versions"); then
+    echo "  ✗ Failed to count GHCR versions for Docker Hub authority; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+  if ! package_metadata=$(gh api -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+      "/users/${OWNER}/packages/container/${container}"); then
+    echo "  ✗ Failed to get GHCR version count for Docker Hub authority; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+  if ! reported_version_count=$(jq -c '.version_count' <<< "$package_metadata"); then
+    echo "  ✗ Failed to read GHCR package version_count for Docker Hub authority; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+  if ! validation_error=$(jq -er --argjson reported_version_count "$reported_version_count" "$VERSION_RECORD_VALIDATION_JQ
+    validate_versions_listing_count(\$reported_version_count)" <<< "$versions" 2>&1 >/dev/null); then
+    echo "  ✗ GHCR version listing count for Docker Hub authority was invalid: ${validation_error##*validation failed: }; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+  if ! validation_error=$(jq -er "$VERSION_RECORD_VALIDATION_JQ
+    validate_outdated_tags_versions" <<< "$versions" 2>&1 >/dev/null); then
+    echo "  ✗ GHCR version records for Docker Hub authority were invalid: ${validation_error##*validation failed: }; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+  if ! jq -r '.[] | select(.metadata.container.tags | length > 0) | .name' <<< "$versions"; then
+    echo "  ✗ Failed to read GHCR tagged digests for Docker Hub authority; skipping $container" >&2
+    return "$LISTING_FAILURE"
+  fi
+}
+
 # stdout is assessed|candidates|successful_deletes|delete_failures. No configured
 # Docker Hub credentials means it was not attempted (0|0|0|0); a returned
 # non-zero status is always a real failure.
 _purge_dockerhub() {
-  local container="$1" valid_tags="$2" dh_jwt dh_next dh_listing_url dh_repository_path dh_continuation_prefix dh_page dh_listing_file=""
-  local dh_namespace_path dh_container_path dh_page_total dh_reported_total="" tag dh_new_tags dh_pages_read=0 validation_status
-  local dh_kept=0 dh_candidates=0 dh_successful_deletes=0 delete_failures=0
-  local -a dh_page_values=() dh_tags=() dh_obsolete_tags=()
+  local container="$1" valid_tags="$2" ghcr_digests="${3-}" dh_jwt dh_next dh_listing_url dh_repository_path dh_continuation_prefix dh_page dh_listing_file=""
+  local dh_namespace_path dh_container_path dh_page_total dh_reported_total="" tag dh_digest dh_record dh_record_json dh_new_tags dh_pages_read=0 validation_status
+  local dh_kept=0 dh_kept_by_ghcr_digest=0 dh_candidates=0 dh_successful_deletes=0 delete_failures=0
+  local -a dh_page_values=() dh_tags=() dh_digests=() dh_obsolete_tags=()
   local -A dh_seen_tags=()
 
   validate_cleanup_authority || return 64
@@ -584,11 +635,14 @@ _purge_dockerhub() {
           and (.[0] | has("count") and (.count | type == "number" and floor == . and . >= 0))
           and (.[0] | has("next") and (.next | . == null or (type == "string" and length > 0
               and (index("\n") == null) and (index("\r") == null) and (index("\u0000") == null))))
-          and (.[0].results | all(.[]; type == "object" and has("name") and (.name | valid_tag))))
+          and (.[0].results | all(.[];
+              type == "object" and has("name") and (.name | valid_tag)
+              and ((has("digest") | not) or .digest == null
+                   or (.digest | type == "string" and test("^sha256:[0-9a-f]{64}\\z"))))))
       then .[0] as $page
       | $page.count,
         (if $page.next == null then "N" else "U" + $page.next end),
-        $page.results[].name
+        ($page.results[] | {name, digest: (.digest // null)} | @base64)
       else error("malformed Docker Hub tag listing page")
       end
     ' "$dh_listing_file"); then
@@ -630,13 +684,20 @@ _purge_dockerhub() {
     fi
     dh_reported_total="$dh_page_total"
     dh_new_tags=0
-    for tag in "${dh_page_values[@]:2}"; do
+    for dh_record in "${dh_page_values[@]:2}"; do
+      if ! dh_record_json=$(printf '%s' "$dh_record" | base64 -d) \
+        || ! tag=$(jq -er '.name' <<< "$dh_record_json") \
+        || ! dh_digest=$(jq -r '.digest // ""' <<< "$dh_record_json"); then
+        echo "  ✗ Docker Hub tag listing page was malformed; skipping $container" >&2
+        return "$LISTING_FAILURE"
+      fi
       if [[ -v "dh_seen_tags[$tag]" ]]; then
         echo "  ✗ Docker Hub tag listing contained a duplicate tag; skipping $container" >&2
         return "$LISTING_FAILURE"
       fi
       dh_seen_tags["$tag"]=1
       dh_tags+=("$tag")
+      dh_digests+=("$dh_digest")
       dh_new_tags=$((dh_new_tags + 1))
     done
     if [[ "${#dh_tags[@]}" -gt "$dh_reported_total" ]]; then
@@ -664,7 +725,8 @@ _purge_dockerhub() {
     fi
     dh_listing_url="$dh_next"
   done
-  for tag in "${dh_tags[@]}"; do
+  for index in "${!dh_tags[@]}"; do
+    tag="${dh_tags[$index]}"
     if is_valid_tag "$tag" "$valid_tags"; then
       dh_kept=$((dh_kept + 1))
       continue
@@ -672,6 +734,22 @@ _purge_dockerhub() {
       validation_status=$?
       if [[ "$validation_status" -ne 1 ]]; then
         echo "  ✗ Failed to classify Docker Hub tag; skipping $container" >&2
+        return "$PROCESSING_FAILURE"
+      fi
+    fi
+    dh_digest="${dh_digests[$index]}"
+    if [[ -z "$dh_digest" ]]; then
+      dh_kept=$((dh_kept + 1))
+      continue
+    fi
+    if grep -qxF "$dh_digest" <<< "$ghcr_digests"; then
+      dh_kept=$((dh_kept + 1))
+      dh_kept_by_ghcr_digest=$((dh_kept_by_ghcr_digest + 1))
+      continue
+    else
+      validation_status=$?
+      if [[ "$validation_status" -ne 1 ]]; then
+        echo "  ✗ Failed to compare Docker Hub digest with GHCR; skipping $container" >&2
         return "$PROCESSING_FAILURE"
       fi
     fi
@@ -688,7 +766,7 @@ _purge_dockerhub() {
       echo "    ✗ Failed to delete Docker Hub tag: $tag" >&2; delete_failures=$((delete_failures + 1))
     fi
   done
-  echo "  Docker Hub: kept=$dh_kept, candidates=$dh_candidates, successful_deletes=$dh_successful_deletes, delete_failures=$delete_failures" >&2
+  echo "  Docker Hub: kept=$dh_kept, kept_by_ghcr_digest=$dh_kept_by_ghcr_digest, candidates=$dh_candidates, successful_deletes=$dh_successful_deletes, delete_failures=$delete_failures" >&2
   if ! printf '%s\n' "1|$dh_candidates|$dh_successful_deletes|$delete_failures"; then
     return "$PROCESSING_FAILURE"
   fi
@@ -742,7 +820,7 @@ main() {
   # 16 is fail-closed when the listing required an orphan assessment but a
   # prior deletion failure or replay abort prevented that phase from running.
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
-  local containers_output container valid_tags valid_count result ghcr_status dh_result dh_requests_used dh_status containers_discovered=true
+  local containers_output container valid_tags valid_count result ghcr_status ghcr_digests dh_result dh_requests_used dh_status containers_discovered=true
   local -a containers=()
   # shellcheck disable=SC2034 # parse_result_counters assigns this dynamic output destination.
   local kept obsolete orphans delete_failures dh_assessed dh_candidates dh_successful_deletes dh_delete_failures package_assessed skip_dockerhub
@@ -803,7 +881,13 @@ main() {
       continue
     fi
 
-    if dh_result=$(DOCKERHUB_REPORT_REQUESTS=true purge_dockerhub "$container" "$valid_tags"); then dh_status=0; else dh_status=$?; fi
+    if ! ghcr_digests=$(list_tagged_ghcr_digests "$container"); then
+      echo "  Docker Hub cleanup skipped: GHCR digest authority listing failed"
+      total_listing_failures=$((total_listing_failures + 1))
+      continue
+    fi
+
+    if dh_result=$(DOCKERHUB_REPORT_REQUESTS=true purge_dockerhub "$container" "$valid_tags" "$ghcr_digests"); then dh_status=0; else dh_status=$?; fi
     if [[ "$dh_result" == *$'\036'* ]]; then
       dh_requests_used=${dh_result##*$'\036'}
       dh_result=${dh_result%$'\n'$'\036'*}

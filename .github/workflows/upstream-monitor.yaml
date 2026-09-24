@@ -1548,6 +1548,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          source helpers/variant-utils.sh
+
           # Read PG versions from variants.yaml
           pg_versions=$(yq -r '.versions[].tag' postgres/variants.yaml | tr '\n' ' ')
           echo "PG versions: $pg_versions"
@@ -1565,13 +1567,14 @@ jobs:
           # Resolve version-set per PG major
           declare -A vsets
           for pg in $pg_versions; do
-              echo "  Resolving timescaledb version-set for pg${pg}..."
-              arr=$(PG_MAJOR="$pg" CEILING_VERSION="$CEILING_VERSION" \
+              pg_major=$(declared_version_major "$pg")
+              echo "  Resolving timescaledb version-set for pg${pg_major}..."
+              arr=$(PG_MAJOR="$pg_major" CEILING_VERSION="$CEILING_VERSION" \
                     RETAIN_COUNT="$RETAIN_COUNT" \
                     bash scripts/resolvers/timescaledb-ha.sh)
-              vsets["pg${pg}"]="$arr"
+              vsets["pg${pg_major}"]="$arr"
               count=$(printf '%s' "$arr" | jq 'length')
-              echo "  pg${pg}: ${count} versions (ceiling: $CEILING_VERSION)"
+              echo "  pg${pg_major}: ${count} versions (ceiling: $CEILING_VERSION)"
           done
 
           # Assemble JSON and write committed file atomically.
