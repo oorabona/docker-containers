@@ -1740,6 +1740,26 @@ GHEOF
     [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
 }
 
+@test "FAILED_ALLOWLIST empty, non-variant php build job → opens" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_JOBS_JSON='[{"name":"Build php (amd64)","id":1}]'
+    export FAILED_ALLOWLIST=""
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"🚨 [php]"* ]]
+}
+
+@test "FAILED_ALLOWLIST empty, non-variant php build job rejects postgres" {
+    export COMMIT_SUBJECT="build(postgres): update to 18.2"
+    export FAILED_JOBS_JSON='[{"name":"Build php (amd64)","id":1}]'
+    export FAILED_ALLOWLIST=""
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"not named by a failing job"* ]]
+}
+
 @test "FAILED_ALLOWLIST empty, matching failing job → opens and lists only the job name" {
     export COMMIT_SUBJECT="deps(github-runner): bump to 2.337.0"
     export FAILED_JOBS_JSON='[{"name":"Create Manifest github-runner:2.337.0-windows-ltsc2022","id":1}]'
@@ -1776,6 +1796,36 @@ GHEOF
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
     [ "$status" -eq 0 ]
     [[ "$output" == *"🚨 [postgres]"* ]]
+}
+
+@test "multi-document FAILED_ALLOWLIST uses job evidence and rejects another container" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST=$'["other"]\n["also-other"]'
+    export FAILED_JOBS_JSON='[{"name":"Build postgres:18.2","id":1}]'
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+}
+
+@test "multi-document FAILED_ALLOWLIST uses job evidence and attributes the detected container" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST=$'["other"]\n["also-other"]'
+    export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+}
+
+@test "FAILED_JOBS_JSON with two arrays is not valid failure evidence" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST=""
+    export FAILED_JOBS_JSON=$'[{"name":"Build php:8.3","id":1}]\n[{"name":"Build php:8.3","id":2}]'
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no valid failing-job evidence"* ]]
 }
 
 @test "FAILED_ALLOWLIST empty and FAILED_JOBS_JSON not an array → exits 1" {
