@@ -7,12 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Dry-run the age and obsolete-tag pruners (no deletions); extension cleanup remains global and is controlled by execute_ext_cleanup alone'
+        description: 'Dry-run the age and obsolete-tag pruners (no deletions); extension cleanup remains global and is controlled by execute_ext_cleanup alone; Docker Hub obsolete tags are always plan-only until #1574.'
         required: false
         type: boolean
         default: false
       purge_obsolete:
-        description: 'Purge images with tags not matching current valid builds'
+        description: 'Purge images with tags not matching current valid builds (GHCR deletes; Docker Hub only plans until #1574)'
         required: false
         type: boolean
         default: false
