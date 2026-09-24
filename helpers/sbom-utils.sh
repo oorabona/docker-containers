@@ -227,11 +227,17 @@ generate_sbom() (
 
     log_info "Generating SBOM for $image_ref..."
     local syft_args=("registry:${image_ref}" -o "spdx-json=${staged_output}" --quiet)
+    local image_repository="${image_ref%@*}"
+    image_repository="${image_repository##*/}"
+    image_repository="${image_repository%%:*}"
     local syft_cmd=(syft)
     if syft --timeout 10m --help &>/dev/null; then
         syft_args=(--timeout 10m "${syft_args[@]}")
     elif command -v timeout &>/dev/null; then
         syft_cmd=(timeout 10m syft)
+    fi
+    if [[ "$image_repository" == "github-runner" ]]; then
+        syft_args+=(--select-catalogers=-pe-binary-package-cataloger)
     fi
 
     if ! retry_with_backoff 2 30 "${syft_cmd[@]}" "${syft_args[@]}"; then
@@ -241,6 +247,70 @@ generate_sbom() (
     if [[ ! -f "$staged_output" || ! -r "$staged_output" ]]; then
         log_error "SBOM producer did not create a readable staged output: $staged_output"
         return 1
+    fi
+    if [[ "$image_repository" == "github-runner" ]]; then
+        local filtered_output
+        if ! filtered_output=$(mktemp -- "$output_dir/.sbom-filter.XXXXXX"); then
+            log_error "Failed to create filtered SPDX output in: $output_dir"
+            return 1
+        fi
+        if ! jq '
+            (if has("files") then
+                (.files | if type == "array" then . else error("SPDX files must be an array") end)
+             else []
+             end
+             | map(
+                 if type == "object" then
+                     if (.SPDXID | type) == "string" then .SPDXID else error("SPDX file must have a string SPDXID") end
+                 else error("SPDX file must be an object")
+                 end
+             )
+             | map({(.): true}) | add // {}) as $file_ids
+            | del(.files)
+            | if has("relationships") then
+                  if (.relationships | type) == "array" then
+                  .relationships |= map(select(
+                      if type == "object" then
+                          (.spdxElementId as $spdx_element_id
+                           | $file_ids[$spdx_element_id] | not)
+                          and
+                          (.relatedSpdxElement as $related_spdx_element
+                           | $file_ids[$related_spdx_element] | not)
+                      else error("SPDX relationship must be an object")
+                      end
+                  ))
+              else error("SPDX relationships must be an array")
+              end
+              else .
+              end
+            | if (.packages | type) == "array" then
+                  .packages |= map(
+                      if type != "object" then error("SPDX package must be an object")
+                      elif has("hasFiles") then
+                          if (.hasFiles | type) == "array" then
+                              .hasFiles |= map(
+                                  if type == "string" then
+                                      select(. as $file_id | $file_ids[$file_id] | not)
+                                  else error("SPDX package hasFiles entries must be strings")
+                                  end
+                              )
+                          else error("SPDX package hasFiles must be an array")
+                          end
+                      else .
+                      end
+                  )
+              else error("SPDX packages must be an array")
+              end
+        ' -- "$staged_output" > "$filtered_output"; then
+            rm -f -- "$filtered_output"
+            log_error "Failed to remove SPDX file entries from $staged_output"
+            return 1
+        fi
+        if ! mv -fT -- "$filtered_output" "$staged_output"; then
+            rm -f -- "$filtered_output"
+            log_error "Failed to replace staged SBOM with its filtered form: $staged_output"
+            return 1
+        fi
     fi
     # Require one SPDX JSON document with the fields downstream consumers need;
     # this validates a minimal contract, not the complete SPDX schema.
