@@ -141,6 +141,27 @@ JSON
     jq -e '.packages == []' "$output_file" >/dev/null || return 1
 }
 
+@test "generate_sbom stages and publishes a relative destination under -dir" {
+    local output_file="-dir/result.sbom.json"
+
+    run bash -c '
+        cd "$1"
+        source "$2"
+        syft() {
+            local argument staged_output=""
+            for argument in "$@"; do
+                [[ "$argument" == "--help" ]] && return 0
+                case "$argument" in spdx-json=*) staged_output="${argument#spdx-json=}" ;; esac
+            done
+            printf "{\"spdxVersion\":\"SPDX-2.3\",\"SPDXID\":\"SPDXRef-DOCUMENT\",\"packages\":[]}" > "$staged_output"
+        }
+        generate_sbom example/image:tag "$3"
+    ' _ "$TEST_TEMP_DIR" "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    [ -f "$TEST_TEMP_DIR/$output_file" ] || return 1
+}
+
 @test "generate_sbom preserves a prior SBOM when syft writes a fragment then fails" {
     write_syft_stub
     local output_file="$TEST_TEMP_DIR/prior.sbom.json"
@@ -713,4 +734,17 @@ STUB
 
     [ "$status" -eq 0 ] || return 1
     [ "$(jq -r '.[0].changes_summary' "$history_file")" = '+1 -2 ~3' ] || return 1
+}
+
+@test "append_build_history stages and publishes a relative destination under -dir" {
+    local lineage_file="$TEST_TEMP_DIR/lineage.json"
+    local history_file="-dir/result.history.json"
+    local summary='{"total":1,"apk":1}'
+    write_lineage "$lineage_file"
+
+    run bash -c 'cd "$1" && source "$2" && append_build_history "$3" "$4" "$5"' \
+        _ "$TEST_TEMP_DIR" "$SBOM_UTILS" "$lineage_file" "$summary" "$history_file"
+
+    [ "$status" -eq 0 ] || return 1
+    [ -f "$TEST_TEMP_DIR/$history_file" ] || return 1
 }

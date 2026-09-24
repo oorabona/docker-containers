@@ -71,7 +71,7 @@ BAKE_MERGE_RECEIPT_DIR="${BAKE_MERGE_RECEIPT_DIR:-}"
 _emit_merge_receipt() (
     set -uo pipefail
     local container="$1" tag="$2" receipt_dir="$BAKE_MERGE_RECEIPT_DIR"
-    local receipt_file staged_receipt="" receipt_json
+    local receipt_file staged_receipt="" receipt_json receipt_digest sha256_output
     cleanup_staged_receipt() {
         if [[ -n "$staged_receipt" && -e "$staged_receipt" ]] && ! rm -f -- "$staged_receipt"; then
             printf '::error::Could not remove staged bake merge receipt; retained: %s\n' "$staged_receipt" >&2
@@ -84,7 +84,16 @@ _emit_merge_receipt() (
         printf '::error::Could not create bake merge receipt directory: %s\n' "$receipt_dir" >&2
         return 1
     fi
-    receipt_file="${receipt_dir}/bake-merge-${container}-${tag}.json"
+    if ! sha256_output=$(printf '%s\0%s' "$container" "$tag" | sha256sum); then
+        printf '::error::Could not hash bake merge receipt identity for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    receipt_digest="${sha256_output%%[[:space:]]*}"
+    if [[ ! "$receipt_digest" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        printf '::error::Invalid bake merge receipt identity hash for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    receipt_file="${receipt_dir}/bake-merge-${receipt_digest,,}.json"
     if ! receipt_json=$(jq -cn --arg container "$container" --arg tag "$tag" '{container:$container, tag:$tag}'); then
         printf '::error::Could not construct bake merge receipt for %s:%s\n' "$container" "$tag" >&2
         return 1
@@ -95,7 +104,7 @@ _emit_merge_receipt() (
         printf '::error::Invalid bake merge receipt for %s:%s\n' "$container" "$tag" >&2
         return 1
     fi
-    if ! staged_receipt=$(mktemp "${receipt_dir}/.bake-merge-receipt.XXXXXX"); then
+    if ! staged_receipt=$(mktemp -- "${receipt_dir}/.bake-merge-receipt.XXXXXX"); then
         printf '::error::Could not stage bake merge receipt in: %s\n' "$receipt_dir" >&2
         return 1
     fi
@@ -107,7 +116,7 @@ _emit_merge_receipt() (
     fi
     if ! jq -e 'type == "object" and keys == ["container", "tag"] and
         (.container | type == "string" and length > 0) and
-        (.tag | type == "string" and length > 0)' "$staged_receipt" >/dev/null; then
+        (.tag | type == "string" and length > 0)' -- "$staged_receipt" >/dev/null; then
         printf '::error::Staged bake merge receipt is invalid for %s:%s\n' "$container" "$tag" >&2
         return 1
     fi

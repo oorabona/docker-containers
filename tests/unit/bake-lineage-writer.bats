@@ -157,6 +157,51 @@ STUB
     [ "$(jq -r '.build_digest' "$TEST_TEMP_DIR/.build-lineage/second-2.json")" = "$old_second" ] || return 1
 }
 
+@test "cache lineage uses collision-free receipt keys and ignores malformed receipts" {
+    local old_first old_second new_first new_second
+    old_first=$(digest a)
+    old_second=$(digest b)
+    new_first=$(digest c)
+    new_second=$(digest d)
+    mkdir -p "$TEST_TEMP_DIR/.build-lineage" \
+        "$TEST_TEMP_DIR/.build-lineage-artifacts/build-lineage-bake-amd64-test" \
+        "$TEST_TEMP_DIR/.bake-merge-receipts-artifacts/bake-merge-receipts-test"
+    lineage_record 'a-b' c "$old_first" > "$TEST_TEMP_DIR/.build-lineage/a-b-c.json"
+    lineage_record a 'b-c' "$old_second" > "$TEST_TEMP_DIR/.build-lineage/a-b-c-second.json"
+    lineage_record 'a-b' c "$new_first" > "$TEST_TEMP_DIR/.build-lineage-artifacts/build-lineage-bake-amd64-test/a-b-c.json"
+    lineage_record a 'b-c' "$new_second" > "$TEST_TEMP_DIR/.build-lineage-artifacts/build-lineage-bake-amd64-test/a-b-c-second.json"
+    printf '{"container":"a-b","tag":"c"}\n' > "$TEST_TEMP_DIR/.bake-merge-receipts-artifacts/bake-merge-receipts-test/first.json"
+    printf '{"container":"a","tag":"b-c"}\n' > "$TEST_TEMP_DIR/.bake-merge-receipts-artifacts/bake-merge-receipts-test/second.json"
+    printf '{"container":"a-b","tag":false}\n' > "$TEST_TEMP_DIR/.bake-merge-receipts-artifacts/bake-merge-receipts-test/malformed.json"
+
+    run env BAKE_MERGE_RESULT=failure GITHUB_OUTPUT="$TEST_TEMP_DIR/github-output" \
+        bash -c 'cd "$1" && bash -c "$2"' _ "$TEST_TEMP_DIR" "$CACHE_MERGE_BODY"
+
+    [ "$status" -eq 0 ] || return 1
+    [ "$(jq -r '.build_digest' "$TEST_TEMP_DIR/.build-lineage/a-b-c.json")" = "$new_first" ] || return 1
+    [ "$(jq -r '.build_digest' "$TEST_TEMP_DIR/.build-lineage/a-b-c-second.json")" = "$new_second" ] || return 1
+    [[ "$output" == *'Ignoring malformed bake merge receipt'* ]] || return 1
+}
+
+@test "cache lineage lets a malformed receipt authorize no bake record" {
+    local old_digest new_digest
+    old_digest=$(digest a)
+    new_digest=$(digest b)
+    mkdir -p "$TEST_TEMP_DIR/.build-lineage" \
+        "$TEST_TEMP_DIR/.build-lineage-artifacts/build-lineage-bake-amd64-test" \
+        "$TEST_TEMP_DIR/.bake-merge-receipts-artifacts/bake-merge-receipts-test"
+    lineage_record first 1 "$old_digest" > "$TEST_TEMP_DIR/.build-lineage/first-1.json"
+    lineage_record first 1 "$new_digest" > "$TEST_TEMP_DIR/.build-lineage-artifacts/build-lineage-bake-amd64-test/first-1.json"
+    printf '{"container":"first","tag":false}\n' > "$TEST_TEMP_DIR/.bake-merge-receipts-artifacts/bake-merge-receipts-test/malformed.json"
+
+    run env BAKE_MERGE_RESULT=failure GITHUB_OUTPUT="$TEST_TEMP_DIR/github-output" \
+        bash -c 'cd "$1" && bash -c "$2"' _ "$TEST_TEMP_DIR" "$CACHE_MERGE_BODY"
+
+    [ "$status" -eq 0 ] || return 1
+    [ "$(jq -r '.build_digest' "$TEST_TEMP_DIR/.build-lineage/first-1.json")" = "$old_digest" ] || return 1
+    [[ "$output" == *'Ignoring malformed bake merge receipt'* ]] || return 1
+}
+
 @test "external index descriptor writes a valid schema-v3 record" {
     local build_digest base_digest base_identity plan metadata descriptors record
     build_digest=$(digest a)

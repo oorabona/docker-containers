@@ -218,7 +218,7 @@ generate_sbom() (
         log_error "Failed to create SBOM output directory: $output_dir"
         return 1
     fi
-    if ! staged_output=$(mktemp "$output_dir/.sbom-stage.XXXXXX"); then
+    if ! staged_output=$(mktemp -- "$output_dir/.sbom-stage.XXXXXX"); then
         log_error "Failed to create staged SBOM file in: $output_dir"
         return 1
     fi
@@ -944,7 +944,7 @@ append_build_history() (
         changes_summary="+$added_count -$removed_count ~$updated_count"
     fi
 
-    if ! staged_history=$(mktemp "$output_dir/.history-stage.XXXXXX"); then
+    if ! staged_history=$(mktemp -- "$output_dir/.history-stage.XXXXXX"); then
         log_error "Failed to create staged build history file in: $output_dir"
         return 1
     fi

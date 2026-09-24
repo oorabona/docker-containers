@@ -4380,28 +4380,36 @@ jobs:
         run: |
           source helpers/base-image-utils.sh
           mkdir -p .build-lineage
-          receipt_matches_lineage() {
-            local lineage_record="$1" receipt_file receipt_container receipt_tag
-            local lineage_container lineage_tag
-            lineage_container=$(jq -r '.container' <<< "$lineage_record")
-            lineage_tag=$(jq -r '.tag' <<< "$lineage_record")
-            [[ -d ".bake-merge-receipts-artifacts" ]] || return 1
+          declare -A bake_merge_receipt_keys=()
+          load_bake_merge_receipts() {
+            local receipt_file receipt_key
+            [[ -d ".bake-merge-receipts-artifacts" ]] || return 0
             while IFS= read -r -d '' receipt_file; do
-              if ! jq -e 'type == "object" and keys == ["container", "tag"] and
-                  (.container | type == "string" and length > 0) and
-                  (.tag | type == "string" and length > 0)' \
-                  "$receipt_file" >/dev/null 2>&1; then
+              if ! receipt_key=$(jq -cer 'select(
+                  (type == "object") and
+                  (keys == ["container", "tag"]) and
+                  ((.container | type) == "string") and
+                  ((.container | length) > 0) and
+                  ((.tag | type) == "string") and
+                  ((.tag | length) > 0)
+                ) |
+                  [.container, .tag] | tojson' "$receipt_file" 2>/dev/null); then
                 echo "::warning::Ignoring malformed bake merge receipt: $receipt_file"
                 continue
               fi
-              receipt_container=$(jq -r '.container' "$receipt_file")
-              receipt_tag=$(jq -r '.tag' "$receipt_file")
-              if [[ "$receipt_container" == "$lineage_container" && "$receipt_tag" == "$lineage_tag" ]]; then
-                return 0
-              fi
+              bake_merge_receipt_keys["$receipt_key"]=1
             done < <(find .bake-merge-receipts-artifacts -name '*.json' -print0)
-            return 1
           }
+          receipt_matches_lineage() {
+            local lineage_record="$1" lineage_key
+            if ! lineage_key=$(jq -cer '[.container, .tag] | tojson' <<< "$lineage_record"); then
+              return 1
+            fi
+            [[ "${bake_merge_receipt_keys[$lineage_key]+present}" == "present" ]]
+          }
+          if [[ "$BAKE_MERGE_RESULT" != "success" ]]; then
+            load_bake_merge_receipts
+          fi
           if [ -d ".build-lineage-artifacts" ]; then
             while IFS= read -r -d '' lineage_file; do
               case "$lineage_file" in
