@@ -23,6 +23,11 @@ if [[ "$*" == *"--method DELETE"* ]]; then
     exit 0
 fi
 
+if [[ "$*" == *"/versions/101"* ]]; then
+    printf '%s\n' '{"id":101,"metadata":{"container":{"tags":["obsolete"]}}}'
+    exit 0
+fi
+
 if [[ "$*" != *"/versions"* ]]; then
     case "${GH_MODE:-}" in
         delete-failure|cleanup-failure) package_version_count=1 ;;
@@ -213,6 +218,7 @@ EOF
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" == *"/versions/102"* ]]; then printf "%s\\n" "{\"id\":102,\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}}}"; return 0; fi
                 if [[ "$*" == *"/versions"* ]]; then
                     [[ "$*" == *"/container/short/versions"* ]] && printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]" || printf "%s\\n" "[]"
                 elif [[ "$*" == *"/container/short"* ]]; then
@@ -246,6 +252,7 @@ EOF
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" == *"/versions/102"* ]]; then printf "%s\\n" "{\"id\":102,\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}}}"; return 0; fi
                 if [[ "$*" == *"/versions"* ]]; then
                     printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
                 else
@@ -301,6 +308,7 @@ EOF
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" == *"/versions/101"* ]]; then printf "%s\n" "{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}}}"; return 0; fi
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\n" "{\"version_count\":2}"; return 0; fi
                 printf "%s\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
             }
@@ -894,6 +902,7 @@ EOF
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "%s\\n" "client response"; return 0; fi
+                if [[ "$*" == *"/versions/101"* ]]; then printf "%s\\n" "{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}}}"; return 0; fi
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":1}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
             }
@@ -911,7 +920,7 @@ EOF
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
-            purge_container() { printf "%s\\n" stray "0|0|0|0"; }
+            purge_container() { printf "%s\\n" stray "0|0|0|0|0"; }
             main stale
         '
 
@@ -930,7 +939,7 @@ EOF
             bash -c '
                 set -euo pipefail
                 source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
-                purge_container() { printf "%s\\n" "$RESULT_COUNTER|0|0|0"; }
+                purge_container() { printf "%s\\n" "$RESULT_COUNTER|0|0|0|0"; }
                 main stale
             '
 
@@ -947,7 +956,7 @@ EOF
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
-            purge_container() { printf "%s\\n" "2147483647|0|0|0"; }
+            purge_container() { printf "%s\\n" "2147483647|0|0|0|0"; }
             main first second
         '
 
@@ -1281,6 +1290,7 @@ EOF
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" == *"/versions/101"* ]]; then printf "%s\\n" "{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}"; return 0; fi
                 if [[ "$*" == *"/versions"* ]]; then
                     printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]"
                 else
@@ -1296,4 +1306,44 @@ EOF
     '
 
     [[ "$status" -eq 0 ]]
+}
+
+@test "age cleanup does not delete a stale record whose re-read tag set changed" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN=test-token OWNER=test-owner DRY_RUN=false KEEP_LATEST_COUNT=0 KEEP_MONTHS=0 bash -c '
+        source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+        gh() {
+            [[ "$*" == *"--method DELETE"* ]] && { printf "DELETE\n"; return 0; }
+            [[ "$*" == *"/versions/101"* ]] && { printf "%s\n" "{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"obsolete\",\"new-tag\"]}}}"; return 0; }
+            [[ "$*" == *"/versions"* ]] && printf "%s\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]" || printf "%s\n" "{\"version_count\":1}"
+        }
+        main stale
+    '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *DELETE* ]]
+    [[ "$output" == *"version 101 not deleted: re-read tag set changed"* ]]
+}
+
+@test "age cleanup fails closed for failed or malformed version re-reads" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN=test-token OWNER=test-owner DRY_RUN=false KEEP_LATEST_COUNT=0 KEEP_MONTHS=0 bash -c '
+        source "$PROJECT_ROOT/scripts/cleanup-old-versions.sh"
+        for mode in failed malformed; do
+            gh() {
+                [[ "$*" == *"--method DELETE"* ]] && { printf "DELETE\n"; return 0; }
+                if [[ "$*" == *"/versions/101"* ]]; then
+                    [[ "$mode" == failed ]] && return 1
+                    printf "%s\n" "[]"
+                    return 0
+                fi
+                [[ "$*" == *"/versions"* ]] && printf "%s\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"obsolete\"]}},\"created_at\":\"2000-01-01T00:00:00Z\"}]" || printf "%s\n" "{\"version_count\":1}"
+            }
+            main stale && exit 1
+            true
+        done
+    '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *DELETE* ]]
+    [[ "$output" == *"reread_failures=1"* ]]
+    [[ "$output" == *"not deleted: re-read failed"* ]]
 }
