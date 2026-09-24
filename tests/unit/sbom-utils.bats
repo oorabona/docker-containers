@@ -24,6 +24,9 @@ teardown() {
 write_syft_stub() {
     cat > "$TEST_TEMP_DIR/bin/syft" <<'STUB'
 #!/usr/bin/env bash
+if [[ -n "${SYFT_STUB_ARGV_LOG:-}" ]]; then
+    printf '%s\n' "$@" >> "$SYFT_STUB_ARGV_LOG"
+fi
 for argument in "$@"; do
     [[ "$argument" == "--help" ]] && exit 0
 done
@@ -37,12 +40,32 @@ done
 
 case "${SYFT_STUB_MODE:-valid}" in
     valid) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[]}' > "$output_file" ;;
+    invalid-filterable) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[],"files":"not-an-array"}' > "$output_file" ;;
     no-output) ;;
     multi-root) printf '[]\n{"packages":[]}\n' > "$output_file" ;;
     invalid-spdx) printf '{"packages":[]}' > "$output_file" ;;
     invalid) printf 'not-json' > "$output_file" ;;
     fail) exit 1 ;;
 esac
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/syft"
+}
+
+write_file_relationships_syft_stub() {
+    cat > "$TEST_TEMP_DIR/bin/syft" <<'STUB'
+#!/usr/bin/env bash
+for argument in "$@"; do
+    [[ "$argument" == "--help" ]] && exit 0
+done
+
+output_file=""
+for argument in "$@"; do
+    case "$argument" in
+        spdx-json=*) output_file="${argument#spdx-json=}" ;;
+    esac
+done
+
+printf '%s\n' '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[{"SPDXID":"SPDXRef-Package-a","name":"a","hasFiles":["SPDXRef-File-a"]},{"SPDXID":"SPDXRef-Package-b","name":"b"}],"files":[{"SPDXID":"SPDXRef-File-a","fileName":"/a"}],"relationships":[{"spdxElementId":"SPDXRef-Package-a","relationshipType":"OTHER","relatedSpdxElement":"SPDXRef-File-a"},{"spdxElementId":"SPDXRef-Package-a","relationshipType":"DEPENDS_ON","relatedSpdxElement":"SPDXRef-Package-b"}]}' > "$output_file"
 STUB
     chmod +x "$TEST_TEMP_DIR/bin/syft"
 }
@@ -138,6 +161,76 @@ JSON
 
     [ "$status" -eq 0 ] || return 1
     jq -e '.packages == []' "$output_file" >/dev/null || return 1
+}
+
+@test "generate_sbom excludes only the PE binary package cataloger for github-runner" {
+    write_syft_stub
+    local output_file="$TEST_TEMP_DIR/github-runner.sbom.json"
+    local argv_log="$TEST_TEMP_DIR/syft.argv"
+    : > "$argv_log"
+
+    run env SYFT_STUB_ARGV_LOG="$argv_log" bash -c 'source "$1"; generate_sbom ghcr.io/oorabona/github-runner:windows-dev "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    grep -Fqx -- '--select-catalogers=-pe-binary-package-cataloger' "$argv_log"
+}
+
+@test "generate_sbom leaves cataloger selection unchanged for ordinary images" {
+    write_syft_stub
+    local output_file="$TEST_TEMP_DIR/ordinary.sbom.json"
+    local argv_log="$TEST_TEMP_DIR/syft.argv"
+    : > "$argv_log"
+
+    run env SYFT_STUB_ARGV_LOG="$argv_log" bash -c 'source "$1"; generate_sbom ghcr.io/oorabona/ordinary-image:tag "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    ! grep -Fqx -- '--select-catalogers=-pe-binary-package-cataloger' "$argv_log"
+}
+
+@test "generate_sbom removes SPDX file entries and their relationships for github-runner" {
+    write_file_relationships_syft_stub
+    local output_file="$TEST_TEMP_DIR/github-runner.sbom.json"
+
+    run bash -c 'source "$1"; generate_sbom ghcr.io/oorabona/github-runner:windows-dev "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    "$SYSTEM_JQ" -e '(.files | not) and
+        ([.relationships[] | select(.spdxElementId == "SPDXRef-File-a" or .relatedSpdxElement == "SPDXRef-File-a")] | length == 0) and
+        ([.packages[].SPDXID] | sort == ["SPDXRef-Package-a", "SPDXRef-Package-b"]) and
+        ([.packages[] | .hasFiles? // [] | .[]] | index("SPDXRef-File-a") | not) and
+        .relationships == [{spdxElementId: "SPDXRef-Package-a", relationshipType: "DEPENDS_ON", relatedSpdxElement: "SPDXRef-Package-b"}]' "$output_file" >/dev/null
+}
+
+@test "generate_sbom filters github-runner output in a relative -dir destination" {
+    write_file_relationships_syft_stub
+    local output_file="-dir/github-runner.sbom.json"
+
+    run bash -c 'cd "$3" && source "$1" && generate_sbom ghcr.io/oorabona/github-runner:windows-dev "$2"' _ "$SBOM_UTILS" "$output_file" "$TEST_TEMP_DIR"
+
+    [ "$status" -eq 0 ] || return 1
+    [ -f "$TEST_TEMP_DIR/$output_file" ]
+}
+
+@test "generate_sbom leaves ordinary SPDX documents byte-identical" {
+    write_file_relationships_syft_stub
+    local output_file="$TEST_TEMP_DIR/ordinary.sbom.json"
+    local expected_file="$TEST_TEMP_DIR/expected.sbom.json"
+    printf '%s\n' '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[{"SPDXID":"SPDXRef-Package-a","name":"a","hasFiles":["SPDXRef-File-a"]},{"SPDXID":"SPDXRef-Package-b","name":"b"}],"files":[{"SPDXID":"SPDXRef-File-a","fileName":"/a"}],"relationships":[{"spdxElementId":"SPDXRef-Package-a","relationshipType":"OTHER","relatedSpdxElement":"SPDXRef-File-a"},{"spdxElementId":"SPDXRef-Package-a","relationshipType":"DEPENDS_ON","relatedSpdxElement":"SPDXRef-Package-b"}]}' > "$expected_file"
+
+    run bash -c 'source "$1"; generate_sbom ghcr.io/oorabona/ordinary-image:tag "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    cmp -s "$expected_file" "$output_file"
+}
+
+@test "generate_sbom fails when the github-runner SPDX filter cannot process output" {
+    write_syft_stub
+    local output_file="$TEST_TEMP_DIR/github-runner.sbom.json"
+
+    run env SYFT_STUB_MODE=invalid-filterable bash -c 'source "$1"; generate_sbom ghcr.io/oorabona/github-runner:windows-dev "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -ne 0 ] || return 1
+    [ ! -e "$output_file" ]
 }
 
 @test "generate_sbom returns failure to if and || when syft writes no output" {

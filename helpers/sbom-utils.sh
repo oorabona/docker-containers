@@ -210,11 +210,17 @@ generate_sbom() (
     fi
     log_info "Generating SBOM for $image_ref..."
     local syft_args=("registry:${image_ref}" -o "spdx-json=${output_file}" --quiet)
+    local image_repository="${image_ref%@*}"
+    image_repository="${image_repository##*/}"
+    image_repository="${image_repository%%:*}"
     local syft_cmd=(syft)
     if syft --timeout 10m --help &>/dev/null; then
         syft_args=(--timeout 10m "${syft_args[@]}")
     elif command -v timeout &>/dev/null; then
         syft_cmd=(timeout 10m syft)
+    fi
+    if [[ "$image_repository" == "github-runner" ]]; then
+        syft_args+=(--select-catalogers=-pe-binary-package-cataloger)
     fi
 
     if ! retry_with_backoff 2 30 "${syft_cmd[@]}" "${syft_args[@]}"; then
@@ -224,6 +230,47 @@ generate_sbom() (
     if [[ ! -f "$output_file" || ! -r "$output_file" ]]; then
         log_error "SBOM producer did not create a readable output: $output_file"
         return 1
+    fi
+    if [[ "$image_repository" == "github-runner" ]]; then
+        local filtered_output
+        if ! filtered_output=$(mktemp -- "${output_file}.filtered.XXXXXX"); then
+            rm -f -- "$output_file"
+            log_error "Failed to create filtered SPDX output for $output_file"
+            return 1
+        fi
+        if ! jq '
+            (.files // [] | if type == "array" then . else error("SPDX files must be an array") end
+             | map(if (.SPDXID | type) == "string" then .SPDXID else error("SPDX file must have a string SPDXID") end)
+             | map({(.): true}) | add // {}) as $file_ids
+            | del(.files)
+            | if .relationships == null then .
+              elif (.relationships | type) == "array" then
+                  .relationships |= map(select(
+                      (.spdxElementId as $spdx_element_id
+                       | $file_ids[$spdx_element_id] | not)
+                      and
+                      (.relatedSpdxElement as $related_spdx_element
+                       | $file_ids[$related_spdx_element] | not)
+                  ))
+              else error("SPDX relationships must be an array")
+              end
+            | .packages |= map(
+                if (.hasFiles? == null) then .
+                elif (.hasFiles | type) == "array" then
+                    .hasFiles |= map(select(. as $file_id | $file_ids[$file_id] | not))
+                else error("SPDX package hasFiles must be an array")
+                end
+            )
+        ' -- "$output_file" > "$filtered_output"; then
+            rm -f -- "$filtered_output" "$output_file"
+            log_error "Failed to remove SPDX file entries from $output_file"
+            return 1
+        fi
+        if ! mv -f -- "$filtered_output" "$output_file"; then
+            rm -f -- "$filtered_output" "$output_file"
+            log_error "Failed to publish filtered SPDX output: $output_file"
+            return 1
+        fi
     fi
     # Require one SPDX JSON document with the fields downstream consumers need;
     # this validates a minimal contract, not the complete SPDX schema.
