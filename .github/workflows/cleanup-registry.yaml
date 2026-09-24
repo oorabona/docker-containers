@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Dry-run the age and obsolete-tag pruners (no deletions); extension cleanup remains global and is controlled by execute_ext_cleanup alone; Docker Hub obsolete tags are always plan-only until #1574.'
+        description: 'Dry-run the age and obsolete-tag pruners (no deletions); extension cleanup remains global and is controlled by execute_ext_cleanup alone; Docker Hub plans only until the operator enables it; candidates are tags neither declared nor still published on GHCR.'
         required: false
         type: boolean
         default: false
@@ -75,7 +75,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
-          # Keep Docker Hub cleanup plan-only until #1574 gives tag planning one owner.
+          # Docker Hub plans only until the operator enables it; candidates are tags neither declared nor still published on GHCR.
           DOCKERHUB_DRY_RUN: 'true'
           OWNER: ${{ github.repository_owner }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
