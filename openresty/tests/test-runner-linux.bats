@@ -123,6 +123,9 @@ _find_image() {
 # ---------------------------------------------------------------------------
 
 setup() {
+    CONTAINER_ID=""
+    NGINX_CONF=""
+
     if IMAGE=$(_find_image); then
         :
     else
@@ -217,7 +220,9 @@ teardown() {
     if [[ -n "${CONTAINER_ID:-}" ]]; then
         docker rm -f "$CONTAINER_ID" 2>/dev/null || true
     fi
-    rm -f "$NGINX_CONF" 2>/dev/null || true
+    if [[ -n "${NGINX_CONF:-}" ]]; then
+        rm -f "$NGINX_CONF" 2>/dev/null || true
+    fi
 }
 
 # ---------------------------------------------------------------------------

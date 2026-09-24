@@ -159,7 +159,12 @@ case "\$1" in
             *'nginx -V'*) printf '%s\n' '/usr/local/openresty/pcre2/include /usr/local/openresty/pcre2/lib' ;;
         esac
         ;;
-    rm|logs) exit 0 ;;
+    rm)
+        if [[ -n "\${DOCKER_RM_LOG:-}" ]]; then
+            printf '%s\n' "\$@" >> "\$DOCKER_RM_LOG"
+        fi
+        ;;
+    logs) exit 0 ;;
     *) exit 64 ;;
 esac
 EOF
@@ -337,6 +342,25 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"resolved openresty image sha256:enumerated has org.opencontainers.image.build-digest label different-digest; expected $expected; run ./make build openresty, or set OPENRESTY_IMAGE"* ]]
     [ ! -s "$DOCKER_RUN_LOG" ]
+}
+
+@test "openresty runner: stale digest skip leaves inherited teardown targets untouched" {
+    local sentinel_nginx_conf="$TEST_TEMP_DIR/sentinel-nginx.conf"
+    local DOCKER_RUN_LOG="$TEST_TEMP_DIR/docker-run.log"
+    local DOCKER_RM_LOG="$TEST_TEMP_DIR/docker-rm.log"
+    : > "$sentinel_nginx_conf"
+    : > "$DOCKER_RUN_LOG"
+    : > "$DOCKER_RM_LOG"
+    export CONTAINER_ID="sentinel-container"
+    export NGINX_CONF="$sentinel_nginx_conf"
+    export DOCKER_RM_LOG
+    stub_runner_docker "sha256:enumerated" "different-digest" "1.31.1.1"
+
+    run_runner_suite
+
+    [ "$status" -eq 0 ]
+    [ -e "$sentinel_nginx_conf" ]
+    [ ! -s "$DOCKER_RM_LOG" ]
 }
 
 @test "openresty runner: matching enumerated image runs by its ID" {
