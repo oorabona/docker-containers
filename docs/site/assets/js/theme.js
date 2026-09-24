@@ -2,7 +2,21 @@
 // Included before page-specific scripts
 // API: ThemeManager.currentTheme, ThemeManager.initTheme(), ThemeManager.applyTheme(), ThemeManager.toggleTheme()
 (function() {
-  var currentTheme = localStorage.getItem('preferredTheme') || 'dark';
+  function getStoredItem(key, defaultValue) {
+    try {
+      return localStorage.getItem(key) || defaultValue;
+    } catch (e) {
+      return defaultValue;
+    }
+  }
+
+  function setStoredItem(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (e) {}
+  }
+
+  var currentTheme = getStoredItem('preferredTheme', 'dark');
 
   function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
@@ -11,7 +25,7 @@
   }
 
   function initTheme() {
-    var saved = localStorage.getItem('preferredTheme');
+    var saved = getStoredItem('preferredTheme', null);
     if (!saved) {
       currentTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
@@ -20,7 +34,7 @@
 
   function toggleTheme() {
     currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
-    localStorage.setItem('preferredTheme', currentTheme);
+    setStoredItem('preferredTheme', currentTheme);
     applyTheme(currentTheme);
   }
 
