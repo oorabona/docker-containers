@@ -79,10 +79,18 @@ run_dockerhub_fixture() {
     local delete_http_code="$3"
     local dry_run="$4"
     local valid_tags="$5"
+    local dockerhub_dry_run="${6-false}"
+    local -a environment=(env)
+
+    if [[ "$dockerhub_dry_run" == unset ]]; then
+        environment+=(-u DOCKERHUB_DRY_RUN)
+    else
+        environment+=("DOCKERHUB_DRY_RUN=$dockerhub_dry_run")
+    fi
 
     DH_CURL_LOG="$BATS_TEST_TMPDIR/dockerhub-curl.log"
     : > "$DH_CURL_LOG"
-    run env \
+    run "${environment[@]}" \
         PROJECT_ROOT="$PROJECT_ROOT" \
         DH_PAGE_ONE="$page_one" \
         DH_PAGE_TWO="$page_two" \
@@ -118,6 +126,37 @@ run_dockerhub_fixture() {
             }
             purge_dockerhub app "$DH_VALID_TAGS"
         '
+}
+
+@test "Docker Hub cleanup plans obsolete tags unless DOCKERHUB_DRY_RUN is false" {
+    local listing='{"count":1,"results":[{"name":"obsolete"}],"next":null}'
+    local dockerhub_dry_run
+
+    for dockerhub_dry_run in unset true; do
+        run_dockerhub_fixture "$listing" '' 204 false latest "$dockerhub_dry_run"
+
+        [[ "$status" -eq 0 ]]
+        [[ "$output" == *"[DRY RUN] Would delete Docker Hub tag: obsolete"* ]]
+        [[ "$output" == *"1|1|0|0"* ]]
+        [[ "$(grep -c -- '-X DELETE' "$DH_CURL_LOG")" -eq 0 ]]
+    done
+
+    run_dockerhub_fixture "$listing" '' 204 false latest false
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"1|1|1|0"* ]]
+    [[ "$(grep -c -- '-X DELETE' "$DH_CURL_LOG")" -eq 1 ]]
+}
+
+@test "Docker Hub deletion primitive refuses without DOCKERHUB_DRY_RUN opt-in" {
+    run env -u DOCKERHUB_DRY_RUN PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false bash -c '
+        source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+        curl() { printf "%s" 204; }
+        _cleanup_outdated_tags_delete dockerhub-tag fixture-jwt app obsolete
+    '
+
+    [[ "$status" -eq 64 ]]
+    [[ "$output" == *"cleanup deletion refused: DOCKERHUB_DRY_RUN must be false"* ]]
 }
 
 @test "Docker Hub cleanup reads every page before deleting an obsolete tag" {
@@ -273,7 +312,7 @@ run_dockerhub_fixture() {
     : > "$curl_log"
 
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
-        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false DOCKERHUB_DRY_RUN=false CURL_LOG="$curl_log" bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
             emit_listing() {
@@ -310,7 +349,7 @@ run_dockerhub_fixture() {
     : > "$curl_log"
 
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
-        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false DOCKERHUB_DRY_RUN=false CURL_LOG="$curl_log" bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
             curl() {
@@ -342,7 +381,7 @@ run_dockerhub_fixture() {
     : > "$listing_file_path"
 
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
-        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" LISTING_FILE_PATH="$listing_file_path" bash -c '
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false DOCKERHUB_DRY_RUN=false CURL_LOG="$curl_log" LISTING_FILE_PATH="$listing_file_path" bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
             curl() {
@@ -384,7 +423,7 @@ run_dockerhub_fixture() {
         '{"token":""}'; do
         : > "$curl_log"
         run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
-            DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" LOGIN_RESPONSE="$login_response" bash -c '
+            DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false DOCKERHUB_DRY_RUN=false CURL_LOG="$curl_log" LOGIN_RESPONSE="$login_response" bash -c '
                 source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
                 LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
                 curl() {
@@ -409,7 +448,7 @@ run_dockerhub_fixture() {
     : > "$curl_log"
 
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
-        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false DOCKERHUB_DRY_RUN=false CURL_LOG="$curl_log" bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
             DOCKERHUB_LOGIN_MAX_BYTES=16
@@ -464,7 +503,7 @@ run_dockerhub_fixture() {
     : > "$curl_log"
 
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
-        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false DOCKERHUB_DRY_RUN=false CURL_LOG="$curl_log" bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
             curl() {
@@ -541,7 +580,7 @@ run_dockerhub_fixture() {
     : > "$curl_log"
 
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
-        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false DOCKERHUB_DRY_RUN=false CURL_LOG="$curl_log" bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12
             DOCKERHUB_REQUESTS_REMAINING=3
@@ -716,7 +755,7 @@ run_dockerhub_fixture() {
 
 @test "outdated-tag main aggregates Docker Hub counters and continues after a delete failure" {
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
-        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false bash -c '
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false DOCKERHUB_DRY_RUN=false bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
@@ -741,7 +780,7 @@ run_dockerhub_fixture() {
     : > "$curl_log"
 
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
-        DOCKERHUB_USERNAME='test user' DRY_RUN=false CURL_LOG="$curl_log" bash -c '
+        DOCKERHUB_USERNAME='test user' DRY_RUN=false DOCKERHUB_DRY_RUN=false CURL_LOG="$curl_log" bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             curl() { printf "%s\\n" "$*" >> "$CURL_LOG"; printf '%s' 204; }
             _cleanup_outdated_tags_delete dockerhub-tag fixture-jwt "repo/name" "tag[{/%"
@@ -1967,6 +2006,7 @@ EOF
     [[ "$purge_step" == *"always() && (github.event_name == 'schedule' || inputs.purge_obsolete == true)"* ]]
     [[ "$workflow" == *"steps.cleanup_old_versions.outcome }}\" == \"failure\" || \"\${{ steps.purge_obsolete_images.outcome"* ]]
     [[ "$purge_step" == *"github.event_name == 'schedule' && 'true' || inputs.dry_run || 'false'"* ]]
+    [[ "$purge_step" == *"DOCKERHUB_DRY_RUN: 'true'"* ]]
 
     # This is the failure path that GitHub Actions evaluates: continue-on-error
     # preserves the age-pruner outcome while always() still starts the second

@@ -75,6 +75,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ github.event_name == 'schedule' && 'true' || inputs.dry_run || 'false' }}
+          # Keep Docker Hub cleanup plan-only until #1574 gives tag planning one owner.
+          DOCKERHUB_DRY_RUN: 'true'
           OWNER: ${{ github.repository_owner }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
