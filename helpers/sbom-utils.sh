@@ -239,28 +239,52 @@ generate_sbom() (
             return 1
         fi
         if ! jq '
-            (.files // [] | if type == "array" then . else error("SPDX files must be an array") end
-             | map(if (.SPDXID | type) == "string" then .SPDXID else error("SPDX file must have a string SPDXID") end)
+            (if has("files") then
+                (.files | if type == "array" then . else error("SPDX files must be an array") end)
+             else []
+             end
+             | map(
+                 if type == "object" then
+                     if (.SPDXID | type) == "string" then .SPDXID else error("SPDX file must have a string SPDXID") end
+                 else error("SPDX file must be an object")
+                 end
+             )
              | map({(.): true}) | add // {}) as $file_ids
             | del(.files)
-            | if .relationships == null then .
-              elif (.relationships | type) == "array" then
+            | if has("relationships") then
+                  if (.relationships | type) == "array" then
                   .relationships |= map(select(
-                      (.spdxElementId as $spdx_element_id
-                       | $file_ids[$spdx_element_id] | not)
-                      and
-                      (.relatedSpdxElement as $related_spdx_element
-                       | $file_ids[$related_spdx_element] | not)
+                      if type == "object" then
+                          (.spdxElementId as $spdx_element_id
+                           | $file_ids[$spdx_element_id] | not)
+                          and
+                          (.relatedSpdxElement as $related_spdx_element
+                           | $file_ids[$related_spdx_element] | not)
+                      else error("SPDX relationship must be an object")
+                      end
                   ))
               else error("SPDX relationships must be an array")
               end
-            | .packages |= map(
-                if (.hasFiles? == null) then .
-                elif (.hasFiles | type) == "array" then
-                    .hasFiles |= map(select(. as $file_id | $file_ids[$file_id] | not))
-                else error("SPDX package hasFiles must be an array")
-                end
-            )
+              else .
+              end
+            | if (.packages | type) == "array" then
+                  .packages |= map(
+                      if type != "object" then error("SPDX package must be an object")
+                      elif has("hasFiles") then
+                          if (.hasFiles | type) == "array" then
+                              .hasFiles |= map(
+                                  if type == "string" then
+                                      select(. as $file_id | $file_ids[$file_id] | not)
+                                  else error("SPDX package hasFiles entries must be strings")
+                                  end
+                              )
+                          else error("SPDX package hasFiles must be an array")
+                          end
+                      else .
+                      end
+                  )
+              else error("SPDX packages must be an array")
+              end
         ' -- "$output_file" > "$filtered_output"; then
             rm -f -- "$filtered_output" "$output_file"
             log_error "Failed to remove SPDX file entries from $output_file"

@@ -41,6 +41,11 @@ done
 case "${SYFT_STUB_MODE:-valid}" in
     valid) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[]}' > "$output_file" ;;
     invalid-filterable) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[],"files":"not-an-array"}' > "$output_file" ;;
+    files-null) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[],"files":null}' > "$output_file" ;;
+    relationships-null) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[],"relationships":null}' > "$output_file" ;;
+    has-files-null) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[{"hasFiles":null}]}' > "$output_file" ;;
+    null-package) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[null]}' > "$output_file" ;;
+    string-package) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":["not-an-object"]}' > "$output_file" ;;
     no-output) ;;
     multi-root) printf '[]\n{"packages":[]}\n' > "$output_file" ;;
     invalid-spdx) printf '{"packages":[]}' > "$output_file" ;;
@@ -231,6 +236,20 @@ JSON
 
     [ "$status" -ne 0 ] || return 1
     [ ! -e "$output_file" ]
+}
+
+@test "generate_sbom rejects null SPDX fields and non-object github-runner packages" {
+    write_syft_stub
+    local fixture output_file
+
+    for fixture in files-null relationships-null has-files-null null-package string-package; do
+        output_file="$TEST_TEMP_DIR/${fixture}.sbom.json"
+
+        run env SYFT_STUB_MODE="$fixture" bash -c 'source "$1"; generate_sbom ghcr.io/oorabona/github-runner:windows-dev "$2"' _ "$SBOM_UTILS" "$output_file"
+
+        [ "$status" -ne 0 ] || return 1
+        [ ! -e "$output_file" ] || return 1
+    done
 }
 
 @test "generate_sbom returns failure to if and || when syft writes no output" {
