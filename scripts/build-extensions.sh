@@ -1181,7 +1181,9 @@ _bundle_and_write_artifact() {
 _capture_index_digest() {
     local _ref="$1"
     local _raw_manifest
-    _raw_manifest=$($DOCKER buildx imagetools inspect "$_ref" --raw 2>/dev/null) || true
+    if ! _raw_manifest=$($DOCKER buildx imagetools inspect "$_ref" --raw 2>/dev/null); then
+        return 1
+    fi
     if [[ -n "$_raw_manifest" ]]; then
         printf 'sha256:%s' "$(printf '%s' "$_raw_manifest" | sha256sum | awk '{print $1}')"
     else
@@ -1189,26 +1191,30 @@ _capture_index_digest() {
     fi
 }
 
-# _multiarch_index_has_required_platforms <index_output>
-# Returns success when an imagetools index representation covers both required
-# target platforms.  The representation may be the human-readable inspect
-# output or the JSON emitted by `imagetools create --dry-run`.
-_multiarch_index_has_required_platforms() {
+# _multiarch_index_json_has_required_platforms <index_json>
+# Returns success only when index JSON covers exact linux/amd64 and linux/arm64
+# platforms. A document jq cannot process is always rejected; callers that
+# receive text must use _multiarch_index_text_has_required_platforms instead.
+_multiarch_index_json_has_required_platforms() {
     local _index_output="$1"
-    local _platforms
-    if _platforms=$(printf '%s' "$_index_output" | jq -r '
-        if type == "object" and (.manifests | type == "array") then
-            .manifests[]? | .platform? | select(.os != null and .architecture != null) |
-                "\(.os)/\(.architecture)"
-        else
-            empty
-        end
-    ' 2>/dev/null); then
-        grep -q "linux/amd64" <<< "$_platforms" && grep -q "linux/arm64" <<< "$_platforms"
-    else
-        # `imagetools inspect` without --raw is a human-readable platform list.
-        grep -q "linux/amd64" <<< "$_index_output" && grep -q "linux/arm64" <<< "$_index_output"
-    fi
+    printf '%s' "$_index_output" | jq -e '
+        type == "object" and
+        ((.manifests | type) == "array") and
+        any(.manifests[]?; (.platform? | type) == "object" and
+            .platform.os == "linux" and .platform.architecture == "amd64") and
+        any(.manifests[]?; (.platform? | type) == "object" and
+            .platform.os == "linux" and .platform.architecture == "arm64")
+    ' >/dev/null 2>&1
+}
+
+# _multiarch_index_text_has_required_platforms <imagetools_inspect_output>
+# Returns success only when human-readable `imagetools inspect` output has
+# complete, anchored Platform: fields. arm64/v8 is the buildx text form for
+# the arm64 variant and is accepted alongside bare arm64.
+_multiarch_index_text_has_required_platforms() {
+    local _index_output="$1"
+    grep -Eq '^[[:space:]]*Platform:[[:space:]]+linux/amd64[[:space:]]*$' <<< "$_index_output" &&
+        grep -Eq '^[[:space:]]*Platform:[[:space:]]+linux/arm64(/v8)?[[:space:]]*$' <<< "$_index_output"
 }
 
 # _dry_run_output_is_single_json_index <dry_run_output>
@@ -1219,7 +1225,16 @@ _dry_run_output_is_single_json_index() {
     local _dry_run_output="$1"
     printf '%s' "$_dry_run_output" | jq -es '
         if length == 1 then
-            .[0] | (type == "object" and (.manifests | type == "array"))
+            .[0] |
+            (type == "object" and
+             (.mediaType == "application/vnd.oci.image.index.v1+json" or
+              .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json") and
+             ((.manifests | type) == "array") and
+             ((.manifests | length) > 0) and
+             all(.manifests[];
+                 type == "object" and
+                 (.digest | type) == "string" and
+                 (.digest | test("^sha256:[0-9a-f]{64}$"))))
         else
             false
         end
@@ -1243,7 +1258,7 @@ _reuse_ref_is_multiarch() {
     if [[ "$_rc" -ne 0 ]]; then
         return 2
     fi
-    if _multiarch_index_has_required_platforms "$_out"; then
+    if _multiarch_index_text_has_required_platforms "$_out"; then
         return 0
     fi
     return 1
@@ -2528,7 +2543,7 @@ finalize_multiarch_manifests() {
                 _failed=true
                 continue
             fi
-            if ! _multiarch_index_has_required_platforms "$_nr_dry_run_out"; then
+            if ! _multiarch_index_json_has_required_platforms "$_nr_dry_run_out"; then
                 log_error "$ext $ceiling pg${major_ver}: non-resolver imagetools dry-run index does not cover both linux/amd64 and linux/arm64 — final tag not written"
                 _failed=true
                 continue
@@ -2749,7 +2764,7 @@ finalize_multiarch_manifests() {
                 _ext_failed=true
                 break
             fi
-            if ! _multiarch_index_has_required_platforms "$_dry_run_out"; then
+            if ! _multiarch_index_json_has_required_platforms "$_dry_run_out"; then
                 log_error "$ext $ver pg${major_ver}: imagetools dry-run index does not cover both linux/amd64 and linux/arm64 — final tag not written"
                 _ext_failed=true
                 break
@@ -2782,7 +2797,7 @@ finalize_multiarch_manifests() {
                 _ext_failed=true
                 break
             fi
-            if ! _multiarch_index_has_required_platforms "$_inspect_out"; then
+            if ! _multiarch_index_text_has_required_platforms "$_inspect_out"; then
                 if [[ "$ver" == "$ceiling" ]]; then
                     log_error "$ext $ver pg${major_ver} (ceiling): created manifest does not cover both linux/amd64 and linux/arm64 — fatal"
                     _ext_failed=true
