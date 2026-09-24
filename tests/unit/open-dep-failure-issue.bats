@@ -26,7 +26,7 @@ setup() {
     export VDRIFT_APP_SLUG="test-drift-app"
 
     # Optional vars — cleared so each test can set what it needs
-    unset PR_NUMBER PR_TITLE PR_BODY PR_LABELS FAILED_JOBS_JSON VDRIFT_GH_ERROR VDRIFT_RETRY_FLAG VDRIFT_VIEW_JSON
+    unset PR_NUMBER PR_TITLE PR_BODY PR_LABELS FAILED_JOBS_JSON FAILED_ALLOWLIST VDRIFT_GH_ERROR VDRIFT_RETRY_FLAG VDRIFT_VIEW_JSON
     export DRY_RUN="true"
 
     # Provide a mock gh that does nothing (prevents any real network call)
@@ -306,6 +306,7 @@ GHEOF
 |---|---|---|
 | FOO | 1.0 | 1.1 |"
     export PR_LABELS="automation,dependencies,php,minor-update"
+    export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
     export DRY_RUN="true"
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh"
@@ -322,6 +323,7 @@ GHEOF
 @test "DRY_RUN: version-bump prints container and new version" {
     export COMMIT_SUBJECT="build(postgres): update to 18.2"
     export PR_TITLE="🚀 Minor: postgres to 18.2"
+    export FAILED_JOBS_JSON='[{"name":"Build postgres:18.2","id":1}]'
     export DRY_RUN="true"
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh"
@@ -374,6 +376,7 @@ GHEOF
     export PR_BODY="| Dependency | Old | New |
 |---|---|---|
 | FOO | 1.0 | 1.1 |"
+    export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
     export DRY_RUN="false"
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh"
@@ -430,6 +433,7 @@ GHEOF
     export PR_BODY="| Dependency | Old | New |
 |---|---|---|
 | LIBSSL | 1.1.1w | 3.5.6 |"
+    export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
     export DRY_RUN="false"
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh"
@@ -921,6 +925,7 @@ GHEOF
     export PR_BODY="| Dependency | Old | New |
 |---|---|---|
 | LIBSSL | 1.1.1w | 3.5.6 |"
+    export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
     export DRY_RUN="false"
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh"
@@ -1411,6 +1416,7 @@ GHEOF
 
 @test "Proof D: without --container, deps(php) commit → auto-detects php, exit 0 (DRY_RUN)" {
     export COMMIT_SUBJECT="deps(php): update 4 dependencies"
+    export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
     export DRY_RUN="true"
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh"
@@ -1694,7 +1700,7 @@ GHEOF
 }
 
 # ---------------------------------------------------------------------------
-# F3 — FAILED_ALLOWLIST cross-check in auto-detect path
+# F3 — failure attribution cross-check in auto-detect path
 # ---------------------------------------------------------------------------
 
 @test "FAILED_ALLOWLIST set, detected container absent → exits 1 (skip, no spurious issue)" {
@@ -1721,25 +1727,66 @@ GHEOF
     [ "$status" -eq 0 ]
 }
 
-@test "FAILED_ALLOWLIST unset → no cross-check, original behaviour (exits 0 in DRY_RUN)" {
-    # No FAILED_ALLOWLIST → non-checkpoint run; original #514 behaviour preserved.
-    # deps(php) commit detected, no allowlist → proceeds unconditionally.
-    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+@test "FAILED_ALLOWLIST unset, unrelated failing job → exits 1 without opening an issue" {
+    # postgres was updated, but the only failed job belongs to github-runner.
+    export COMMIT_SUBJECT="build(postgres): update to 18.2"
+    export FAILED_JOBS_JSON='[{"name":"Create Manifest github-runner:2.337.0-windows-ltsc2022","id":1}]'
     unset FAILED_ALLOWLIST
     export DRY_RUN="true"
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
-    [ "$status" -eq 0 ]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"not named by a failing job"* ]]
+    [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
 }
 
-@test "FAILED_ALLOWLIST='' (empty string) → no cross-check, original behaviour" {
-    # Empty string (checkpoint skipped/guard-break) → same as unset → no allowlist check.
-    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+@test "FAILED_ALLOWLIST empty, matching failing job → opens and lists only the job name" {
+    export COMMIT_SUBJECT="deps(github-runner): bump to 2.337.0"
+    export FAILED_JOBS_JSON='[{"name":"Create Manifest github-runner:2.337.0-windows-ltsc2022","id":1}]'
     export FAILED_ALLOWLIST=""
     export DRY_RUN="true"
 
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
     [ "$status" -eq 0 ]
+    [[ "$output" == *"- Create Manifest github-runner:2.337.0-windows-ltsc2022"* ]]
+    [[ "$output" != *$'\n- id\n'* ]]
+}
+
+@test "FAILED_ALLOWLIST unset, cascade detection with another container's failed job → exits 1" {
+    # Cascade detection keeps its literal cascade:waiting-for-debian container
+    # value; it must not be attributed to a github-runner job.
+    export COMMIT_SUBJECT="deps(cascade:waiting-for-debian): bump dependency"
+    export FAILED_JOBS_JSON='[{"name":"Build github-runner:windows-ltsc2022-dev (amd64)","id":1}]'
+    unset FAILED_ALLOWLIST
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"[cascade:waiting-for-debian] is not named by a failing job"* ]]
+}
+
+@test "FAILED_ALLOWLIST valid and containing container → opens without failed-job matching" {
+    # The non-empty checkpoint allowlist remains authoritative, even if the
+    # failed-job names do not name this container.
+    export COMMIT_SUBJECT="build(postgres): update to 18.2"
+    export FAILED_JOBS_JSON='[{"name":"Build github-runner:windows-ltsc2022-dev (amd64)","id":1}]'
+    export FAILED_ALLOWLIST='["postgres"]'
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"🚨 [postgres]"* ]]
+}
+
+@test "FAILED_ALLOWLIST empty and FAILED_JOBS_JSON not an array → exits 1" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_JOBS_JSON='{"name":"Build php:8.3","id":1}'
+    export FAILED_ALLOWLIST=""
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no valid failing-job evidence"* ]]
 }
 
 # ---------------------------------------------------------------------------

@@ -312,19 +312,16 @@ build_issue_body() {
 
     # Failing jobs section
     local failing_jobs_section
-    if [[ -n "$FAILED_JOBS_JSON" ]]; then
+    if [[ -n "$FAILED_JOBS_JSON" ]] && \
+        printf '%s' "$FAILED_JOBS_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
         failing_jobs_section="## Failing jobs
 
 "
         local job_item
         while IFS= read -r job_item; do
-            job_item="$(echo "$job_item" | tr -d '"' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
             [[ -n "$job_item" ]] && failing_jobs_section+="- ${job_item}
 "
-        done < <(echo "$FAILED_JOBS_JSON" \
-            | grep -o '"[^"]*"' \
-            | grep -v '^"name"\|^"conclusion"\|^"failure"\|^"cancelled"' \
-            | tr -d '"')
+        done < <(printf '%s' "$FAILED_JOBS_JSON" | jq -r '.[]?.name // empty | strings')
     else
         failing_jobs_section="## Failing jobs
 
@@ -1229,8 +1226,9 @@ main() {
     # that actually built fine (another job caused build_failed=true).
     #
     # Behaviour matrix:
-    #   FAILED_ALLOWLIST unset/empty → no cross-check (non-checkpoint runs: workflow_dispatch/call,
-    #                                   skipped checkpoint) — original #514 behaviour preserved.
+    #   FAILED_ALLOWLIST unset/empty, FAILED_JOBS_JSON valid array with container name → proceed normally.
+    #   FAILED_ALLOWLIST unset/empty, FAILED_JOBS_JSON valid array without container name → return 1 (no-op).
+    #   FAILED_ALLOWLIST unset/empty, FAILED_JOBS_JSON empty/not an array → return 1 (no-op; no attribution evidence).
     #   FAILED_ALLOWLIST set, valid JSON array, container present → proceed normally.
     #   FAILED_ALLOWLIST set, valid JSON array, container absent  → return 1 (no-op, same as no-dep-bump).
     #   FAILED_ALLOWLIST set, invalid JSON                        → treat as empty (no cross-check; safe).
@@ -1241,6 +1239,32 @@ main() {
             2>/dev/null || true)
         if [[ "$in_allowlist" == "false" ]]; then
             log_info "::notice::detected container [${container}] is not in the checkpoint failure set (${FAILED_ALLOWLIST}) — skipping dep-attributed open (no spurious issue)"
+            exit 1
+        fi
+    else
+        # workflow_dispatch/workflow_call runs do not provide the checkpoint
+        # allowlist.  Attribute a dep failure only when a failing job name names
+        # this detected container (the word immediately before its first ':').
+        if [[ -z "$FAILED_JOBS_JSON" ]] || \
+            ! printf '%s' "$FAILED_JOBS_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            log_info "::notice::no valid failing-job evidence for detected container [${container}] — skipping dep-attributed open"
+            exit 1
+        fi
+
+        local failing_job_name job_prefix job_container
+        local container_has_failed_job=false
+        while IFS= read -r failing_job_name; do
+            [[ "$failing_job_name" == *:* ]] || continue
+            job_prefix="${failing_job_name%%:*}"
+            job_container="${job_prefix##*[[:space:]]}"
+            if [[ "$job_container" == "$container" ]]; then
+                container_has_failed_job=true
+                break
+            fi
+        done < <(printf '%s' "$FAILED_JOBS_JSON" | jq -r '.[]?.name // empty | strings')
+
+        if [[ "$container_has_failed_job" != "true" ]]; then
+            log_info "::notice::detected container [${container}] is not named by a failing job — skipping dep-attributed open (no spurious issue)"
             exit 1
         fi
     fi
