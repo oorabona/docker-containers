@@ -34,11 +34,13 @@ DOCKERHUB_LOGIN_MAX_BYTES=65536
 DOCKERHUB_LISTING_MAX_BYTES=1048576
 DOCKERHUB_CURL_CONNECT_TIMEOUT=10
 DOCKERHUB_CURL_MAX_TIME=30
+REGISTRY_MANIFEST_ACCEPT='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json'
 # The cleanup job has timeout-minutes: 75. Reserving five minutes for setup,
 # GHCR, and reporting leaves 70 * 60 = 4200 seconds; at most 4200 / 30 = 140
 # Docker Hub requests can each consume their full --max-time without exceeding
-# that allowance. This single allowance covers logins, listings, and DELETEs
-# across every container, and is reserved before each request.
+# that allowance. This single allowance covers Hub and registry token requests,
+# listings, manifest reads, and DELETEs across every container, and is reserved
+# before each request.
 DOCKERHUB_REQUESTS_REMAINING=140
 
 script_root() {
@@ -75,6 +77,80 @@ dockerhub_reserve_request() {
   fi
   DOCKERHUB_REQUESTS_REMAINING=$((DOCKERHUB_REQUESTS_REMAINING - 1))
   DOCKERHUB_REQUESTS_USED=$((DOCKERHUB_REQUESTS_USED + 1))
+}
+
+# Return a registry pull token for a single Docker Hub repository. The Hub API
+# login token authorizes tag-list and DELETE requests, while registry manifest
+# requests use the registry token service.
+dockerhub_registry_token() {
+  local container="$1" scope scope_path
+
+  if ! scope=$(printf 'repository:%s/%s:pull' "$DOCKERHUB_USERNAME" "$container") \
+    || ! scope_path=$(dockerhub_path_segment "$scope"); then
+    return 1
+  fi
+  dockerhub_reserve_request || return 1
+  curl -sf --connect-timeout "$DOCKERHUB_CURL_CONNECT_TIMEOUT" --max-time "$DOCKERHUB_CURL_MAX_TIME" \
+    -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" \
+    "https://auth.docker.io/token?service=registry.docker.io&scope=$scope_path" | jq -er -s '
+      if (length == 1
+          and (.[0] | type == "object")
+          and (.[0] | has("token") and (.token | type == "string" and length > 0)))
+      then .[0].token
+      else error("malformed Docker Hub registry token response")
+      end
+    '
+}
+
+# Print HTTP-status|digest for docker.io/<namespace>/<container>:<tag>. A
+# digest is present only for a 200 response with one valid header; callers must
+# treat every other result as inconclusive rather than an absence verdict.
+dockerhub_manifest_digest() {
+  local registry_token="$1" namespace_path="$2" container_path="$3" tag_path="$4"
+  local headers http_status digest
+
+  if ! headers=$(mktemp); then
+    printf '%s\n' 'failure|'
+    return 0
+  fi
+  dockerhub_reserve_request || { rm -f "$headers"; printf '%s\n' 'failure|'; return 0; }
+  if ! http_status=$(curl --globoff -sS --connect-timeout "$DOCKERHUB_CURL_CONNECT_TIMEOUT" --max-time "$DOCKERHUB_CURL_MAX_TIME" \
+      -D "$headers" -o /dev/null -w '%{http_code}' \
+      -H "Authorization: Bearer $registry_token" -H "Accept: $REGISTRY_MANIFEST_ACCEPT" \
+      "https://registry-1.docker.io/v2/$namespace_path/$container_path/manifests/$tag_path"); then
+    rm -f "$headers"
+    printf '%s\n' 'transport|'
+    return 0
+  fi
+  digest=$(awk 'tolower($0) ~ /^docker-content-digest:[[:space:]]*/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print }' "$headers")
+  rm -f "$headers" || { printf '%s\n' 'failure|'; return 0; }
+  if [[ "$http_status" == 200 && "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    printf '%s|%s\n' "$http_status" "$digest"
+  else
+    printf '%s|\n' "$http_status"
+  fi
+}
+
+# Obtain the GHCR bearer token used by the existing manifest GET below.
+ghcr_manifest_token() {
+  local container="$1"
+
+  curl -sf -u "_:${GH_TOKEN}" \
+    "https://ghcr.io/token?service=ghcr.io&scope=repository:${OWNER}/${container}:pull" | jq -er '.token'
+}
+
+# Print the explicit GHCR manifest status. Deliberately do not use curl -f:
+# 404 is positive evidence of absence, while transport/auth failures are not.
+ghcr_manifest_status() {
+  local ghcr_token="$1" container="$2" digest="$3" http_status
+
+  if ! http_status=$(curl --globoff -sS -o /dev/null -w '%{http_code}' \
+      -H "Authorization: Bearer $ghcr_token" -H "Accept: $REGISTRY_MANIFEST_ACCEPT" \
+      "https://ghcr.io/v2/${OWNER}/${container}/manifests/${digest}"); then
+    printf '%s\n' transport
+    return 0
+  fi
+  printf '%s\n' "$http_status"
 }
 
 _cleanup_outdated_tags_delete() {
@@ -564,10 +640,10 @@ list_tagged_ghcr_digests() {
 # Docker Hub credentials means it was not attempted (0|0|0|0); a returned
 # non-zero status is always a real failure.
 _purge_dockerhub() {
-  local container="$1" valid_tags="$2" ghcr_digests="${3-}" dh_jwt dh_next dh_listing_url dh_repository_path dh_continuation_prefix dh_page dh_listing_file=""
-  local dh_namespace_path dh_container_path dh_page_total dh_reported_total="" tag dh_digest dh_record dh_record_json dh_new_tags dh_pages_read=0 validation_status
+  local container="$1" valid_tags="$2" ghcr_digests="${3-}" dh_jwt dh_registry_token="" ghcr_token="" dh_next dh_listing_url dh_repository_path dh_continuation_prefix dh_page dh_listing_file=""
+  local dh_namespace_path dh_container_path dh_tag_path dh_page_total dh_reported_total="" tag dh_digest dh_manifest_result ghcr_status dh_record dh_record_json dh_new_tags dh_pages_read=0 validation_status
   local dh_kept=0 dh_kept_by_ghcr_digest=0 dh_candidates=0 dh_successful_deletes=0 delete_failures=0
-  local -a dh_page_values=() dh_tags=() dh_digests=() dh_obsolete_tags=()
+  local -a dh_page_values=() dh_tags=() dh_obsolete_tags=() dh_obsolete_digests=()
   local -A dh_seen_tags=()
 
   validate_cleanup_authority || return 64
@@ -636,13 +712,11 @@ _purge_dockerhub() {
           and (.[0] | has("next") and (.next | . == null or (type == "string" and length > 0
               and (index("\n") == null) and (index("\r") == null) and (index("\u0000") == null))))
           and (.[0].results | all(.[];
-              type == "object" and has("name") and (.name | valid_tag)
-              and ((has("digest") | not) or .digest == null
-                   or (.digest | type == "string" and test("^sha256:[0-9a-f]{64}\\z"))))))
+              type == "object" and has("name") and (.name | valid_tag))))
       then .[0] as $page
       | $page.count,
         (if $page.next == null then "N" else "U" + $page.next end),
-        ($page.results[] | {name, digest: (.digest // null)} | @base64)
+        ($page.results[] | {name} | @base64)
       else error("malformed Docker Hub tag listing page")
       end
     ' "$dh_listing_file"); then
@@ -686,8 +760,7 @@ _purge_dockerhub() {
     dh_new_tags=0
     for dh_record in "${dh_page_values[@]:2}"; do
       if ! dh_record_json=$(printf '%s' "$dh_record" | base64 -d) \
-        || ! tag=$(jq -er '.name' <<< "$dh_record_json") \
-        || ! dh_digest=$(jq -r '.digest // ""' <<< "$dh_record_json"); then
+        || ! tag=$(jq -er '.name' <<< "$dh_record_json"); then
         echo "  ✗ Docker Hub tag listing page was malformed; skipping $container" >&2
         return "$LISTING_FAILURE"
       fi
@@ -697,7 +770,6 @@ _purge_dockerhub() {
       fi
       dh_seen_tags["$tag"]=1
       dh_tags+=("$tag")
-      dh_digests+=("$dh_digest")
       dh_new_tags=$((dh_new_tags + 1))
     done
     if [[ "${#dh_tags[@]}" -gt "$dh_reported_total" ]]; then
@@ -737,11 +809,31 @@ _purge_dockerhub() {
         return "$PROCESSING_FAILURE"
       fi
     fi
-    dh_digest="${dh_digests[$index]}"
-    if [[ -z "$dh_digest" ]]; then
+    if ! dh_tag_path=$(dockerhub_path_segment "$tag"); then
+      echo "  ✗ Failed to encode Docker Hub tag path for $tag; keeping it" >&2
       dh_kept=$((dh_kept + 1))
+      delete_failures=$((delete_failures + 1))
       continue
     fi
+    if [[ -z "$dh_registry_token" ]] && ! dh_registry_token=$(dockerhub_registry_token "$container"); then
+      echo "  ✗ Failed to get Docker Hub registry token for $tag; keeping it" >&2
+      dh_kept=$((dh_kept + 1))
+      delete_failures=$((delete_failures + 1))
+      continue
+    fi
+    if ! dh_manifest_result=$(dockerhub_manifest_digest "$dh_registry_token" "$dh_namespace_path" "$dh_container_path" "$dh_tag_path"); then
+      echo "  ✗ Failed to inspect Docker Hub manifest for $tag; keeping it" >&2
+      dh_kept=$((dh_kept + 1))
+      delete_failures=$((delete_failures + 1))
+      continue
+    fi
+    if [[ ! "$dh_manifest_result" =~ ^200\|(sha256:[0-9a-f]{64})$ ]]; then
+      echo "  ✗ Docker Hub manifest digest was unavailable for $tag; keeping it" >&2
+      dh_kept=$((dh_kept + 1))
+      delete_failures=$((delete_failures + 1))
+      continue
+    fi
+    dh_digest="${BASH_REMATCH[1]}"
     if grep -qxF "$dh_digest" <<< "$ghcr_digests"; then
       dh_kept=$((dh_kept + 1))
       dh_kept_by_ghcr_digest=$((dh_kept_by_ghcr_digest + 1))
@@ -753,12 +845,46 @@ _purge_dockerhub() {
         return "$PROCESSING_FAILURE"
       fi
     fi
+    if [[ -z "$ghcr_token" ]] && ! ghcr_token=$(ghcr_manifest_token "$container"); then
+      echo "  ✗ Failed to get GHCR manifest token for ${dh_digest:0:19}; keeping $tag" >&2
+      dh_kept=$((dh_kept + 1))
+      delete_failures=$((delete_failures + 1))
+      continue
+    fi
+    ghcr_status=$(ghcr_manifest_status "$ghcr_token" "$container" "$dh_digest")
+    case "$ghcr_status" in
+      200)
+        dh_kept=$((dh_kept + 1))
+        dh_kept_by_ghcr_digest=$((dh_kept_by_ghcr_digest + 1))
+        continue
+        ;;
+      404)
+        ;;
+      *)
+        echo "  ✗ Could not confirm GHCR manifest absence for ${dh_digest:0:19}; keeping $tag" >&2
+        dh_kept=$((dh_kept + 1))
+        delete_failures=$((delete_failures + 1))
+        continue
+        ;;
+    esac
     dh_candidates=$((dh_candidates + 1))
     dh_obsolete_tags+=("$tag")
+    dh_obsolete_digests+=("$dh_digest")
   done
-  for tag in "${dh_obsolete_tags[@]}"; do
+  for index in "${!dh_obsolete_tags[@]}"; do
+    tag="${dh_obsolete_tags[$index]}"
+    dh_digest="${dh_obsolete_digests[$index]}"
     if [[ "$DRY_RUN" == true || "${DOCKERHUB_DRY_RUN-}" != false ]]; then
       echo "    [DRY RUN] Would delete Docker Hub tag: $tag" >&2
+    elif ! dh_tag_path=$(dockerhub_path_segment "$tag"); then
+      echo "    ✗ Failed to encode Docker Hub tag path: $tag" >&2
+      delete_failures=$((delete_failures + 1))
+    elif ! dh_manifest_result=$(dockerhub_manifest_digest "$dh_registry_token" "$dh_namespace_path" "$dh_container_path" "$dh_tag_path"); then
+      echo "    ✗ Failed to re-read Docker Hub tag: $tag" >&2
+      delete_failures=$((delete_failures + 1))
+    elif [[ "$dh_manifest_result" != "200|$dh_digest" ]]; then
+      echo "    ✗ Docker Hub tag changed or was unavailable: $tag" >&2
+      delete_failures=$((delete_failures + 1))
     elif _cleanup_outdated_tags_delete dockerhub-tag "$dh_jwt" "$container" "$tag"; then
       echo "    ✓ Deleted Docker Hub tag: $tag" >&2
       dh_successful_deletes=$((dh_successful_deletes + 1))
@@ -820,7 +946,7 @@ main() {
   # 16 is fail-closed when the listing required an orphan assessment but a
   # prior deletion failure or replay abort prevented that phase from running.
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
-  local containers_output container valid_tags valid_count result ghcr_status ghcr_digests dh_result dh_requests_used dh_status containers_discovered=true
+  local containers_output container valid_tags valid_count result ghcr_status ghcr_digests="" dh_result dh_requests_used dh_status containers_discovered=true
   local -a containers=()
   # shellcheck disable=SC2034 # parse_result_counters assigns this dynamic output destination.
   local kept obsolete orphans delete_failures dh_assessed dh_candidates dh_successful_deletes dh_delete_failures package_assessed skip_dockerhub
@@ -881,10 +1007,12 @@ main() {
       continue
     fi
 
-    if ! ghcr_digests=$(list_tagged_ghcr_digests "$container"); then
-      echo "  Docker Hub cleanup skipped: GHCR digest authority listing failed"
-      total_listing_failures=$((total_listing_failures + 1))
-      continue
+    if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]; then
+      if ! ghcr_digests=$(list_tagged_ghcr_digests "$container"); then
+        echo "  Docker Hub cleanup skipped: GHCR digest authority listing failed"
+        total_listing_failures=$((total_listing_failures + 1))
+        continue
+      fi
     fi
 
     if dh_result=$(DOCKERHUB_REPORT_REQUESTS=true purge_dockerhub "$container" "$valid_tags" "$ghcr_digests"); then dh_status=0; else dh_status=$?; fi

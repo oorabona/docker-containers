@@ -9,93 +9,38 @@
 # shellcheck disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/collect-lines.sh"
 
-# Return the leading numeric major from an exact declared build-cell tag.
-# Usage: declared_version_major <declared_tag>
-declared_version_major() {
-    local declared_tag="$1"
-
-    if [[ "$declared_tag" =~ ^([0-9]+) ]]; then
-        printf '%s\n' "${BASH_REMATCH[1]}"
-        return 0
-    fi
-
-    echo "declared_version_major: tag has no leading numeric major: $declared_tag" >&2
-    return 1
-}
-
-# Resolve a request to one exact declared build-cell tag.
-# Usage: resolve_declared_version <container_dir> <requested_version>
-# An exact declaration wins. Otherwise the requested leading major must select
-# exactly one declaration; missing and ambiguous selections fail closed.
-# shellcheck disable=SC2094 # The collected file is read only after collection succeeds.
-resolve_declared_version() {
-    local container_dir="$1"
-    local requested_version="$2"
-    local declared_tags_file declared_tag requested_major match_count=0 matched_tag=""
-
-    declared_tags_file=$(mktemp "${TMPDIR:-/tmp}/declared-version-tags.XXXXXX") || return 1
-    local collect_status
-    if collect_lines "$declared_tags_file" -- list_versions "$container_dir"; then
-        :
-    else
-        collect_status=$?
-        rm -f "$declared_tags_file"
-        return "$collect_status"
-    fi
-
-    while IFS= read -r declared_tag; do
-        [[ -z "$declared_tag" ]] && continue
-        if [[ "$requested_version" == "$declared_tag" ]]; then
-            printf '%s\n' "$declared_tag"
-            rm -f "$declared_tags_file"
-            return 0
-        fi
-    done < "$declared_tags_file"
-
-    if ! requested_major=$(declared_version_major "$requested_version"); then
-        rm -f "$declared_tags_file"
-        return 1
-    fi
-
-    while IFS= read -r declared_tag; do
-        [[ -z "$declared_tag" ]] && continue
-        if [[ "$(declared_version_major "$declared_tag")" == "$requested_major" ]]; then
-            matched_tag="$declared_tag"
-            match_count=$((match_count + 1))
-        fi
-    done < "$declared_tags_file"
-    rm -f "$declared_tags_file"
-
-    if [[ "$match_count" -eq 1 ]]; then
-        printf '%s\n' "$matched_tag"
-        return 0
-    fi
-
-    if [[ "$match_count" -eq 0 ]]; then
-        echo "resolve_declared_version: no declared tag for major $requested_major in $container_dir" >&2
-    else
-        echo "resolve_declared_version: ambiguous declared tags for major $requested_major in $container_dir" >&2
-    fi
-    return 1
-}
-
-# Legacy compatibility helper. New declaration consumers must call
-# resolve_declared_version so an unresolved selector cannot become a build tag.
+# Resolve a full version string to a variants.yaml tag
+# Usage: resolve_major_version <container_dir> <full_version>
+# Example: resolve_major_version ./postgres "18.1-alpine" → "18"
+# Returns: matching tag on stdout, exit 0 if matched, exit 1 if no match (returns original)
 resolve_major_version() {
     local container_dir="$1"
     local full_version="$2"
-    local tags tag
 
+    local tags
     tags=$(list_versions "$container_dir")
+
+    # Direct match first (e.g., "18" == "18")
     while IFS= read -r tag; do
         [[ -z "$tag" ]] && continue
-        if [[ "$full_version" == "$tag" || "$full_version" == "${tag}."* || "$full_version" == "${tag}-"* ]]; then
-            printf '%s\n' "$tag"
+        if [[ "$full_version" == "$tag" ]]; then
+            echo "$tag"
             return 0
         fi
     done <<< "$tags"
 
-    printf '%s\n' "$full_version"
+    # Prefix match: "18.1-alpine" starts with "18." or "18-"
+    while IFS= read -r tag; do
+        [[ -z "$tag" ]] && continue
+        if [[ "$full_version" == "${tag}."* || "$full_version" == "${tag}-"* ]]; then
+            echo "$tag"
+            return 0
+        fi
+    done <<< "$tags"
+
+    # No match — return original (e.g., dynamic version containers like terraform)
+    echo "$full_version"
+    return 0
 }
 
 # Check if a container has variants
