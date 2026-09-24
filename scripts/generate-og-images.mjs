@@ -11,8 +11,11 @@
 //   site_dir defaults to "_site"
 
 import { readFile, writeFile, mkdir, readdir, stat } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
-import sharp from 'sharp';
+
+const require = createRequire(new URL('./og-images/package.json', import.meta.url));
+const sharp = require('sharp');
 
 const SITE_DIR = path.resolve(process.argv[2] ?? '_site');
 const OG_DIR = path.join(SITE_DIR, 'assets', 'og');

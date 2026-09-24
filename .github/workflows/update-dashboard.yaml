@@ -56,15 +56,6 @@ on:
     types: [completed]
     branches: [master]
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
-permissions:
-  actions: read           # gh run list/download (#352 hydration step)
-  attestations: read      # gh api repos/.../attestations/{digest} for trust-strip attestation_url
-  contents: read
-  id-token: write
-  pages: write
-  security-events: read   # gh api code-scanning/alerts for trust-strip trivy_summary
-
 # NOTE: no workflow-level `concurrency` block. GitHub Actions concurrency
 # groups are scoped by NAME across the whole repository, not per workflow
 # file — a workflow-level group here would cancel the ENTIRE run (all jobs,
@@ -89,6 +80,14 @@ jobs:
        github.event.workflow_run.head_branch == 'master')
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      actions: read           # gh run list/download (#352 hydration step)
+      attestations: read      # gh api repos/.../attestations/{digest} for trust-strip attestation_url
+      contents: read
+      # configure-pages calls GET /repos/{owner}/{repo}/pages; Pages read is documented at
+      # https://docs.github.com/rest/authentication/permissions-required-for-github-apps#pages
+      pages: read
+      security-events: read   # gh api code-scanning/alerts for trust-strip trivy_summary
     # Allow only one concurrent build. With cancel-in-progress: true, a batch of parallel
     # auto-build completions collapses to a single dashboard build — each successive workflow_run
     # event supersedes any in-flight build so only the last one in the batch actually proceeds.
@@ -641,8 +640,8 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install sharp (raster OG covers from inline SVG)
-        run: npm install --no-save sharp@^0.33
+      - name: Install locked sharp dependencies (raster OG covers from inline SVG)
+        run: npm ci --prefix scripts/og-images --include=optional
 
       - name: Generate OG PNG covers from rendered SVG
         run: |
@@ -928,6 +927,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: build
+    permissions:
+      id-token: write
+      pages: write
     # Own group, deliberately separate from `build`'s "pages-build" — see the
     # note on that job for why they must not share a name. cancel-in-progress:
     # false here (unlike build) because a deploy in progress has already
@@ -995,6 +997,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: build
+    permissions: {}
     # Show summary when deployment is skipped (PR context)
     if: github.event_name == 'workflow_call' && github.ref != 'refs/heads/master'
     steps:

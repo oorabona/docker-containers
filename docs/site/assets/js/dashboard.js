@@ -1,8 +1,22 @@
   (function() {
     'use strict';
 
+    function getStoredItem(key, defaultValue) {
+      try {
+        return localStorage.getItem(key) || defaultValue;
+      } catch (e) {
+        return defaultValue;
+      }
+    }
+
+    function setStoredItem(key, value) {
+      try {
+        localStorage.setItem(key, value);
+      } catch (e) {}
+    }
+
     // State (theme managed by shared theme.js)
-    var currentRegistry = localStorage.getItem('preferredRegistry') || 'ghcr';
+    var currentRegistry = getStoredItem('preferredRegistry', 'ghcr');
     var currentSearch = '';
     var currentStatus = 'all';
     var comparisonOutcomes = {};
@@ -60,7 +74,7 @@
       registry = resolveOfferedRegistry(registry);
       currentRegistry = registry;
       if (save) {
-        localStorage.setItem('preferredRegistry', registry);
+        setStoredItem('preferredRegistry', registry);
       }
 
       // Update toggle buttons and ARIA state
