@@ -51,7 +51,7 @@ Markers must be on their own line — the engine replaces entire lines. Generato
 
 ### Build digest stability
 
-`compute_build_digest()` hashes `Dockerfile.template` + `config.yaml` — the stable inputs — not the transient generated Dockerfile. This keeps rebuild detection correct when only the generator output changes due to template expansion.
+`compute_build_digest()` hashes `Dockerfile.template` + `config.yaml` — the stable inputs — not the transient generated Dockerfile. Hashing the stable inputs keeps the descriptive label and lineage representative when only the generated output changes due to template expansion; the rebuild-decision skip described in [ADR-002](ADR-002-smart-rebuild-detection.md) has been removed.
 
 ## Consequences
 
