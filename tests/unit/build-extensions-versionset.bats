@@ -11125,9 +11125,8 @@ EOF
     # sum_flavor_extension_durations canonical duration file has duration=140.
     [ "$consolidated_dur" -gt 0 ]
 
-    # For a single-version set (set_size=1), no versionset artifact is produced —
-    # that is correct behavior (the consumer uses the single-version path).
-    # The test's goal is only to verify duration consolidation; versionset absence is expected.
+    # Single-version lineage is emitted alongside the consolidated duration so
+    # the ordinary single-version consumer can pin the published manifest.
 }
 
 # ---------------------------------------------------------------------------
@@ -12187,11 +12186,15 @@ EOF
         false
     }
 
-    # No bundle must be built for set_size==1.
-    # No versionset artifact (consumer uses single-version path; stale deleted).
+    # No bundle must be built for set_size==1, but the manifest's digest lineage
+    # is required for the single-version consumer.
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    [ ! -f "$artifact" ] || {
-        echo "FAIL: versionset artifact should not be written for set_size==1"
+    [ -f "$artifact" ] || {
+        echo "FAIL: digest lineage should be written for set_size==1"
+        false
+    }
+    jq -e '.version_digests["2.27.1"] == "sha256:0000000000000000000000000000000000000000000000000000000000000000"' "$artifact" >/dev/null || {
+        echo "FAIL: set_size==1 lineage must contain the verified digest"
         false
     }
 }
@@ -14517,8 +14520,8 @@ EOF
 
 # ---------------------------------------------------------------------------
 # MG: in a PR, a non-resolver ext whose canonical plain ref EXISTS but
-# imagetools inspect reports single-arch (only linux/amd64) must repair that
-# canonical target, rather than silently reusing it or creating a PR target.
+# imagetools inspect reports single-arch (only linux/amd64) must create only
+# the PR-scoped target, rather than letting unmerged code repair canonical.
 #
 # RED against old code: the old `0) ... continue` blindly reused any present
 # manifest without inspecting it, so a single-arch legacy tag was never
@@ -14527,7 +14530,7 @@ EOF
 # GREEN after fix: `_reuse_ref_is_multiarch` returns 1 → fall-through to
 # imagetools create.
 # ---------------------------------------------------------------------------
-@test "PR context, non-resolver single-arch canonical manifest → repairs canonical target" {
+@test "PR context, non-resolver single-arch canonical manifest → creates scoped target" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/mg_imagetools.log"
@@ -14645,12 +14648,25 @@ EOF
         echo "FAIL: imagetools create call does not reference -arm64 source. Got: $call"
         false
     }
-    [[ "$call" == *'-t ghcr.io/test/ext-pgvector:pg18-0.8.0 '* ]] || {
-        echo "FAIL: imagetools create must repair the canonical target. Got: $call"
+    [[ "$call" == *'-t ghcr.io/test/ext-pgvector:pg18-0.8.0-pr42 '* ]] || {
+        echo "FAIL: imagetools create must target the PR-scoped tag. Got: $call"
         false
     }
-    [[ "$call" != *'-t ghcr.io/test/ext-pgvector:pg18-0.8.0-pr42 '* ]] || {
-        echo "FAIL: imagetools create incorrectly targeted the PR-scoped tag. Got: $call"
+    [[ "$call" != *'-t ghcr.io/test/ext-pgvector:pg18-0.8.0 '* ]] || {
+        echo "FAIL: imagetools create incorrectly targeted canonical. Got: $call"
+        false
+    }
+
+    local artifact="$tmpd/.build-lineage/ext-pgvector-pg18-versionset.json"
+    [ -f "$artifact" ] || {
+        echo "FAIL: published non-resolver manifest must write digest lineage"
+        false
+    }
+    jq -e '
+      .available == ["0.8.0"]
+      and .version_digests["0.8.0"] == "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    ' "$artifact" >/dev/null || {
+        echo "FAIL: non-resolver lineage must retain the verified manifest digest. Got: $(cat "$artifact")"
         false
     }
 }

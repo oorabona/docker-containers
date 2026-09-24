@@ -2413,9 +2413,13 @@ finalize_multiarch_manifests() {
                                 ;;
                             1)
                                 log_warning "$ext $ceiling pg${major_ver}: reused manifest is not multi-arch — re-creating from per-arch legs"
-                                # An existing incomplete resolved manifest is recreated at its resolved target.
-                                # On a pull request that target may be canonical; publication ownership is #1880.
-                                _nr_target="$_nr_resolved_ref"
+                                # Push/dispatch repairs the canonical ref selected by the resolver.
+                                # A PR must never turn an incomplete canonical ref into a
+                                # branch-controlled canonical write: derive its target through
+                                # the shared scoped-tag helper below instead.
+                                if [[ -z "${PR_TAG_SUFFIX:-}" ]]; then
+                                    _nr_target="$_nr_resolved_ref"
+                                fi
                                 # Fall through to the CREATE path below.
                                 ;;
                             *)
@@ -2492,6 +2496,32 @@ finalize_multiarch_manifests() {
                     _failed=true
                 else
                     log_success "Multi-arch manifest created: $_nr_target (non-resolver)"
+
+                    # Stage B published this single-version manifest.  Record its
+                    # verified index digest in the existing versionset schema so a
+                    # downstream consumer can use the immutable source rather than
+                    # re-resolving this mutable tag.
+                    local _nr_digest _nr_digest_rc=0 _nr_repository _nr_lineage_file
+                    _nr_digest=$(_capture_index_digest "$_nr_target") || _nr_digest_rc=$?
+                    if [[ "$_nr_digest_rc" -ne 0 ]] || ! is_valid_oci_digest "$_nr_digest"; then
+                        log_error "$ext $ceiling pg${major_ver}: index digest capture failed after non-resolver manifest create (got: '$(_sanitize_for_log "${_nr_digest:-<empty>}")') — fail closed"
+                        _failed=true
+                    else
+                        _nr_repository=$(ext_image_repository "$ext") || { _failed=true; continue; }
+                        _nr_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
+                        # shellcheck disable=SC2016 # jq program is intentionally single-quoted.
+                        if ! _write_lineage_artifact "$_nr_lineage_file" jq -nc \
+                            --arg ext "$ext" \
+                            --arg pg_major "$major_ver" \
+                            --arg ceiling "$ceiling" \
+                            --arg digest "$_nr_digest" \
+                            --arg repository "$_nr_repository" \
+                            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:[$ceiling], available:[$ceiling], excluded:[], version_digests:{($ceiling):$digest}, version_digests_repository:$repository}'; then
+                            _failed=true
+                        else
+                            log_success "Versionset artifact written: $_nr_lineage_file"
+                        fi
+                    fi
                 fi
             fi
             # AX-3: consolidate per-arch duration files so the summer counts the
@@ -2715,21 +2745,9 @@ finalize_multiarch_manifests() {
             continue
         fi
 
-        # For set_size == 1 (single-version resolver): the per-version multi-arch manifest
-        # was already created above (ceiling). Consumer uses single-version path.
-        # Delete any stale versionset artifact. (AZ-4 fix: manifest IS created above.)
-        if [[ "$set_size" -le 1 ]]; then
-            log_info "$ext pg${major_ver}: single-version resolver result — per-version manifest created, no collector needed"
-            _delete_stale_versionset_artifact "$ext" "$major_ver"
-            continue
-        fi
-
-        # Only one version confirmed available — consumer uses single-version path.
-        if [[ ${#_confirmed_available[@]} -le 1 ]]; then
-            log_info "$ext pg${major_ver}: only ${#_confirmed_available[@]} version(s) available — consumer uses single-version path"
-            _delete_stale_versionset_artifact "$ext" "$major_ver"
-            continue
-        fi
+        # Single-version sets still need lineage.  The consumer's ordinary
+        # single-version stage can then pin the manifest it consumes, and the
+        # Stage-B output can name this extension without allowing tag fallback.
 
         # Validate: every version in confirmed_available must have a valid index digest.
         local _digest_ok=true
