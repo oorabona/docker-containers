@@ -289,6 +289,27 @@ _install_gh_failure_mock() {
     rm -f "$cache_file" "${GH_COUNTER_FILE}"
 }
 
+@test "cache temporary-file allocation failure is diagnosed without discarding the observation" {
+    local cache_file="$BATS_TEST_TMPDIR/trivy-cache.json"
+
+    run env TRIVY_CACHE_FILE="$cache_file" CANNED_ALERTS="$CANNED_ALERTS" bash -c '
+        mktemp() {
+            if [[ "$1" == *".trivy-summary.XXXXXX" ]]; then
+                return 1
+            fi
+            command mktemp "$@"
+        }
+        gh() { printf "%s\\n" "$CANNED_ALERTS"; }
+        source "$1/helpers/trivy-utils.sh"
+        _fetch_trivy_alerts_once
+        printf "outcome=%s\\n" "$_TRIVY_FETCH_OUTCOME"
+    ' _ "$PROJECT_ROOT"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"unable to allocate Trivy summary cache temporary file"* ]]
+    [[ "$output" == *"outcome=ok"* ]]
+}
+
 @test "security severity drives counts when SARIF level differs" {
     export CANNED_ALERTS='[
       {"rule":{"id":"HIGH-ERROR","severity":"error","security_severity_level":"high","description":"High finding"},"most_recent_instance":{"category":"container-test-1-linux/amd64","created_at":"2026-04-30T10:00:00Z","location":{"path":"usr/lib/high"}}},

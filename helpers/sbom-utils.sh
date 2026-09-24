@@ -225,10 +225,14 @@ generate_sbom() (
         log_error "SBOM producer did not create a readable output: $output_file"
         return 1
     fi
-    # This establishes only that the producer wrote a JSON object; it does not
-    # validate the SBOM's SPDX schema or shape.
-    if ! _is_single_json_type object "$output_file"; then
-        log_error "SBOM producer did not write a JSON object: $output_file"
+    # Require one SPDX JSON document with the fields downstream consumers need;
+    # this validates a minimal contract, not the complete SPDX schema.
+    if ! jq -en '([limit(2; inputs)] | length == 1 and
+        (.[0] | type == "object"
+          and (.spdxVersion | type == "string" and startswith("SPDX-"))
+          and (.SPDXID | type == "string")
+          and (.packages | type == "array")))' -- "$output_file" >/dev/null 2>&1; then
+        log_error "SBOM producer did not write a valid SPDX JSON document: $output_file"
         return 1
     fi
     if ! output_size=$(wc -c < "$output_file"); then

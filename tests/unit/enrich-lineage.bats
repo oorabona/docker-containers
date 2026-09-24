@@ -93,6 +93,28 @@ STUB
   chmod +x "$TEST_TEMP_DIR/bin/mv"
 }
 
+_write_stub_mktemp_fail_enrich_temp() {
+  export REAL_MKTEMP
+  export MKTEMP_ENRICH_FAILURE_MARKER="$TEST_TEMP_DIR/mktemp-enrich-failed-once"
+  REAL_MKTEMP="$(command -v mktemp)"
+  cat > "$TEST_TEMP_DIR/bin/mktemp" <<'STUB'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    */.enrich-tmp.XXXXXX)
+      if [[ ! -e "$MKTEMP_ENRICH_FAILURE_MARKER" ]]; then
+        : > "$MKTEMP_ENRICH_FAILURE_MARKER"
+        echo "simulated mktemp failure" >&2
+        exit 74
+      fi
+      ;;
+  esac
+done
+exec "$REAL_MKTEMP" "$@"
+STUB
+  chmod +x "$TEST_TEMP_DIR/bin/mktemp"
+}
+
 _write_stub_find_partial_failure() {
   cat > "$TEST_TEMP_DIR/bin/find" <<'STUB'
 #!/usr/bin/env bash
@@ -433,6 +455,19 @@ JSON
   [[ "$output" == *"Enriched 0 lineage files (0 skipped, 1 errors)"* ]]
   [ "$(jq -r 'has("multi_arch_index_digest")' "$LINEAGE_DIR/mv-failure-1.0.0.json")" = "false" ]
   [ "$(find "$LINEAGE_DIR" -name '.enrich-tmp.*' -type f | wc -l)" -eq 0 ]
+}
+
+@test "temporary lineage-file allocation failure counts as an error and continues" {
+  _write_lineage "a-mktemp-failure-1.0.0.json" "mktemp-failure" "1.0.0"
+  _write_lineage "z-good-after-mktemp-1.0.0.json" "good-after-mktemp" "1.0.0"
+  _write_stub_mktemp_fail_enrich_temp
+
+  _run_enrich
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not create temporary lineage file"* ]]
+  [[ "$output" == *"Enriched 1 lineage files (0 skipped, 1 errors)"* ]]
+  [ "$(jq -r 'has("multi_arch_index_digest")' "$LINEAGE_DIR/z-good-after-mktemp-1.0.0.json")" = "true" ]
 }
 
 # -----------------------------------------------------------------------

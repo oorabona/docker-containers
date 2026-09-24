@@ -14,7 +14,7 @@ setup() {
     export ORIG_PATH="$PATH"
     export ORIG_DIR="$PWD"
 
-    # Minimal required env vars for the script to not abort on the : "${VAR:?}" checks
+    # Minimal required env vars for the script's explicit required-env checks.
     export GH_TOKEN="fake-token"
     export GITHUB_REPOSITORY="oorabona/docker-containers"
     export GITHUB_RUN_ID="123456789"
@@ -1955,6 +1955,13 @@ GHEOF
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure --container
     [ "$status" -eq 2 ]
     [[ "$output" == *"--container requires a value"* ]]
+}
+
+@test "missing required env var exits 2 with the caller-compatible diagnostic" {
+    run env -u GH_TOKEN bash "$SCRIPTS_DIR/open-dep-failure-issue.sh"
+
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"missing required env var: GH_TOKEN"* ]]
 }
 
 # ---------------------------------------------------------------------------

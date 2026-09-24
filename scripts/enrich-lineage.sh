@@ -195,7 +195,11 @@ for lineage_file in "${lineage_files[@]}"; do
 
     # --- Merge fields into lineage file (atomic write) ---
     # Build the update expression as a single jq call to avoid multiple reads
-    tmp_file=$(mktemp "${LINEAGE_DIR}/.enrich-tmp.XXXXXX")
+    if ! tmp_file=$(mktemp "${LINEAGE_DIR}/.enrich-tmp.XXXXXX"); then
+        echo "::warning::Failed to enrich $basename_file: could not create temporary lineage file" >&2
+        errors=$((errors + 1))
+        continue
+    fi
 
     if jq \
         --argjson multi_arch_digests "$multi_arch_digests" \

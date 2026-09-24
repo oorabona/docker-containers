@@ -1958,6 +1958,8 @@ main() {
     local include_final_build=""
     local scope_versions=""
     local scope_flavors=""
+    local scope_versions_set=false
+    local scope_flavors_set=false
     local scope=""
     local container_scopes=""
 
@@ -1985,9 +1987,10 @@ main() {
                     exit 2
                 fi
                 scope_versions="$2"
+                scope_versions_set=true
                 shift
                 ;;
-            --scope-versions=*) scope_versions="${1#*=}" ;;
+            --scope-versions=*) scope_versions="${1#*=}"; scope_versions_set=true ;;
             --scope-flavors)
                 if [[ $# -lt 2 ]]; then
                     printf 'ERROR: --scope-flavors requires a value\n' >&2
@@ -1995,9 +1998,10 @@ main() {
                     exit 2
                 fi
                 scope_flavors="$2"
+                scope_flavors_set=true
                 shift
                 ;;
-            --scope-flavors=*) scope_flavors="${1#*=}" ;;
+            --scope-flavors=*) scope_flavors="${1#*=}"; scope_flavors_set=true ;;
             --scope)
                 if [[ $# -lt 2 ]]; then
                     printf 'ERROR: --scope requires a value\n' >&2
@@ -2032,6 +2036,23 @@ main() {
             exit 2
         fi
     fi
+
+    local scope_csv scope_option scope_set
+    for scope_option in versions flavors; do
+        if [[ "$scope_option" == "versions" ]]; then
+            scope_csv="$scope_versions"
+            scope_set="$scope_versions_set"
+        else
+            scope_csv="$scope_flavors"
+            scope_set="$scope_flavors_set"
+        fi
+        if [[ "$scope_set" == true ]] && [[ -z "$scope_csv" || "$scope_csv" == ,* || "$scope_csv" == *, || "$scope_csv" == *,,* ]]; then
+            # Use the same refusal wording as normalize_container_scopes for
+            # per-container fields.
+            printf '::error::--scope-%s contains an empty CSV element\n' "$scope_option" >&2
+            exit 2
+        fi
+    done
 
     if [[ "$include_final_build" == "1" ]]; then
         export _BAKE_INCLUDE_FINAL_BUILD=1

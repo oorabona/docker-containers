@@ -44,8 +44,26 @@ run_find_image_with_override() {
 # resolution failure propagation.
 run_runner_suite() {
     local nested_bin="$TEST_TEMP_DIR/nested-runner-bin"
+    local runner_path="$nested_bin:$PATH"
+    local -a runner_env=(env "PATH=$runner_path")
 
-    run env -u OPENRESTY_IMAGE PATH="$nested_bin:$PATH" bats "$RUNNER"
+    [[ -n "${RUNNER_EXTRA_PATH:-}" ]] && runner_env=(env "PATH=$nested_bin:$RUNNER_EXTRA_PATH:$PATH")
+    [[ -n "${DOCKER_RUN_LOG:-}" ]] && runner_env+=("DOCKER_RUN_LOG=$DOCKER_RUN_LOG")
+    [[ -n "${DOCKER_RETAG_STATE:-}" ]] && runner_env+=("DOCKER_RETAG_STATE=$DOCKER_RETAG_STATE")
+    [[ -n "${DOCKER_REJECT_LABEL_INSPECT:-}" ]] && runner_env+=("DOCKER_REJECT_LABEL_INSPECT=$DOCKER_REJECT_LABEL_INSPECT")
+    run "${runner_env[@]}" bats "$RUNNER"
+}
+
+run_runner_suite_with_override() {
+    local image="$1"
+    local nested_bin="$TEST_TEMP_DIR/nested-runner-bin"
+    local runner_path="$nested_bin:$PATH"
+    local -a runner_env=(env "OPENRESTY_IMAGE=$image" "PATH=$runner_path")
+
+    [[ -n "${DOCKER_RUN_LOG:-}" ]] && runner_env+=("DOCKER_RUN_LOG=$DOCKER_RUN_LOG")
+    [[ -n "${DOCKER_RETAG_STATE:-}" ]] && runner_env+=("DOCKER_RETAG_STATE=$DOCKER_RETAG_STATE")
+    [[ -n "${DOCKER_REJECT_LABEL_INSPECT:-}" ]] && runner_env+=("DOCKER_REJECT_LABEL_INSPECT=$DOCKER_REJECT_LABEL_INSPECT")
+    run "${runner_env[@]}" bats "$RUNNER"
 }
 
 stub_docker() {
@@ -55,16 +73,110 @@ stub_docker() {
     mkdir -p "$docker_bin"
     cat > "$docker_bin/docker" <<EOF
 #!/usr/bin/env bash
-if [[ "\$#" -ne 4 || "\$1" != images || "\$2" != --no-trunc || "\$3" != --format || "\$4" != '{{.ID}} {{.Repository}}:{{.Tag}}' ]]; then
-    printf 'unexpected docker invocation:' >&2
-    printf ' %q' "\$@" >&2
-    printf '\\n' >&2
-    exit 64
-fi
-$docker_body
+case "\$1" in
+    images)
+        if [[ "\$#" -ne 4 || "\$2" != --no-trunc || "\$3" != --format || "\$4" != '{{.ID}} {{.Repository}}:{{.Tag}}' ]]; then
+            printf 'unexpected docker invocation:' >&2
+            printf ' %q' "\$@" >&2
+            printf '\\n' >&2
+            exit 64
+        fi
+        $docker_body
+        ;;
+    image)
+        if [[ "\$#" -eq 5 && "\$2" == inspect && "\$3" == --format && "\$4" == '{{.Id}}' ]]; then
+            printf '%s\\n' "\${DOCKER_IMAGE_ID:-sha256:override}"
+        else
+            printf 'unexpected docker invocation:' >&2
+            printf ' %q' "\$@" >&2
+            printf '\\n' >&2
+            exit 64
+        fi
+        ;;
+    *)
+        printf 'unexpected docker invocation:' >&2
+        printf ' %q' "\$@" >&2
+        printf '\\n' >&2
+        exit 64
+        ;;
+esac
 EOF
     chmod +x "$docker_bin/docker"
     export PATH="$docker_bin:$PATH"
+}
+
+expected_openresty_digest() {
+    local resty_version="$1"
+
+    (
+        cd "$PROJECT_ROOT/openresty" || exit
+        # shellcheck source=../../helpers/build-cache-utils.sh
+        # shellcheck disable=SC1091 # The project-root variable resolves the checked-in helper.
+        source "$PROJECT_ROOT/helpers/build-cache-utils.sh"
+        unset CUSTOM_BUILD_ARGS
+        export VERSION="$resty_version"
+        # shellcheck source=../../openresty/build
+        source ./build >/dev/null
+        compute_build_digest Dockerfile ""
+    )
+}
+
+stub_runner_docker() {
+    local image_id="$1"
+    local build_digest="$2"
+    local resty_version="${3:-1.31.1.1}"
+    local retag_after_listing="${4:-false}"
+    local docker_bin="$TEST_TEMP_DIR/nested-runner-bin"
+
+    mkdir -p "$docker_bin"
+    cat > "$docker_bin/docker" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+    images)
+        [[ "\$#" -eq 4 && "\$2" == --no-trunc && "\$3" == --format && "\$4" == '{{.ID}} {{.Repository}}:{{.Tag}}' ]] || exit 64
+        printf '%s\n' '$image_id ghcr.io/oorabona/openresty:latest'
+        if [[ '$retag_after_listing' == true ]]; then
+            : > "\$DOCKER_RETAG_STATE"
+        fi
+        ;;
+    image)
+        [[ "\$2" == inspect && "\$3" == --format ]] || exit 64
+        case "\$4" in
+            '{{.Id}}') printf '%s\n' '$image_id' ;;
+            *'resty_version'*) printf '%s\n' '$resty_version' ;;
+            *) [[ "\${DOCKER_REJECT_LABEL_INSPECT:-}" != 1 ]] || exit 65; printf '%s\n' '$build_digest' ;;
+        esac
+        ;;
+    run)
+        printf '%s\n' "\$@" >> "\$DOCKER_RUN_LOG"
+        printf '%s\n' runner-container
+        ;;
+    port) printf '%s\n' 127.0.0.1:18080 ;;
+    exec)
+        case "\$*" in
+            *'command -v nginx'*) printf '%s\n' nginx ;;
+            *'ldd '*) printf '%s\n' 'libpcre2-8.so => /usr/local/openresty/pcre2/lib/libpcre2-8.so' ;;
+            *'nginx -V'*) printf '%s\n' '/usr/local/openresty/pcre2/include /usr/local/openresty/pcre2/lib' ;;
+        esac
+        ;;
+    rm)
+        if [[ -n "\${DOCKER_RM_LOG:-}" ]]; then
+            printf '%s\n' "\$@" >> "\$DOCKER_RM_LOG"
+        fi
+        ;;
+    logs) exit 0 ;;
+    *) exit 64 ;;
+esac
+EOF
+    chmod +x "$docker_bin/docker"
+
+    cat > "$docker_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+    *'/re/42'*) printf '%s\n' m=42 ;;
+esac
+EOF
+    chmod +x "$docker_bin/curl"
 }
 
 @test "openresty image resolver: Docker's unreachable runtime diagnostic fails, not missing build" {
@@ -101,14 +213,14 @@ EOF
     [[ "$output" != *"no built openresty image found"* ]]
 }
 
-@test "openresty image resolver: explicit OPENRESTY_IMAGE override returns it before listing images" {
+@test "openresty image resolver: explicit OPENRESTY_IMAGE override resolves its ID before listing images" {
     local image="registry.example.test/openresty:explicit-override"
     stub_docker "printf '%s\\n' 'docker must not be called for OPENRESTY_IMAGE' >&2; exit 64"
 
     run_find_image_with_override "$image"
 
     [ "$status" -eq 0 ]
-    [ "$output" = "$image" ]
+    [ "$output" = "sha256:override" ]
 }
 
 @test "openresty image resolver: an empty reachable store returns the skip status" {
@@ -131,7 +243,7 @@ EOF
     [[ "$output" == *"ERROR: ambiguous — 2 distinct openresty images present; set OPENRESTY_IMAGE to the one under test"* ]]
 }
 
-@test "openresty image resolver: aliases for one image resolve to one image" {
+@test "openresty image resolver: aliases for one image resolve to its unique ID" {
     stub_docker "printf '%s\\n' \\
         'sha256:one ghcr.io/oorabona/openresty:latest' \\
         'sha256:one docker.io/oorabona/openresty:latest' \\
@@ -140,16 +252,16 @@ EOF
     run_find_image
 
     [ "$status" -eq 0 ]
-    [ "$output" = "ghcr.io/oorabona/openresty:latest" ]
+    [ "$output" = "sha256:one" ]
 }
 
-@test "openresty image resolver: one matching image returns its tag" {
+@test "openresty image resolver: one matching image returns its ID" {
     stub_docker "printf '%s\\n' 'sha256:one ghcr.io/oorabona/openresty:latest'"
 
     run_find_image
 
     [ "$status" -eq 0 ]
-    [ "$output" = "ghcr.io/oorabona/openresty:latest" ]
+    [ "$output" = "sha256:one" ]
 }
 
 @test "openresty image resolver: successful listing replays its warning to stderr" {
@@ -158,7 +270,7 @@ EOF
     run_find_image --separate-stderr
 
     [ "$status" -eq 0 ]
-    [ "$output" = "ghcr.io/oorabona/openresty:latest" ]
+    [ "$output" = "sha256:one" ]
     [[ "$stderr" == *"WARNING: image store is in degraded mode"* ]]
 }
 
@@ -168,7 +280,7 @@ EOF
     run_find_image --separate-stderr
 
     [ "$status" -eq 0 ]
-    [ "$output" = "ghcr.io/oorabona/openresty:latest" ]
+    [ "$output" = "sha256:one" ]
     [ "$stderr" = "" ]
 }
 
@@ -190,6 +302,154 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"1..3"* ]]
     [ "$(grep -F -c '# skip no built openresty image found; set OPENRESTY_IMAGE or run ./make build openresty' <<< "$output")" -eq 3 ]
+}
+
+@test "openresty runner: enumerated image without a build digest label skips" {
+    local expected
+    expected=$(expected_openresty_digest 1.31.1.1)
+    local DOCKER_RUN_LOG="$TEST_TEMP_DIR/docker-run.log"
+    : > "$DOCKER_RUN_LOG"
+    stub_runner_docker "sha256:enumerated" "none" "1.31.1.1"
+
+    run_runner_suite
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"resolved openresty image sha256:enumerated has org.opencontainers.image.build-digest label none; expected $expected; run ./make build openresty, or set OPENRESTY_IMAGE"* ]]
+    [ ! -s "$DOCKER_RUN_LOG" ]
+}
+
+@test "openresty runner: enumerated image without a resty_version label skips" {
+    local DOCKER_RUN_LOG="$TEST_TEMP_DIR/docker-run.log"
+    : > "$DOCKER_RUN_LOG"
+    stub_runner_docker "sha256:enumerated" "unreached-build-digest" "none"
+
+    run_runner_suite
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"resolved openresty image sha256:enumerated has resty_version label none; run ./make build openresty, or set OPENRESTY_IMAGE"* ]]
+    [ ! -s "$DOCKER_RUN_LOG" ]
+}
+
+@test "openresty runner: enumerated image with a different build digest label skips" {
+    local expected
+    expected=$(expected_openresty_digest 1.31.1.1)
+    local DOCKER_RUN_LOG="$TEST_TEMP_DIR/docker-run.log"
+    : > "$DOCKER_RUN_LOG"
+    stub_runner_docker "sha256:enumerated" "different-digest" "1.31.1.1"
+
+    run_runner_suite
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"resolved openresty image sha256:enumerated has org.opencontainers.image.build-digest label different-digest; expected $expected; run ./make build openresty, or set OPENRESTY_IMAGE"* ]]
+    [ ! -s "$DOCKER_RUN_LOG" ]
+}
+
+@test "openresty runner: stale digest skip leaves inherited teardown targets untouched" {
+    local sentinel_nginx_conf="$TEST_TEMP_DIR/sentinel-nginx.conf"
+    local DOCKER_RUN_LOG="$TEST_TEMP_DIR/docker-run.log"
+    local DOCKER_RM_LOG="$TEST_TEMP_DIR/docker-rm.log"
+    : > "$sentinel_nginx_conf"
+    : > "$DOCKER_RUN_LOG"
+    : > "$DOCKER_RM_LOG"
+    export CONTAINER_ID="sentinel-container"
+    export NGINX_CONF="$sentinel_nginx_conf"
+    export DOCKER_RM_LOG
+    stub_runner_docker "sha256:enumerated" "different-digest" "1.31.1.1"
+
+    run_runner_suite
+
+    [ "$status" -eq 0 ]
+    [ -e "$sentinel_nginx_conf" ]
+    [ ! -s "$DOCKER_RM_LOG" ]
+}
+
+@test "openresty runner: matching enumerated image runs by its ID" {
+    local expected
+    expected=$(expected_openresty_digest 1.31.1.1)
+    local DOCKER_RUN_LOG="$TEST_TEMP_DIR/docker-run.log"
+    : > "$DOCKER_RUN_LOG"
+    stub_runner_docker "sha256:matching" "$expected" "1.31.1.1"
+
+    run_runner_suite
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"# skip"* ]]
+    [ "$(awk 'END {print $NF}' "$DOCKER_RUN_LOG")" = "sha256:matching" ]
+}
+
+@test "openresty runner: a retag after enumeration cannot change the image run" {
+    local expected
+    expected=$(expected_openresty_digest 1.31.1.1)
+    local DOCKER_RUN_LOG="$TEST_TEMP_DIR/docker-run.log"
+    local DOCKER_RETAG_STATE="$TEST_TEMP_DIR/retagged"
+    : > "$DOCKER_RUN_LOG"
+    stub_runner_docker "sha256:resolved-before-retag" "$expected" "1.31.1.1" true
+
+    run_runner_suite
+
+    [ "$status" -eq 0 ]
+    [ -e "$DOCKER_RETAG_STATE" ]
+    [ "$(awk 'END {print $NF}' "$DOCKER_RUN_LOG")" = "sha256:resolved-before-retag" ]
+}
+
+@test "openresty runner: OPENRESTY_IMAGE bypasses label comparison but runs its resolved ID" {
+    local image="registry.example.test/openresty:operator-choice"
+    local DOCKER_RUN_LOG="$TEST_TEMP_DIR/docker-run.log"
+    local DOCKER_REJECT_LABEL_INSPECT=1
+    : > "$DOCKER_RUN_LOG"
+    stub_runner_docker "sha256:operator-choice" "none" "none"
+
+    run_runner_suite_with_override "$image"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"# skip"* ]]
+    [ "$(awk 'END {print $NF}' "$DOCKER_RUN_LOG")" = "sha256:operator-choice" ]
+}
+
+@test "openresty runner: a build digest computation failure fails without skipping or running" {
+    local failing_bin="$TEST_TEMP_DIR/failing-yq-bin"
+    local DOCKER_RUN_LOG="$TEST_TEMP_DIR/docker-run.log"
+    : > "$DOCKER_RUN_LOG"
+    stub_runner_docker "sha256:enumerated" "none" "1.31.1.1"
+    mkdir -p "$failing_bin"
+    cat > "$failing_bin/yq" <<'EOF'
+#!/usr/bin/env bash
+exit 42
+EOF
+    chmod +x "$failing_bin/yq"
+    local RUNNER_EXTRA_PATH="$failing_bin"
+
+    run_runner_suite
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"digest input: failed to query variants.yaml"* ]]
+    [[ "$output" != *"# skip"* ]]
+    [ ! -s "$DOCKER_RUN_LOG" ]
+}
+
+@test "openresty runner: a failing build hook fails without skipping or running" {
+    local DOCKER_RUN_LOG="$TEST_TEMP_DIR/docker-run.log"
+    : > "$DOCKER_RUN_LOG"
+    stub_runner_docker "sha256:enumerated" "none" "not-a-version"
+
+    run_runner_suite
+
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"# skip"* ]]
+    [ ! -s "$DOCKER_RUN_LOG" ]
+}
+
+@test "openresty runner: resty_version changes the expected build digest" {
+    local first_version="1.31.1.1"
+    local second_version="1.31.1.2"
+    local first_expected second_expected
+
+    first_expected=$(expected_openresty_digest "$first_version")
+    second_expected=$(expected_openresty_digest "$second_version")
+
+    [ -n "$first_expected" ]
+    [ -n "$second_expected" ]
+    [ "$first_expected" != "$second_expected" ]
 }
 
 @test "openresty image resolver: a processing utility failure fails, not skips" {

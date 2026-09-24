@@ -3565,8 +3565,9 @@ jobs:
       issue_mode: ${{ steps.publish.outputs.issue_mode }}
       # Precise failure set for THIS run (artifact-attributed).  Used by summary Path 1
       # as FAILED_ALLOWLIST to prevent spurious dep:<c> issues when the commit names a
-      # container that did not actually fail.  Empty string when checkpoint was skipped/
-      # crashed or when guard-break fired (summary must treat '' as "no allowlist").
+      # container that did not actually fail. Empty or unset uses failing-job evidence;
+      # a non-empty valid array is authoritative; a non-empty invalid value skips the
+      # dep-attributed open.
       failed_this_run: ${{ steps.publish.outputs.failed_this_run }}
     steps:
       - name: Checkout repository
@@ -3666,10 +3667,9 @@ jobs:
           published=false
           prior_failed='[]'
           new_failed='[]'
-          # ftr_safe: safe default for the failed_this_run output on guard-break/CAS-exhaust.
-          # ftr is set by classify (Step 3) above; this ensures failed_this_run is always
-          # a valid JSON array even if the loop exits early via guard-break.
-          ftr_safe="${ftr:-[]}"
+          # Only a real-push run may publish its attributed failures to Path 1.
+          # All not-published outcomes start with an authoritative empty allowlist.
+          ftr_safe='[]'
           for attempt in 1 2 3 4 5; do
             # Re-fetch the current remote tag (force, so our local ref tracks remote exactly).
             git fetch --force --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
@@ -3743,6 +3743,10 @@ jobs:
             base="uncovered"
           fi
 
+          if [[ "$published" == "true" ]]; then
+            ftr_safe="${ftr:-[]}"
+          fi
+
           # Per-container issue management — only when this run published the tag (real-push).
           # Open loop iterates ftr (precise artifact-attributed failures for THIS run only).
           # new_failed (carry-forward set) is intentionally NOT used here: carried-from-prior
@@ -3783,8 +3787,8 @@ jobs:
           echo "issue_mode=${base}" >> "$GITHUB_OUTPUT"
 
           # Emit failed_this_run: the precise artifact-attributed failure set for THIS run.
-          # ftr_safe is initialized from ftr (Step 3) before the CAS loop; it is '[]' on
-          # guard-break (published=false, pushed=true) and on CAS-exhaust (pushed=false).
+          # It is '[]' for every not-published outcome, including guard-break
+          # (published=false, pushed=true) and CAS-exhaust (pushed=false).
           # The summary job reads this as FAILED_ALLOWLIST; '' means "no allowlist".
           echo "failed_this_run=${ftr_safe}" >> "$GITHUB_OUTPUT"
 

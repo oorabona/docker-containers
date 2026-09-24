@@ -9809,6 +9809,10 @@ EOF
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
                 return 0
             fi
+            if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'inspect' ]]; then
+                printf 'linux/amd64\nlinux/arm64\n'
+                return 0
+            fi
             if [[ \"\$1\" == 'manifest' ]]; then
                 echo manifest unknown >&2
                 return 1
@@ -11275,7 +11279,12 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        docker() { return 0; }
+        docker() {
+            if [[ \"\${1:-}\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'inspect' ]]; then
+                printf 'linux/amd64\nlinux/arm64\n'
+            fi
+            return 0
+        }
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
@@ -14352,6 +14361,10 @@ EOF
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
                 return 0
             fi
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
+                printf 'linux/amd64\nlinux/arm64\n'
+                return 0
+            fi
             if [[ \"\$_dc\" == 'manifest' && \"\$_d2\" == 'inspect' ]]; then
                 local _ref=\"\$_d3\"
                 # Only pr-scoped arch tags are present.
@@ -14453,6 +14466,10 @@ EOF
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
                 return 0
             fi
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
+                printf 'linux/amd64\nlinux/arm64\n'
+                return 0
+            fi
             if [[ \"\$_dc\" == 'manifest' ]]; then
                 echo \"manifest unknown: manifest unknown\" >&2
                 return 1
@@ -14514,6 +14531,8 @@ EOF
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/mg_imagetools.log"
+    local inspect_count="$tmpd/mg_inspect_count"
+    printf '0\n' > "$inspect_count"
 
     # Config: pgvector is NON-resolver.
     cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
@@ -14529,6 +14548,7 @@ EOF
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
         export PR_TAG_SUFFIX='-pr42'
         export imagetools_log='${imagetools_log}'
+        export inspect_count='${inspect_count}'
         cd '${sd}'
         source ./build-extensions.sh
         export ROOT_DIR='${tmpd}'
@@ -14567,8 +14587,16 @@ EOF
         docker() {
             local _cmd=\"\${1:-}\" _sub=\"\${2:-}\" _subsub=\"\${3:-}\"
             if [[ \"\$_cmd\" == 'buildx' && \"\$_sub\" == 'imagetools' && \"\$_subsub\" == 'inspect' ]]; then
-                # Single-arch: only amd64 reported.
-                printf 'linux/amd64\n'
+                _count=\$(<"\$inspect_count")
+                _count=\$((_count + 1))
+                printf '%s\n' "\$_count" > "\$inspect_count"
+                if [[ "\$_count" -eq 1 ]]; then
+                    # The pre-create manifest is single-arch.
+                    printf 'linux/amd64\n'
+                else
+                    # The freshly created manifest covers both platforms.
+                    printf 'linux/amd64\nlinux/arm64\n'
+                fi
                 return 0
             fi
             if [[ \"\$_cmd\" == 'buildx' && \"\$_sub\" == 'imagetools' && \"\$_subsub\" == 'create' ]]; then
@@ -14670,6 +14698,8 @@ EOF
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/push_single_arch_imagetools.log"
+    local inspect_count="$tmpd/push_single_arch_inspect_count"
+    printf '0\n' > "$inspect_count"
 
     cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
 extensions:
@@ -14684,6 +14714,7 @@ EOF
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
         export PR_TAG_SUFFIX=''
         export imagetools_log='${imagetools_log}'
+        export inspect_count='${inspect_count}'
         cd '${sd}'
         source ./build-extensions.sh
         export ROOT_DIR='${tmpd}'
@@ -14713,7 +14744,14 @@ EOF
 
         docker() {
             if [[ \"\${1:-}\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'inspect' ]]; then
-                printf 'linux/amd64\\n'
+                _count=\$(<"\$inspect_count")
+                _count=\$((_count + 1))
+                printf '%s\n' "\$_count" > "\$inspect_count"
+                if [[ "\$_count" -eq 1 ]]; then
+                    printf 'linux/amd64\n'
+                else
+                    printf 'linux/amd64\nlinux/arm64\n'
+                fi
                 return 0
             fi
             if [[ \"\${1:-}\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'create' ]]; then
@@ -14814,6 +14852,36 @@ EOF
 
     run _reuse_ref_is_multiarch 'ghcr.io/test/ext-pgvector:pg18-0.8.0'
     [ "$status" -eq 2 ]
+}
+
+@test "non-resolver manifest create fails closed when its result lacks arm64" {
+    _prepare_nonresolver_probe_finalization
+    export FORCE=true
+
+    ext_ref_resolve() {
+        case "${4:-}" in
+            amd64|arm64) printf 'ghcr.io/test/ext-%s:pg%s-%s-%s' "$1" "$3" "$2" "$4" ;;
+            *) return 1 ;;
+        esac
+    }
+    export -f ext_ref_resolve
+
+    docker() {
+        if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'create' ]]; then
+            return 0
+        fi
+        if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'inspect' ]]; then
+            printf 'linux/amd64\n'
+            return 0
+        fi
+        return 1
+    }
+    export -f docker
+
+    run finalize_multiarch_manifests "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"created non-resolver manifest does not cover both linux/amd64 and linux/arm64"* ]]
 }
 
 # ---------------------------------------------------------------------------
