@@ -233,7 +233,7 @@ The following build arguments can be passed to customize the container build:
 | `VERSION` | `latest` | OpenVPN version to build |
 | `UPSTREAM_VERSION` | (empty) | Fallback upstream version if `VERSION` is not specified |
 | `OS_VERSION` | `latest` | Alpine Linux version tag — **3.24 or newer**, the releases carrying `pkcs11-helper` |
-| `EASYRSA_VERSION` | `3.2.6` | EasyRSA version for certificate management |
+| `EASYRSA_VERSION` | pinned in `config.yaml` | EasyRSA version for certificate management |
 | `NPROC` | `1` | Number of parallel processes for compilation |
 | `PKCS11_HELPER_VERSION` | — | **Refused.** The build stops if it is set: `pkcs11-helper` now comes from Alpine, so its version follows `OS_VERSION` |
 
@@ -328,7 +328,7 @@ The following third-party dependencies are pinned and monitored for updates:
 
 | Dependency | Version | Source | Monitoring |
 |-----------|---------|--------|-----------|
-| EasyRSA | 3.2.6 | GitHub Release (OpenVPN/easy-rsa) | Enabled |
+| EasyRSA | `build_args.EASYRSA_VERSION` in `config.yaml` | GitHub Release (OpenVPN/easy-rsa) | Enabled |
 
 `pkcs11-helper` is deliberately absent from that table: it comes from the Alpine
 repository, so its version follows the base image and `apk` verifies its signature.
