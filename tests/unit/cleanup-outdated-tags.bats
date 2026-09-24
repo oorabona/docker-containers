@@ -1856,7 +1856,7 @@ run_orphan_phase_completion_case() {
     [[ -z "$output" ]]
 }
 
-@test "cleanup workflow schedules weekly registry pruning" {
+@test "cleanup workflow schedules daily registry pruning" {
     local workflow_path
     workflow_path="$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml"
 
@@ -1869,8 +1869,8 @@ run_orphan_phase_completion_case() {
 
     run yq -r '.on.schedule[0].cron' "$workflow_path"
     [ "$status" -eq 0 ]
-    if [ "$output" != '17 3 * * 1' ]; then
-        printf "FAIL: expected weekly registry prune cron '17 3 * * 1', got %s\n" "$output" >&2
+    if [ "$output" != '17 3 * * *' ]; then
+        printf "FAIL: expected daily registry prune cron '17 3 * * *', got %s\n" "$output" >&2
         return 1
     fi
 
@@ -2005,8 +2005,25 @@ EOF
     [[ "$purge_step" == *"continue-on-error: true"* ]]
     [[ "$purge_step" == *"always() && (github.event_name == 'schedule' || inputs.purge_obsolete == true)"* ]]
     [[ "$workflow" == *"steps.cleanup_old_versions.outcome }}\" == \"failure\" || \"\${{ steps.purge_obsolete_images.outcome"* ]]
-    [[ "$purge_step" == *"github.event_name == 'schedule' && 'true' || inputs.dry_run || 'false'"* ]]
+    local purge_dry_run
+    purge_dry_run=$(yq -r '.jobs.cleanup.steps[] | select(.id == "purge_obsolete_images") | .env.DRY_RUN' "$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml")
+    [[ "$purge_dry_run" == "\${{ inputs.dry_run || 'false' }}" ]]
     [[ "$purge_step" == *"DOCKERHUB_DRY_RUN: 'true'"* ]]
+
+    # The expression's fallback is the scheduled-run value because schedule
+    # events have no workflow_dispatch inputs; manual true remains true.
+    local dry_run_input expected_dry_run
+    for dry_run_input in '' true; do
+        expected_dry_run="${dry_run_input:-false}"
+        run bash -c '
+            expression="${1#\${{ }"
+            expression="${expression% }}}"
+            [[ "$expression" == "inputs.dry_run || '\''false'\''" ]] || exit 1
+            printf "%s\\n" "${2:-false}"
+        ' _ "$purge_dry_run" "$dry_run_input"
+        [[ "$status" -eq 0 ]]
+        [[ "$output" == "$expected_dry_run" ]]
+    done
 
     # This is the failure path that GitHub Actions evaluates: continue-on-error
     # preserves the age-pruner outcome while always() still starts the second
@@ -2022,6 +2039,15 @@ EOF
     [[ "$status" -eq 0 ]]
     [[ "$output" == *"Cleanup old versions ran (failure)"* ]]
     [[ "$output" == *"Purge obsolete images ran"* ]]
+}
+
+@test "upstream monitor does not dispatch registry cleanup after a rotation merge" {
+    local workflow_path
+    workflow_path="$PROJECT_ROOT/.github/workflows/upstream-monitor.yaml"
+
+    run grep -F 'gh workflow run cleanup-registry.yaml' "$workflow_path"
+    [[ "$status" -eq 1 ]]
+    [[ -z "$output" ]]
 }
 
 @test "purge_ghcr delete failure is counted and returned as a failed completed run" {
