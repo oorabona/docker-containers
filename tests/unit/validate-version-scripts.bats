@@ -30,6 +30,7 @@ run_validator() {
     [ "$status" -ne 0 ]
     assert_output_contains "missing-version/version.sh"
     assert_output_contains "Explicitly requested container is missing missing-version/version.sh"
+    assert_output_not_contains "skipping"
     assert_output_contains "Failed: 1"
     assert_output_contains "Skipped: 0"
 }

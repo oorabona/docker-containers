@@ -194,7 +194,7 @@ test_version_script() {
     
     # Check if version.sh exists
     if [[ ! -f "$container/version.sh" ]]; then
-        log_warning "No version.sh file found - skipping"
+        log_warning "No version.sh file found"
         container_issues["$container"]="version_script_missing"
         return 2
     fi
@@ -415,6 +415,7 @@ main() {
                         failed_list+=("$container")
                         ;;
                     2)
+                        log_warning "No version.sh file found - skipping"
                         ((skipped_containers++))
                         skipped_list+=("$container")
                         ;;
