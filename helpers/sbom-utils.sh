@@ -292,10 +292,13 @@ extract_sbom_summary() (
 # Usage: compare_sboms <new_sbom> <old_sbom> <output_file>
 # Output: JSON with added/removed/updated arrays + summary counts, written only when
 #         both SBOMs are present.
-# Returns: 0 on success; a missing old SBOM logs a warning, returns 0, and leaves
-#          output_file untouched; 1 on operational or
-#          new-SBOM failures, 2 for invalid arguments or output aliases of an
-#          input SBOM, 3 for a malformed old SBOM.
+# Returns: 0 when the changelog is written, or when the old SBOM is missing
+#          (warning logged, output_file untouched); 1 on operational failures,
+#          including an unreadable or malformed new SBOM; 2 on invalid arguments
+#          or an output path that aliases an input SBOM; 3 on a malformed old
+#          SBOM. The argument, alias and new-SBOM checks run before the
+#          missing-old return, so a missing old SBOM still yields 1 or 2 when
+#          one of them fails.
 compare_sboms() (
     set -uo pipefail
     if [[ "$#" -ne 3 || -z "$1" || -z "$2" || -z "$3" ]]; then
