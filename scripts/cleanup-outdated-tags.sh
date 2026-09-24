@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Purge container images whose tags are not in the current valid build set.
+#
+# This guard does not re-establish orphan status, which depends on
+# manifest references, or the age pruner's retention ranking, which depends on
+# the whole listing. It closes the tag-attachment window only.
 # Required env vars: GH_TOKEN, OWNER
 # Optional env vars: DRY_RUN (default: false; exactly true or false);
 # DOCKERHUB_DRY_RUN (default: plan-only; deletes only when exactly false). The
@@ -190,6 +194,27 @@ _cleanup_outdated_tags_delete() {
   esac
 }
 
+# Re-read the exact GHCR version record just before DELETE. A listing is only a
+# snapshot, so a missing, malformed, or different record must fail closed.
+_get_ghcr_version_tags() {
+  local container="$1" version_id="$2"
+
+  gh api \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "/users/${OWNER}/packages/container/${container}/versions/${version_id}" 2>/dev/null \
+    | jq -ce --arg expected_version_id "$version_id" '
+      if type != "object" then error("GHCR version record must be an object")
+      elif (.id? | tostring) != $expected_version_id then error("GHCR version record id does not match requested version id")
+      elif (.metadata? | type) != "object" then error("GHCR version record metadata is invalid")
+      elif (.metadata.container? | type) != "object" then error("GHCR version record metadata.container is invalid")
+      elif (.metadata.container.tags? | type) != "array" then error("GHCR version record tags are invalid")
+      elif all(.metadata.container.tags[]; type == "string") | not then error("GHCR version record tags must be strings")
+      else .metadata.container.tags
+      end
+    '
+}
+
 build_valid_tags() {
   local container="$1" builds_json tags variant_tags flavor_tags
   if ! builds_json=$("$ROOT_DIR/make" list-builds "$container" 2>/dev/null); then
@@ -279,9 +304,9 @@ purge_ghcr() {
   # tagged-plan record, but only returns 13 when no orphan remains unresolved.
   local container="$1" valid_tags="$2"
   local versions package_metadata version_count reported_version_count versions_file="" obsolete_file="" protected_file=""
-  local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 validation_error validation_status index
+  local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 reread_failures=0 validation_error validation_status index
   local record_b64 record_json
-  local protected_digests="" ghcr_token manifest children protection_result
+  local protected_digests="" ghcr_token manifest children protection_result current_tags_json current_tag_list current_tag current_has_valid parent_not_deleted=0
   local -a kept_digests=() version_records=() obsolete_source_ids=() obsolete_source_digests=() obsolete_source_tags=()
   local -a untagged_ids=() untagged_digests=() orphan_ids=() orphan_digests=() obsolete_replay=()
   local -a parent_ids=() parent_digests=() parent_tags=() obsolete_ids=() obsolete_digests=() obsolete_tags=()
@@ -325,7 +350,7 @@ purge_ghcr() {
   echo "  Found $version_count GHCR versions" >&2
   if [[ "$version_count" -eq 0 ]]; then
     echo "  No GHCR versions found" >&2
-    if ! printf '%s\n' "0|0|0|0"; then
+    if ! printf '%s\n' "0|0|0|0|0"; then
       return "$PROCESSING_FAILURE"
     fi
     return 0
@@ -507,7 +532,7 @@ purge_ghcr() {
   # below reads only these immutable id/digest/tag arrays.
   if ! load_framed_work_list "deletion replay" "$obsolete_file" obsolete_replay; then
     cleanup_files
-    if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
+    if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures|$reread_failures"; then
       return "$PROCESSING_FAILURE"
     fi
     if [[ ${#orphan_ids[@]} -gt 0 ]]; then
@@ -518,7 +543,7 @@ purge_ghcr() {
   for record_b64 in "${obsolete_replay[@]}"; do
     if [[ ! "$record_b64" =~ ^([1-9][0-9]*)\|(sha256:[0-9a-f]{64})\|(.*)$ ]]; then
       echo "  ✗ Failed to read prepared GHCR deletion record; skipping $container" >&2
-      if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
+      if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures|$reread_failures"; then
         return "$PROCESSING_FAILURE"
       fi
       cleanup_files
@@ -539,26 +564,55 @@ purge_ghcr() {
     echo "  ✗ Obsolete (tags: $tags)" >&2
     if [[ "$DRY_RUN" == true ]]; then
       echo "    [DRY RUN] Would delete version $version_id" >&2
-    elif _cleanup_outdated_tags_delete ghcr-version "$container" "$version_id"; then
-      echo "    ✓ Deleted" >&2
+    elif ! current_tags_json=$(_get_ghcr_version_tags "$container" "$version_id"); then
+      echo "    ✗ version $version_id not deleted: re-read failed" >&2
+      reread_failures=$((reread_failures + 1))
+      parent_not_deleted=1
+    elif ! current_tag_list=$(jq -r '.[]' <<< "$current_tags_json"); then
+      echo "    ✗ version $version_id not deleted: re-read tags could not be read" >&2
+      reread_failures=$((reread_failures + 1))
+      parent_not_deleted=1
     else
-      echo "    ✗ Failed to delete" >&2
-      delete_failures=$((delete_failures + 1))
+      current_has_valid=false
+      while IFS= read -r current_tag; do
+        if is_valid_tag "$current_tag" "$valid_tags"; then
+          current_has_valid=true
+          break
+        else
+          validation_status=$?
+          if [[ "$validation_status" -ne 1 ]]; then
+            echo "    ✗ version $version_id not deleted: re-read tag classification failed" >&2
+            reread_failures=$((reread_failures + 1))
+            current_has_valid=true
+            break
+          fi
+        fi
+      done <<< "$current_tag_list"
+      if [[ "$current_has_valid" == true ]]; then
+        echo "    ✓ version $version_id not deleted: re-read has a valid tag" >&2
+        parent_not_deleted=1
+      elif _cleanup_outdated_tags_delete ghcr-version "$container" "$version_id"; then
+        echo "    ✓ Deleted" >&2
+      else
+        echo "    ✗ Failed to delete" >&2
+        delete_failures=$((delete_failures + 1))
+        parent_not_deleted=1
+      fi
     fi
   done
 
-  if [[ "$delete_failures" -gt 0 && ${#orphan_ids[@]} -gt 0 ]]; then
+  if [[ "$parent_not_deleted" -eq 1 && ${#orphan_ids[@]} -gt 0 ]]; then
     # A surviving obsolete parent may still reference every candidate.  They
     # are not orphans, and this package has no completed orphan assessment.
-    echo "  ✗ Orphan assessment incomplete: an obsolete parent DELETE failed" >&2
-    if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
+    echo "  ✗ Orphan assessment incomplete: an obsolete parent was not deleted" >&2
+    if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures|$reread_failures"; then
       return "$PROCESSING_FAILURE"
     fi
     cleanup_files || echo "  ✗ Failed to remove GHCR work files after incomplete orphan assessment" >&2
     return "$INCOMPLETE_DELETION_FAILURE"
   fi
 
-  if [[ "$delete_failures" -eq 0 ]]; then
+  if [[ "$parent_not_deleted" -eq 0 ]]; then
     for index in "${!orphan_ids[@]}"; do
       version_id="${orphan_ids[$index]}"
       digest="${orphan_digests[$index]}"
@@ -568,6 +622,14 @@ purge_ghcr() {
       echo "  ✗ Orphan (digest: ${digest:0:19}...)" >&2
       if [[ "$DRY_RUN" == true ]]; then
         echo "    [DRY RUN] Would delete version $version_id" >&2
+      elif ! current_tags_json=$(_get_ghcr_version_tags "$container" "$version_id"); then
+        echo "    ✗ version $version_id not deleted: re-read failed" >&2
+        reread_failures=$((reread_failures + 1))
+      elif ! current_tag_list=$(jq -r '.[]' <<< "$current_tags_json"); then
+        echo "    ✗ version $version_id not deleted: re-read tags could not be read" >&2
+        reread_failures=$((reread_failures + 1))
+      elif [[ -n "$current_tag_list" ]]; then
+        echo "    ✓ version $version_id not deleted: re-read has tags" >&2
       elif _cleanup_outdated_tags_delete ghcr-version "$container" "$version_id"; then
         echo "    ✓ Deleted" >&2
       else
@@ -576,14 +638,14 @@ purge_ghcr() {
       fi
     done
   fi
-  if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures"; then
+  if ! printf '%s\n' "$kept|$obsolete|$orphans|$delete_failures|$reread_failures"; then
     return "$PROCESSING_FAILURE"
   fi
   if ! cleanup_files; then
     echo "  ✗ Failed to remove GHCR work files after cleanup" >&2
     return "$POST_DELETE_PROCESSING_FAILURE"
   fi
-  [[ "$delete_failures" -eq 0 ]] || return "$DELETE_FAILURE"
+  [[ "$delete_failures" -eq 0 && "$reread_failures" -eq 0 ]] || return "$DELETE_FAILURE"
 }
 
 # Re-read GHCR after its cleanup pass: Docker Hub keeps a tag when its index
@@ -949,8 +1011,8 @@ main() {
   local containers_output container valid_tags valid_count result ghcr_status ghcr_digests="" dh_result dh_requests_used dh_status containers_discovered=true
   local -a containers=()
   # shellcheck disable=SC2034 # parse_result_counters assigns this dynamic output destination.
-  local kept obsolete orphans delete_failures dh_assessed dh_candidates dh_successful_deletes dh_delete_failures package_assessed skip_dockerhub
-  local total_assessed=0 total_build_failures=0 total_listing_failures=0 total_processing_failures=0 total_ghcr_delete_failures=0 total_dh_delete_failures=0
+  local kept obsolete orphans delete_failures reread_failures dh_assessed dh_candidates dh_successful_deletes dh_delete_failures package_assessed skip_dockerhub
+  local total_assessed=0 total_build_failures=0 total_listing_failures=0 total_processing_failures=0 total_ghcr_delete_failures=0 total_ghcr_reread_failures=0 total_dh_delete_failures=0
   local total_kept=0 total_obsolete=0 total_orphans=0 total_dh_candidates=0 total_dh_successful_deletes=0
   if [[ $# -gt 0 ]]; then
     containers=("$@")
@@ -979,9 +1041,9 @@ main() {
     case "$ghcr_status" in
       0|"$DELETE_FAILURE"|"$POST_DELETE_PROCESSING_FAILURE")
         if parse_result_counters "$result" "GHCR cleanup result" \
-          kept total_kept obsolete total_obsolete orphans total_orphans delete_failures total_ghcr_delete_failures; then
+          kept total_kept obsolete total_obsolete orphans total_orphans delete_failures total_ghcr_delete_failures reread_failures total_ghcr_reread_failures; then
           package_assessed=true
-          echo "  GHCR summary: kept=$kept, obsolete=$obsolete, orphans=$orphans, delete_failures=$delete_failures"
+          echo "  GHCR summary: kept=$kept, obsolete=$obsolete, orphans=$orphans, delete_failures=$delete_failures, reread_failures=$reread_failures"
           [[ "$ghcr_status" -ne "$POST_DELETE_PROCESSING_FAILURE" ]] || total_processing_failures=$((total_processing_failures + 1))
         else
           echo "  ✗ Failed to read GHCR cleanup result; skipping $container"; total_processing_failures=$((total_processing_failures + 1)); skip_dockerhub=true
@@ -992,8 +1054,8 @@ main() {
       # Hub stays off.
       "$INCOMPLETE_DELETION_FAILURE")
         if parse_result_counters "$result" "incomplete GHCR cleanup result" \
-          kept total_kept obsolete total_obsolete orphans - delete_failures total_ghcr_delete_failures; then
-          echo "  GHCR summary: kept=$kept, obsolete=$obsolete, orphan phase not assessed, delete_failures=$delete_failures"
+          kept total_kept obsolete total_obsolete orphans - delete_failures total_ghcr_delete_failures reread_failures total_ghcr_reread_failures; then
+          echo "  GHCR summary: kept=$kept, obsolete=$obsolete, orphan phase not assessed, delete_failures=$delete_failures, reread_failures=$reread_failures"
         else
           echo "  ✗ Failed to read incomplete GHCR cleanup result; skipping $container"
         fi
@@ -1049,10 +1111,11 @@ main() {
   echo "Packages skipped (processing failed): $total_processing_failures"
   echo "GHCR — kept: $total_kept, obsolete: $total_obsolete, orphans: $total_orphans"
   echo "GHCR — delete failures: $total_ghcr_delete_failures"
+  echo "GHCR — re-read failures: $total_ghcr_reread_failures"
   [[ -n "$DOCKERHUB_USERNAME" ]] && echo "Docker Hub — delete failures: $total_dh_delete_failures"
   [[ -n "$DOCKERHUB_USERNAME" ]] && echo "Docker Hub — candidates: $total_dh_candidates, successful deletes: $total_dh_successful_deletes"
   echo "========================================"
-  [[ "$total_build_failures" -eq 0 && "$total_listing_failures" -eq 0 && "$total_processing_failures" -eq 0 && "$total_ghcr_delete_failures" -eq 0 && "$total_dh_delete_failures" -eq 0 ]]
+  [[ "$total_build_failures" -eq 0 && "$total_listing_failures" -eq 0 && "$total_processing_failures" -eq 0 && "$total_ghcr_delete_failures" -eq 0 && "$total_ghcr_reread_failures" -eq 0 && "$total_dh_delete_failures" -eq 0 ]]
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

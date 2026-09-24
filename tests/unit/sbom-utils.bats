@@ -41,6 +41,7 @@ case "${SYFT_STUB_MODE:-valid}" in
     multi-root) printf '[]\n{"packages":[]}\n' > "$output_file" ;;
     invalid-spdx) printf '{"packages":[]}' > "$output_file" ;;
     invalid) printf 'not-json' > "$output_file" ;;
+    fragment-fail) printf '{"incomplete":' > "$output_file"; exit 1 ;;
     fail) exit 1 ;;
 esac
 STUB
@@ -138,6 +139,41 @@ JSON
 
     [ "$status" -eq 0 ] || return 1
     jq -e '.packages == []' "$output_file" >/dev/null || return 1
+}
+
+@test "generate_sbom stages and publishes a relative destination under -dir" {
+    local output_file="-dir/result.sbom.json"
+
+    run bash -c '
+        cd "$1"
+        source "$2"
+        syft() {
+            local argument staged_output=""
+            for argument in "$@"; do
+                [[ "$argument" == "--help" ]] && return 0
+                case "$argument" in spdx-json=*) staged_output="${argument#spdx-json=}" ;; esac
+            done
+            printf "{\"spdxVersion\":\"SPDX-2.3\",\"SPDXID\":\"SPDXRef-DOCUMENT\",\"packages\":[]}" > "$staged_output"
+        }
+        generate_sbom example/image:tag "$3"
+    ' _ "$TEST_TEMP_DIR" "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    [ -f "$TEST_TEMP_DIR/$output_file" ] || return 1
+}
+
+@test "generate_sbom preserves a prior SBOM when syft writes a fragment then fails" {
+    write_syft_stub
+    local output_file="$TEST_TEMP_DIR/prior.sbom.json"
+    local original_file="$TEST_TEMP_DIR/prior.original.json"
+    printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[{"name":"prior"}]}' > "$output_file"
+    cp -- "$output_file" "$original_file"
+
+    run env SYFT_STUB_MODE=fragment-fail bash -c 'source "$1"; generate_sbom example/image:tag "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -ne 0 ] || return 1
+    cmp -s -- "$original_file" "$output_file" || return 1
+    [ -z "$(find "$TEST_TEMP_DIR" -maxdepth 1 -name '.sbom-stage.*' -print -quit)" ] || return 1
 }
 
 @test "generate_sbom returns failure to if and || when syft writes no output" {
@@ -658,6 +694,33 @@ JSON
     [[ "$output" == *"or-failure-observed"* ]] || return 1
 }
 
+@test "append_build_history preserves prior history when jq writes a fragment then fails" {
+    local lineage_file="$TEST_TEMP_DIR/lineage.json"
+    local history_file="$TEST_TEMP_DIR/prior.history.json"
+    local original_file="$TEST_TEMP_DIR/prior.history.original.json"
+    local summary='{"total":1,"apk":1}'
+    write_lineage "$lineage_file"
+    printf '[{"built_at":"prior"}]\n' > "$history_file"
+    cp -- "$history_file" "$original_file"
+    cat > "$TEST_TEMP_DIR/bin/jq" <<'STUB'
+#!/usr/bin/env bash
+for argument in "$@"; do
+    if [[ "$argument" == "-n" ]]; then
+        printf '[{"incomplete":'
+        exit 1
+    fi
+done
+exec "$SYSTEM_JQ" "$@"
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/jq"
+
+    run bash -c 'source "$1"; append_build_history "$2" "$3" "$4"' _ "$SBOM_UTILS" "$lineage_file" "$summary" "$history_file"
+
+    [ "$status" -ne 0 ] || return 1
+    cmp -s -- "$original_file" "$history_file" || return 1
+    [ -z "$(find "$TEST_TEMP_DIR" -maxdepth 1 -name '.history-stage.*' -print -quit)" ] || return 1
+}
+
 @test "append_build_history publishes valid non-negative integer counters" {
     local lineage_file="$TEST_TEMP_DIR/lineage.json"
     local changelog_file="$TEST_TEMP_DIR/result.changelog.json"
@@ -671,4 +734,17 @@ JSON
 
     [ "$status" -eq 0 ] || return 1
     [ "$(jq -r '.[0].changes_summary' "$history_file")" = '+1 -2 ~3' ] || return 1
+}
+
+@test "append_build_history stages and publishes a relative destination under -dir" {
+    local lineage_file="$TEST_TEMP_DIR/lineage.json"
+    local history_file="-dir/result.history.json"
+    local summary='{"total":1,"apk":1}'
+    write_lineage "$lineage_file"
+
+    run bash -c 'cd "$1" && source "$2" && append_build_history "$3" "$4" "$5"' \
+        _ "$TEST_TEMP_DIR" "$SBOM_UTILS" "$lineage_file" "$summary" "$history_file"
+
+    [ "$status" -eq 0 ] || return 1
+    [ -f "$TEST_TEMP_DIR/$history_file" ] || return 1
 }

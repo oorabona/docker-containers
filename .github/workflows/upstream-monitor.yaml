@@ -922,18 +922,6 @@ jobs:
           retention-days: 1
           overwrite: true
 
-      - name: Cleanup outdated registry images
-        if: steps.env_check.outputs.is_local_test != 'true' && steps.merge_pr.outputs.merged == 'true' && steps.rotate.outputs.rotated == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CONTAINER: ${{ steps.resolve.outputs.container_name }}
-        run: |
-          echo "🧹 Triggering registry cleanup for $CONTAINER (version rotated out)"
-          gh workflow run cleanup-registry.yaml \
-            -f purge_obsolete=true \
-            -f container_filter="$CONTAINER"
-          echo "✅ Cleanup workflow triggered for $CONTAINER"
-
       - name: Show PR details (test mode)
         if: steps.env_check.outputs.is_local_test == 'true'
         env:

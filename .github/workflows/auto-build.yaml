@@ -2527,11 +2527,6 @@ jobs:
           ncells=$(jq -r 'length' "$BAKE_PLAN_FILE")
           mkdir -p .build-lineage
 
-          # Attest manifest: [{subject_name, subject_digest, sbom_path}] written for the
-          # real-attestation step below (parity with flat matrix).
-          attest_manifest=".build-lineage/.bake-attest-entries.json"
-          printf '[]' > "$attest_manifest"
-
           for (( i=0; i<ncells; i++ )); do
             cell=$(jq -c ".[$i]" "$BAKE_PLAN_FILE")
             container=$(jq -r '.container'       <<< "$cell")
@@ -2543,30 +2538,15 @@ jobs:
 
             # SBOM
             sbom_file=".build-lineage/${container}-${tag}.sbom.json"
-            generate_sbom "$image_ref" "$sbom_file" || \
-              echo "::warning::SBOM generation failed for ${container}:${tag} — continuing"
-
-            # Capture digest for attestation (mirrors build-and-push job pattern)
-            digest=""
-            raw_manifest=$(retry_with_backoff 3 10 docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
-            if [[ -n "$raw_manifest" ]]; then
-              digest="sha256:$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}')"
-            fi
-            echo "digest_${container}_${tag}=${digest}" >> "$GITHUB_OUTPUT"
-
-            # Append to attest manifest when digest + SBOM are both present
-            if [[ -n "$digest" && -f "$sbom_file" ]]; then
-              jq -c \
-                --arg sn "${REMOTE_CR}/${container}" \
-                --arg sd "$digest" \
-                --arg sp "$sbom_file" \
-                '. + [{subject_name:$sn, subject_digest:$sd, sbom_path:$sp}]' \
-                "$attest_manifest" > "${attest_manifest}.tmp" && mv "${attest_manifest}.tmp" "$attest_manifest" || true
+            if ! generate_sbom "$image_ref" "$sbom_file"; then
+              # The following upload uses a broad glob.  A failed current producer
+              # must not leave a prior cell's SBOM eligible for attestation.
+              rm -f -- "$sbom_file"
+              echo "::warning::SBOM generation failed for ${container}:${tag} — removed failed-cell output and continuing"
             fi
 
             echo "::endgroup::"
           done
-          echo "attest_manifest=${attest_manifest}" >> "$GITHUB_OUTPUT"
         continue-on-error: true
 
       # Upload all bake SBOMs as a single combined artifact so the bake-attest
@@ -3260,6 +3240,7 @@ jobs:
           BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
           DRY_RUN: ${{ env.DRY_RUN }}
+          BAKE_MERGE_RECEIPT_DIR: .bake-merge-receipts
         run: |
           set -euo pipefail
           chmod +x scripts/bake-merge-manifests.sh scripts/generate-bake-hcl.sh
@@ -3309,6 +3290,17 @@ jobs:
                 ./scripts/bake-merge-manifests.sh "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS}
             fi
           fi
+
+      - name: Upload bake merge receipts
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: bake-merge-receipts-${{ github.run_id }}
+          path: .bake-merge-receipts/*.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
 
       - name: Best-effort DockerHub mirror (bake)
         if: always() && steps.bake-merge-step.outcome == 'success'
@@ -4328,6 +4320,14 @@ jobs:
           path: .build-lineage-artifacts/
           merge-multiple: false
 
+      - name: Download bake merge receipts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          pattern: bake-merge-receipts-*
+          path: .bake-merge-receipts-artifacts/
+          merge-multiple: false
+        continue-on-error: true
+
       - name: Download Trivy scan history artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
@@ -4378,14 +4378,52 @@ jobs:
         env:
           BAKE_MERGE_RESULT: ${{ needs.bake-merge.result }}
         run: |
+          source helpers/base-image-utils.sh
           mkdir -p .build-lineage
+          declare -A bake_merge_receipt_keys=()
+          load_bake_merge_receipts() {
+            local receipt_file receipt_key
+            [[ -d ".bake-merge-receipts-artifacts" ]] || return 0
+            while IFS= read -r -d '' receipt_file; do
+              if ! receipt_key=$(jq -cer 'select(
+                  (type == "object") and
+                  (keys == ["container", "tag"]) and
+                  ((.container | type) == "string") and
+                  ((.container | length) > 0) and
+                  ((.tag | type) == "string") and
+                  ((.tag | length) > 0)
+                ) |
+                  [.container, .tag] | tojson' "$receipt_file" 2>/dev/null); then
+                echo "::warning::Ignoring malformed bake merge receipt: $receipt_file"
+                continue
+              fi
+              bake_merge_receipt_keys["$receipt_key"]=1
+            done < <(find .bake-merge-receipts-artifacts -name '*.json' -print0)
+          }
+          receipt_matches_lineage() {
+            local lineage_record="$1" lineage_key
+            if ! lineage_key=$(jq -cer '[.container, .tag] | tojson' <<< "$lineage_record"); then
+              return 1
+            fi
+            [[ "${bake_merge_receipt_keys[$lineage_key]+present}" == "present" ]]
+          }
+          if [[ "$BAKE_MERGE_RESULT" != "success" ]]; then
+            load_bake_merge_receipts
+          fi
           if [ -d ".build-lineage-artifacts" ]; then
             while IFS= read -r -d '' lineage_file; do
               case "$lineage_file" in
                 .build-lineage-artifacts/build-lineage-bake-*/*)
                   if [[ "$BAKE_MERGE_RESULT" != "success" ]]; then
-                    echo "::notice::Skipping bake lineage because bake-merge result is ${BAKE_MERGE_RESULT}"
-                    continue
+                    if ! lineage_record=$(cat "$lineage_file") \
+                        || ! lineage_complete_record_valid "$lineage_record"; then
+                      echo "::warning::Preserving cached bake lineage; candidate is not a valid complete record: $lineage_file"
+                      continue
+                    fi
+                    if ! receipt_matches_lineage "$lineage_record"; then
+                      echo "::notice::Preserving cached bake lineage without matching publication receipt: $lineage_file"
+                      continue
+                    fi
                   fi
                   ;;
               esac

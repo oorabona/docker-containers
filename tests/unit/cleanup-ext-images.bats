@@ -781,6 +781,7 @@ EOF
 
     [[ "$cleanup_job" != *"concurrency:"* ]]
     [[ "$cleanup_job" != *"merge-extension-manifests-"* ]]
+    [[ "$cleanup_job" == *"Runs daily on schedule and on every workflow_dispatch."* ]]
 }
 
 @test "--help flag exits 0 and prints usage" {
