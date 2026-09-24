@@ -294,6 +294,7 @@ jobs:
     # so packages:read is enough and none of the workflow's global id-token /
     # attestations / security-events / issues grants are needed.
     permissions:
+      actions: read
       contents: read
       packages: read
     env:
@@ -309,6 +310,7 @@ jobs:
       # this run. '*' preserves the detector's all-extensions scope. Skipped or
       # failed extension stages publish no usable scoped refs, so force nothing.
       FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
+      PUBLISHED_EXTENSION_DIGESTS: ${{ needs.merge-extension-manifests.outputs.published_extension_digests }}
     strategy:
       fail-fast: false
       matrix:
@@ -318,6 +320,33 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Download declared extension lineage
+        id: download-extension-lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          name: ext-lineage-${{ github.run_id }}
+          path: .build-lineage/
+
+      - name: Require declared extension lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        shell: bash
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-extension-lineage.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$DOWNLOAD_OUTCOME" == "success" ]] || {
+            echo "::error::Declared extension digest lineage is unavailable"
+            exit 1
+          }
+          for ext in ${PUBLISHED_EXTENSION_DIGESTS//,/ }; do
+            compgen -G ".build-lineage/ext-${ext}-pg*-versionset.json" >/dev/null || {
+              echo "::error::Declared extension digest lineage is incomplete for ${ext}"
+              exit 1
+            }
+          done
 
       - name: Ensure /dev/net/tun
         shell: bash
@@ -758,6 +787,8 @@ jobs:
   merge-extension-manifests:
     name: Merge Extension Manifests (multi-arch)
     needs: [detect-containers, build-extensions, sync-base-images]
+    outputs:
+      published_extension_digests: ${{ steps.published-extension-digests.outputs.value }}
     if: |
       always() &&
       needs.detect-containers.outputs.count > 0 &&
@@ -916,6 +947,30 @@ jobs:
             done
           done
 
+      - name: Emit published extension digest set
+        id: published-extension-digests
+        if: steps.merge-manifests-step.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          declare -A published=()
+          for lineage in .build-lineage/ext-*-versionset.json; do
+            ext=$(jq -er '.ext | strings | select(test("^[A-Za-z0-9_-]+$"))' "$lineage")
+            jq -e '
+              . as $artifact
+              | (.available | type == "array" and length > 0)
+              and (.version_digests | type == "object")
+              and all(.available[]; . as $version | $artifact.version_digests[$version] | strings | test("^sha256:[0-9a-f]{64}$"))
+            ' "$lineage" >/dev/null
+            published["$ext"]=1
+          done
+          value=""
+          if [[ ${#published[@]} -gt 0 ]]; then
+            value=$(printf '%s\n' "${!published[@]}" | LC_ALL=C sort | paste -sd, -)
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
       - name: Upload canonical lineage (versionset + consolidated duration files)
         id: upload_ext_lineage_canonical
         if: always() && hashFiles('.build-lineage/ext-*.json') != ''
@@ -936,6 +991,7 @@ jobs:
           include-hidden-files: true
 
       - name: Upload canonical lineage (versionset + consolidated duration files) (retry on transient failure)
+        id: upload_ext_lineage_canonical_retry
         if: always() && steps.upload_ext_lineage_canonical.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
@@ -952,6 +1008,20 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
           overwrite: true
+
+      - name: Require declared extension lineage upload
+        if: always() && steps.published-extension-digests.outputs.value != ''
+        shell: bash
+        env:
+          PUBLISHED_EXTENSION_DIGESTS: ${{ steps.published-extension-digests.outputs.value }}
+          UPLOAD_INITIAL: ${{ steps.upload_ext_lineage_canonical.outcome }}
+          UPLOAD_RETRY: ${{ steps.upload_ext_lineage_canonical_retry.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$UPLOAD_INITIAL" != "success" && "$UPLOAD_RETRY" != "success" ]]; then
+            echo "::error::Declared extension digest lineage (${PUBLISHED_EXTENSION_DIGESTS}) was not uploaded"
+            exit 1
+          fi
 
       - name: Emit build-result artifact (postgres extmerge)
         if: always()
@@ -1163,6 +1233,7 @@ jobs:
       # Resolver contract: only extensions published successfully by this run.
       # An empty value covers skipped or failed extension stages.
       FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
+      PUBLISHED_EXTENSION_DIGESTS: ${{ needs.merge-extension-manifests.outputs.published_extension_digests }}
     runs-on: ${{ matrix.build.os == 'windows' && 'windows-latest' || matrix.runner }}
     timeout-minutes: ${{ matrix.build.os == 'windows' && 120 || 60 }}
     strategy:
@@ -1186,6 +1257,33 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download declared extension lineage
+        id: download-extension-lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          name: ext-lineage-${{ github.run_id }}
+          path: .build-lineage/
+
+      - name: Require declared extension lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        shell: bash
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-extension-lineage.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$DOWNLOAD_OUTCOME" == "success" ]] || {
+            echo "::error::Declared extension digest lineage is unavailable"
+            exit 1
+          }
+          for ext in ${PUBLISHED_EXTENSION_DIGESTS//,/ }; do
+            compgen -G ".build-lineage/ext-${ext}-pg*-versionset.json" >/dev/null || {
+              echo "::error::Declared extension digest lineage is incomplete for ${ext}"
+              exit 1
+            }
+          done
 
       # yq is pre-installed on ubuntu-latest. On Windows we download the binary
       # directly (no Chocolatey — avoids flaky 503s). Action mikefarah/yq is
@@ -1886,6 +1984,7 @@ jobs:
       CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
       # Resolver contract: only extensions published successfully by this run.
       FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
+      PUBLISHED_EXTENSION_DIGESTS: ${{ needs.merge-extension-manifests.outputs.published_extension_digests }}
     permissions:
       contents: read
       packages: read
@@ -1934,13 +2033,32 @@ jobs:
           echo "::notice::bake containers (lineage plan): ${containers}"
           echo "::notice::bake retained-eligible containers (lineage plan): ${retained_containers:-<none>}"
 
-      - name: Download extension lineage (postgres final-image bake)
-        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+      - name: Download declared extension lineage
+        id: download-extension-lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
-        continue-on-error: true
+
+      - name: Require declared extension lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        shell: bash
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-extension-lineage.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$DOWNLOAD_OUTCOME" == "success" ]] || {
+            echo "::error::Declared extension digest lineage is unavailable"
+            exit 1
+          }
+          for ext in ${PUBLISHED_EXTENSION_DIGESTS//,/ }; do
+            compgen -G ".build-lineage/ext-${ext}-pg*-versionset.json" >/dev/null || {
+              echo "::error::Declared extension digest lineage is incomplete for ${ext}"
+              exit 1
+            }
+          done
 
       - name: Compute bake lineage plan
         env:
@@ -2043,7 +2161,9 @@ jobs:
       CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
       # Resolver contract: only extensions published successfully by this run.
       FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
+      PUBLISHED_EXTENSION_DIGESTS: ${{ needs.merge-extension-manifests.outputs.published_extension_digests }}
     permissions:
+      actions: read
       contents: read
       packages: write
       id-token: write
@@ -2150,13 +2270,32 @@ jobs:
             fi
           done <<< "$versions"
 
-      - name: Download extension lineage (postgres final-image bake)
-        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+      - name: Download declared extension lineage
+        id: download-extension-lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
-        continue-on-error: true
+
+      - name: Require declared extension lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        shell: bash
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-extension-lineage.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$DOWNLOAD_OUTCOME" == "success" ]] || {
+            echo "::error::Declared extension digest lineage is unavailable"
+            exit 1
+          }
+          for ext in ${PUBLISHED_EXTENSION_DIGESTS//,/ }; do
+            compgen -G ".build-lineage/ext-${ext}-pg*-versionset.json" >/dev/null || {
+              echo "::error::Declared extension digest lineage is incomplete for ${ext}"
+              exit 1
+            }
+          done
 
       - name: Download bake lineage plan
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
@@ -2627,7 +2766,9 @@ jobs:
       CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
       # Resolver contract: only extensions published successfully by this run.
       FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
+      PUBLISHED_EXTENSION_DIGESTS: ${{ needs.merge-extension-manifests.outputs.published_extension_digests }}
     permissions:
+      actions: read
       contents: read
       packages: write
       id-token: write
@@ -2731,13 +2872,32 @@ jobs:
             fi
           done <<< "$versions"
 
-      - name: Download extension lineage (postgres final-image bake)
-        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+      - name: Download declared extension lineage
+        id: download-extension-lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
-        continue-on-error: true
+
+      - name: Require declared extension lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        shell: bash
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-extension-lineage.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$DOWNLOAD_OUTCOME" == "success" ]] || {
+            echo "::error::Declared extension digest lineage is unavailable"
+            exit 1
+          }
+          for ext in ${PUBLISHED_EXTENSION_DIGESTS//,/ }; do
+            compgen -G ".build-lineage/ext-${ext}-pg*-versionset.json" >/dev/null || {
+              echo "::error::Declared extension digest lineage is incomplete for ${ext}"
+              exit 1
+            }
+          done
 
       - name: Install skopeo (extension final-build self-heal fallback)
         if: needs.detect-containers.outputs.bake_final_builds != '[]'

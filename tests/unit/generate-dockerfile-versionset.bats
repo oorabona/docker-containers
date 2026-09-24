@@ -89,7 +89,7 @@ EOF
 
 teardown() {
     teardown_temp_dir
-    unset ROOT_DIR
+    unset ROOT_DIR PUBLISHED_EXTENSION_DIGESTS
 }
 
 # ---------------------------------------------------------------------------
@@ -179,6 +179,47 @@ EOF
     chmod 600 "$artifact"
     [ "$status" -ne 0 ]
     grep -Fq -- "cannot read versionset artifact: $artifact" <<<"$output"
+}
+
+@test "producer-declared digest lineage absent or malformed refuses without self-heal" {
+    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    export PUBLISHED_EXTENSION_DIGESTS="timescaledb"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"declared by PUBLISHED_EXTENSION_DIGESTS"* ]]
+    ! grep -q "FROM ghcr.io/testowner/ext-timescaledb:" <<<"$output"
+
+    printf '{not json\n' > "$artifact"
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"declared by PUBLISHED_EXTENSION_DIGESTS"* ]]
+    ! grep -q "FROM ghcr.io/testowner/ext-timescaledb:" <<<"$output"
+}
+
+@test "producer-declared digest lineage emits only immutable extension refs" {
+    _write_versionset_with_digests "timescaledb" "18" "2.25.0" "2.27.1"
+    export PUBLISHED_EXTENSION_DIGESTS="timescaledb"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+    grep -Eq '^COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:[0-9a-f]{64} /output/ /[0-9]+\.[0-9]+\.[0-9]+/$' <<<"$output"
+    ! grep -Eq '^COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-' <<<"$output"
 }
 
 @test "unreadable versionset artifact refuses when generate_dockerfile is called inside if" {

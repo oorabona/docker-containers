@@ -66,6 +66,10 @@ EOF
 
     docker() {
         if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'create' ]]; then
+            if [[ "${4:-}" == '--dry-run' ]]; then
+                printf '%s\n' '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1,"platform":{"os":"linux","architecture":"amd64"}},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size":1,"platform":{"os":"linux","architecture":"arm64"}}]}'
+                return 0
+            fi
             printf 'IMAGETOOLS_CREATE %s\n' "$*" >> "$create_log"
         fi
         return 0
@@ -73,6 +77,108 @@ EOF
 
     export -f ext_config list_extensions_by_priority ext_image_name
     export -f _consolidate_version_duration_file docker
+}
+
+# Configure one Stage-B path through main --finalize-multiarch.  The docker
+# stub records both dry-run and publishing creates so the preflight contract is
+# asserted at the same public entry point used by the workflow.
+_prepare_dry_run_preflight_finalization() {
+    local path="$1"
+
+    case "$path" in
+        non-resolver)
+            cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+            rm -f "$EXT_BUILD_DIR/timescaledb.Dockerfile"
+            touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+            ext_config() {
+                case "$2" in
+                    version) echo '0.8.0' ;;
+                    repo) echo 'https://github.com/pgvector/pgvector' ;;
+                    *) echo '' ;;
+                esac
+            }
+            list_extensions_by_priority() { echo 'pgvector'; }
+            ;;
+        resolver)
+            cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+EOF
+            rm -f "$EXT_BUILD_DIR/pgvector.Dockerfile"
+            touch "$EXT_BUILD_DIR/timescaledb.Dockerfile"
+            ext_config() {
+                case "$2" in
+                    version) echo '2.27.1' ;;
+                    repo) echo 'https://github.com/timescale/timescaledb' ;;
+                    *) echo '' ;;
+                esac
+            }
+            list_extensions_by_priority() { echo 'timescaledb'; }
+            resolve_version_set() { echo '["2.27.1"]'; }
+            ;;
+        *)
+            echo "unknown Stage-B path: $path" >&2
+            return 1
+            ;;
+    esac
+
+    ext_image_name() { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+    ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+    ext_ref_resolve() {
+        case "${4:-}" in
+            '') return 1 ;;
+            amd64|arm64) printf 'ghcr.io/test/ext-%s:pg%s-%s-%s' "$1" "$3" "$2" "$4" ;;
+            *) return 1 ;;
+        esac
+    }
+    _consolidate_version_duration_file() { return 0; }
+    sleep() { :; }
+
+    docker() {
+        if [[ "${1:-}" == 'buildx' && "${2:-}" == 'imagetools' && "${3:-}" == 'create' ]]; then
+            if [[ " $* " == *' --dry-run '* ]]; then
+                printf 'DRY_RUN_CREATE %s\n' "$*" >> "$dry_run_create_log"
+                case "$dry_run_mode" in
+                    missing-arm64)
+                        printf '%s\n' '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1,"platform":{"os":"linux","architecture":"amd64"}}]}'
+                        return 0
+                        ;;
+                    fail)
+                        printf 'simulated dry-run failure\n' >&2
+                        return 42
+                        ;;
+                    complete)
+                        printf '%s\n' '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1,"platform":{"os":"linux","architecture":"amd64"}},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size":1,"platform":{"os":"linux","architecture":"arm64"}}]}'
+                        return 0
+                        ;;
+                esac
+            fi
+            printf 'REAL_CREATE %s\n' "$*" >> "$dry_run_create_log"
+            return 0
+        fi
+        if [[ "${1:-}" == 'buildx' && "${2:-}" == 'imagetools' && "${3:-}" == 'inspect' ]]; then
+            printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
+            return 0
+        fi
+        return 0
+    }
+
+    export -f ext_config list_extensions_by_priority ext_image_name ext_local_image_name
+    export -f ext_ref_resolve _consolidate_version_duration_file docker sleep
+    if [[ "$path" == 'resolver' ]]; then
+        export -f resolve_version_set
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -386,7 +492,7 @@ _prepare_finalize_versionset_artifact() {
 
     docker() {
         if [[ "${1:-}" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "inspect" ]]; then
-            printf 'linux/amd64\nlinux/arm64\n'
+            printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
         fi
         return 0
     }
@@ -9414,13 +9520,17 @@ EOCFG
         #   (needed by the platform-coverage check)
         docker() {
             echo "DOCKER $*" >> "$docker_calls"
+            if [[ "${4:-}" == "--dry-run" ]]; then
+                printf "%s\\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                return 0
+            fi
             if [[ "$1" == "manifest" ]]; then
                 echo "manifest unknown: manifest unknown" >&2
                 return 1
             fi
             if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
                 # Return fake inspect output with both platforms (platform-coverage check)
-                printf "linux/amd64\nlinux/arm64\n"
+                printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
                 return 0
             fi
             return 0
@@ -9522,7 +9632,7 @@ EOCFG
         # Mock docker: imagetools inspect returns platform output; everything else succeeds.
         docker() {
             if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
-                printf "linux/amd64\nlinux/arm64\n"
+                printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
                 return 0
             fi
             return 0
@@ -9706,7 +9816,12 @@ EOCFG
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { return 0; }
+        docker() {
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" && "${4:-}" == "--dry-run" ]]; then
+                printf "%s\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+            fi
+            return 0
+        }
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
@@ -9806,11 +9921,15 @@ EOF
         # manifest inspect returns manifest-unknown for un-suffixed absent refs.
         docker() {
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
                 return 0
             fi
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'inspect' ]]; then
-                printf 'linux/amd64\nlinux/arm64\n'
+                printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                 return 0
             fi
             if [[ \"\$1\" == 'manifest' ]]; then
@@ -9920,12 +10039,16 @@ EOF
 
         docker() {
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
                 return 0
             fi
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'inspect' ]]; then
                 # Platform check: return both platforms so the check passes
-                printf 'linux/amd64\nlinux/arm64\n'
+                printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                 return 0
             fi
             if [[ \"\$1\" == 'manifest' ]]; then
@@ -10223,11 +10346,15 @@ EOF
         docker() {
             # imagetools create: succeeds for all (source tags are present)
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 return 0
             fi
             # imagetools inspect: return both platforms (platform-coverage check)
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'inspect' ]]; then
-                printf 'linux/amd64\nlinux/arm64\n'
+                printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                 return 0
             fi
             if [[ \"\$1\" == 'manifest' ]]; then
@@ -10337,11 +10464,14 @@ EOF
                 if [[ \"\${*}\" == *'pg18-2.27.1'* ]]; then
                     return 1  # ceiling: imagetools create fails (sources absent)
                 fi
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                fi
                 return 0
             fi
             # imagetools inspect: return both platforms (platform-coverage check)
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'inspect' ]]; then
-                printf 'linux/amd64\nlinux/arm64\n'
+                printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                 return 0
             fi
             if [[ \"\$1\" == 'manifest' ]]; then
@@ -10422,11 +10552,15 @@ EOF
 
         docker() {
             if [[ "$2" == "imagetools" && "$3" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                    return 0
+                fi
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_calls_log"'"
                 return 0
             fi
             if [[ "$2" == "imagetools" && "$3" == "inspect" ]]; then
-                printf "linux/amd64\nlinux/arm64\n"
+                printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
                 return 0
             fi
             if [[ "$1" == "manifest" ]]; then
@@ -10542,11 +10676,15 @@ EOF
 
         docker() {
             if [[ "$2" == "imagetools" && "$3" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                    return 0
+                fi
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_calls_log"'"
                 return 0
             fi
             if [[ "$2" == "imagetools" && "$3" == "inspect" ]]; then
-                printf "linux/amd64\nlinux/arm64\n"
+                printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
                 return 0
             fi
             if [[ "$1" == "manifest" ]]; then
@@ -10769,14 +10907,17 @@ EOF
                 echo "$_cnt" > "$_inspect_count_file"
                 if [[ "$_cnt" -eq 1 ]]; then
                     # First inspect = reuse check: single-arch (amd64 only)
-                    printf "linux/amd64\n"
+                    printf "Platform: linux/amd64\n"
                 else
                     # Subsequent inspects = create-path check: both arches
-                    printf "linux/amd64\nlinux/arm64\n"
+                    printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
                 fi
                 return 0
             fi
             if [[ "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                fi
                 return 0
             fi
             if [[ "${1:-}" == "manifest" ]]; then
@@ -10886,13 +11027,16 @@ EOF
                 local _ref="${*: -1}"
                 if [[ "$_ref" == *"2.23.1"* ]]; then
                     # Non-ceiling: inspect shows only amd64 after create
-                    printf "linux/amd64\n"
+                    printf "Platform: linux/amd64\n"
                 else
-                    printf "linux/amd64\nlinux/arm64\n"
+                    printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
                 fi
                 return 0
             fi
             if [[ "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                fi
                 return 0
             fi
             if [[ "${1:-}" == "manifest" ]]; then
@@ -11000,10 +11144,14 @@ EOF
         # docker mock: imagetools inspect returns only linux/amd64 (ceiling single-arch)
         docker() {
             if [[ "${2:-}" == "imagetools" && "${3:-}" == "inspect" ]]; then
-                printf "linux/amd64\n"
+                printf "Platform: linux/amd64\n"
                 return 0
             fi
             if [[ "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                    return 0
+                fi
                 return 0
             fi
             if [[ "${1:-}" == "manifest" ]]; then
@@ -11086,7 +11234,7 @@ EOF
 
         docker() {
             if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
-                printf "linux/amd64\nlinux/arm64\n"
+                printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
                 return 0
             fi
             return 0
@@ -11125,9 +11273,8 @@ EOF
     # sum_flavor_extension_durations canonical duration file has duration=140.
     [ "$consolidated_dur" -gt 0 ]
 
-    # For a single-version set (set_size=1), no versionset artifact is produced —
-    # that is correct behavior (the consumer uses the single-version path).
-    # The test's goal is only to verify duration consolidation; versionset absence is expected.
+    # Single-version lineage is emitted alongside the consolidated duration so
+    # the ordinary single-version consumer can pin the published manifest.
 }
 
 # ---------------------------------------------------------------------------
@@ -11188,11 +11335,15 @@ EOF
         docker() {
             local _dcmd=\"\${1:-}\"
             if [[ \"\$_dcmd\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"$imagetools_log\"
                 return 0
             fi
             if [[ \"\$_dcmd\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'inspect' ]]; then
-                printf 'linux/amd64\nlinux/arm64\n'
+                printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                 return 0
             fi
             if [[ \"\$_dcmd\" == 'manifest' ]]; then
@@ -11281,7 +11432,7 @@ EOF
 
         docker() {
             if [[ \"\${1:-}\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'inspect' ]]; then
-                printf 'linux/amd64\nlinux/arm64\n'
+                printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
             fi
             return 0
         }
@@ -11490,7 +11641,7 @@ EOF
                     return 0
                 fi
                 if [[ \"\${3:-}\" == 'inspect' ]]; then
-                    printf 'linux/amd64\nlinux/arm64\n'
+                    printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                     return 0
                 fi
             fi
@@ -11721,7 +11872,12 @@ EOF
 
     export FORCE=true
     list_extensions_by_priority() { echo "timescaledb"; }
-    docker() { return 0; }
+    docker() {
+        if [[ "${1:-}" == 'buildx' && "${2:-}" == 'imagetools' && "${3:-}" == 'create' && "${4:-}" == '--dry-run' ]]; then
+            printf '%s\n' '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1,"platform":{"os":"linux","architecture":"amd64"}},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size":1,"platform":{"os":"linux","architecture":"arm64"}}]}'
+        fi
+        return 0
+    }
     rm() {
         if [[ "${1:-}" == "-f" && "${2:-}" == "${amd64_dur:-}" && "${3:-}" == "${arm64_dur:-}" && -n "${amd64_dur:-}" ]]; then
             echo "forced source cleanup failure" >&2
@@ -11871,7 +12027,7 @@ EOF
 
         docker() {
             if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
-                printf "linux/amd64\nlinux/arm64\n"
+                printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
                 return 0
             fi
             return 0
@@ -11997,11 +12153,15 @@ EOF
         docker() {
             local _dcmd="${1:-}"
             if [[ "$_dcmd" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                    return 0
+                fi
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_log"'"
                 return 0
             fi
             if [[ "$_dcmd" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "inspect" ]]; then
-                printf "linux/amd64\nlinux/arm64\n"
+                printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
                 return 0
             fi
             if [[ "$_dcmd" == "manifest" ]]; then
@@ -12129,11 +12289,15 @@ EOF
         docker() {
             local _dcmd="${1:-}"
             if [[ "$_dcmd" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                    return 0
+                fi
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_log"'"
                 return 0
             fi
             if [[ "$_dcmd" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "inspect" ]]; then
-                printf "linux/amd64\nlinux/arm64\n"
+                printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
                 return 0
             fi
             if [[ "$_dcmd" == "manifest" ]]; then
@@ -12187,11 +12351,15 @@ EOF
         false
     }
 
-    # No bundle must be built for set_size==1.
-    # No versionset artifact (consumer uses single-version path; stale deleted).
+    # No bundle must be built for set_size==1, but the manifest's digest lineage
+    # is required for the single-version consumer.
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    [ ! -f "$artifact" ] || {
-        echo "FAIL: versionset artifact should not be written for set_size==1"
+    [ -f "$artifact" ] || {
+        echo "FAIL: digest lineage should be written for set_size==1"
+        false
+    }
+    jq -e '.version_digests["2.27.1"] == "sha256:0000000000000000000000000000000000000000000000000000000000000000"' "$artifact" >/dev/null || {
+        echo "FAIL: set_size==1 lineage must contain the verified digest"
         false
     }
 }
@@ -12621,7 +12789,11 @@ EOF
 
         docker() {
             if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
-                printf "linux/amd64\nlinux/arm64\n"
+                printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
+                return 0
+            fi
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" && "$4" == "--dry-run" ]]; then
+                printf "%s\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
                 return 0
             fi
             if [[ "$1" == "buildx" && "$2" == "imagetools" ]]; then return 0; fi
@@ -12746,6 +12918,9 @@ EOF
                     echo "registry error: unexpected EOF" >&2
                     return 1
                 fi
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                fi
                 return 0
             fi
             if [[ "$1" == "buildx" && "$2" == "build" ]]; then return 0; fi
@@ -12837,7 +13012,11 @@ EOF
 
         docker() {
             if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
-                printf "linux/amd64\nlinux/arm64\n"
+                printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
+                return 0
+            fi
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" && "${4:-}" == "--dry-run" ]]; then
+                printf "%s\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
                 return 0
             fi
             echo "DOCKER $*" >> "$docker_calls"
@@ -12952,7 +13131,11 @@ EOF
 
         docker() {
             if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
-                printf "linux/amd64\nlinux/arm64\n"
+                printf "Platform: linux/amd64\nPlatform: linux/arm64\n"
+                return 0
+            fi
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" && "${4:-}" == "--dry-run" ]]; then
+                printf "%s\n" "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
                 return 0
             fi
             echo "DOCKER $*" >> "$docker_calls"
@@ -14080,7 +14263,11 @@ _assert_cache_refs() {
             local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
             # imagetools inspect: return both platforms (platform-coverage check)
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
-                printf 'linux/amd64\nlinux/arm64\n'
+                printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
+                return 0
+            fi
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' && \"\${4:-}\" == '--dry-run' ]]; then
+                printf '%s\n' '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
                 return 0
             fi
             echo \"DOCKER \$*\" >> \"\$docker_calls\"
@@ -14266,7 +14453,7 @@ EOF
                 local _ref=\"\${4:-}\"
                 # Canonical multi-arch ref reports both platforms (faithful: it IS multi-arch).
                 if [[ \"\$_ref\" == *':pg18-0.8.0' && \"\$_ref\" != *'-amd64'* && \"\$_ref\" != *'-arm64'* && \"\$_ref\" != *'-pr42'* ]]; then
-                    printf 'linux/amd64\nlinux/arm64\n'
+                    printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                     return 0
                 fi
                 printf 'error: manifest not found\n' >&2
@@ -14358,11 +14545,15 @@ EOF
         docker() {
             local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
                 return 0
             fi
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
-                printf 'linux/amd64\nlinux/arm64\n'
+                printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                 return 0
             fi
             if [[ \"\$_dc\" == 'manifest' && \"\$_d2\" == 'inspect' ]]; then
@@ -14463,11 +14654,15 @@ EOF
         docker() {
             local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
                 return 0
             fi
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
-                printf 'linux/amd64\nlinux/arm64\n'
+                printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                 return 0
             fi
             if [[ \"\$_dc\" == 'manifest' ]]; then
@@ -14517,8 +14712,8 @@ EOF
 
 # ---------------------------------------------------------------------------
 # MG: in a PR, a non-resolver ext whose canonical plain ref EXISTS but
-# imagetools inspect reports single-arch (only linux/amd64) must repair that
-# canonical target, rather than silently reusing it or creating a PR target.
+# imagetools inspect reports single-arch (only linux/amd64) must create only
+# the PR-scoped target, rather than letting unmerged code repair canonical.
 #
 # RED against old code: the old `0) ... continue` blindly reused any present
 # manifest without inspecting it, so a single-arch legacy tag was never
@@ -14527,7 +14722,7 @@ EOF
 # GREEN after fix: `_reuse_ref_is_multiarch` returns 1 → fall-through to
 # imagetools create.
 # ---------------------------------------------------------------------------
-@test "PR context, non-resolver single-arch canonical manifest → repairs canonical target" {
+@test "PR context, non-resolver single-arch canonical manifest → creates scoped target" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local imagetools_log="$tmpd/mg_imagetools.log"
@@ -14592,14 +14787,18 @@ EOF
                 printf '%s\n' "\$_count" > "\$inspect_count"
                 if [[ "\$_count" -eq 1 ]]; then
                     # The pre-create manifest is single-arch.
-                    printf 'linux/amd64\n'
+                    printf 'Platform: linux/amd64\n'
                 else
                     # The freshly created manifest covers both platforms.
-                    printf 'linux/amd64\nlinux/arm64\n'
+                    printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                 fi
                 return 0
             fi
             if [[ \"\$_cmd\" == 'buildx' && \"\$_sub\" == 'imagetools' && \"\$_subsub\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"\$imagetools_log\"
                 return 0
             fi
@@ -14645,12 +14844,25 @@ EOF
         echo "FAIL: imagetools create call does not reference -arm64 source. Got: $call"
         false
     }
-    [[ "$call" == *'-t ghcr.io/test/ext-pgvector:pg18-0.8.0 '* ]] || {
-        echo "FAIL: imagetools create must repair the canonical target. Got: $call"
+    [[ "$call" == *'-t ghcr.io/test/ext-pgvector:pg18-0.8.0-pr42 '* ]] || {
+        echo "FAIL: imagetools create must target the PR-scoped tag. Got: $call"
         false
     }
-    [[ "$call" != *'-t ghcr.io/test/ext-pgvector:pg18-0.8.0-pr42 '* ]] || {
-        echo "FAIL: imagetools create incorrectly targeted the PR-scoped tag. Got: $call"
+    [[ "$call" != *'-t ghcr.io/test/ext-pgvector:pg18-0.8.0 '* ]] || {
+        echo "FAIL: imagetools create incorrectly targeted canonical. Got: $call"
+        false
+    }
+
+    local artifact="$tmpd/.build-lineage/ext-pgvector-pg18-versionset.json"
+    [ -f "$artifact" ] || {
+        echo "FAIL: published non-resolver manifest must write digest lineage"
+        false
+    }
+    jq -e '
+      .available == ["0.8.0"]
+      and .version_digests["0.8.0"] == "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    ' "$artifact" >/dev/null || {
+        echo "FAIL: non-resolver lineage must retain the verified manifest digest. Got: $(cat "$artifact")"
         false
     }
 }
@@ -14748,13 +14960,17 @@ EOF
                 _count=\$((_count + 1))
                 printf '%s\n' "\$_count" > "\$inspect_count"
                 if [[ "\$_count" -eq 1 ]]; then
-                    printf 'linux/amd64\n'
+                    printf 'Platform: linux/amd64\n'
                 else
-                    printf 'linux/amd64\nlinux/arm64\n'
+                    printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                 fi
                 return 0
             fi
             if [[ \"\${1:-}\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"\$imagetools_log\"
                 return 0
             fi
@@ -14809,13 +15025,128 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Stage-B preflight: dry-run must prove the would-be index is a complete
+# multi-arch index before the final tag is written.  Exercise both the
+# non-resolver and resolver paths through main --finalize-multiarch.
+# ---------------------------------------------------------------------------
+
+@test "finalize-multiarch refuses a dry-run index without arm64 before publishing either path" {
+    local path
+    for path in non-resolver resolver; do
+        dry_run_create_log="$TEST_TEMP_DIR/${path}-missing-arm64-create.log"
+        dry_run_mode='missing-arm64'
+        export dry_run_create_log dry_run_mode
+        _prepare_dry_run_preflight_finalization "$path"
+
+        run main postgres --major-version 18 --finalize-multiarch
+
+        [ "$status" -ne 0 ] || {
+            echo "FAIL: $path missing-arm64 dry run must fail finalization"
+            false
+        }
+        grep -Fq 'DRY_RUN_CREATE' "$dry_run_create_log" || {
+            echo "FAIL: $path did not run imagetools create --dry-run"
+            false
+        }
+        ! grep -Fq 'REAL_CREATE' "$dry_run_create_log" || {
+            echo "FAIL: $path wrote the final tag after an incomplete dry-run index. Got: $(cat "$dry_run_create_log")"
+            false
+        }
+    done
+}
+
+@test "finalize-multiarch refuses a failed dry run before publishing either path" {
+    local path
+    for path in non-resolver resolver; do
+        dry_run_create_log="$TEST_TEMP_DIR/${path}-failed-dry-run-create.log"
+        dry_run_mode='fail'
+        export dry_run_create_log dry_run_mode
+        _prepare_dry_run_preflight_finalization "$path"
+
+        run main postgres --major-version 18 --finalize-multiarch
+
+        [ "$status" -ne 0 ] || {
+            echo "FAIL: $path failed dry run must fail finalization"
+            false
+        }
+        grep -Fq 'DRY_RUN_CREATE' "$dry_run_create_log" || {
+            echo "FAIL: $path did not run the failing dry-run create"
+            false
+        }
+        ! grep -Fq 'REAL_CREATE' "$dry_run_create_log" || {
+            echo "FAIL: $path wrote the final tag after dry-run failure. Got: $(cat "$dry_run_create_log")"
+            false
+        }
+    done
+}
+
+@test "finalize-multiarch publishes only after a complete dry-run index on both paths" {
+    local path
+    for path in non-resolver resolver; do
+        dry_run_create_log="$TEST_TEMP_DIR/${path}-complete-dry-run-create.log"
+        dry_run_mode='complete'
+        export dry_run_create_log dry_run_mode
+        _prepare_dry_run_preflight_finalization "$path"
+
+        run main postgres --major-version 18 --finalize-multiarch
+
+        [ "$status" -eq 0 ] || {
+            echo "FAIL: $path complete dry-run index must allow finalization. Got: $output"
+            false
+        }
+        grep -Fq 'DRY_RUN_CREATE' "$dry_run_create_log" || {
+            echo "FAIL: $path did not run imagetools create --dry-run"
+            false
+        }
+        grep -Fq 'REAL_CREATE' "$dry_run_create_log" || {
+            echo "FAIL: $path did not run the real imagetools create after dry-run validation"
+            false
+        }
+    done
+}
+
+# ---------------------------------------------------------------------------
 # MG helper unit tests: _reuse_ref_is_multiarch return codes.
 # ---------------------------------------------------------------------------
+
+@test "_dry_run_output_is_single_json_index rejects an index without a supported media type" {
+    run _dry_run_output_is_single_json_index \
+        '{"manifests":[{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","platform":{"os":"linux","architecture":"amd64"}},{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","platform":{"os":"linux","architecture":"arm64"}}]}'
+
+    [ "$status" -ne 0 ]
+}
+
+@test "_multiarch_index_json_has_required_platforms requires exact platform objects" {
+    run _multiarch_index_json_has_required_platforms \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","platform":{"os":"linux","architecture":"amd64-evil"}},{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","platform":{"os":"linux","architecture":"arm64"}}]}'
+    [ "$status" -ne 0 ]
+
+    run _multiarch_index_json_has_required_platforms \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","platform":"linux/amd64"},{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","platform":"linux/arm64"}]}'
+    [ "$status" -ne 0 ]
+}
+
+@test "_capture_index_digest fails without stdout when raw inspect fails" {
+    # setup() installs a common digest mock; restore the production helper so
+    # this assertion exercises its real imagetools status handling.
+    _source_build_extensions
+    export DOCKER=docker
+    docker() {
+        printf 'partial raw manifest bytes'
+        return 1
+    }
+    export -f docker
+
+    run _capture_index_digest 'ghcr.io/test/ext-pgvector:pg18-0.8.0'
+
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+}
 
 @test "_reuse_ref_is_multiarch returns 0 when both arches reported" {
     docker() {
         if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'inspect' ]]; then
-            printf 'linux/amd64\nlinux/arm64\n'
+            printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
             return 0
         fi
         return 1
@@ -14826,10 +15157,24 @@ EOF
     [ "$status" -eq 0 ]
 }
 
+@test "_reuse_ref_is_multiarch rejects a prefixed architecture in inspect text" {
+    docker() {
+        if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'inspect' ]]; then
+            printf 'Platform: linux/amd64-evil\nPlatform: linux/arm64/v8\n'
+            return 0
+        fi
+        return 1
+    }
+    export -f docker
+
+    run _reuse_ref_is_multiarch 'ghcr.io/test/ext-pgvector:pg18-0.8.0'
+    [ "$status" -eq 1 ]
+}
+
 @test "_reuse_ref_is_multiarch returns 1 when only amd64 reported" {
     docker() {
         if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'inspect' ]]; then
-            printf 'linux/amd64\n'
+            printf 'Platform: linux/amd64\n'
             return 0
         fi
         return 1
@@ -14868,10 +15213,14 @@ EOF
 
     docker() {
         if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'create' ]]; then
+            if [[ "${4:-}" == '--dry-run' ]]; then
+                printf '%s\n' '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1,"platform":{"os":"linux","architecture":"amd64"}},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size":1,"platform":{"os":"linux","architecture":"arm64"}}]}'
+                return 0
+            fi
             return 0
         fi
         if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'inspect' ]]; then
-            printf 'linux/amd64\n'
+            printf 'Platform: linux/amd64\n'
             return 0
         fi
         return 1
@@ -14881,7 +15230,10 @@ EOF
     run finalize_multiarch_manifests "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
 
     [ "$status" -eq 1 ]
-    [[ "$output" == *"created non-resolver manifest does not cover both linux/amd64 and linux/arm64"* ]]
+    # An arm64-less index is rejected by the dry-run preflight; retain the
+    # post-create wording as an accepted outcome for implementations that
+    # validate the created manifest instead.
+    [[ "$output" == *"dry-run index does not cover both linux/amd64 and linux/arm64"* || "$output" == *"created non-resolver manifest does not cover both linux/amd64 and linux/arm64"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -15024,11 +15376,15 @@ EOF
         docker() {
             local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":1,\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
                 return 0
             fi
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
-                printf 'linux/amd64\nlinux/arm64\n'
+                printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                 return 0
             fi
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'build' ]]; then
@@ -15141,7 +15497,7 @@ EOF
                 return 0
             fi
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
-                printf 'linux/amd64\nlinux/arm64\n'
+                printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
                 return 0
             fi
             return 0
