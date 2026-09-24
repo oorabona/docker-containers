@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Age-based cleanup of GHCR container versions.
 #
+# This guard does not re-establish orphan status, which depends on
+# manifest references, or the age pruner's retention ranking, which depends on
+# the whole listing. It closes the tag-attachment window only.
+#
 # Required env vars: GH_TOKEN, OWNER
 # Optional env vars: DRY_RUN (default: false; exactly true or false),
 # KEEP_LATEST_COUNT (default: 10; range: 0 through 2147483647; 0 disables the
@@ -68,7 +72,28 @@ _cleanup_old_versions_delete() {
     "/users/${OWNER}/packages/container/${container}/versions/${version_id}" >/dev/null
 }
 
-# Write kept|decided|deleted|delete_failures to stdout once a package was
+# Re-read the exact GHCR version record just before DELETE. A listing is only a
+# snapshot, so a missing, malformed, or different record must fail closed.
+_get_ghcr_version_tags() {
+  local container="$1" version_id="$2"
+
+  gh api \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "/users/${OWNER}/packages/container/${container}/versions/${version_id}" 2>/dev/null \
+    | jq -ce --arg expected_version_id "$version_id" '
+      if type != "object" then error("GHCR version record must be an object")
+      elif (.id? | tostring) != $expected_version_id then error("GHCR version record id does not match requested version id")
+      elif (.metadata? | type) != "object" then error("GHCR version record metadata is invalid")
+      elif (.metadata.container? | type) != "object" then error("GHCR version record metadata.container is invalid")
+      elif (.metadata.container.tags? | type) != "array" then error("GHCR version record tags are invalid")
+      elif all(.metadata.container.tags[]; type == "string") | not then error("GHCR version record tags must be strings")
+      else .metadata.container.tags | sort | unique
+      end
+    '
+}
+
+# Write kept|decided|deleted|delete_failures|reread_failures to stdout once a package was
 # completely assessed. `decided` counts the completed deletion plan, while
 # `deleted` counts successful removal outcomes. Its return status, rather than
 # that record, communicates failure:
@@ -79,8 +104,8 @@ _cleanup_old_versions_delete() {
 purge_container() {
   local container="$1"
   local versions package version_count reported_version_count versions_file="" deletions_file=""
-  local position=0 kept=0 decided=0 deleted=0 delete_failures=0
-  local version_id tags created_at keep_reason tag tag_list major version_ts cutoff_ts validation_error validation_status
+  local position=0 kept=0 decided=0 deleted=0 delete_failures=0 reread_failures=0
+  local version_id tags created_at keep_reason tag tag_list major version_ts cutoff_ts validation_error validation_status current_tags_json listed_tags_json
   local record_b64 record_json
   local -a version_records=() deletion_records=() replay_records=()
   local -a replay_positions=() replay_ids=() replay_tags=()
@@ -132,7 +157,7 @@ purge_container() {
   echo "  Found $version_count versions" >&2
   if [[ "$version_count" -eq 0 ]]; then
     echo "  No versions found (might be new or private)" >&2
-    if ! printf '%s\n' "0|0|0|0"; then
+    if ! printf '%s\n' "0|0|0|0|0"; then
       return "$PROCESSING_FAILURE"
     fi
     return 0
@@ -261,7 +286,7 @@ purge_container() {
 
   if ! load_framed_work_list "deletion replay" "$deletions_file" replay_records; then
     rm -f "$deletions_file"
-    if ! printf '%s\n' "$kept|$decided|$deleted|$delete_failures"; then
+    if ! printf '%s\n' "$kept|$decided|$deleted|$delete_failures|$reread_failures"; then
       return "$PROCESSING_FAILURE"
     fi
     return "$POST_DELETE_PROCESSING_FAILURE"
@@ -273,7 +298,7 @@ purge_container() {
   for record_b64 in "${replay_records[@]}"; do
     if [[ ! "$record_b64" =~ ^(0|[1-9][0-9]*)\|([1-9][0-9]*)\|(.*)$ ]]; then
       echo "  ✗ Failed to read prepared deletion record; skipping $container" >&2
-      if ! printf '%s\n' "$kept|$decided|$deleted|$delete_failures"; then
+      if ! printf '%s\n' "$kept|$decided|$deleted|$delete_failures|$reread_failures"; then
         return "$PROCESSING_FAILURE"
       fi
       rm -f "$deletions_file"
@@ -290,6 +315,14 @@ purge_container() {
     echo "  ✗ Delete #${replay_positions[$position]} (tags: ${tags:-untagged})" >&2
     if [[ "$DRY_RUN" == "true" ]]; then
       echo "    [DRY RUN] Would delete version $version_id" >&2
+    elif ! current_tags_json=$(_get_ghcr_version_tags "$container" "$version_id"); then
+      echo "    ✗ version $version_id not deleted: re-read failed" >&2
+      reread_failures=$((reread_failures + 1))
+    elif ! listed_tags_json=$(jq -ce --arg tags "$tags" '$tags | split(",") | sort | unique' <<< null); then
+      echo "    ✗ version $version_id not deleted: listed tags could not be read" >&2
+      reread_failures=$((reread_failures + 1))
+    elif [[ "$current_tags_json" != "$listed_tags_json" ]]; then
+      echo "    ✓ version $version_id not deleted: re-read tag set changed" >&2
     elif _cleanup_old_versions_delete "$container" "$version_id"; then
       echo "    ✓ Deleted version $version_id" >&2
       deleted=$((deleted + 1))
@@ -299,14 +332,14 @@ purge_container() {
     fi
   done
 
-  if ! printf '%s\n' "$kept|$decided|$deleted|$delete_failures"; then
+  if ! printf '%s\n' "$kept|$decided|$deleted|$delete_failures|$reread_failures"; then
     return "$PROCESSING_FAILURE"
   fi
   if ! rm -f "$deletions_file"; then
     echo "  ✗ Failed to remove deletion list after cleanup" >&2
     return "$POST_DELETE_PROCESSING_FAILURE"
   fi
-  if [[ "$delete_failures" -gt 0 ]]; then
+  if [[ "$delete_failures" -gt 0 || "$reread_failures" -gt 0 ]]; then
     return "$DELETE_FAILURE"
   fi
 }
@@ -342,7 +375,7 @@ main() {
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14
   local root_dir containers_output container result status
   local -a containers=()
-  local kept decided deleted delete_failures
+  local kept decided deleted delete_failures reread_failures
   root_dir=$(script_root) || return 1
 
   if [[ $# -gt 0 ]]; then
@@ -367,7 +400,7 @@ main() {
   print_banner
 
   local total_decided=0 total_deleted=0 total_kept=0 total_assessed=0
-  local total_listing_failures=0 total_processing_failures=0 total_delete_failures=0
+  local total_listing_failures=0 total_processing_failures=0 total_delete_failures=0 total_reread_failures=0
   for container in "${containers[@]}"; do
     echo ""
     echo "========================================"
@@ -383,7 +416,7 @@ main() {
     case "$status" in
       0|"$DELETE_FAILURE"|"$POST_DELETE_PROCESSING_FAILURE")
         if parse_result_counters "$result" "cleanup result" \
-          kept total_kept decided total_decided deleted total_deleted delete_failures total_delete_failures; then
+          kept total_kept decided total_decided deleted total_deleted delete_failures total_delete_failures reread_failures total_reread_failures; then
           :
         else
           echo "  ✗ Failed to read cleanup result; skipping $container"
@@ -391,7 +424,7 @@ main() {
           continue
         fi
         total_assessed=$((total_assessed + 1))
-        echo "  Summary: kept=$kept, decided=$decided, deleted=$deleted, delete_failures=$delete_failures"
+        echo "  Summary: kept=$kept, decided=$decided, deleted=$deleted, delete_failures=$delete_failures, reread_failures=$reread_failures"
         [[ "$status" -ne "$POST_DELETE_PROCESSING_FAILURE" ]] || total_processing_failures=$((total_processing_failures + 1))
         ;;
       "$LISTING_FAILURE") total_listing_failures=$((total_listing_failures + 1)) ;;
@@ -414,11 +447,12 @@ main() {
   echo "Versions decided for deletion: $total_decided"
   echo "Versions deleted: $total_deleted"
   echo "Delete failures: $total_delete_failures"
+  echo "Re-read failures: $total_reread_failures"
   echo "Untagged versions: retained here; cleanup-outdated-tags.sh is their only deletion authority. Sweep coverage: scheduled runs and unfiltered purge dispatches sweep the whole discovered set; filtered purge dispatches sweep only the selected package; dispatches without purge_obsolete sweep nothing."
   echo "If that sweep skips orphan cleanup after a deletion failure, retention is fail-closed for this run."
   echo "========================================"
 
-  if [[ "$total_listing_failures" -gt 0 || "$total_processing_failures" -gt 0 || "$total_delete_failures" -gt 0 ]]; then
+  if [[ "$total_listing_failures" -gt 0 || "$total_processing_failures" -gt 0 || "$total_delete_failures" -gt 0 || "$total_reread_failures" -gt 0 ]]; then
     return 1
   fi
 }

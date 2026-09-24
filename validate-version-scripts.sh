@@ -194,7 +194,7 @@ test_version_script() {
     
     # Check if version.sh exists
     if [[ ! -f "$container/version.sh" ]]; then
-        log_warning "No version.sh file found - skipping"
+        log_warning "No version.sh file found"
         container_issues["$container"]="version_script_missing"
         return 2
     fi
@@ -384,8 +384,9 @@ main() {
                     failed_list+=("$specific_container")
                     ;;
                 2)
-                    ((skipped_containers++))
-                    skipped_list+=("$specific_container")
+                    log_error "Explicitly requested container is missing $specific_container/version.sh"
+                    ((failed_containers++))
+                    failed_list+=("$specific_container")
                     ;;
             esac
         fi
@@ -414,6 +415,7 @@ main() {
                         failed_list+=("$container")
                         ;;
                     2)
+                        log_warning "No version.sh file found - skipping"
                         ((skipped_containers++))
                         skipped_list+=("$container")
                         ;;

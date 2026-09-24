@@ -615,7 +615,7 @@ run_dockerhub_fixture() {
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             DOCKERHUB_REQUESTS_REMAINING=2
             build_valid_tags() { printf "%s\n" latest; }
-            purge_ghcr() { printf "%s\n" "0|0|0|0"; }
+            purge_ghcr() { printf "%s\n" "0|0|0|0|0"; }
             curl() {
                 printf "%s\n" "$*" >> "$CURL_LOG"
                 case "$*" in
@@ -759,7 +759,7 @@ run_dockerhub_fixture() {
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
-            purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
+            purge_ghcr() { printf "%s\\n" "0|0|0|0|0"; }
             purge_dockerhub() {
                 case "$1" in
                     stale) printf "%s\\n" "1|2|1|1"; return 12 ;;
@@ -963,6 +963,8 @@ run_outdated_tags_safety_case() {
                     printf "DELETE:%s\\n" "$*" >> "$GH_LOG"
                     [[ -z "$DELETE_FAILURE_ID" || "$*" != *"/versions/$DELETE_FAILURE_ID"* ]] || return 1
                     return 0
+                elif [[ "$*" =~ /versions/([0-9]+)$ ]]; then
+                    command jq -ce --arg id "${BASH_REMATCH[1]}" ".[] | select((.id | tostring) == \$id)" <<< "$LISTING_JSON"
                 elif [[ "$*" == *"/versions"* ]]; then
                     printf "%s\\n" "$LISTING_JSON"
                 else
@@ -1007,6 +1009,10 @@ run_orphan_phase_completion_case() {
                     [[ -z "$DELETE_FAILURE_ID" || "$*" != *"/versions/$DELETE_FAILURE_ID"* ]] || return 1
                     return 0
                 fi
+                if [[ "$*" =~ /versions/([0-9]+)$ ]]; then
+                    command jq -ce --arg id "${BASH_REMATCH[1]}" ".[] | select((.id | tostring) == \$id)" <<< "$LISTING_JSON"
+                    return
+                fi
                 if [[ "$*" != *"/versions"* ]]; then
                     printf "%s\\n" "{\"version_count\":$(command jq length <<< "$LISTING_JSON")}"
                     return 0
@@ -1039,7 +1045,7 @@ run_orphan_phase_completion_case() {
     [[ "$(<"$gh_log")" == *"/versions/101"* ]]
     [[ "$(<"$gh_log")" != *"/versions/102"* ]]
     [[ ! -s "$dockerhub_calls" ]]
-    [[ "$output" == *"Orphan assessment incomplete: an obsolete parent DELETE failed"* ]]
+    [[ "$output" == *"Orphan assessment incomplete: an obsolete parent was not deleted"* ]]
     [[ "$output" == *"GHCR summary: kept=0, obsolete=1, orphan phase not assessed, delete_failures=1"* ]]
     [[ "$output" == *"Packages assessed: 0"* ]]
     [[ "$output" == *"GHCR — kept: 0, obsolete: 1, orphans: 0"* ]]
@@ -1061,12 +1067,13 @@ run_orphan_phase_completion_case() {
                     [[ "$*" != *"/versions/101"* ]]
                     return
                 fi
+                if [[ "$*" == *"/versions/101"* ]]; then printf "%s\\n" "{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}"; return 0; fi
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
             }
             if result=$(purge_ghcr stale latest); then status=0; else status=$?; fi
             [[ "$status" -eq 16 ]]
-            [[ "$result" == "0|1|0|1" ]]
+            [[ "$result" == "0|1|0|1|0" ]]
         '
 
     [[ "$status" -eq 0 ]]
@@ -1116,6 +1123,15 @@ run_orphan_phase_completion_case() {
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then
                     [[ "$*" != *"/stale/versions/101"* ]]
+                    return
+                elif [[ "$*" == *"/versions/101"* ]]; then
+                    printf "%s\\n" "{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}"
+                    return
+                elif [[ "$*" == *"/versions/201"* ]]; then
+                    printf "%s\\n" "{\"id\":201,\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}"
+                    return
+                elif [[ "$*" == *"/versions/202"* ]]; then
+                    printf "%s\\n" "{\"id\":202,\"metadata\":{\"container\":{\"tags\":[]}}}"
                     return
                 elif [[ "$*" == *"/stale/versions"* ]]; then
                     printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
@@ -1424,6 +1440,7 @@ run_orphan_phase_completion_case() {
             build_valid_tags() { printf "%s\\n" "latest"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" == *"/versions/104"* ]]; then printf "%s\\n" "{\"id\":104,\"metadata\":{\"container\":{\"tags\":[]}}}"; return 0; fi
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":4}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}},{\"id\":103,\"name\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"metadata\":{\"container\":{\"tags\":[]}}},{\"id\":104,\"name\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
             }
@@ -1459,6 +1476,7 @@ run_orphan_phase_completion_case() {
             build_valid_tags() { printf "%s\\n" "latest"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
+                if [[ "$*" == *"/versions/102"* ]]; then printf "%s\\n" "{\"id\":102,\"metadata\":{\"container\":{\"tags\":[]}}}"; return 0; fi
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}},{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}}]"
             }
@@ -1813,7 +1831,7 @@ run_orphan_phase_completion_case() {
                 name=${expectation%%:*}; remainder=${expectation#*:}; stub_ghcr_status=${remainder%%:*}; remainder=${remainder#*:}; assessment=${remainder%%:*}; expected_run=${remainder#*:}
                 : > "$DOCKERHUB_CALLS"
                 purge_ghcr() {
-                    if [[ "$stub_ghcr_status" -eq 12 ]]; then printf "%s\\n" "0|0|0|1"; else printf "%s\\n" "0|0|0|0"; fi
+                    if [[ "$stub_ghcr_status" -eq 12 ]]; then printf "%s\\n" "0|0|0|1|0"; else printf "%s\\n" "0|0|0|0|0"; fi
                     return "$stub_ghcr_status"
                 }
                 if main stale; then main_result=success; else main_result=failure; fi
@@ -1856,7 +1874,7 @@ run_orphan_phase_completion_case() {
     [[ -z "$output" ]]
 }
 
-@test "cleanup workflow schedules weekly registry pruning" {
+@test "cleanup workflow schedules daily registry pruning" {
     local workflow_path
     workflow_path="$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml"
 
@@ -1869,8 +1887,8 @@ run_orphan_phase_completion_case() {
 
     run yq -r '.on.schedule[0].cron' "$workflow_path"
     [ "$status" -eq 0 ]
-    if [ "$output" != '17 3 * * 1' ]; then
-        printf "FAIL: expected weekly registry prune cron '17 3 * * 1', got %s\n" "$output" >&2
+    if [ "$output" != '17 3 * * *' ]; then
+        printf "FAIL: expected daily registry prune cron '17 3 * * *', got %s\n" "$output" >&2
         return 1
     fi
 
@@ -2005,7 +2023,9 @@ EOF
     [[ "$purge_step" == *"continue-on-error: true"* ]]
     [[ "$purge_step" == *"always() && (github.event_name == 'schedule' || inputs.purge_obsolete == true)"* ]]
     [[ "$workflow" == *"steps.cleanup_old_versions.outcome }}\" == \"failure\" || \"\${{ steps.purge_obsolete_images.outcome"* ]]
-    [[ "$purge_step" == *"github.event_name == 'schedule' && 'true' || inputs.dry_run || 'false'"* ]]
+    local purge_dry_run
+    purge_dry_run=$(yq -r '.jobs.cleanup.steps[] | select(.id == "purge_obsolete_images") | .env.DRY_RUN' "$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml")
+    [[ "$purge_dry_run" == "\${{ inputs.dry_run || 'false' }}" ]]
     [[ "$purge_step" == *"DOCKERHUB_DRY_RUN: 'true'"* ]]
 
     # This is the failure path that GitHub Actions evaluates: continue-on-error
@@ -2024,6 +2044,15 @@ EOF
     [[ "$output" == *"Purge obsolete images ran"* ]]
 }
 
+@test "upstream monitor does not dispatch registry cleanup after a rotation merge" {
+    local workflow_path
+    workflow_path="$PROJECT_ROOT/.github/workflows/upstream-monitor.yaml"
+
+    run grep -F 'gh workflow run cleanup-registry.yaml' "$workflow_path"
+    [[ "$status" -eq 1 ]]
+    [[ -z "$output" ]]
+}
+
 @test "purge_ghcr delete failure is counted and returned as a failed completed run" {
     run env \
         PROJECT_ROOT="$PROJECT_ROOT" \
@@ -2039,6 +2068,7 @@ EOF
                     echo "gh: delete denied" >&2
                     return 1
                 fi
+                if [[ "$*" == *"/versions/101"* ]]; then printf "%s\\n" "{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}"; return 0; fi
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":1}"; return 0; fi
                 printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
             }
@@ -2181,7 +2211,7 @@ EOF
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
-            purge_ghcr() { printf "%s\\n" stray "0|0|0|0"; }
+            purge_ghcr() { printf "%s\\n" stray "0|0|0|0|0"; }
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             main stale
         '
@@ -2196,7 +2226,7 @@ EOF
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
-            purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
+            purge_ghcr() { printf "%s\\n" "0|0|0|0|0"; }
             purge_dockerhub() { printf "%s\\n" "1|0|0|0" stray; }
             main stale
         '
@@ -2218,15 +2248,15 @@ EOF
                     build_valid_tags() { printf "%s\\n" latest; }
                     case "$CONSUMER" in
                       ghcr-complete)
-                        purge_ghcr() { printf "%s\\n" "$RESULT_COUNTER|0|0|0"; return 13; }
+                        purge_ghcr() { printf "%s\\n" "$RESULT_COUNTER|0|0|0|0"; return 13; }
                         purge_dockerhub() { printf "%s\\n" "1|0|0|0"; }
                         ;;
                       ghcr-incomplete)
-                        purge_ghcr() { printf "%s\\n" "$RESULT_COUNTER|0|0|0"; return 16; }
+                        purge_ghcr() { printf "%s\\n" "$RESULT_COUNTER|0|0|0|0"; return 16; }
                         purge_dockerhub() { printf "%s\\n" "1|0|0|0"; }
                         ;;
                       dockerhub)
-                        purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
+                        purge_ghcr() { printf "%s\\n" "0|0|0|0|0"; }
                         purge_dockerhub() { printf "%s\\n" "1|0|$RESULT_COUNTER|0"; }
                         ;;
                     esac
@@ -2544,7 +2574,7 @@ run_invalid_build_case() {
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             build_valid_tags() { printf "%s\\n" latest; }
-            purge_ghcr() { printf "%s\\n" "0|0|0|0"; }
+            purge_ghcr() { printf "%s\\n" "0|0|0|0|0"; }
             purge_dockerhub() { printf "%s\\n" "0|0|0|0"; }
             main stale
         '
@@ -2592,4 +2622,68 @@ run_invalid_build_case() {
     [[ "$output" == *"cleanup deletion refused: DRY_RUN must be false"* ]]
     [[ ! -s "$gh_log" ]]
     [[ ! -s "$curl_log" ]]
+}
+
+@test "outdated-tag cleanup does not delete a tagged version whose re-read gained a valid tag" {
+    local gh_log="$_STUB_DIR/reread-tagged-gh.log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false bash -c '
+        source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+        build_valid_tags() { printf "%s\n" latest; }
+        gh() {
+            [[ "$*" == *"--method DELETE"* ]] && { printf "DELETE\n" >> "$GH_LOG"; return 0; }
+            [[ "$*" == *"/versions/101"* ]] && { printf "%s\n" "{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"stale\",\"latest\"]}}}"; return 0; }
+            [[ "$*" == *"/versions"* ]] && printf "%s\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]" || printf "%s\n" "{\"version_count\":1}"
+        }
+        main stale
+    '
+
+    [[ "$status" -eq 0 ]]
+    [[ ! -s "$gh_log" ]]
+    [[ "$output" == *"version 101 not deleted: re-read has a valid tag"* ]]
+}
+
+@test "outdated-tag cleanup does not delete an orphan whose re-read gained a tag" {
+    local gh_log="$_STUB_DIR/reread-orphan-gh.log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false bash -c '
+        source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+        build_valid_tags() { printf "%s\n" latest; }
+        gh() {
+            [[ "$*" == *"--method DELETE"* ]] && { printf "DELETE\n" >> "$GH_LOG"; return 0; }
+            [[ "$*" == *"/versions/102"* ]] && { printf "%s\n" "{\"id\":102,\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}}"; return 0; }
+            [[ "$*" == *"/versions"* ]] && printf "%s\n" "[{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}}]" || printf "%s\n" "{\"version_count\":1}"
+        }
+        main stale
+    '
+
+    [[ "$status" -eq 0 ]]
+    [[ ! -s "$gh_log" ]]
+    [[ "$output" == *"version 102 not deleted: re-read has tags"* ]]
+}
+
+@test "outdated-tag cleanup fails closed for failed or malformed version re-reads" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false bash -c '
+        source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+        build_valid_tags() { printf "%s\n" latest; }
+        for mode in failed malformed; do
+            delete_log=$(mktemp)
+            gh() {
+                [[ "$*" == *"--method DELETE"* ]] && { printf "DELETE\n" >> "$delete_log"; return 0; }
+                if [[ "$*" == *"/versions/101"* ]]; then
+                    [[ "$mode" == failed ]] && return 1
+                    printf "%s\n" "[]"
+                    return 0
+                fi
+                [[ "$*" == *"/versions"* ]] && printf "%s\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]" || printf "%s\n" "{\"version_count\":1}"
+            }
+            main stale && exit 1
+            [[ ! -s "$delete_log" ]] || exit 1
+            rm -f "$delete_log"
+        done
+    '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"reread_failures=1"* ]]
+    [[ "$output" == *"not deleted: re-read failed"* ]]
 }

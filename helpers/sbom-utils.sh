@@ -194,12 +194,22 @@ generate_sbom() (
         return 1
     fi
 
+    if [[ -L "$output_file" ]]; then
+        log_error "SBOM output path must not be a symlink: $output_file"
+        return 1
+    fi
     if [[ -d "$output_file" ]]; then
         log_error "SBOM output path is a directory: $output_file"
         return 1
     fi
 
-    local output_dir output_size
+    local output_dir output_size staged_output=""
+    cleanup_staged_sbom() {
+        if [[ -n "$staged_output" && -e "$staged_output" ]] && ! rm -f -- "$staged_output"; then
+            log_error "Could not remove staged SBOM temporary file; retained: $staged_output"
+            return 1
+        fi
+    }
     if ! output_dir=$(dirname -- "$output_file"); then
         log_error "Failed to determine SBOM output directory: $output_file"
         return 1
@@ -208,8 +218,15 @@ generate_sbom() (
         log_error "Failed to create SBOM output directory: $output_dir"
         return 1
     fi
+    if ! staged_output=$(mktemp -- "$output_dir/.sbom-stage.XXXXXX"); then
+        log_error "Failed to create staged SBOM file in: $output_dir"
+        return 1
+    fi
+    trap cleanup_staged_sbom EXIT
+    trap 'exit 128' INT TERM
+
     log_info "Generating SBOM for $image_ref..."
-    local syft_args=("registry:${image_ref}" -o "spdx-json=${output_file}" --quiet)
+    local syft_args=("registry:${image_ref}" -o "spdx-json=${staged_output}" --quiet)
     local image_repository="${image_ref%@*}"
     image_repository="${image_repository##*/}"
     image_repository="${image_repository%%:*}"
@@ -227,15 +244,14 @@ generate_sbom() (
         log_error "Failed to generate SBOM for $image_ref"
         return 1
     fi
-    if [[ ! -f "$output_file" || ! -r "$output_file" ]]; then
-        log_error "SBOM producer did not create a readable output: $output_file"
+    if [[ ! -f "$staged_output" || ! -r "$staged_output" ]]; then
+        log_error "SBOM producer did not create a readable staged output: $staged_output"
         return 1
     fi
     if [[ "$image_repository" == "github-runner" ]]; then
         local filtered_output
-        if ! filtered_output=$(mktemp -- "${output_file}.filtered.XXXXXX"); then
-            rm -f -- "$output_file"
-            log_error "Failed to create filtered SPDX output for $output_file"
+        if ! filtered_output=$(mktemp -- "$output_dir/.sbom-filter.XXXXXX"); then
+            log_error "Failed to create filtered SPDX output in: $output_dir"
             return 1
         fi
         if ! jq '
@@ -285,14 +301,14 @@ generate_sbom() (
                   )
               else error("SPDX packages must be an array")
               end
-        ' -- "$output_file" > "$filtered_output"; then
-            rm -f -- "$filtered_output" "$output_file"
-            log_error "Failed to remove SPDX file entries from $output_file"
+        ' -- "$staged_output" > "$filtered_output"; then
+            rm -f -- "$filtered_output"
+            log_error "Failed to remove SPDX file entries from $staged_output"
             return 1
         fi
-        if ! mv -f -- "$filtered_output" "$output_file"; then
-            rm -f -- "$filtered_output" "$output_file"
-            log_error "Failed to publish filtered SPDX output: $output_file"
+        if ! mv -fT -- "$filtered_output" "$staged_output"; then
+            rm -f -- "$filtered_output"
+            log_error "Failed to replace staged SBOM with its filtered form: $staged_output"
             return 1
         fi
     fi
@@ -302,19 +318,24 @@ generate_sbom() (
         (.[0] | type == "object"
           and (.spdxVersion | type == "string" and startswith("SPDX-"))
           and (.SPDXID | type == "string")
-          and (.packages | type == "array")))' -- "$output_file" >/dev/null 2>&1; then
-        log_error "SBOM producer did not write a valid SPDX JSON document: $output_file"
+          and (.packages | type == "array")))' -- "$staged_output" >/dev/null 2>&1; then
+        log_error "SBOM producer did not write a valid SPDX JSON document: $staged_output"
         return 1
     fi
-    if ! output_size=$(wc -c < "$output_file"); then
-        log_error "Failed to measure generated SBOM: $output_file"
+    if ! output_size=$(wc -c < "$staged_output"); then
+        log_error "Failed to measure generated SBOM: $staged_output"
         return 1
     fi
     output_size="${output_size//[[:space:]]/}"
     if [[ ! "$output_size" =~ ^[0-9]+$ ]]; then
-        log_error "Generated SBOM has an invalid size: $output_file"
+        log_error "Generated SBOM has an invalid size: $staged_output"
         return 1
     fi
+    if ! mv -fT -- "$staged_output" "$output_file"; then
+        log_error "Failed to publish generated SBOM: $output_file"
+        return 1
+    fi
+    staged_output=""
     log_success "SBOM generated: $output_file (${output_size} bytes)"
     return 0
 )
@@ -893,6 +914,10 @@ append_build_history() (
     local history_file="$3"
     local max_entries="${4:-10}"
 
+    if [[ -L "$history_file" ]]; then
+        log_error "Build history output path must not be a symlink: $history_file"
+        return 1
+    fi
     if [[ -d "$history_file" ]]; then
         log_error "Build history output path is a directory: $history_file"
         return 1
@@ -902,7 +927,13 @@ append_build_history() (
         return 2
     fi
 
-    local output_dir
+    local output_dir staged_history=""
+    cleanup_staged_history() {
+        if [[ -n "$staged_history" && -e "$staged_history" ]] && ! rm -f -- "$staged_history"; then
+            log_error "Could not remove staged build history temporary file; retained: $staged_history"
+            return 1
+        fi
+    }
     if ! output_dir=$(dirname -- "$history_file"); then
         log_error "Failed to determine build history output directory: $history_file"
         return 1
@@ -983,6 +1014,13 @@ append_build_history() (
         changes_summary="+$added_count -$removed_count ~$updated_count"
     fi
 
+    if ! staged_history=$(mktemp -- "$output_dir/.history-stage.XXXXXX"); then
+        log_error "Failed to create staged build history file in: $output_dir"
+        return 1
+    fi
+    trap cleanup_staged_history EXIT
+    trap 'exit 128' INT TERM
+
     # Create new entry and prepend to history, keeping max_entries.
     # extensions_build_seconds is conditionally added only when the source
     # lineage carried it — preserves the "container has no extensions concept"
@@ -1011,19 +1049,24 @@ append_build_history() (
             duration_seconds: $duration
         } + (if $ext_present then {extensions_build_seconds: $ext_duration} else {} end))] + $history |
         .[:$max]
-    ' > "$history_file"; then
+    ' > "$staged_history"; then
         log_error "Failed to generate build history: $history_file"
         return 1
     fi
-    if [[ ! -f "$history_file" || ! -r "$history_file" ]] \
-        || ! _is_single_json_type array "$history_file"; then
+    if [[ ! -f "$staged_history" || ! -r "$staged_history" ]] \
+        || ! _is_single_json_type array "$staged_history"; then
         log_error "Generated build history is not readable valid JSON: $history_file"
         return 1
     fi
-    if ! entry_count=$(jq -er 'length | select(type == "number" and . >= 0 and floor == .)' "$history_file"); then
+    if ! entry_count=$(jq -er 'length | select(type == "number" and . >= 0 and floor == .)' "$staged_history"); then
         log_error "Generated build history has an invalid entry count: $history_file"
         return 1
     fi
+    if ! mv -fT -- "$staged_history" "$history_file"; then
+        log_error "Failed to publish build history: $history_file"
+        return 1
+    fi
+    staged_history=""
 
     log_info "Build history updated: $history_file (${entry_count} entries)"
     return 0
