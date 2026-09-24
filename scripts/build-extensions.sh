@@ -2482,7 +2482,17 @@ finalize_multiarch_manifests() {
                 log_error "$ext $ceiling pg${major_ver}: non-resolver imagetools create failed (rc=$_nr_create_rc) — fail-closed"
                 _failed=true
             else
-                log_success "Multi-arch manifest created: $_nr_target (non-resolver)"
+                local _nr_created_ma_rc=0
+                _reuse_ref_is_multiarch "$_nr_target" || _nr_created_ma_rc=$?
+                if [[ "$_nr_created_ma_rc" -eq 2 ]]; then
+                    log_error "$ext $ceiling pg${major_ver}: imagetools inspect failed after non-resolver manifest create — fail closed"
+                    _failed=true
+                elif [[ "$_nr_created_ma_rc" -ne 0 ]]; then
+                    log_error "$ext $ceiling pg${major_ver}: created non-resolver manifest does not cover both linux/amd64 and linux/arm64 — fail closed"
+                    _failed=true
+                else
+                    log_success "Multi-arch manifest created: $_nr_target (non-resolver)"
+                fi
             fi
             # AX-3: consolidate per-arch duration files so the summer counts the
             # ceiling once (MAX), not once per arch.

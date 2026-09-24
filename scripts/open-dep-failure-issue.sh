@@ -30,14 +30,14 @@ source "$ROOT_DIR/helpers/retry.sh"
 # ---------------------------------------------------------------------------
 # Required env vars
 # ---------------------------------------------------------------------------
-: "${GH_TOKEN:?GH_TOKEN is required}"
-: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
-: "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
-: "${GITHUB_SERVER_URL:?GITHUB_SERVER_URL is required}"
-: "${GITHUB_SHA:?GITHUB_SHA is required}"
-: "${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME is required}"
-: "${GITHUB_REF_NAME:?GITHUB_REF_NAME is required}"
-: "${COMMIT_SUBJECT:?COMMIT_SUBJECT is required}"
+for required_env in GH_TOKEN GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_SERVER_URL \
+    GITHUB_SHA GITHUB_EVENT_NAME GITHUB_REF_NAME COMMIT_SUBJECT; do
+    if [[ -z "${!required_env:-}" ]]; then
+        printf 'missing required env var: %s\n' "$required_env" >&2
+        exit 2
+    fi
+done
+unset required_env
 
 # Optional
 PR_NUMBER="${PR_NUMBER:-}"

@@ -385,12 +385,14 @@ _fetch_trivy_alerts_once() {
         if cache_envelope=$(jq -cn --arg outcome "$_TRIVY_FETCH_OUTCOME" --arg fetched_at "$_TRIVY_FETCHED_AT" \
             --argjson summary_map "$_TRIVY_SUMMARY_MAP" \
             '{outcome: $outcome, fetched_at: (if $outcome == "ok" then $fetched_at else null end), summary_map: $summary_map}'); then
-            cache_tmp=$(mktemp "$(dirname "${TRIVY_CACHE_FILE}")/.trivy-summary.XXXXXX" 2>/dev/null || true)
-            if [[ -n "$cache_tmp" ]]; then
-                if ! printf '%s' "$cache_envelope" >"$cache_tmp" 2>/dev/null \
-                    || ! mv -f -- "$cache_tmp" "${TRIVY_CACHE_FILE}" 2>/dev/null; then
-                    rm -f -- "$cache_tmp" || true
-                fi
+            if ! cache_tmp=$(mktemp "$(dirname "${TRIVY_CACHE_FILE}")/.trivy-summary.XXXXXX" 2>/dev/null); then
+                log_warning "unable to allocate Trivy summary cache temporary file — cache unavailable" || true
+            elif ! printf '%s' "$cache_envelope" >"$cache_tmp" 2>/dev/null; then
+                rm -f -- "$cache_tmp" || true
+                log_warning "unable to write Trivy summary cache temporary file — cache unavailable" || true
+            elif ! mv -f -- "$cache_tmp" "${TRIVY_CACHE_FILE}" 2>/dev/null; then
+                rm -f -- "$cache_tmp" || true
+                log_warning "unable to publish Trivy summary cache file — cache unavailable" || true
             fi
         fi
     fi

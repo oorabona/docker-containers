@@ -36,9 +36,10 @@ for argument in "$@"; do
 done
 
 case "${SYFT_STUB_MODE:-valid}" in
-    valid) printf '{"packages":[]}' > "$output_file" ;;
+    valid) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[]}' > "$output_file" ;;
     no-output) ;;
     multi-root) printf '[]\n{"packages":[]}\n' > "$output_file" ;;
+    invalid-spdx) printf '{"packages":[]}' > "$output_file" ;;
     invalid) printf 'not-json' > "$output_file" ;;
     fail) exit 1 ;;
 esac
@@ -186,6 +187,17 @@ JSON
 
     [ "$status" -eq 0 ] || return 1
     [[ "$output" == *"failure-observed"* ]] || return 1
+}
+
+@test "generate_sbom rejects a JSON object without the required SPDX fields" {
+    write_syft_stub
+    local output_file="$TEST_TEMP_DIR/invalid-spdx.sbom.json"
+
+    run env SYFT_STUB_MODE=invalid-spdx bash -c 'source "$1"; generate_sbom example/image:tag "$2" || printf "failure-observed\\n"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"failure-observed"* ]]
+    [[ "$output" == *"valid SPDX JSON document"* ]]
 }
 
 @test "generate_sbom returns failure to if and || when mkdir fails" {

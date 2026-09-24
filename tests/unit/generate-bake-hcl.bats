@@ -2574,6 +2574,15 @@ YAML
     [[ "$stderr" == *"empty CSV element"* ]]
 }
 
+@test "global scope flavors — an empty CSV element is refused before selection" {
+    _run_generator_separate_stderr --cells --scope-flavors 'aws,' terraform
+
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"--scope-flavors"* ]]
+    [[ "$stderr" == *"empty CSV element"* ]]
+}
+
 @test "container scopes — terraform retained version scope keeps only matching-version cells" {
     local unscoped_output unscoped_count pick
     unscoped_output=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform 2>/dev/null)
