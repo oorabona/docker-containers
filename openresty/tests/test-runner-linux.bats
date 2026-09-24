@@ -56,15 +56,19 @@ _find_image() {
     fi
 
     local ids
-    ids=$(printf '%s\n' "$images" \
+    if ! ids=$(set -o pipefail; printf '%s\n' "$images" \
           | awk '$2 ~ /^(ghcr\.io\/oorabona\/openresty|docker\.io\/oorabona\/openresty|openresty):/ {print $1}' \
-          | sort -u)
+          | sort -u); then
+        echo "ERROR: could not process container image listing; set OPENRESTY_IMAGE to run the openresty smoke suite" >&2
+        return 1
+    fi
 
     local count
-    count=$(echo "$ids" | grep -c .) 2>/dev/null || count=0
-    # grep -c on empty string returns 1 (the empty line); guard for that:
     if [[ -z "$ids" ]]; then
         count=0
+    elif ! count=$(set -o pipefail; printf '%s\n' "$ids" | grep -c .); then
+        echo "ERROR: could not count built openresty images; set OPENRESTY_IMAGE to run the openresty smoke suite" >&2
+        return 1
     fi
 
     if [[ "$count" -eq 0 ]]; then
@@ -77,10 +81,19 @@ _find_image() {
         return 1
     fi
 
-    # Exactly 1 distinct image ID — return the first matching tag (docker run <tag> works).
+    # Exactly 1 distinct image ID — return its first matching tag (docker run <tag> works).
     local tag
-    tag=$(printf '%s\n' "$images" \
-          | awk -v id="$ids" '$1 == id && $2 ~ /^(ghcr\.io\/oorabona\/openresty|docker\.io\/oorabona\/openresty|openresty):/ {print $2; exit}')
+    if ! tag=$(set -o pipefail; printf '%s\n' "$images" \
+          | awk -v id="$ids" '$1 == id && $2 ~ /^(ghcr\.io\/oorabona\/openresty|docker\.io\/oorabona\/openresty|openresty):/ && tag == "" {tag = $2} END {if (tag != "") print tag}' \
+          | sort -u \
+          | sed -n '1p'); then
+        echo "ERROR: could not extract an openresty image reference; set OPENRESTY_IMAGE to run the openresty smoke suite" >&2
+        return 1
+    fi
+    if [[ -z "$tag" ]]; then
+        echo "ERROR: could not extract an openresty image reference; set OPENRESTY_IMAGE to run the openresty smoke suite" >&2
+        return 1
+    fi
     echo "$tag"
     return 0
 }

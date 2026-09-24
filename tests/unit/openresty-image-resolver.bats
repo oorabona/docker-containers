@@ -12,6 +12,8 @@ setup() {
     # Direct resolver cases must exercise image resolution, not an inherited override.
     unset OPENRESTY_IMAGE
     RUNNER="$PROJECT_ROOT/openresty/tests/test-runner-linux.bats"
+    # The loader must keep working when a resolver utility is deliberately stubbed.
+    LOADER_AWK="$(command -v awk)"
 }
 
 teardown() {
@@ -21,9 +23,9 @@ teardown() {
 run_find_image() {
     # Permit Bats run options such as --separate-stderr for channel assertions.
     run "$@" bash -c '
-        source <(awk "/^_find_image\\(\\) \\{/ { inside = 1 } inside { print } inside && /^}\$/ { exit }" "$1")
+        source <("$2" "/^_find_image\\(\\) \\{/ { inside = 1 } inside { print } inside && /^}\$/ { exit }" "$1")
         _find_image
-    ' _ "$RUNNER"
+    ' _ "$RUNNER" "$LOADER_AWK"
 }
 
 run_find_image_with_override() {
@@ -32,9 +34,9 @@ run_find_image_with_override() {
 
     # Keep the override case explicit: the rest of this suite resolves images.
     run "$@" env OPENRESTY_IMAGE="$image" bash -c '
-        source <(awk "/^_find_image\\(\\) \\{/ { inside = 1 } inside { print } inside && /^}\$/ { exit }" "$1")
+        source <("$2" "/^_find_image\\(\\) \\{/ { inside = 1 } inside { print } inside && /^}\$/ { exit }" "$1")
         _find_image
-    ' _ "$RUNNER"
+    ' _ "$RUNNER" "$LOADER_AWK"
 }
 
 # The resolver cases exercise _find_image directly. Spawn Bats for the runner
@@ -109,12 +111,12 @@ EOF
     [ "$output" = "$image" ]
 }
 
-@test "openresty image resolver: an empty reachable store reports the missing build" {
+@test "openresty image resolver: an empty reachable store returns the skip status" {
     stub_docker 'exit 0'
 
     run_find_image
 
-    [ "$status" -eq 1 ]
+    [ "$status" -eq 3 ]
     [[ "$output" == *"ERROR: no built openresty image found (run ./make build openresty, or set OPENRESTY_IMAGE)"* ]]
 }
 
@@ -180,13 +182,35 @@ EOF
     [[ "$output" != *"no built openresty image found"* ]]
 }
 
-@test "openresty runner: empty reachable store fails the runner suite" {
+@test "openresty runner: empty reachable store skips all smoke tests" {
     stub_docker 'exit 0' "$TEST_TEMP_DIR/nested-runner-bin"
 
     run_runner_suite
 
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"ERROR: no built openresty image found"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"1..3"* ]]
+    [ "$(grep -F -c '# skip no built openresty image found; set OPENRESTY_IMAGE or run ./make build openresty' <<< "$output")" -eq 3 ]
+}
+
+@test "openresty image resolver: a processing utility failure fails, not skips" {
+    local failing_bin="$TEST_TEMP_DIR/failing-awk-bin"
+
+    stub_docker "printf '%s\\n' 'sha256:one ghcr.io/oorabona/openresty:latest'"
+    mkdir -p "$failing_bin"
+    cat > "$failing_bin/awk" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\\n' 'deliberate awk failure' >&2
+exit 42
+EOF
+    chmod +x "$failing_bin/awk"
+    export PATH="$failing_bin:$PATH"
+
+    run_find_image
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"deliberate awk failure"* ]]
+    [[ "$output" == *"ERROR: could not process container image listing"* ]]
+    [[ "$output" != *"no built openresty image found"* ]]
 }
 
 @test "openresty image resolver stub: exact resolver invocation returns fixture rows" {
