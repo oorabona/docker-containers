@@ -1789,6 +1789,107 @@ GHEOF
     [[ "$output" == *"no valid failing-job evidence"* ]]
 }
 
+@test "FAILED_ALLOWLIST empty scans all seven jobs, renders five names, and attributes the seventh" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST=""
+    export FAILED_JOBS_JSON='[{"name":"Build alpha:1","id":1},{"name":"Build bravo:1","id":2},{"name":"Build charlie:1","id":3},{"name":"Build delta:1","id":4},{"name":"Build echo:1","id":5},{"name":"Build foxtrot:1","id":6},{"name":"Build php:8.3","id":7}]'
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"- Build alpha:1"* ]]
+    [[ "$output" == *"- Build bravo:1"* ]]
+    [[ "$output" == *"- Build charlie:1"* ]]
+    [[ "$output" == *"- Build delta:1"* ]]
+    [[ "$output" == *"- Build echo:1"* ]]
+    [[ "$output" == *"- … and 2 more"* ]]
+    [[ "$output" != *"- Build foxtrot:1"* ]]
+    [[ "$output" != *"- Build php:8.3"* ]]
+}
+
+@test "FAILED_ALLOWLIST empty skips non-object failed-job entries and attributes a later matching job" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST=""
+    export FAILED_JOBS_JSON='[1, {"name":"Build php:8.3","id":2}]'
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"- Build php:8.3"* ]]
+}
+
+@test "malformed FAILED_ALLOWLIST uses failing-job evidence and rejects another container" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST='{bad'
+    export FAILED_JOBS_JSON='[{"name":"Build postgres:18.2","id":1}]'
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+    [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
+}
+
+@test "malformed FAILED_ALLOWLIST uses failing-job evidence and attributes the detected container" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST='{bad'
+    export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+}
+
+@test "null FAILED_ALLOWLIST uses failing-job evidence and rejects another container" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST='null'
+    export FAILED_JOBS_JSON='[{"name":"Build postgres:18.2","id":1}]'
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+    [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
+}
+
+@test "null FAILED_ALLOWLIST uses failing-job evidence and attributes the detected container" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST='null'
+    export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+}
+
+@test "string FAILED_ALLOWLIST uses failing-job evidence and rejects another container" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST='"php"'
+    export FAILED_JOBS_JSON='[{"name":"Build postgres:18.2","id":1}]'
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+    [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
+}
+
+@test "string FAILED_ALLOWLIST uses failing-job evidence and attributes the detected container" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST='"php"'
+    export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"FAILED_ALLOWLIST is malformed"* ]]
+}
+
+@test "FAILED_ALLOWLIST valid empty array remains an authoritative empty failure set" {
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST='[]'
+    export FAILED_JOBS_JSON='[{"name":"Build php:8.3","id":1}]'
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"not in the checkpoint failure set"* ]]
+    [[ "$output" != *"=== DRY_RUN: ISSUE BODY ==="* ]]
+}
+
 # ---------------------------------------------------------------------------
 # F4 — --container with no value exits 2 (usage error, distinct from 1)
 # ---------------------------------------------------------------------------

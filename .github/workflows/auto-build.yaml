@@ -3994,7 +3994,7 @@ jobs:
           fi
 
           failed_jobs_json=$(retry_with_backoff 3 5 gh run view "$GH_RUN_ID" --repo "$GH_REPOSITORY" --json jobs \
-            --jq '[.jobs[] | select(.conclusion == "failure") | {name, id: .databaseId}] | .[:5]' \
+            --jq '[.jobs[] | select(.conclusion == "failure") | {name, id: .databaseId}]' \
             2>/dev/null || echo '[]')
 
           {
@@ -4046,9 +4046,10 @@ jobs:
           PR_BODY: ${{ steps.ctx.outputs.pr_body }}
           PR_LABELS: ${{ steps.ctx.outputs.pr_labels }}
           FAILED_JOBS_JSON: ${{ steps.ctx.outputs.failed_jobs_json }}
-          # Allowlist for Path 1: only open a dep-attributed issue when the commit-attributed
-          # container actually failed this run.  '' (checkpoint skipped/guard-break/CAS-exhaust)
-          # means no cross-check — original behaviour for non-checkpoint runs preserved.
+          # Allowlist for Path 1: '' (checkpoint skipped or crashed, and non-checkpoint
+          # dispatch/call runs) makes the script require a failing job of the detected container.
+          # Guard-break and CAS-exhaust supply the valid array [] (see failed_this_run above),
+          # which the script treats as an authoritative empty failure set.
           FAILED_ALLOWLIST: ${{ needs.publish-coverage-checkpoint.outputs.failed_this_run }}
         run: |
           chmod +x scripts/open-dep-failure-issue.sh
@@ -4071,7 +4072,7 @@ jobs:
             if [ "$dep_rc" -eq 0 ]; then
               echo "Dep-attributed issue opened/updated"
             elif [ "$dep_rc" -eq 1 ]; then
-              echo "No dep-bump context detected — dep-attributed open skipped (info only)"
+              echo "No attributable dependency failure — dep-attributed open skipped (info only)"
             elif [ "$dep_rc" -eq 3 ]; then
               echo "::warning::open-dep-failure-issue.sh: gh issue operation failed (rc=3) — dep-attributed issue may be missing"
             elif [ "$dep_rc" -eq 2 ]; then

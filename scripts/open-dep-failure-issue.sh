@@ -10,8 +10,9 @@
 #
 # Exit codes:
 #   0  — issue created or commented successfully (or DRY_RUN printed)
-#   1  — no dep-bump detected (caller must fall back to generic issue logic; NOT a gh error)
-#   2  — missing required env var
+#   1  — auto-detect found no dependency failure attributable to the detected container
+#        (including no dep bump detected); the required-variable `:?` guards above also exit 1
+#   2  — invalid CLI argument
 #   3  — gh CLI / issue-operation failure (create failed, comment failed, number unparseable)
 #        Callers: rc=1 → "no dep-bump" (info); rc=3 → "gh op failed" (warning); neither
 #        gates the generic issue — that is decided solely by issue_mode from the checkpoint job.
@@ -318,10 +319,18 @@ build_issue_body() {
 
 "
         local job_item
+        local -a failing_job_names=()
         while IFS= read -r job_item; do
+            [[ -n "$job_item" ]] && failing_job_names+=("$job_item")
+        done < <(printf '%s' "$FAILED_JOBS_JSON" | jq -r '.[]? | objects | .name? | strings')
+        for job_item in "${failing_job_names[@]:0:5}"; do
             [[ -n "$job_item" ]] && failing_jobs_section+="- ${job_item}
 "
-        done < <(printf '%s' "$FAILED_JOBS_JSON" | jq -r '.[]?.name // empty | strings')
+        done
+        if (( ${#failing_job_names[@]} > 5 )); then
+            failing_jobs_section+="- … and $((${#failing_job_names[@]} - 5)) more
+"
+        fi
     else
         failing_jobs_section="## Failing jobs
 
@@ -1231,19 +1240,28 @@ main() {
     #   FAILED_ALLOWLIST unset/empty, FAILED_JOBS_JSON empty/not an array → return 1 (no-op; no attribution evidence).
     #   FAILED_ALLOWLIST set, valid JSON array, container present → proceed normally.
     #   FAILED_ALLOWLIST set, valid JSON array, container absent  → return 1 (no-op, same as no-dep-bump).
-    #   FAILED_ALLOWLIST set, invalid JSON                        → treat as empty (no cross-check; safe).
-    if [[ -n "${FAILED_ALLOWLIST:-}" ]]; then
+    #   FAILED_ALLOWLIST set, malformed/not an array              → notice, then use FAILED_JOBS_JSON evidence.
+    local use_failed_job_evidence=false
+    if [[ -n "${FAILED_ALLOWLIST:-}" ]] && \
+        printf '%s' "$FAILED_ALLOWLIST" | jq -e 'type == "array"' >/dev/null 2>&1; then
         local in_allowlist
         in_allowlist=$(printf '%s' "$FAILED_ALLOWLIST" \
-            | jq -e --arg c "$container" 'if type=="array" then (index($c) != null) else false end' \
+            | jq -e --arg c "$container" 'index($c) != null' \
             2>/dev/null || true)
         if [[ "$in_allowlist" == "false" ]]; then
             log_info "::notice::detected container [${container}] is not in the checkpoint failure set (${FAILED_ALLOWLIST}) — skipping dep-attributed open (no spurious issue)"
             exit 1
         fi
     else
+        if [[ -n "${FAILED_ALLOWLIST:-}" ]]; then
+            log_info "::notice::FAILED_ALLOWLIST is malformed (expected a JSON array); using failing-job evidence for detected container [${container}]"
+        fi
+        use_failed_job_evidence=true
+    fi
+
+    if [[ "$use_failed_job_evidence" == "true" ]]; then
         # workflow_dispatch/workflow_call runs do not provide the checkpoint
-        # allowlist.  Attribute a dep failure only when a failing job name names
+        # allowlist, and malformed allowlists are not authoritative. Attribute a dep failure only when a failing job name names
         # this detected container (the word immediately before its first ':').
         if [[ -z "$FAILED_JOBS_JSON" ]] || \
             ! printf '%s' "$FAILED_JOBS_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
@@ -1261,7 +1279,7 @@ main() {
                 container_has_failed_job=true
                 break
             fi
-        done < <(printf '%s' "$FAILED_JOBS_JSON" | jq -r '.[]?.name // empty | strings')
+        done < <(printf '%s' "$FAILED_JOBS_JSON" | jq -r '.[]? | objects | .name? | strings')
 
         if [[ "$container_has_failed_job" != "true" ]]; then
             log_info "::notice::detected container [${container}] is not named by a failing job — skipping dep-attributed open (no spurious issue)"
