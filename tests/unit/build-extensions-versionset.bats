@@ -66,6 +66,10 @@ EOF
 
     docker() {
         if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'create' ]]; then
+            if [[ "${4:-}" == '--dry-run' ]]; then
+                printf '%s\n' '{"schemaVersion":2,"manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64"}}]}'
+                return 0
+            fi
             printf 'IMAGETOOLS_CREATE %s\n' "$*" >> "$create_log"
         fi
         return 0
@@ -9812,7 +9816,12 @@ EOCFG
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { return 0; }
+        docker() {
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" && "${4:-}" == "--dry-run" ]]; then
+                printf "%s\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+            fi
+            return 0
+        }
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
@@ -10030,6 +10039,10 @@ EOF
 
         docker() {
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
                 return 0
             fi
@@ -10333,6 +10346,10 @@ EOF
         docker() {
             # imagetools create: succeeds for all (source tags are present)
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 return 0
             fi
             # imagetools inspect: return both platforms (platform-coverage check)
@@ -10447,6 +10464,9 @@ EOF
                 if [[ \"\${*}\" == *'pg18-2.27.1'* ]]; then
                     return 1  # ceiling: imagetools create fails (sources absent)
                 fi
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                fi
                 return 0
             fi
             # imagetools inspect: return both platforms (platform-coverage check)
@@ -10532,6 +10552,10 @@ EOF
 
         docker() {
             if [[ "$2" == "imagetools" && "$3" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                    return 0
+                fi
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_calls_log"'"
                 return 0
             fi
@@ -10652,6 +10676,10 @@ EOF
 
         docker() {
             if [[ "$2" == "imagetools" && "$3" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                    return 0
+                fi
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_calls_log"'"
                 return 0
             fi
@@ -10887,6 +10915,9 @@ EOF
                 return 0
             fi
             if [[ "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                fi
                 return 0
             fi
             if [[ "${1:-}" == "manifest" ]]; then
@@ -11003,6 +11034,9 @@ EOF
                 return 0
             fi
             if [[ "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                fi
                 return 0
             fi
             if [[ "${1:-}" == "manifest" ]]; then
@@ -11114,6 +11148,10 @@ EOF
                 return 0
             fi
             if [[ "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}}]}"
+                    return 0
+                fi
                 return 0
             fi
             if [[ "${1:-}" == "manifest" ]]; then
@@ -11297,6 +11335,10 @@ EOF
         docker() {
             local _dcmd=\"\${1:-}\"
             if [[ \"\$_dcmd\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"$imagetools_log\"
                 return 0
             fi
@@ -11830,7 +11872,12 @@ EOF
 
     export FORCE=true
     list_extensions_by_priority() { echo "timescaledb"; }
-    docker() { return 0; }
+    docker() {
+        if [[ "${1:-}" == 'buildx' && "${2:-}" == 'imagetools' && "${3:-}" == 'create' && "${4:-}" == '--dry-run' ]]; then
+            printf '%s\n' '{"schemaVersion":2,"manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64"}}]}'
+        fi
+        return 0
+    }
     rm() {
         if [[ "${1:-}" == "-f" && "${2:-}" == "${amd64_dur:-}" && "${3:-}" == "${arm64_dur:-}" && -n "${amd64_dur:-}" ]]; then
             echo "forced source cleanup failure" >&2
@@ -12106,6 +12153,10 @@ EOF
         docker() {
             local _dcmd="${1:-}"
             if [[ "$_dcmd" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                    return 0
+                fi
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_log"'"
                 return 0
             fi
@@ -12238,6 +12289,10 @@ EOF
         docker() {
             local _dcmd="${1:-}"
             if [[ "$_dcmd" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                    return 0
+                fi
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_log"'"
                 return 0
             fi
@@ -12737,6 +12792,10 @@ EOF
                 printf "linux/amd64\nlinux/arm64\n"
                 return 0
             fi
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" && "$4" == "--dry-run" ]]; then
+                printf "%s\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                return 0
+            fi
             if [[ "$1" == "buildx" && "$2" == "imagetools" ]]; then return 0; fi
             if [[ "$1" == "buildx" && "$2" == "build" ]]; then return 0; fi
             if [[ "$*" == *"manifest inspect"* ]]; then
@@ -12859,6 +12918,9 @@ EOF
                     echo "registry error: unexpected EOF" >&2
                     return 1
                 fi
+                if [[ "${4:-}" == "--dry-run" ]]; then
+                    printf "%s\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                fi
                 return 0
             fi
             if [[ "$1" == "buildx" && "$2" == "build" ]]; then return 0; fi
@@ -12951,6 +13013,10 @@ EOF
         docker() {
             if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
                 printf "linux/amd64\nlinux/arm64\n"
+                return 0
+            fi
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" && "${4:-}" == "--dry-run" ]]; then
+                printf "%s\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
                 return 0
             fi
             echo "DOCKER $*" >> "$docker_calls"
@@ -13066,6 +13132,10 @@ EOF
         docker() {
             if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
                 printf "linux/amd64\nlinux/arm64\n"
+                return 0
+            fi
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" && "${4:-}" == "--dry-run" ]]; then
+                printf "%s\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
                 return 0
             fi
             echo "DOCKER $*" >> "$docker_calls"
@@ -14196,6 +14266,10 @@ _assert_cache_refs() {
                 printf 'linux/amd64\nlinux/arm64\n'
                 return 0
             fi
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' && \"\${4:-}\" == '--dry-run' ]]; then
+                printf '%s\n' '{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                return 0
+            fi
             echo \"DOCKER \$*\" >> \"\$docker_calls\"
             if [[ \"\$_dc\" == 'manifest' && \"\$_d2\" == 'inspect' ]]; then
                 local _ref=\"\$_d3\"
@@ -14471,6 +14545,10 @@ EOF
         docker() {
             local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
                 return 0
             fi
@@ -14576,6 +14654,10 @@ EOF
         docker() {
             local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
                 return 0
             fi
@@ -14713,6 +14795,10 @@ EOF
                 return 0
             fi
             if [[ \"\$_cmd\" == 'buildx' && \"\$_sub\" == 'imagetools' && \"\$_subsub\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"\$imagetools_log\"
                 return 0
             fi
@@ -14881,6 +14967,10 @@ EOF
                 return 0
             fi
             if [[ \"\${1:-}\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"\$imagetools_log\"
                 return 0
             fi
@@ -15075,6 +15165,10 @@ EOF
 
     docker() {
         if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'create' ]]; then
+            if [[ "${4:-}" == '--dry-run' ]]; then
+                printf '%s\n' '{"schemaVersion":2,"manifests":[{"platform":{"os":"linux","architecture":"amd64"}}]}'
+                return 0
+            fi
             return 0
         fi
         if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'inspect' ]]; then
@@ -15088,7 +15182,10 @@ EOF
     run finalize_multiarch_manifests "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
 
     [ "$status" -eq 1 ]
-    [[ "$output" == *"created non-resolver manifest does not cover both linux/amd64 and linux/arm64"* ]]
+    # An arm64-less index is rejected by the dry-run preflight; retain the
+    # post-create wording as an accepted outcome for implementations that
+    # validate the created manifest instead.
+    [[ "$output" == *"dry-run index does not cover both linux/amd64 and linux/arm64"* || "$output" == *"created non-resolver manifest does not cover both linux/amd64 and linux/arm64"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -15231,6 +15328,10 @@ EOF
         docker() {
             local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
                 return 0
             fi
