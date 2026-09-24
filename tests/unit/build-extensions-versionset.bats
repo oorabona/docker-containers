@@ -75,6 +75,108 @@ EOF
     export -f _consolidate_version_duration_file docker
 }
 
+# Configure one Stage-B path through main --finalize-multiarch.  The docker
+# stub records both dry-run and publishing creates so the preflight contract is
+# asserted at the same public entry point used by the workflow.
+_prepare_dry_run_preflight_finalization() {
+    local path="$1"
+
+    case "$path" in
+        non-resolver)
+            cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+            rm -f "$EXT_BUILD_DIR/timescaledb.Dockerfile"
+            touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+            ext_config() {
+                case "$2" in
+                    version) echo '0.8.0' ;;
+                    repo) echo 'https://github.com/pgvector/pgvector' ;;
+                    *) echo '' ;;
+                esac
+            }
+            list_extensions_by_priority() { echo 'pgvector'; }
+            ;;
+        resolver)
+            cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+EOF
+            rm -f "$EXT_BUILD_DIR/pgvector.Dockerfile"
+            touch "$EXT_BUILD_DIR/timescaledb.Dockerfile"
+            ext_config() {
+                case "$2" in
+                    version) echo '2.27.1' ;;
+                    repo) echo 'https://github.com/timescale/timescaledb' ;;
+                    *) echo '' ;;
+                esac
+            }
+            list_extensions_by_priority() { echo 'timescaledb'; }
+            resolve_version_set() { echo '["2.27.1"]'; }
+            ;;
+        *)
+            echo "unknown Stage-B path: $path" >&2
+            return 1
+            ;;
+    esac
+
+    ext_image_name() { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+    ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+    ext_ref_resolve() {
+        case "${4:-}" in
+            '') return 1 ;;
+            amd64|arm64) printf 'ghcr.io/test/ext-%s:pg%s-%s-%s' "$1" "$3" "$2" "$4" ;;
+            *) return 1 ;;
+        esac
+    }
+    _consolidate_version_duration_file() { return 0; }
+    sleep() { :; }
+
+    docker() {
+        if [[ "${1:-}" == 'buildx' && "${2:-}" == 'imagetools' && "${3:-}" == 'create' ]]; then
+            if [[ " $* " == *' --dry-run '* ]]; then
+                printf 'DRY_RUN_CREATE %s\n' "$*" >> "$dry_run_create_log"
+                case "$dry_run_mode" in
+                    missing-arm64)
+                        printf '%s\n' '{"schemaVersion":2,"manifests":[{"platform":{"os":"linux","architecture":"amd64"}}]}'
+                        return 0
+                        ;;
+                    fail)
+                        printf 'simulated dry-run failure\n' >&2
+                        return 42
+                        ;;
+                    complete)
+                        printf '%s\n' '{"schemaVersion":2,"manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64"}}]}'
+                        return 0
+                        ;;
+                esac
+            fi
+            printf 'REAL_CREATE %s\n' "$*" >> "$dry_run_create_log"
+            return 0
+        fi
+        if [[ "${1:-}" == 'buildx' && "${2:-}" == 'imagetools' && "${3:-}" == 'inspect' ]]; then
+            printf 'linux/amd64\nlinux/arm64\n'
+            return 0
+        fi
+        return 0
+    }
+
+    export -f ext_config list_extensions_by_priority ext_image_name ext_local_image_name
+    export -f ext_ref_resolve _consolidate_version_duration_file docker sleep
+    if [[ "$path" == 'resolver' ]]; then
+        export -f resolve_version_set
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Rotation producer state: a build phase exhausted after retries is distinct
 # from push and resolver failures, which remain infra.  These tests exercise
@@ -9414,6 +9516,10 @@ EOCFG
         #   (needed by the platform-coverage check)
         docker() {
             echo "DOCKER $*" >> "$docker_calls"
+            if [[ "${4:-}" == "--dry-run" ]]; then
+                printf "%s\\n" "{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+                return 0
+            fi
             if [[ "$1" == "manifest" ]]; then
                 echo "manifest unknown: manifest unknown" >&2
                 return 1
@@ -9806,6 +9912,10 @@ EOF
         # manifest inspect returns manifest-unknown for un-suffixed absent refs.
         docker() {
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
+                if [[ \"\${4:-}\" == '--dry-run' ]]; then
+                    printf '%s\n' '{\"schemaVersion\":2,\"manifests\":[{\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}'
+                    return 0
+                fi
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
                 return 0
             fi
@@ -14819,6 +14929,87 @@ EOF
         }
         [ ! -e "$create_log" ] || {
             echo "FAIL: absent ${probe_arch} source ran imagetools create. Got: $(cat "$create_log")"
+            false
+        }
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Stage-B preflight: dry-run must prove the would-be index is a complete
+# multi-arch index before the final tag is written.  Exercise both the
+# non-resolver and resolver paths through main --finalize-multiarch.
+# ---------------------------------------------------------------------------
+
+@test "finalize-multiarch refuses a dry-run index without arm64 before publishing either path" {
+    local path
+    for path in non-resolver resolver; do
+        dry_run_create_log="$TEST_TEMP_DIR/${path}-missing-arm64-create.log"
+        dry_run_mode='missing-arm64'
+        export dry_run_create_log dry_run_mode
+        _prepare_dry_run_preflight_finalization "$path"
+
+        run main postgres --major-version 18 --finalize-multiarch
+
+        [ "$status" -ne 0 ] || {
+            echo "FAIL: $path missing-arm64 dry run must fail finalization"
+            false
+        }
+        grep -Fq 'DRY_RUN_CREATE' "$dry_run_create_log" || {
+            echo "FAIL: $path did not run imagetools create --dry-run"
+            false
+        }
+        ! grep -Fq 'REAL_CREATE' "$dry_run_create_log" || {
+            echo "FAIL: $path wrote the final tag after an incomplete dry-run index. Got: $(cat "$dry_run_create_log")"
+            false
+        }
+    done
+}
+
+@test "finalize-multiarch refuses a failed dry run before publishing either path" {
+    local path
+    for path in non-resolver resolver; do
+        dry_run_create_log="$TEST_TEMP_DIR/${path}-failed-dry-run-create.log"
+        dry_run_mode='fail'
+        export dry_run_create_log dry_run_mode
+        _prepare_dry_run_preflight_finalization "$path"
+
+        run main postgres --major-version 18 --finalize-multiarch
+
+        [ "$status" -ne 0 ] || {
+            echo "FAIL: $path failed dry run must fail finalization"
+            false
+        }
+        grep -Fq 'DRY_RUN_CREATE' "$dry_run_create_log" || {
+            echo "FAIL: $path did not run the failing dry-run create"
+            false
+        }
+        ! grep -Fq 'REAL_CREATE' "$dry_run_create_log" || {
+            echo "FAIL: $path wrote the final tag after dry-run failure. Got: $(cat "$dry_run_create_log")"
+            false
+        }
+    done
+}
+
+@test "finalize-multiarch publishes only after a complete dry-run index on both paths" {
+    local path
+    for path in non-resolver resolver; do
+        dry_run_create_log="$TEST_TEMP_DIR/${path}-complete-dry-run-create.log"
+        dry_run_mode='complete'
+        export dry_run_create_log dry_run_mode
+        _prepare_dry_run_preflight_finalization "$path"
+
+        run main postgres --major-version 18 --finalize-multiarch
+
+        [ "$status" -eq 0 ] || {
+            echo "FAIL: $path complete dry-run index must allow finalization. Got: $output"
+            false
+        }
+        grep -Fq 'DRY_RUN_CREATE' "$dry_run_create_log" || {
+            echo "FAIL: $path did not run imagetools create --dry-run"
+            false
+        }
+        grep -Fq 'REAL_CREATE' "$dry_run_create_log" || {
+            echo "FAIL: $path did not run the real imagetools create after dry-run validation"
             false
         }
     done

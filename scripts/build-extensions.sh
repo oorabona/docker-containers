@@ -1189,6 +1189,43 @@ _capture_index_digest() {
     fi
 }
 
+# _multiarch_index_has_required_platforms <index_output>
+# Returns success when an imagetools index representation covers both required
+# target platforms.  The representation may be the human-readable inspect
+# output or the JSON emitted by `imagetools create --dry-run`.
+_multiarch_index_has_required_platforms() {
+    local _index_output="$1"
+    local _platforms
+    if _platforms=$(printf '%s' "$_index_output" | jq -r '
+        if type == "object" and (.manifests | type == "array") then
+            .manifests[]? | .platform? | select(.os != null and .architecture != null) |
+                "\(.os)/\(.architecture)"
+        else
+            empty
+        end
+    ' 2>/dev/null); then
+        grep -q "linux/amd64" <<< "$_platforms" && grep -q "linux/arm64" <<< "$_platforms"
+    else
+        # `imagetools inspect` without --raw is a human-readable platform list.
+        grep -q "linux/amd64" <<< "$_index_output" && grep -q "linux/arm64" <<< "$_index_output"
+    fi
+}
+
+# _dry_run_output_is_single_json_index <dry_run_output>
+# Refuses anything other than exactly one JSON image index.  This is distinct
+# from the shared platform predicate above: it prevents diagnostic text or a
+# non-index JSON document from being mistaken for a preflighted manifest.
+_dry_run_output_is_single_json_index() {
+    local _dry_run_output="$1"
+    printf '%s' "$_dry_run_output" | jq -es '
+        if length == 1 then
+            .[0] | (type == "object" and (.manifests | type == "array"))
+        else
+            false
+        end
+    ' >/dev/null 2>&1
+}
+
 # _reuse_ref_is_multiarch <image_ref>
 # Inspects an existing manifest and checks whether it covers both linux/amd64
 # and linux/arm64.
@@ -1206,7 +1243,7 @@ _reuse_ref_is_multiarch() {
     if [[ "$_rc" -ne 0 ]]; then
         return 2
     fi
-    if grep -q "linux/amd64" <<< "$_out" && grep -q "linux/arm64" <<< "$_out"; then
+    if _multiarch_index_has_required_platforms "$_out"; then
         return 0
     fi
     return 1
@@ -2476,6 +2513,26 @@ finalize_multiarch_manifests() {
             fi
 
             log_info "$ext $ceiling pg${major_ver}: imagetools create $_nr_target from $_nr_src_amd64 + $_nr_src_arm64 (non-resolver, stable suffixed tags)"
+            local _nr_dry_run_out _nr_dry_run_rc=0
+            _nr_dry_run_out=$(retry_with_backoff 3 5 $DOCKER buildx imagetools create \
+                --dry-run \
+                -t "$_nr_target" \
+                "$_nr_src_amd64" "$_nr_src_arm64") || _nr_dry_run_rc=$?
+            if [[ "$_nr_dry_run_rc" -ne 0 ]]; then
+                log_error "$ext $ceiling pg${major_ver}: non-resolver imagetools dry-run failed (rc=$_nr_dry_run_rc) — final tag not written"
+                _failed=true
+                continue
+            fi
+            if ! _dry_run_output_is_single_json_index "$_nr_dry_run_out"; then
+                log_error "$ext $ceiling pg${major_ver}: non-resolver imagetools dry-run did not produce a single JSON index — final tag not written"
+                _failed=true
+                continue
+            fi
+            if ! _multiarch_index_has_required_platforms "$_nr_dry_run_out"; then
+                log_error "$ext $ceiling pg${major_ver}: non-resolver imagetools dry-run index does not cover both linux/amd64 and linux/arm64 — final tag not written"
+                _failed=true
+                continue
+            fi
             local _nr_create_rc=0
             # retry_with_backoff 3 5: imagetools create is idempotent (same manifest list on retry).
             retry_with_backoff 3 5 $DOCKER buildx imagetools create \
@@ -2677,6 +2734,26 @@ finalize_multiarch_manifests() {
             ver_multiarch=$(_scoped_tag "$_ver_image")
 
             log_info "$ext $ver pg${major_ver}: imagetools create $ver_multiarch from $_ver_tag_amd64 + $_ver_tag_arm64"
+            local _dry_run_out _dry_run_rc=0
+            _dry_run_out=$(retry_with_backoff 3 5 $DOCKER buildx imagetools create \
+                --dry-run \
+                -t "$ver_multiarch" \
+                "$_ver_tag_amd64" "$_ver_tag_arm64") || _dry_run_rc=$?
+            if [[ "$_dry_run_rc" -ne 0 ]]; then
+                log_error "$ext $ver pg${major_ver}: imagetools dry-run failed (rc=$_dry_run_rc) — final tag not written"
+                _ext_failed=true
+                break
+            fi
+            if ! _dry_run_output_is_single_json_index "$_dry_run_out"; then
+                log_error "$ext $ver pg${major_ver}: imagetools dry-run did not produce a single JSON index — final tag not written"
+                _ext_failed=true
+                break
+            fi
+            if ! _multiarch_index_has_required_platforms "$_dry_run_out"; then
+                log_error "$ext $ver pg${major_ver}: imagetools dry-run index does not cover both linux/amd64 and linux/arm64 — final tag not written"
+                _ext_failed=true
+                break
+            fi
             local _create_rc=0
             # retry_with_backoff 3 5: imagetools create is idempotent (same manifest list on retry).
             retry_with_backoff 3 5 $DOCKER buildx imagetools create \
@@ -2705,8 +2782,7 @@ finalize_multiarch_manifests() {
                 _ext_failed=true
                 break
             fi
-            if ! grep -q "linux/amd64" <<< "$_inspect_out" || \
-               ! grep -q "linux/arm64" <<< "$_inspect_out"; then
+            if ! _multiarch_index_has_required_platforms "$_inspect_out"; then
                 if [[ "$ver" == "$ceiling" ]]; then
                     log_error "$ext $ver pg${major_ver} (ceiling): created manifest does not cover both linux/amd64 and linux/arm64 — fatal"
                     _ext_failed=true
