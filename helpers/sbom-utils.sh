@@ -290,7 +290,12 @@ extract_sbom_summary() (
 
 # Compare two SBOMs and produce changelog JSON
 # Usage: compare_sboms <new_sbom> <old_sbom> <output_file>
-# Output: JSON with added/removed/updated arrays + summary counts
+# Output: JSON with added/removed/updated arrays + summary counts, written only when
+#         both SBOMs are present.
+# Returns: 0 on success; a missing old SBOM logs a warning, returns 0, and leaves
+#          output_file untouched; 1 on operational or
+#          new-SBOM failures, 2 for invalid arguments or output aliases of an
+#          input SBOM, 3 for a malformed old SBOM.
 compare_sboms() (
     set -uo pipefail
     if [[ "$#" -ne 3 || -z "$1" || -z "$2" || -z "$3" ]]; then
@@ -305,10 +310,45 @@ compare_sboms() (
         log_error "New SBOM is not readable: $new_sbom"
         return 1
     fi
+
+    if [[ "$output_file" -ef "$new_sbom" || "$output_file" -ef "$old_sbom" ]]; then
+        log_error "Changelog output aliases an input SBOM: $output_file"
+        return 2
+    fi
+
+    local new_validation_status=0
+    if jq -en '([limit(2; inputs)] | length == 1 and (.[0] | type == "object") and (.[0].packages | type == "array"))' -- "$new_sbom" >/dev/null 2>&1; then
+        :
+    else
+        new_validation_status=$?
+    fi
+    if [[ "$new_validation_status" -ne 0 ]]; then
+        log_error "New SBOM is malformed (must be one object with an array .packages): $new_sbom"
+        return 1
+    fi
+
     if [[ ! -f "$old_sbom" ]]; then
         log_warning "Old SBOM not found: $old_sbom — skipping comparison"
         return 0
     fi
+
+    local old_validation_status=0
+    if jq -en '([limit(2; inputs)] | length == 1 and (.[0] | type == "object") and (.[0].packages | type == "array"))' -- "$old_sbom" >/dev/null 2>&1; then
+        :
+    else
+        old_validation_status=$?
+    fi
+    case "$old_validation_status" in
+        0) ;;
+        1|5)
+            log_error "Old SBOM is malformed (missing or non-array .packages): $old_sbom"
+            return 3
+            ;;
+        *)
+            log_error "Failed to validate old SBOM (jq status $old_validation_status): $old_sbom"
+            return 1
+            ;;
+    esac
 
     if [[ -d "$output_file" ]]; then
         log_error "Changelog output path is a directory: $output_file"
@@ -324,67 +364,85 @@ compare_sboms() (
         log_error "Failed to create changelog output directory: $output_dir"
         return 1
     fi
-    # Extract package lists as JSON arrays: [{type, name, version}, ...]
-    local new_pkgs old_pkgs
-    if ! new_pkgs=$(jq '[
-        .packages // [] |
-        .[] |
-        select(.name != null and .versionInfo != null) |
-        (.externalRefs // [] | map(select(.referenceCategory == "PACKAGE-MANAGER")) | first // null) as $ref |
-        {
-            pkg_type: (if $ref then ($ref.referenceLocator // "" | ltrimstr("pkg:") | split("/")[0] // "other" | if . == "" then "other" else . end) else "other" end),
-            name: .name,
-            version: .versionInfo
-        }
-    ] | sort_by(.name)' "$new_sbom"); then
-        log_error "Failed to read new SBOM: $new_sbom"
-        return 1
-    fi
-
-    if ! old_pkgs=$(jq '[
-        .packages // [] |
-        .[] |
-        select(.name != null and .versionInfo != null) |
-        (.externalRefs // [] | map(select(.referenceCategory == "PACKAGE-MANAGER")) | first // null) as $ref |
-        {
-            pkg_type: (if $ref then ($ref.referenceLocator // "" | ltrimstr("pkg:") | split("/")[0] // "other" | if . == "" then "other" else . end) else "other" end),
-            name: .name,
-            version: .versionInfo
-        }
-    ] | sort_by(.name)' "$old_sbom"); then
-        log_error "Failed to read old SBOM: $old_sbom"
-        return 1
-    fi
-
     if ! generated_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ"); then
         log_error "Failed to determine changelog generation time"
         return 1
     fi
 
-    # Compute diff using jq
+    # Read both SBOMs in jq so package data never travels through argv.
     if ! jq -n \
-        --argjson new_pkgs "$new_pkgs" \
-        --argjson old_pkgs "$old_pkgs" \
+        --slurpfile new_sboms "$new_sbom" \
+        --slurpfile old_sboms "$old_sbom" \
         --arg generated_at "$generated_at" \
     '
-        # Build lookup maps: name -> {version, pkg_type}
-        ($old_pkgs | map({key: .name, value: {version: .version, pkg_type: .pkg_type}}) | from_entries) as $old_map |
-        ($new_pkgs | map({key: .name, value: {version: .version, pkg_type: .pkg_type}}) | from_entries) as $new_map |
+        def purl_without_version:
+            . as $purl |
+            (try ($purl | capture("^(?<base>[^@]+)@[^?#]*(?<suffix>[?#].*)?$")) catch null) as $parts |
+            if $parts == null then $purl else $parts.base + ($parts.suffix // "") end;
 
-        # Added: in new but not in old
-        [($new_pkgs | .[] | select(.name as $n | $old_map | has($n) | not) |
-            {type: "added", name: .name, pkg_type: .pkg_type, version: .version})] as $added |
+        def packages:
+            .packages |
+            map(
+                select(.name != null and .versionInfo != null) |
+                ([.externalRefs // [] | .[] |
+                    select(
+                        .referenceCategory == "PACKAGE-MANAGER" and
+                        .referenceType == "purl" and
+                        (.referenceLocator | type == "string") and
+                        (.referenceLocator | startswith("pkg:"))
+                    ) | .referenceLocator] | first // null) as $purl |
+                {
+                    name: .name,
+                    version: .versionInfo,
+                    pkg_type: (if $purl then ($purl | ltrimstr("pkg:") | split("/")[0]) else "other" end),
+                    identity: (if $purl then ($purl | purl_without_version) else "nopurl:" + .name end),
+                    has_purl: ($purl != null)
+                }
+            );
 
-        # Removed: in old but not in new
-        [($old_pkgs | .[] | select(.name as $n | $new_map | has($n) | not) |
-            {type: "removed", name: .name, pkg_type: .pkg_type, version: .version})] as $removed |
+        # Return the occurrences in $left whose versions are not matched by $right.
+        def surplus($left; $right):
+            ($right | group_by(.version) |
+                map({key: .[0].version, value: length}) | from_entries) as $right_counts |
+            reduce $left[] as $package
+                ({seen: {}, result: []};
+                    (.seen[$package.version] // 0) as $seen |
+                    .seen[$package.version] = ($seen + 1) |
+                    if $seen < ($right_counts[$package.version] // 0)
+                    then . else .result += [$package] end
+                ) | .result;
 
-        # Updated: in both but version differs
-        [($new_pkgs | .[] |
-            select(.name as $n | $old_map | has($n)) |
-            select(.version != ($old_map[.name].version)) |
-            {type: "updated", name: .name, pkg_type: .pkg_type,
-             from: ($old_map[.name].version), to: .version})] as $updated |
+        ($old_sboms[0] | packages) as $old_pkgs |
+        ($new_sboms[0] | packages) as $new_pkgs |
+        ($old_pkgs | sort_by(.identity) | group_by(.identity) |
+            map({key: .[0].identity, value: .}) | from_entries) as $old_groups |
+        ($new_pkgs | sort_by(.identity) | group_by(.identity) |
+            map({key: .[0].identity, value: .}) | from_entries) as $new_groups |
+        ([($old_groups | keys[]), ($new_groups | keys[])] | unique) as $identities |
+        reduce $identities[] as $identity
+            ({added: [], removed: [], updated: []};
+                ($old_groups[$identity] // []) as $old_group |
+                ($new_groups[$identity] // []) as $new_group |
+                (surplus($old_group; $new_group)) as $old_surplus |
+                (surplus($new_group; $old_group)) as $new_surplus |
+                if ($old_surplus | length) == 1 and
+                   ($new_surplus | length) == 1 and
+                   ($old_surplus[0].has_purl) then
+                    .updated += [{
+                        type: "updated",
+                        name: $new_surplus[0].name,
+                        pkg_type: $new_surplus[0].pkg_type,
+                        from: $old_surplus[0].version,
+                        to: $new_surplus[0].version
+                    }]
+                else
+                    .removed += ($old_surplus | map({type: "removed", name, pkg_type, version})) |
+                    .added += ($new_surplus | map({type: "added", name, pkg_type, version}))
+                end
+            ) |
+        .added as $added |
+        .removed as $removed |
+        .updated as $updated |
 
         {
             generated_at: $generated_at,
