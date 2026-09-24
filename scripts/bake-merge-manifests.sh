@@ -64,6 +64,60 @@ DOCKER="${DOCKER:-docker}"
 # REMOTE_CR: GHCR namespace (default matches bake variable default)
 REMOTE_CR="${REMOTE_CR:-ghcr.io/oorabona}"
 
+# BAKE_MERGE_RECEIPT_DIR: optional directory for per-cell publication receipts.
+# A receipt is emitted only after its non-dry-run imagetools create succeeds.
+BAKE_MERGE_RECEIPT_DIR="${BAKE_MERGE_RECEIPT_DIR:-}"
+
+_emit_merge_receipt() (
+    set -uo pipefail
+    local container="$1" tag="$2" receipt_dir="$BAKE_MERGE_RECEIPT_DIR"
+    local receipt_file staged_receipt="" receipt_json
+    cleanup_staged_receipt() {
+        if [[ -n "$staged_receipt" && -e "$staged_receipt" ]] && ! rm -f -- "$staged_receipt"; then
+            printf '::error::Could not remove staged bake merge receipt; retained: %s\n' "$staged_receipt" >&2
+            return 1
+        fi
+    }
+
+    [[ -n "$receipt_dir" ]] || return 0
+    if ! mkdir -p -- "$receipt_dir"; then
+        printf '::error::Could not create bake merge receipt directory: %s\n' "$receipt_dir" >&2
+        return 1
+    fi
+    receipt_file="${receipt_dir}/bake-merge-${container}-${tag}.json"
+    if ! receipt_json=$(jq -cn --arg container "$container" --arg tag "$tag" '{container:$container, tag:$tag}'); then
+        printf '::error::Could not construct bake merge receipt for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    if ! jq -e 'type == "object" and keys == ["container", "tag"] and
+        (.container | type == "string" and length > 0) and
+        (.tag | type == "string" and length > 0)' <<< "$receipt_json" >/dev/null; then
+        printf '::error::Invalid bake merge receipt for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    if ! staged_receipt=$(mktemp "${receipt_dir}/.bake-merge-receipt.XXXXXX"); then
+        printf '::error::Could not stage bake merge receipt in: %s\n' "$receipt_dir" >&2
+        return 1
+    fi
+    trap cleanup_staged_receipt EXIT
+    trap 'exit 128' INT TERM
+    if ! printf '%s\n' "$receipt_json" > "$staged_receipt"; then
+        printf '::error::Could not write bake merge receipt for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    if ! jq -e 'type == "object" and keys == ["container", "tag"] and
+        (.container | type == "string" and length > 0) and
+        (.tag | type == "string" and length > 0)' "$staged_receipt" >/dev/null; then
+        printf '::error::Staged bake merge receipt is invalid for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    if ! mv -fT -- "$staged_receipt" "$receipt_file"; then
+        printf '::error::Could not publish bake merge receipt for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    staged_receipt=""
+)
+
 # ---------------------------------------------------------------------------
 # _merge_cell — merge one cell's arch refs into final GHCR manifests.
 #
@@ -175,6 +229,11 @@ _merge_cell() {
         "$src_arm64" 2>&1); then
         printf '::error::GHCR merge failed for %s:%s — %s\n' \
             "$container" "$tag" "$err_output" >&2
+        return 1
+    fi
+    if ! _emit_merge_receipt "$container" "$tag"; then
+        printf '::error::GHCR manifest published but receipt emission failed for %s:%s\n' \
+            "$container" "$tag" >&2
         return 1
     fi
     printf '::notice::GHCR manifest created for %s:%s (%d refs)\n' \

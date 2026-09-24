@@ -380,6 +380,39 @@ EOF
     [[ "$output" == *"Duplicate final ref"* ]]
 }
 
+@test "partial merge failure emits exactly the earlier successful cell receipt" {
+    export REMOTE_CR="ghcr.io/oorabona"
+    export BAKE_MERGE_RECEIPT_DIR="${TEST_TEMP_DIR}/receipts"
+    local mock_gen="${TEST_TEMP_DIR}/bin/generate-bake-hcl.sh"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        'printf '\''[{"container":"debian","tag":"trixie","flavor":"","variant":"","is_default":true,"is_latest_version":true,"intermediate_ref":"ghcr.io/oorabona/debian:trixie"},{"container":"debian","tag":"bookworm","flavor":"","variant":"","is_default":true,"is_latest_version":false,"intermediate_ref":"ghcr.io/oorabona/debian:bookworm"}]\n'\''' > "$mock_gen"
+    chmod +x "$mock_gen"
+    cat > "${TEST_TEMP_DIR}/bin/docker" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${DOCKER_LOG}"
+[[ "$*" == *"bookworm-amd64"* ]] && exit 1
+exit 0
+MOCK
+    chmod +x "${TEST_TEMP_DIR}/bin/docker"
+
+    local caller_script="${TEST_TEMP_DIR}/_partial_merge_caller.sh"
+    cat > "$caller_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
+SCRIPT_DIR="${TEST_TEMP_DIR}/bin"
+main
+EOF
+    chmod +x "$caller_script"
+
+    run bash "$caller_script"
+
+    [ "$status" -ne 0 ] || return 1
+    [ "$(find "$BAKE_MERGE_RECEIPT_DIR" -maxdepth 1 -name '*.json' | wc -l | tr -d ' ')" -eq 1 ] || return 1
+    [ "$(jq -r '.container + ":" + .tag' "$BAKE_MERGE_RECEIPT_DIR/bake-merge-debian-trixie.json")" = 'debian:trixie' ] || return 1
+    [ ! -e "$BAKE_MERGE_RECEIPT_DIR/bake-merge-debian-bookworm.json" ] || return 1
+}
+
 @test "short suffix enumeration refuses a cell before any manifest publish [catches partial GHCR publish]" {
     local caller_script="${TEST_TEMP_DIR}/_short_cell_caller.sh"
     cat > "$caller_script" <<'EOF'
@@ -448,11 +481,13 @@ EOF
 @test "FIX H — DRY_RUN=true emits imagetools create command visibly and exits 0" {
     export REMOTE_CR="ghcr.io/oorabona"
     export DRY_RUN="true"
+    export BAKE_MERGE_RECEIPT_DIR="${TEST_TEMP_DIR}/dry-run-receipts"
 
     # Use _call_merge_cell so we can assert on its stdout
     _call_merge_cell "debian" "trixie" "" "true" \
         "ghcr.io/oorabona/debian:trixie" "true" ""
     [ "$status" -eq 0 ]
+    [ ! -e "$BAKE_MERGE_RECEIPT_DIR" ]
 
     # The DRY-RUN line must be visible on stdout (captured in $output by bats run)
     [[ "$output" == *"DRY-RUN: docker buildx imagetools create"* ]]

@@ -9,8 +9,13 @@ setup() {
     WORKFLOW="$PROJECT_ROOT/.github/workflows/auto-build.yaml"
     setup_temp_dir
     STEP_BODY=$(yq -r '.jobs."bake-build-amd64".steps[] | select(.id == "write-bake-lineage") | .run' "$WORKFLOW")
+    BAKE_SBOM_BODY=$(yq -r '.jobs."bake-build-amd64".steps[] | select(.id == "bake-sbom") | .run' "$WORKFLOW")
+    CACHE_MERGE_BODY=$(yq -r '.jobs."cache-lineage".steps[] | select(.id == "merge") | .run' "$WORKFLOW")
     [ -n "$STEP_BODY" ]
+    [ -n "$BAKE_SBOM_BODY" ]
+    [ -n "$CACHE_MERGE_BODY" ]
     ln -s "$PROJECT_ROOT/helpers" "$TEST_TEMP_DIR/helpers"
+    mkdir -p "$TEST_TEMP_DIR/bin"
     PLAN="$TEST_TEMP_DIR/bake-plan.json"
     DESCRIPTORS="$TEST_TEMP_DIR/bake-base-descriptors.json"
     METADATA="$TEST_TEMP_DIR/bake-metadata-amd64.json"
@@ -82,6 +87,74 @@ assert_boolean_field() {
         --argjson expected "$expected" \
         '(.[$field] == $expected) and (.[$field] | type == "boolean")' \
         <<< "$record" >/dev/null
+}
+
+lineage_record() {
+    local container=$1 tag=$2 build_digest=$3
+    jq -cn --arg container "$container" --arg tag "$tag" --arg build_digest "$build_digest" \
+        '{lineage_schema_version:3,container:$container,version:$tag,tag:$tag,
+          flavor:"",dockerfile:"Dockerfile",platform:"linux/amd64",runtime:"docker",
+          build_digest:$build_digest,built_at:"2026-09-24T00:00:00Z",
+          duration_seconds:1,github_actions:true,images:{dockerhub:"docker.io/example/image",ghcr:"ghcr.io/example/image"},
+          build_args:{},base_image_kind:"not_evaluated"}'
+}
+
+@test "bake SBOM step removes only a failed cell output before the broad upload glob" {
+    local plan call_count
+    plan='[{"container":"good","tag":"1","intermediate_ref":"ghcr.io/example/good:1"},{"container":"bad","tag":"2","intermediate_ref":"ghcr.io/example/bad:2"}]'
+    printf '%s\n' "$plan" > "$PLAN"
+    call_count="$TEST_TEMP_DIR/syft-call-count"
+    cat > "$TEST_TEMP_DIR/bin/syft" <<'STUB'
+#!/usr/bin/env bash
+for argument in "$@"; do
+    [[ "$argument" == "--help" ]] && exit 0
+done
+output_file=""
+for argument in "$@"; do
+    case "$argument" in spdx-json=*) output_file="${argument#spdx-json=}" ;; esac
+done
+count=0
+[[ -r "$SYFT_CALL_COUNT_FILE" ]] && count=$(cat "$SYFT_CALL_COUNT_FILE")
+count=$((count + 1))
+printf '%s\n' "$count" > "$SYFT_CALL_COUNT_FILE"
+if [[ "$count" -ge 2 ]]; then
+    printf '{"incomplete":' > "$output_file"
+    exit 1
+fi
+printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[]}' > "$output_file"
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/syft"
+
+    run env PATH="$TEST_TEMP_DIR/bin:$PATH" BAKE_PLAN_FILE="$PLAN" REMOTE_CR="ghcr.io/example" \
+        GITHUB_OUTPUT="$TEST_TEMP_DIR/github-output" SYFT_CALL_COUNT_FILE="$call_count" \
+        bash -c 'cd "$1" && bash -c "$2"' _ "$TEST_TEMP_DIR" "$BAKE_SBOM_BODY"
+
+    [ "$status" -eq 0 ] || return 1
+    [ -f "$TEST_TEMP_DIR/.build-lineage/good-1.sbom.json" ] || return 1
+    [ ! -e "$TEST_TEMP_DIR/.build-lineage/bad-2.sbom.json" ] || return 1
+}
+
+@test "cache lineage promotes only bake records authorized by receipts after a partial merge" {
+    local old_first old_second new_first new_second
+    old_first=$(digest a)
+    old_second=$(digest b)
+    new_first=$(digest c)
+    new_second=$(digest d)
+    mkdir -p "$TEST_TEMP_DIR/.build-lineage" \
+        "$TEST_TEMP_DIR/.build-lineage-artifacts/build-lineage-bake-amd64-test" \
+        "$TEST_TEMP_DIR/.bake-merge-receipts-artifacts/bake-merge-receipts-test"
+    lineage_record first 1 "$old_first" > "$TEST_TEMP_DIR/.build-lineage/first-1.json"
+    lineage_record second 2 "$old_second" > "$TEST_TEMP_DIR/.build-lineage/second-2.json"
+    lineage_record first 1 "$new_first" > "$TEST_TEMP_DIR/.build-lineage-artifacts/build-lineage-bake-amd64-test/first-1.json"
+    lineage_record second 2 "$new_second" > "$TEST_TEMP_DIR/.build-lineage-artifacts/build-lineage-bake-amd64-test/second-2.json"
+    printf '{"container":"first","tag":"1"}\n' > "$TEST_TEMP_DIR/.bake-merge-receipts-artifacts/bake-merge-receipts-test/first.json"
+
+    run env BAKE_MERGE_RESULT=failure GITHUB_OUTPUT="$TEST_TEMP_DIR/github-output" \
+        bash -c 'cd "$1" && bash -c "$2"' _ "$TEST_TEMP_DIR" "$CACHE_MERGE_BODY"
+
+    [ "$status" -eq 0 ] || return 1
+    [ "$(jq -r '.build_digest' "$TEST_TEMP_DIR/.build-lineage/first-1.json")" = "$new_first" ] || return 1
+    [ "$(jq -r '.build_digest' "$TEST_TEMP_DIR/.build-lineage/second-2.json")" = "$old_second" ] || return 1
 }
 
 @test "external index descriptor writes a valid schema-v3 record" {
@@ -404,6 +477,9 @@ assert_boolean_field() {
     [[ "$inspect_body" == *'retry_with_backoff 2 10 timeout -k 5 30'* && "$inspect_body" == *'DRY_RUN:-false'* && "$inspect_body" == *'IS_PR'* ]]
     [ "$(yq -r '.jobs."bake-plan".steps[] | select(.name == "Upload bake lineage plan") | .with.name' "$WORKFLOW")" = 'bake-plan-${{ github.run_id }}' ]
     [ "$(yq -r '.jobs."cache-lineage".steps[] | select(.id == "merge") | .env.BAKE_MERGE_RESULT' "$WORKFLOW")" = '${{ needs.bake-merge.result }}' ]
+    [ "$(yq -r '.jobs."bake-merge".steps[] | select(.name == "Upload bake merge receipts") | .if' "$WORKFLOW")" = 'always()' ]
+    [ "$(yq -r '.jobs."bake-merge".steps[] | select(.name == "Upload bake merge receipts") | .with.name' "$WORKFLOW")" = 'bake-merge-receipts-${{ github.run_id }}' ]
+    [ "$(yq -r '.jobs."cache-lineage".steps[] | select(.name == "Download bake merge receipts") | .with.pattern' "$WORKFLOW")" = 'bake-merge-receipts-*' ]
     cache_merge_body=$(yq -r '.jobs."cache-lineage".steps[] | select(.id == "merge") | .run' "$WORKFLOW")
-    [[ "$cache_merge_body" == *'build-lineage-bake-'* && "$cache_merge_body" == *'BAKE_MERGE_RESULT" != "success"'* ]]
+    [[ "$cache_merge_body" == *'build-lineage-bake-'* && "$cache_merge_body" == *'BAKE_MERGE_RESULT" != "success"'* && "$cache_merge_body" == *'receipt_matches_lineage'* && "$cache_merge_body" == *'lineage_complete_record_valid'* ]]
 }
