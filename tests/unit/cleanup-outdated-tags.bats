@@ -940,6 +940,78 @@ run_dockerhub_delete_reread_case() {
     done < "$DH_CURL_LOG"
 }
 
+@test "Docker Hub keep containers skip exact matches while other containers still run" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-keep-containers-curl.log"
+    local ghcr_log="$BATS_TEST_TMPDIR/dockerhub-keep-containers-ghcr.log"
+    : > "$curl_log"
+    : > "$ghcr_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" CURL_LOG="$curl_log" GHCR_LOG="$ghcr_log" \
+        GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false DOCKERHUB_DRY_RUN=false \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password \
+        DOCKERHUB_KEEP_CONTAINERS=postgres bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
+            purge_ghcr() { printf "%s\n" "$1" >> "$GHCR_LOG"; printf "%s\n" "0|0|0|0|0"; }
+            list_tagged_ghcr_digests() { :; }
+            gh() { printf "%s\n" "$*" >&2; }
+            curl() {
+                printf "%s\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
+                        printf "%s" "{\"count\":1,\"results\":[{\"name\":\"latest\"}],\"next\":null}" > "$output_file"
+                        ;;
+                    *) return 1 ;;
+                esac
+            }
+            main postgres app
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Docker Hub: postgres kept by DOCKERHUB_KEEP_CONTAINERS"* ]]
+    [[ "$(<"$ghcr_log")" == $'postgres\napp' ]]
+    [[ "$(<"$curl_log")" != *"/postgres/"* ]]
+    [[ "$(<"$curl_log")" == *"/app/tags"* ]]
+}
+
+@test "Docker Hub keep containers does not match prefixes" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-keep-prefix-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" CURL_LOG="$curl_log" \
+        GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false DOCKERHUB_DRY_RUN=false \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password \
+        DOCKERHUB_KEEP_CONTAINERS=postgre bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
+            purge_ghcr() { printf "%s\n" "0|0|0|0|0"; }
+            list_tagged_ghcr_digests() { :; }
+            gh() { printf "%s\n" "$*" >&2; }
+            curl() {
+                printf "%s\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
+                        printf "%s" "{\"count\":1,\"results\":[{\"name\":\"latest\"}],\"next\":null}" > "$output_file"
+                        ;;
+                    *) return 1 ;;
+                esac
+            }
+            main postgres
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *"kept by DOCKERHUB_KEEP_CONTAINERS"* ]]
+    [[ "$(<"$curl_log")" == *"/postgres/tags"* ]]
+}
+
 @test "outdated-tag main aggregates Docker Hub counters and continues after a delete failure" {
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
         DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false DOCKERHUB_DRY_RUN=false bash -c '
@@ -2124,6 +2196,15 @@ run_orphan_phase_completion_case() {
         return 1
     fi
 
+}
+
+@test "cleanup workflow keeps postgres Docker Hub tags" {
+    local workflow_path
+    workflow_path="$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml"
+
+    run yq -r '.jobs.cleanup.steps[] | select(.id == "purge_obsolete_images") | .env.DOCKERHUB_KEEP_CONTAINERS' "$workflow_path"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "postgres" ]]
 }
 
 @test "cleanup workflow serializes registry cleanup runs" {

@@ -8,7 +8,9 @@
 # Optional env vars: DRY_RUN (default: false; exactly true or false);
 # DOCKERHUB_DRY_RUN (default: plan-only when unset; deletes only when exactly
 # false). Docker Hub deletion follows workflow dry_run; candidates are tags not
-# declared and whose digest GHCR no longer publishes.
+# declared and whose digest GHCR no longer publishes. DOCKERHUB_KEEP_CONTAINERS
+# is a space-separated list of exact container names whose Docker Hub pass is
+# skipped.
 #
 # Usage: cleanup-outdated-tags.sh [container]
 # With an argument, process exactly one package. Multiple package names need a
@@ -999,6 +1001,19 @@ purge_dockerhub() {
   return "$dockerhub_status"
 }
 
+dockerhub_container_is_kept() {
+  local container="$1" keep_container
+  local -a keep_containers=()
+
+  # read -a splits only on IFS whitespace; unlike an unquoted expansion, it
+  # never expands pathname patterns from the environment.
+  read -r -a keep_containers <<< "${DOCKERHUB_KEEP_CONTAINERS-}"
+  for keep_container in "${keep_containers[@]}"; do
+    [[ "$container" == "$keep_container" ]] && return 0
+  done
+  return 1
+}
+
 main() {
   set -euo pipefail
   if [[ "${1-}" == --help || "${1-}" == -h ]]; then
@@ -1092,25 +1107,32 @@ main() {
       continue
     fi
 
-    if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]; then
-      if ! ghcr_digests=$(list_tagged_ghcr_digests "$container"); then
-        echo "  Docker Hub cleanup skipped: GHCR digest authority listing failed"
-        total_listing_failures=$((total_listing_failures + 1))
-        continue
+    if dockerhub_container_is_kept "$container"; then
+      echo "  Docker Hub: $container kept by DOCKERHUB_KEEP_CONTAINERS"
+      # Match the credential-absent Docker Hub result: it was not attempted.
+      dh_result="0|0|0|0"
+      dh_status=0
+    else
+      if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]; then
+        if ! ghcr_digests=$(list_tagged_ghcr_digests "$container"); then
+          echo "  Docker Hub cleanup skipped: GHCR digest authority listing failed"
+          total_listing_failures=$((total_listing_failures + 1))
+          continue
+        fi
       fi
-    fi
 
-    if dh_result=$(DOCKERHUB_REPORT_REQUESTS=true purge_dockerhub "$container" "$valid_tags" "$ghcr_digests" "$bare_majors"); then dh_status=0; else dh_status=$?; fi
-    if [[ "$dh_result" == *$'\036'* ]]; then
-      dh_requests_used=${dh_result##*$'\036'}
-      dh_result=${dh_result%$'\n'$'\036'*}
-      if ! is_canonical_decimal "$dh_requests_used" \
-        || decimal_string_greater_than "$dh_requests_used" "$DOCKERHUB_REQUESTS_REMAINING"; then
-        echo "  ✗ Docker Hub cleanup reported an invalid request reservation; skipping $container"
-        total_processing_failures=$((total_processing_failures + 1))
-        continue
+      if dh_result=$(DOCKERHUB_REPORT_REQUESTS=true purge_dockerhub "$container" "$valid_tags" "$ghcr_digests" "$bare_majors"); then dh_status=0; else dh_status=$?; fi
+      if [[ "$dh_result" == *$'\036'* ]]; then
+        dh_requests_used=${dh_result##*$'\036'}
+        dh_result=${dh_result%$'\n'$'\036'*}
+        if ! is_canonical_decimal "$dh_requests_used" \
+          || decimal_string_greater_than "$dh_requests_used" "$DOCKERHUB_REQUESTS_REMAINING"; then
+          echo "  ✗ Docker Hub cleanup reported an invalid request reservation; skipping $container"
+          total_processing_failures=$((total_processing_failures + 1))
+          continue
+        fi
+        DOCKERHUB_REQUESTS_REMAINING=$((DOCKERHUB_REQUESTS_REMAINING - dh_requests_used))
       fi
-      DOCKERHUB_REQUESTS_REMAINING=$((DOCKERHUB_REQUESTS_REMAINING - dh_requests_used))
     fi
     case "$dh_status" in
       0|"$DELETE_FAILURE")
