@@ -1181,12 +1181,64 @@ _bundle_and_write_artifact() {
 _capture_index_digest() {
     local _ref="$1"
     local _raw_manifest
-    _raw_manifest=$($DOCKER buildx imagetools inspect "$_ref" --raw 2>/dev/null) || true
+    if ! _raw_manifest=$($DOCKER buildx imagetools inspect "$_ref" --raw 2>/dev/null); then
+        return 1
+    fi
     if [[ -n "$_raw_manifest" ]]; then
         printf 'sha256:%s' "$(printf '%s' "$_raw_manifest" | sha256sum | awk '{print $1}')"
     else
         return 1
     fi
+}
+
+# _multiarch_index_json_has_required_platforms <index_json>
+# Returns success only when index JSON covers exact linux/amd64 and linux/arm64
+# platforms. A document jq cannot process is always rejected; callers that
+# receive text must use _multiarch_index_text_has_required_platforms instead.
+_multiarch_index_json_has_required_platforms() {
+    local _index_output="$1"
+    printf '%s' "$_index_output" | jq -e '
+        type == "object" and
+        ((.manifests | type) == "array") and
+        any(.manifests[]?; (.platform? | type) == "object" and
+            .platform.os == "linux" and .platform.architecture == "amd64") and
+        any(.manifests[]?; (.platform? | type) == "object" and
+            .platform.os == "linux" and .platform.architecture == "arm64")
+    ' >/dev/null 2>&1
+}
+
+# _multiarch_index_text_has_required_platforms <imagetools_inspect_output>
+# Returns success only when human-readable `imagetools inspect` output has
+# complete, anchored Platform: fields. arm64/v8 is the buildx text form for
+# the arm64 variant and is accepted alongside bare arm64.
+_multiarch_index_text_has_required_platforms() {
+    local _index_output="$1"
+    grep -Eq '^[[:space:]]*Platform:[[:space:]]+linux/amd64[[:space:]]*$' <<< "$_index_output" &&
+        grep -Eq '^[[:space:]]*Platform:[[:space:]]+linux/arm64(/v8)?[[:space:]]*$' <<< "$_index_output"
+}
+
+# _dry_run_output_is_single_json_index <dry_run_output>
+# Refuses anything other than exactly one JSON image index.  This is distinct
+# from the shared platform predicate above: it prevents diagnostic text or a
+# non-index JSON document from being mistaken for a preflighted manifest.
+_dry_run_output_is_single_json_index() {
+    local _dry_run_output="$1"
+    printf '%s' "$_dry_run_output" | jq -es '
+        if length == 1 then
+            .[0] |
+            (type == "object" and
+             (.mediaType == "application/vnd.oci.image.index.v1+json" or
+              .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json") and
+             ((.manifests | type) == "array") and
+             ((.manifests | length) > 0) and
+             all(.manifests[];
+                 type == "object" and
+                 (.digest | type) == "string" and
+                 (.digest | test("^sha256:[0-9a-f]{64}$"))))
+        else
+            false
+        end
+    ' >/dev/null 2>&1
 }
 
 # _reuse_ref_is_multiarch <image_ref>
@@ -1206,7 +1258,7 @@ _reuse_ref_is_multiarch() {
     if [[ "$_rc" -ne 0 ]]; then
         return 2
     fi
-    if grep -q "linux/amd64" <<< "$_out" && grep -q "linux/arm64" <<< "$_out"; then
+    if _multiarch_index_text_has_required_platforms "$_out"; then
         return 0
     fi
     return 1
@@ -2413,9 +2465,13 @@ finalize_multiarch_manifests() {
                                 ;;
                             1)
                                 log_warning "$ext $ceiling pg${major_ver}: reused manifest is not multi-arch — re-creating from per-arch legs"
-                                # An existing incomplete resolved manifest is recreated at its resolved target.
-                                # On a pull request that target may be canonical; publication ownership is #1880.
-                                _nr_target="$_nr_resolved_ref"
+                                # Push/dispatch repairs the canonical ref selected by the resolver.
+                                # A PR must never turn an incomplete canonical ref into a
+                                # branch-controlled canonical write: derive its target through
+                                # the shared scoped-tag helper below instead.
+                                if [[ -z "${PR_TAG_SUFFIX:-}" ]]; then
+                                    _nr_target="$_nr_resolved_ref"
+                                fi
                                 # Fall through to the CREATE path below.
                                 ;;
                             *)
@@ -2472,6 +2528,26 @@ finalize_multiarch_manifests() {
             fi
 
             log_info "$ext $ceiling pg${major_ver}: imagetools create $_nr_target from $_nr_src_amd64 + $_nr_src_arm64 (non-resolver, stable suffixed tags)"
+            local _nr_dry_run_out _nr_dry_run_rc=0
+            _nr_dry_run_out=$(retry_with_backoff 3 5 $DOCKER buildx imagetools create \
+                --dry-run \
+                -t "$_nr_target" \
+                "$_nr_src_amd64" "$_nr_src_arm64") || _nr_dry_run_rc=$?
+            if [[ "$_nr_dry_run_rc" -ne 0 ]]; then
+                log_error "$ext $ceiling pg${major_ver}: non-resolver imagetools dry-run failed (rc=$_nr_dry_run_rc) — final tag not written"
+                _failed=true
+                continue
+            fi
+            if ! _dry_run_output_is_single_json_index "$_nr_dry_run_out"; then
+                log_error "$ext $ceiling pg${major_ver}: non-resolver imagetools dry-run did not produce a single JSON index — final tag not written"
+                _failed=true
+                continue
+            fi
+            if ! _multiarch_index_json_has_required_platforms "$_nr_dry_run_out"; then
+                log_error "$ext $ceiling pg${major_ver}: non-resolver imagetools dry-run index does not cover both linux/amd64 and linux/arm64 — final tag not written"
+                _failed=true
+                continue
+            fi
             local _nr_create_rc=0
             # retry_with_backoff 3 5: imagetools create is idempotent (same manifest list on retry).
             retry_with_backoff 3 5 $DOCKER buildx imagetools create \
@@ -2482,7 +2558,43 @@ finalize_multiarch_manifests() {
                 log_error "$ext $ceiling pg${major_ver}: non-resolver imagetools create failed (rc=$_nr_create_rc) — fail-closed"
                 _failed=true
             else
-                log_success "Multi-arch manifest created: $_nr_target (non-resolver)"
+                local _nr_created_ma_rc=0
+                _reuse_ref_is_multiarch "$_nr_target" || _nr_created_ma_rc=$?
+                if [[ "$_nr_created_ma_rc" -eq 2 ]]; then
+                    log_error "$ext $ceiling pg${major_ver}: imagetools inspect failed after non-resolver manifest create — fail closed"
+                    _failed=true
+                elif [[ "$_nr_created_ma_rc" -ne 0 ]]; then
+                    log_error "$ext $ceiling pg${major_ver}: created non-resolver manifest does not cover both linux/amd64 and linux/arm64 — fail closed"
+                    _failed=true
+                else
+                    log_success "Multi-arch manifest created: $_nr_target (non-resolver)"
+
+                    # Stage B published this single-version manifest.  Record its
+                    # verified index digest in the existing versionset schema so a
+                    # downstream consumer can use the immutable source rather than
+                    # re-resolving this mutable tag.
+                    local _nr_digest _nr_digest_rc=0 _nr_repository _nr_lineage_file
+                    _nr_digest=$(_capture_index_digest "$_nr_target") || _nr_digest_rc=$?
+                    if [[ "$_nr_digest_rc" -ne 0 ]] || ! is_valid_oci_digest "$_nr_digest"; then
+                        log_error "$ext $ceiling pg${major_ver}: index digest capture failed after non-resolver manifest create (got: '$(_sanitize_for_log "${_nr_digest:-<empty>}")') — fail closed"
+                        _failed=true
+                    else
+                        _nr_repository=$(ext_image_repository "$ext") || { _failed=true; continue; }
+                        _nr_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
+                        # shellcheck disable=SC2016 # jq program is intentionally single-quoted.
+                        if ! _write_lineage_artifact "$_nr_lineage_file" jq -nc \
+                            --arg ext "$ext" \
+                            --arg pg_major "$major_ver" \
+                            --arg ceiling "$ceiling" \
+                            --arg digest "$_nr_digest" \
+                            --arg repository "$_nr_repository" \
+                            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:[$ceiling], available:[$ceiling], excluded:[], version_digests:{($ceiling):$digest}, version_digests_repository:$repository}'; then
+                            _failed=true
+                        else
+                            log_success "Versionset artifact written: $_nr_lineage_file"
+                        fi
+                    fi
+                fi
             fi
             # AX-3: consolidate per-arch duration files so the summer counts the
             # ceiling once (MAX), not once per arch.
@@ -2637,6 +2749,26 @@ finalize_multiarch_manifests() {
             ver_multiarch=$(_scoped_tag "$_ver_image")
 
             log_info "$ext $ver pg${major_ver}: imagetools create $ver_multiarch from $_ver_tag_amd64 + $_ver_tag_arm64"
+            local _dry_run_out _dry_run_rc=0
+            _dry_run_out=$(retry_with_backoff 3 5 $DOCKER buildx imagetools create \
+                --dry-run \
+                -t "$ver_multiarch" \
+                "$_ver_tag_amd64" "$_ver_tag_arm64") || _dry_run_rc=$?
+            if [[ "$_dry_run_rc" -ne 0 ]]; then
+                log_error "$ext $ver pg${major_ver}: imagetools dry-run failed (rc=$_dry_run_rc) — final tag not written"
+                _ext_failed=true
+                break
+            fi
+            if ! _dry_run_output_is_single_json_index "$_dry_run_out"; then
+                log_error "$ext $ver pg${major_ver}: imagetools dry-run did not produce a single JSON index — final tag not written"
+                _ext_failed=true
+                break
+            fi
+            if ! _multiarch_index_json_has_required_platforms "$_dry_run_out"; then
+                log_error "$ext $ver pg${major_ver}: imagetools dry-run index does not cover both linux/amd64 and linux/arm64 — final tag not written"
+                _ext_failed=true
+                break
+            fi
             local _create_rc=0
             # retry_with_backoff 3 5: imagetools create is idempotent (same manifest list on retry).
             retry_with_backoff 3 5 $DOCKER buildx imagetools create \
@@ -2665,8 +2797,7 @@ finalize_multiarch_manifests() {
                 _ext_failed=true
                 break
             fi
-            if ! grep -q "linux/amd64" <<< "$_inspect_out" || \
-               ! grep -q "linux/arm64" <<< "$_inspect_out"; then
+            if ! _multiarch_index_text_has_required_platforms "$_inspect_out"; then
                 if [[ "$ver" == "$ceiling" ]]; then
                     log_error "$ext $ver pg${major_ver} (ceiling): created manifest does not cover both linux/amd64 and linux/arm64 — fatal"
                     _ext_failed=true
@@ -2705,21 +2836,9 @@ finalize_multiarch_manifests() {
             continue
         fi
 
-        # For set_size == 1 (single-version resolver): the per-version multi-arch manifest
-        # was already created above (ceiling). Consumer uses single-version path.
-        # Delete any stale versionset artifact. (AZ-4 fix: manifest IS created above.)
-        if [[ "$set_size" -le 1 ]]; then
-            log_info "$ext pg${major_ver}: single-version resolver result — per-version manifest created, no collector needed"
-            _delete_stale_versionset_artifact "$ext" "$major_ver"
-            continue
-        fi
-
-        # Only one version confirmed available — consumer uses single-version path.
-        if [[ ${#_confirmed_available[@]} -le 1 ]]; then
-            log_info "$ext pg${major_ver}: only ${#_confirmed_available[@]} version(s) available — consumer uses single-version path"
-            _delete_stale_versionset_artifact "$ext" "$major_ver"
-            continue
-        fi
+        # Single-version sets still need lineage.  The consumer's ordinary
+        # single-version stage can then pin the manifest it consumes, and the
+        # Stage-B output can name this extension without allowing tag fallback.
 
         # Validate: every version in confirmed_available must have a valid index digest.
         local _digest_ok=true

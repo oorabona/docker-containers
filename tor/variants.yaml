@@ -9,6 +9,17 @@ build:
   requires_extensions: false
   version_retention: 3
 versions:
+  - tag: 0.4.9.13-alpine
+    variants:
+      - name: default
+        suffix: ""
+        flavor: default
+        description: "Tor + Lyrebird SOCKS proxy, relay, bridge, and hidden-service support"
+        default: true
+      - name: monitoring
+        suffix: "-monitoring"
+        flavor: monitoring
+        description: "Default Tor image plus Nyx and py3-stem for in-container monitoring"
   - tag: 0.4.9.12-alpine
     variants:
       - name: default

@@ -37,6 +37,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BAKE_MERGE_SCRIPT_DIR="$SCRIPT_DIR"
 cd "${PROJECT_ROOT}"
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,14 @@ source "${PROJECT_ROOT}/helpers/retry.sh"
 source "${PROJECT_ROOT}/helpers/variant-utils.sh"
 # shellcheck source=../helpers/collect-lines.sh
 source "${PROJECT_ROOT}/helpers/collect-lines.sh"
+# Reuse the legacy matrix publisher's FULL_VERSION spelling rather than
+# duplicating its precise-tag derivation.  The PG_VERSION validation below is
+# intentionally bake-only; forced flat-matrix and recreate-manifests paths keep
+# their existing create-manifest.sh behavior.
+# shellcheck source=../helpers/create-manifest.sh
+# shellcheck disable=SC1091 # PROJECT_ROOT is runtime-resolved, like adjacent helpers.
+source "${PROJECT_ROOT}/helpers/create-manifest.sh"
+SCRIPT_DIR="$BAKE_MERGE_SCRIPT_DIR"
 
 # Force config-only dep resolution (no lineage dir needed for merge)
 export _DEPGRAPH_LINEAGE_DIR=/nonexistent
@@ -63,6 +72,105 @@ DOCKER="${DOCKER:-docker}"
 # ---------------------------------------------------------------------------
 # REMOTE_CR: GHCR namespace (default matches bake variable default)
 REMOTE_CR="${REMOTE_CR:-ghcr.io/oorabona}"
+
+# BAKE_MERGE_RECEIPT_DIR: optional directory for per-cell publication receipts.
+# A receipt is emitted only after its non-dry-run imagetools create succeeds.
+BAKE_MERGE_RECEIPT_DIR="${BAKE_MERGE_RECEIPT_DIR:-}"
+
+# BAKE_MERGE_PUBLISHED_TAGS_FILE: optional JSONL verdict transport for the
+# subsequent Docker Hub mirror.  A record is written only after the GHCR merge
+# succeeds, so the mirror cannot invent a precise tag rejected by PG_VERSION.
+BAKE_MERGE_PUBLISHED_TAGS_FILE="${BAKE_MERGE_PUBLISHED_TAGS_FILE:-}"
+
+_emit_published_tags() {
+    local container="$1" tag="$2"
+    shift 2
+    [[ -n "$BAKE_MERGE_PUBLISHED_TAGS_FILE" ]] || return 0
+
+    local tags_json record
+    if ! tags_json=$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0))'); then
+        printf '::error::Could not construct published-tag verdict for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    if ! record=$(jq -cn --arg container "$container" --arg tag "$tag" --argjson tags "$tags_json" \
+        '{container:$container, tag:$tag, published_tags:$tags}'); then
+        printf '::error::Could not encode published-tag verdict for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    if ! printf '%s\n' "$record" >> "$BAKE_MERGE_PUBLISHED_TAGS_FILE"; then
+        printf '::error::Could not persist published-tag verdict for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+}
+
+_postgres_pg_version_for_ref() {
+    local source_ref="$1" inspect_json
+    if ! inspect_json=$("$DOCKER" buildx imagetools inspect --format '{{json .Image}}' "$source_ref" 2>&1); then
+        printf '%s\n' "$inspect_json" >&2
+        return 1
+    fi
+    jq -er '[.config.Env[]? | select(startswith("PG_VERSION=")) | ltrimstr("PG_VERSION=")]
+        | if length == 1 then .[0] else error("expected exactly one PG_VERSION") end' <<< "$inspect_json"
+}
+
+_emit_merge_receipt() (
+    set -uo pipefail
+    local container="$1" tag="$2" receipt_dir="$BAKE_MERGE_RECEIPT_DIR"
+    local receipt_file staged_receipt="" receipt_json receipt_digest sha256_output
+    cleanup_staged_receipt() {
+        if [[ -n "$staged_receipt" && -e "$staged_receipt" ]] && ! rm -f -- "$staged_receipt"; then
+            printf '::error::Could not remove staged bake merge receipt; retained: %s\n' "$staged_receipt" >&2
+            return 1
+        fi
+    }
+
+    [[ -n "$receipt_dir" ]] || return 0
+    if ! mkdir -p -- "$receipt_dir"; then
+        printf '::error::Could not create bake merge receipt directory: %s\n' "$receipt_dir" >&2
+        return 1
+    fi
+    if ! sha256_output=$(printf '%s\0%s' "$container" "$tag" | sha256sum); then
+        printf '::error::Could not hash bake merge receipt identity for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    receipt_digest="${sha256_output%%[[:space:]]*}"
+    if [[ ! "$receipt_digest" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        printf '::error::Invalid bake merge receipt identity hash for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    receipt_file="${receipt_dir}/bake-merge-${receipt_digest,,}.json"
+    if ! receipt_json=$(jq -cn --arg container "$container" --arg tag "$tag" '{container:$container, tag:$tag}'); then
+        printf '::error::Could not construct bake merge receipt for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    if ! jq -e 'type == "object" and keys == ["container", "tag"] and
+        (.container | type == "string" and length > 0) and
+        (.tag | type == "string" and length > 0)' <<< "$receipt_json" >/dev/null; then
+        printf '::error::Invalid bake merge receipt for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    if ! staged_receipt=$(mktemp -- "${receipt_dir}/.bake-merge-receipt.XXXXXX"); then
+        printf '::error::Could not stage bake merge receipt in: %s\n' "$receipt_dir" >&2
+        return 1
+    fi
+    trap cleanup_staged_receipt EXIT
+    trap 'exit 128' INT TERM
+    if ! printf '%s\n' "$receipt_json" > "$staged_receipt"; then
+        printf '::error::Could not write bake merge receipt for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    if ! jq -e 'type == "object" and keys == ["container", "tag"] and
+        (.container | type == "string" and length > 0) and
+        (.tag | type == "string" and length > 0)' -- "$staged_receipt" >/dev/null; then
+        printf '::error::Staged bake merge receipt is invalid for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    if ! mv -fT -- "$staged_receipt" "$receipt_file"; then
+        printf '::error::Could not publish bake merge receipt for %s:%s\n' "$container" "$tag" >&2
+        return 1
+    fi
+    staged_receipt=""
+)
 
 # ---------------------------------------------------------------------------
 # _merge_cell — merge one cell's arch refs into final GHCR manifests.
@@ -84,7 +192,7 @@ REMOTE_CR="${REMOTE_CR:-ghcr.io/oorabona}"
 # Rolling aliases route by variant on Linux and flavor on Windows, matching the
 # production planners. The helper receives both fields and chooses.
 #
-# Args: <container> <tag> <flavor> <is_default> <intermediate_ref> <is_latest_version> <variant> <os>
+# Args: <container> <tag> <flavor> <is_default> <intermediate_ref> <is_latest_version> <variant> <os> <matrix_version> <full_version>
 #   intermediate_ref has the literal "${REMOTE_CR}" token already expanded.
 # ---------------------------------------------------------------------------
 _merge_cell() {
@@ -96,6 +204,8 @@ _merge_cell() {
     local is_latest_version="${6:-true}"   # default true for backward compat
     local variant="${7:-$flavor}"
     local os="${8:-linux}"
+    local matrix_version="${9:-}"
+    local full_version="${10:-}"
 
     local ghcr_image="${REMOTE_CR}/${container}"
 
@@ -139,6 +249,42 @@ _merge_cell() {
         return 1
     fi
 
+    # Precise Postgres aliases are bake-only.  The legacy matrix publisher
+    # derives their spelling from FULL_VERSION; before this path publishes one,
+    # both built architecture sources must attest the same PG_VERSION.
+    local precise_tag=""
+    if [[ "$container" == "postgres" && -n "$full_version" ]]; then
+        if ! precise_tag=$(TAG="$tag" VERSION="$matrix_version" FULL_VERSION="$full_version" _compute_full_version_tag_suffix); then
+            printf '::warning::Skipping precise Postgres alias for %s:%s: no valid FULL_VERSION-derived tag (matrix_version=%s full_version=%s)\n' \
+                "$container" "$tag" "$matrix_version" "$full_version" >&2
+        elif [[ "$full_version" =~ ^([0-9]+\.[0-9]+(\.[0-9]+)?) ]]; then
+            local expected_pg_version="${BASH_REMATCH[1]}"
+            if [[ "${DRY_RUN:-false}" == "true" ]]; then
+                # Dry run does not contact a registry. The real path below is
+                # the publication gate; retaining the ref here exposes the
+                # planned alias and lets duplicate-ref preflight cover it.
+                ghcr_refs+=("${ghcr_image}:${precise_tag}")
+            else
+                local amd64_pg_version arm64_pg_version
+                if amd64_pg_version=$(_postgres_pg_version_for_ref "$src_amd64") \
+                    && arm64_pg_version=$(_postgres_pg_version_for_ref "$src_arm64") \
+                    && [[ "$amd64_pg_version" == "$arm64_pg_version" ]] \
+                    && [[ "$amd64_pg_version" == "$expected_pg_version" ]]; then
+                    ghcr_refs+=("${ghcr_image}:${precise_tag}")
+                else
+                    printf '::warning::Skipping precise Postgres alias %s for %s:%s: PG_VERSION amd64=%s arm64=%s expected=%s\n' \
+                        "$precise_tag" "$container" "$tag" "${amd64_pg_version:-<unavailable>}" \
+                        "${arm64_pg_version:-<unavailable>}" "$expected_pg_version" >&2
+                    precise_tag=""
+                fi
+            fi
+        else
+            printf '::warning::Skipping precise Postgres alias for %s:%s: FULL_VERSION has no numeric prefix (%s)\n' \
+                "$container" "$tag" "$full_version" >&2
+            precise_tag=""
+        fi
+    fi
+
     # ------------------------------------------------------------------
     # GHCR publish — STRICT / fail-closed
     # Both arch sources required.  No single-arch fallback (ADR-013 §4).
@@ -175,6 +321,20 @@ _merge_cell() {
         "$src_arm64" 2>&1); then
         printf '::error::GHCR merge failed for %s:%s — %s\n' \
             "$container" "$tag" "$err_output" >&2
+        return 1
+    fi
+    if ! _emit_merge_receipt "$container" "$tag"; then
+        printf '::error::GHCR manifest published but receipt emission failed for %s:%s\n' \
+            "$container" "$tag" >&2
+        return 1
+    fi
+    local -a published_suffixes=()
+    for ref in "${ghcr_refs[@]}"; do
+        published_suffixes+=("${ref##*:}")
+    done
+    if ! _emit_published_tags "$container" "$tag" "${published_suffixes[@]}"; then
+        printf '::error::GHCR manifest published but published-tag verdict emission failed for %s:%s\n' \
+            "$container" "$tag" >&2
         return 1
     fi
     printf '::notice::GHCR manifest created for %s:%s (%d refs)\n' \
@@ -232,7 +392,7 @@ main() {
     for (( _ci=0; _ci<ncells; _ci++ )); do
         local _chk_cell
         _chk_cell=$(jq -c ".[$_ci]" <<< "$cells_json")
-        local _chk_c _chk_tag _chk_flavor _chk_variant _chk_os _chk_default _chk_latest _chk_iref
+        local _chk_c _chk_tag _chk_flavor _chk_variant _chk_os _chk_default _chk_latest _chk_iref _chk_matrix_version _chk_full_version
         _chk_c=$(jq -r '.container'     <<< "$_chk_cell")
         _chk_tag=$(jq -r '.tag'         <<< "$_chk_cell")
         _chk_flavor=$(jq -r '.flavor // ""'  <<< "$_chk_cell")
@@ -240,6 +400,8 @@ main() {
         _chk_os=$(jq -r '.os // "linux"' <<< "$_chk_cell")
         _chk_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$_chk_cell")
         _chk_latest=$(jq -r 'if has("is_latest_version") then (if .is_latest_version then "true" else "false" end) else "true" end' <<< "$_chk_cell")
+        _chk_matrix_version=$(jq -r '.matrix_version // ""' <<< "$_chk_cell")
+        _chk_full_version=$(jq -r '.full_version // ""' <<< "$_chk_cell")
         _chk_iref=$(jq -r '.intermediate_ref' <<< "$_chk_cell")
         _chk_iref="${_chk_iref//\$\{REMOTE_CR\}/${REMOTE_CR}}"
         local _sfx
@@ -267,6 +429,23 @@ main() {
             fi
             _seen_refs["$_fref"]="$_cell_id"
         done < "$_suffixes_file"
+        # The actual merge admits this ref only after PG_VERSION agrees across
+        # both architecture images. Include the candidate in preflight so a
+        # duplicate can never evade the final-ref guard by being precise.
+        if [[ "$_chk_c" == "postgres" && -n "$_chk_full_version" ]]; then
+            local _chk_precise_tag
+            if _chk_precise_tag=$(TAG="$_chk_tag" VERSION="$_chk_matrix_version" FULL_VERSION="$_chk_full_version" _compute_full_version_tag_suffix); then
+                local _precise_ref="${REMOTE_CR}/${_chk_c}:${_chk_precise_tag}"
+                local _precise_cell_id="${_cell_id}[precise]"
+                if [[ -n "${_seen_refs[$_precise_ref]+set}" ]]; then
+                    printf '::error::Duplicate final ref detected: %s would be published by both %s and %s — aborting\n' \
+                        "$_precise_ref" "${_seen_refs[$_precise_ref]}" "$_precise_cell_id" >&2
+                    rm -f "$_suffixes_file"
+                    exit 1
+                fi
+                _seen_refs["$_precise_ref"]="$_precise_cell_id"
+            fi
+        fi
         rm -f "$_suffixes_file"
     done
 
@@ -279,7 +458,7 @@ main() {
         local cell
         cell=$(jq -c ".[$i]" <<< "$cells_json")
 
-        local container tag flavor variant os is_default intermediate_ref is_latest_version
+        local container tag flavor variant os is_default intermediate_ref is_latest_version matrix_version full_version
         container=$(jq -r '.container'        <<< "$cell")
         tag=$(jq -r '.tag'                    <<< "$cell")
         flavor=$(jq -r '.flavor // ""'        <<< "$cell")
@@ -289,12 +468,14 @@ main() {
         is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
         # F2: read is_latest_version; default to "true" for backward compat when field absent.
         is_latest_version=$(jq -r 'if has("is_latest_version") then (if .is_latest_version then "true" else "false" end) else "true" end' <<< "$cell")
+        matrix_version=$(jq -r '.matrix_version // ""' <<< "$cell")
+        full_version=$(jq -r '.full_version // ""' <<< "$cell")
         # Expand the literal ${REMOTE_CR} token using the resolved env value
         intermediate_ref=$(jq -r '.intermediate_ref' <<< "$cell")
         intermediate_ref="${intermediate_ref//\$\{REMOTE_CR\}/${REMOTE_CR}}"
 
         if ! _merge_cell "$container" "$tag" "$flavor" "$is_default" \
-                "$intermediate_ref" "$is_latest_version" "$variant" "$os"; then
+                "$intermediate_ref" "$is_latest_version" "$variant" "$os" "$matrix_version" "$full_version"; then
             printf '::error::Cell merge FAILED: %s:%s\n' "$container" "$tag" >&2
             failed=$(( failed + 1 ))
         fi

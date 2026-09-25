@@ -33,26 +33,11 @@ _compute_tag_args() {
     local tag_args="-t $target_image:$TAG"
 
     # Version-specific tag (e.g., 18.2-alpine alongside rolling 18-alpine)
-    # Enables dashboard version tracking via registry pattern matching
-    # Guard: TAG must start with VERSION to safely strip the prefix (P3 fix)
-    if [[ -n "${FULL_VERSION:-}" && "$FULL_VERSION" != "$TAG" && "$TAG" == "$VERSION"* ]]; then
-        local rest="${TAG#"$VERSION"}"
-        local full_numeric
-        full_numeric=$(echo "$FULL_VERSION" | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
-        local version_numeric
-        version_numeric=$(echo "$VERSION" | grep -oE '^[0-9]+(\.[0-9]+)*' || true)
-        # Only emit when FULL_VERSION's numeric STRICTLY EXTENDS the cell's VERSION
-        # numeric (e.g. 18 -> 18.3). Skip a different or equal version: a retained
-        # cell whose FULL_VERSION carries the latest (e.g. terraform 1.15.4 built with
-        # FULL_VERSION=1.15.6) would otherwise mis-tag a cross-version, -alpine-stripped
-        # alias (1.15.6 onto the 1.15.4 image).
-        if [[ -n "$full_numeric" && -n "$version_numeric" && "$full_numeric" == "$version_numeric".* ]]; then
-            local full_tag="${full_numeric}${rest}"
-            if [[ "$full_tag" != "$TAG" ]]; then
-                tag_args="$tag_args -t $target_image:$full_tag"
-                echo "::notice::Adding version-specific tag: $full_tag" >&2
-            fi
-        fi
+    # Enables dashboard version tracking via registry pattern matching.
+    local full_tag
+    if full_tag=$(_compute_full_version_tag_suffix); then
+        tag_args="$tag_args -t $target_image:$full_tag"
+        echo "::notice::Adding version-specific tag: $full_tag" >&2
     fi
 
     # Major-version rolling tag (e.g., 18-alpine-vector derived from TAG=18.3-alpine-vector).
@@ -87,6 +72,26 @@ _compute_tag_args() {
     echo "$tag_args"
 }
 
+# Derive the FULL_VERSION-specific alias suffix without constructing a full
+# imagetools argument list.  This is shared by bake merge, which must validate
+# Postgres' PG_VERSION before admitting the same alias.
+#
+# Reads TAG, VERSION and FULL_VERSION.  Prints the suffix only when
+# FULL_VERSION's numeric prefix strictly extends VERSION (18 -> 18.3).
+_compute_full_version_tag_suffix() {
+    [[ -n "${FULL_VERSION:-}" && "$FULL_VERSION" != "$TAG" && "$TAG" == "$VERSION"* ]] || return 1
+
+    local rest="${TAG#"$VERSION"}"
+    local full_numeric version_numeric
+    full_numeric=$(echo "$FULL_VERSION" | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
+    version_numeric=$(echo "$VERSION" | grep -oE '^[0-9]+(\.[0-9]+)*' || true)
+    [[ -n "$full_numeric" && -n "$version_numeric" && "$full_numeric" == "$version_numeric".* ]] || return 1
+
+    local full_tag="${full_numeric}${rest}"
+    [[ "$full_tag" != "$TAG" ]] || return 1
+    printf '%s\n' "$full_tag"
+}
+
 # Compute ONLY the version-specific (most precise) tag argument.
 # Used by fallback paths to avoid polluting rolling/latest tags with single-arch manifests.
 #
@@ -100,26 +105,11 @@ _compute_tag_args() {
 _compute_version_specific_tag_args() {
     local target_image="$1"
 
-    # Path A: derive version-specific from FULL_VERSION
-    #   e.g., 18.3-alpine-vector from TAG=18-alpine-vector + FULL_VERSION=18.3-alpine
-    # Guard: TAG must start with VERSION to safely strip the prefix (P3 fix)
-    if [[ -n "${FULL_VERSION:-}" && "$FULL_VERSION" != "$TAG" && "$TAG" == "$VERSION"* ]]; then
-        local rest="${TAG#"$VERSION"}"
-        local full_numeric
-        full_numeric=$(echo "$FULL_VERSION" | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
-        local version_numeric
-        version_numeric=$(echo "$VERSION" | grep -oE '^[0-9]+(\.[0-9]+)*' || true)
-        # Only emit when FULL_VERSION's numeric STRICTLY EXTENDS the cell's VERSION
-        # numeric (e.g. 18 -> 18.3). Skip a different/equal version so a terraform-style
-        # full-version TAG falls through to Path C (TAG itself) instead of a
-        # cross-version, -alpine-stripped alias.
-        if [[ -n "$full_numeric" && -n "$version_numeric" && "$full_numeric" == "$version_numeric".* ]]; then
-            local full_tag="${full_numeric}${rest}"
-            if [[ "$full_tag" != "$TAG" ]]; then
-                echo "-t $target_image:$full_tag"
-                return 0
-            fi
-        fi
+    # Path A: derive version-specific from FULL_VERSION.
+    local full_tag
+    if full_tag=$(_compute_full_version_tag_suffix); then
+        echo "-t $target_image:$full_tag"
+        return 0
     fi
 
     # Path B: VERSION is a single major integer → TAG IS the rolling form.

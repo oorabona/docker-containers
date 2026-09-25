@@ -43,6 +43,7 @@ setup() {
     setup_temp_dir
     mkdir -p "${TEST_TEMP_DIR}/bin"
     _setup_docker_mock
+    unset BAKE_MERGE_PUBLISHED_TAGS_FILE
 }
 
 teardown() {
@@ -52,6 +53,113 @@ teardown() {
 # Run the merge script with the mock DOCKER
 _run_merge() {
     run bash "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh" "$@"
+}
+
+receipt_path_for_pair() {
+    local container="$1" tag="$2" digest
+    digest=$(printf '%s\0%s' "$container" "$tag" | sha256sum)
+    digest="${digest%%[[:space:]]*}"
+    printf 'bake-merge-%s.json' "$digest"
+}
+
+_set_postgres_inspect_mock() {
+    local amd64_version="$1" arm64_version="$2"
+    cat > "$DOCKER" <<MOCK
+#!/usr/bin/env bash
+if [[ "\$*" == *"imagetools inspect"* ]]; then
+    if [[ "\$*" == *"-arm64" ]]; then
+        printf '%s\\n' '{"config":{"Env":["PG_VERSION=${arm64_version}"]}}'
+    else
+        printf '%s\\n' '{"config":{"Env":["PG_VERSION=${amd64_version}"]}}'
+    fi
+    exit 0
+fi
+printf '%s\\n' "\$*" >> "\${DOCKER_LOG}"
+MOCK
+    chmod +x "$DOCKER"
+}
+
+@test "postgres retained bake cell publishes its PG_VERSION-verified precise alias" {
+    _set_postgres_inspect_mock "16.13" "16.13"
+    export BAKE_MERGE_PUBLISHED_TAGS_FILE="${TEST_TEMP_DIR}/published-tags.jsonl"
+
+    _call_merge_cell "postgres" "16-alpine-vector" "vector" "false" \
+        "ghcr.io/oorabona/postgres:16-alpine-vector" "false" "vector" "linux" "16" "16.13-alpine"
+
+    [ "$status" -eq 0 ]
+    local create_line
+    create_line=$(grep 'imagetools create' "$DOCKER_LOG")
+    [[ "$create_line" == *"ghcr.io/oorabona/postgres:16-alpine-vector"* ]]
+    [[ "$create_line" == *"ghcr.io/oorabona/postgres:16.13-alpine-vector"* ]]
+    [[ "$create_line" != *"ghcr.io/oorabona/postgres:latest"* ]]
+    [ "$(jq -r '.published_tags | join(",")' "$BAKE_MERGE_PUBLISHED_TAGS_FILE")" = "16-alpine-vector,16.13-alpine-vector" ]
+}
+
+@test "postgres PG_VERSION disagreement warns and skips only the precise alias" {
+    _set_postgres_inspect_mock "16.13" "16.14"
+
+    _call_merge_cell "postgres" "16-alpine-vector" "vector" "false" \
+        "ghcr.io/oorabona/postgres:16-alpine-vector" "false" "vector" "linux" "16" "16.13-alpine"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::warning::Skipping precise Postgres alias"* ]]
+    local create_line
+    create_line=$(grep 'imagetools create' "$DOCKER_LOG")
+    [[ "$create_line" == *"ghcr.io/oorabona/postgres:16-alpine-vector"* ]]
+    [[ "$create_line" != *"16.13-alpine-vector"* ]]
+}
+
+@test "postgres PG_VERSION must equal FULL_VERSION's numeric part" {
+    _set_postgres_inspect_mock "16.13" "16.13"
+
+    _call_merge_cell "postgres" "16-alpine-vector" "vector" "false" \
+        "ghcr.io/oorabona/postgres:16-alpine-vector" "false" "vector" "linux" "16" "16.14-alpine"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::warning::Skipping precise Postgres alias"* ]]
+    local create_line
+    create_line=$(grep 'imagetools create' "$DOCKER_LOG")
+    [[ "$create_line" == *"ghcr.io/oorabona/postgres:16-alpine-vector"* ]]
+    [[ "$create_line" != *"16.14-alpine-vector"* ]]
+}
+
+@test "cell without full_version keeps its existing merge refs" {
+    _call_merge_cell "postgres" "16-alpine-vector" "vector" "false" \
+        "ghcr.io/oorabona/postgres:16-alpine-vector" "false" "vector" "linux" "16" ""
+
+    [ "$status" -eq 0 ]
+    local create_line
+    create_line=$(grep 'imagetools create' "$DOCKER_LOG")
+    [[ "$create_line" == *"ghcr.io/oorabona/postgres:16-alpine-vector"* ]]
+    [[ "$create_line" != *"16.13-alpine-vector"* ]]
+}
+
+@test "duplicate preflight includes the admitted postgres precise alias" {
+    local generator caller
+    generator="${TEST_TEMP_DIR}/bin/generate-bake-hcl.sh"
+    caller="${TEST_TEMP_DIR}/precise-duplicate-caller.sh"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[
+  {"container":"postgres","tag":"16-alpine-vector","flavor":"vector","variant":"vector","is_default":false,"is_latest_version":false,"os":"linux","matrix_version":"16","full_version":"16.13-alpine","intermediate_ref":"ghcr.io/oorabona/postgres:16-alpine-vector"},
+  {"container":"postgres","tag":"16.13-alpine-vector","flavor":"vector","variant":"vector","is_default":false,"is_latest_version":false,"os":"linux","matrix_version":"16.13","full_version":"","intermediate_ref":"ghcr.io/oorabona/postgres:16.13-alpine-vector"}
+]'
+EOF
+    cat > "$caller" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
+SCRIPT_DIR="${TEST_TEMP_DIR}/bin"
+main postgres
+EOF
+    chmod +x "$generator" "$caller"
+
+    run bash "$caller"
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Duplicate final ref detected"* ]]
+    [[ "$output" == *"16.13-alpine-vector"* ]]
+    [ ! -s "$DOCKER_LOG" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -380,6 +488,69 @@ EOF
     [[ "$output" == *"Duplicate final ref"* ]]
 }
 
+@test "partial merge failure emits exactly the earlier successful cell receipt" {
+    export REMOTE_CR="ghcr.io/oorabona"
+    export BAKE_MERGE_RECEIPT_DIR="${TEST_TEMP_DIR}/receipts"
+    local mock_gen="${TEST_TEMP_DIR}/bin/generate-bake-hcl.sh"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        'printf '\''[{"container":"debian","tag":"trixie","flavor":"","variant":"","is_default":true,"is_latest_version":true,"intermediate_ref":"ghcr.io/oorabona/debian:trixie"},{"container":"debian","tag":"bookworm","flavor":"","variant":"","is_default":true,"is_latest_version":false,"intermediate_ref":"ghcr.io/oorabona/debian:bookworm"}]\n'\''' > "$mock_gen"
+    chmod +x "$mock_gen"
+    cat > "${TEST_TEMP_DIR}/bin/docker" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${DOCKER_LOG}"
+[[ "$*" == *"bookworm-amd64"* ]] && exit 1
+exit 0
+MOCK
+    chmod +x "${TEST_TEMP_DIR}/bin/docker"
+
+    local caller_script="${TEST_TEMP_DIR}/_partial_merge_caller.sh"
+    cat > "$caller_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
+SCRIPT_DIR="${TEST_TEMP_DIR}/bin"
+main
+EOF
+    chmod +x "$caller_script"
+
+    run bash "$caller_script"
+
+    [ "$status" -ne 0 ] || return 1
+    [ "$(find "$BAKE_MERGE_RECEIPT_DIR" -maxdepth 1 -name '*.json' | wc -l | tr -d ' ')" -eq 1 ] || return 1
+    local successful_receipt failed_receipt
+    successful_receipt=$(receipt_path_for_pair debian trixie)
+    failed_receipt=$(receipt_path_for_pair debian bookworm)
+    [ "$(jq -r '.container + ":" + .tag' "$BAKE_MERGE_RECEIPT_DIR/$successful_receipt")" = 'debian:trixie' ] || return 1
+    [ ! -e "$BAKE_MERGE_RECEIPT_DIR/$failed_receipt" ] || return 1
+}
+
+@test "merge receipts use distinct exact NUL-delimited-pair digests" {
+    export BAKE_MERGE_RECEIPT_DIR="${TEST_TEMP_DIR}/receipts"
+    local first_receipt second_receipt
+    first_receipt=$(receipt_path_for_pair 'a-b' 'c')
+    second_receipt=$(receipt_path_for_pair 'a' 'b-c')
+    [ "$first_receipt" != "$second_receipt" ] || return 1
+
+    run bash -c 'source "$1"; _emit_merge_receipt "a-b" "c"; _emit_merge_receipt "a" "b-c"' \
+        _ "$PROJECT_ROOT/scripts/bake-merge-manifests.sh"
+
+    [ "$status" -eq 0 ] || return 1
+    [ -f "$BAKE_MERGE_RECEIPT_DIR/$first_receipt" ] || return 1
+    [ -f "$BAKE_MERGE_RECEIPT_DIR/$second_receipt" ] || return 1
+    [ "$(jq -r '.container + ":" + .tag' "$BAKE_MERGE_RECEIPT_DIR/$first_receipt")" = 'a-b:c' ] || return 1
+    [ "$(jq -r '.container + ":" + .tag' "$BAKE_MERGE_RECEIPT_DIR/$second_receipt")" = 'a:b-c' ] || return 1
+}
+
+@test "merge receipt stages and publishes a relative destination under -dir" {
+    local receipt_dir="-dir/receipts"
+
+    run env BAKE_MERGE_RECEIPT_DIR="$receipt_dir" bash -c 'source "$2" && cd "$1" && _emit_merge_receipt debian trixie' \
+        _ "$TEST_TEMP_DIR" "$PROJECT_ROOT/scripts/bake-merge-manifests.sh"
+
+    [ "$status" -eq 0 ] || return 1
+    [ "$(find "$TEST_TEMP_DIR/$receipt_dir" -maxdepth 1 -name 'bake-merge-*.json' | wc -l | tr -d ' ')" -eq 1 ] || return 1
+}
+
 @test "short suffix enumeration refuses a cell before any manifest publish [catches partial GHCR publish]" {
     local caller_script="${TEST_TEMP_DIR}/_short_cell_caller.sh"
     cat > "$caller_script" <<'EOF'
@@ -448,11 +619,13 @@ EOF
 @test "FIX H — DRY_RUN=true emits imagetools create command visibly and exits 0" {
     export REMOTE_CR="ghcr.io/oorabona"
     export DRY_RUN="true"
+    export BAKE_MERGE_RECEIPT_DIR="${TEST_TEMP_DIR}/dry-run-receipts"
 
     # Use _call_merge_cell so we can assert on its stdout
     _call_merge_cell "debian" "trixie" "" "true" \
         "ghcr.io/oorabona/debian:trixie" "true" ""
     [ "$status" -eq 0 ]
+    [ ! -e "$BAKE_MERGE_RECEIPT_DIR" ]
 
     # The DRY-RUN line must be visible on stdout (captured in $output by bats run)
     [[ "$output" == *"DRY-RUN: docker buildx imagetools create"* ]]

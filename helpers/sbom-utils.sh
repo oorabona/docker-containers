@@ -194,12 +194,22 @@ generate_sbom() (
         return 1
     fi
 
+    if [[ -L "$output_file" ]]; then
+        log_error "SBOM output path must not be a symlink: $output_file"
+        return 1
+    fi
     if [[ -d "$output_file" ]]; then
         log_error "SBOM output path is a directory: $output_file"
         return 1
     fi
 
-    local output_dir output_size
+    local output_dir output_size staged_output=""
+    cleanup_staged_sbom() {
+        if [[ -n "$staged_output" && -e "$staged_output" ]] && ! rm -f -- "$staged_output"; then
+            log_error "Could not remove staged SBOM temporary file; retained: $staged_output"
+            return 1
+        fi
+    }
     if ! output_dir=$(dirname -- "$output_file"); then
         log_error "Failed to determine SBOM output directory: $output_file"
         return 1
@@ -208,38 +218,124 @@ generate_sbom() (
         log_error "Failed to create SBOM output directory: $output_dir"
         return 1
     fi
+    if ! staged_output=$(mktemp -- "$output_dir/.sbom-stage.XXXXXX"); then
+        log_error "Failed to create staged SBOM file in: $output_dir"
+        return 1
+    fi
+    trap cleanup_staged_sbom EXIT
+    trap 'exit 128' INT TERM
+
     log_info "Generating SBOM for $image_ref..."
-    local syft_args=("registry:${image_ref}" -o "spdx-json=${output_file}" --quiet)
+    local syft_args=("registry:${image_ref}" -o "spdx-json=${staged_output}" --quiet)
+    local image_repository="${image_ref%@*}"
+    image_repository="${image_repository##*/}"
+    image_repository="${image_repository%%:*}"
     local syft_cmd=(syft)
     if syft --timeout 10m --help &>/dev/null; then
         syft_args=(--timeout 10m "${syft_args[@]}")
     elif command -v timeout &>/dev/null; then
         syft_cmd=(timeout 10m syft)
     fi
+    if [[ "$image_repository" == "github-runner" ]]; then
+        syft_args+=(--select-catalogers=-pe-binary-package-cataloger)
+    fi
 
     if ! retry_with_backoff 2 30 "${syft_cmd[@]}" "${syft_args[@]}"; then
         log_error "Failed to generate SBOM for $image_ref"
         return 1
     fi
-    if [[ ! -f "$output_file" || ! -r "$output_file" ]]; then
-        log_error "SBOM producer did not create a readable output: $output_file"
+    if [[ ! -f "$staged_output" || ! -r "$staged_output" ]]; then
+        log_error "SBOM producer did not create a readable staged output: $staged_output"
         return 1
     fi
-    # This establishes only that the producer wrote a JSON object; it does not
-    # validate the SBOM's SPDX schema or shape.
-    if ! _is_single_json_type object "$output_file"; then
-        log_error "SBOM producer did not write a JSON object: $output_file"
+    if [[ "$image_repository" == "github-runner" ]]; then
+        local filtered_output
+        if ! filtered_output=$(mktemp -- "$output_dir/.sbom-filter.XXXXXX"); then
+            log_error "Failed to create filtered SPDX output in: $output_dir"
+            return 1
+        fi
+        if ! jq '
+            (if has("files") then
+                (.files | if type == "array" then . else error("SPDX files must be an array") end)
+             else []
+             end
+             | map(
+                 if type == "object" then
+                     if (.SPDXID | type) == "string" then .SPDXID else error("SPDX file must have a string SPDXID") end
+                 else error("SPDX file must be an object")
+                 end
+             )
+             | map({(.): true}) | add // {}) as $file_ids
+            | del(.files)
+            | if has("relationships") then
+                  if (.relationships | type) == "array" then
+                  .relationships |= map(select(
+                      if type == "object" then
+                          (.spdxElementId as $spdx_element_id
+                           | $file_ids[$spdx_element_id] | not)
+                          and
+                          (.relatedSpdxElement as $related_spdx_element
+                           | $file_ids[$related_spdx_element] | not)
+                      else error("SPDX relationship must be an object")
+                      end
+                  ))
+              else error("SPDX relationships must be an array")
+              end
+              else .
+              end
+            | if (.packages | type) == "array" then
+                  .packages |= map(
+                      if type != "object" then error("SPDX package must be an object")
+                      elif has("hasFiles") then
+                          if (.hasFiles | type) == "array" then
+                              .hasFiles |= map(
+                                  if type == "string" then
+                                      select(. as $file_id | $file_ids[$file_id] | not)
+                                  else error("SPDX package hasFiles entries must be strings")
+                                  end
+                              )
+                          else error("SPDX package hasFiles must be an array")
+                          end
+                      else .
+                      end
+                  )
+              else error("SPDX packages must be an array")
+              end
+        ' -- "$staged_output" > "$filtered_output"; then
+            rm -f -- "$filtered_output"
+            log_error "Failed to remove SPDX file entries from $staged_output"
+            return 1
+        fi
+        if ! mv -fT -- "$filtered_output" "$staged_output"; then
+            rm -f -- "$filtered_output"
+            log_error "Failed to replace staged SBOM with its filtered form: $staged_output"
+            return 1
+        fi
+    fi
+    # Require one SPDX JSON document with the fields downstream consumers need;
+    # this validates a minimal contract, not the complete SPDX schema.
+    if ! jq -en '([limit(2; inputs)] | length == 1 and
+        (.[0] | type == "object"
+          and (.spdxVersion | type == "string" and startswith("SPDX-"))
+          and (.SPDXID | type == "string")
+          and (.packages | type == "array")))' -- "$staged_output" >/dev/null 2>&1; then
+        log_error "SBOM producer did not write a valid SPDX JSON document: $staged_output"
         return 1
     fi
-    if ! output_size=$(wc -c < "$output_file"); then
-        log_error "Failed to measure generated SBOM: $output_file"
+    if ! output_size=$(wc -c < "$staged_output"); then
+        log_error "Failed to measure generated SBOM: $staged_output"
         return 1
     fi
     output_size="${output_size//[[:space:]]/}"
     if [[ ! "$output_size" =~ ^[0-9]+$ ]]; then
-        log_error "Generated SBOM has an invalid size: $output_file"
+        log_error "Generated SBOM has an invalid size: $staged_output"
         return 1
     fi
+    if ! mv -fT -- "$staged_output" "$output_file"; then
+        log_error "Failed to publish generated SBOM: $output_file"
+        return 1
+    fi
+    staged_output=""
     log_success "SBOM generated: $output_file (${output_size} bytes)"
     return 0
 )
@@ -292,10 +388,13 @@ extract_sbom_summary() (
 # Usage: compare_sboms <new_sbom> <old_sbom> <output_file>
 # Output: JSON with added/removed/updated arrays + summary counts, written only when
 #         both SBOMs are present.
-# Returns: 0 on success; a missing old SBOM logs a warning, returns 0, and leaves
-#          output_file untouched; 1 on operational or
-#          new-SBOM failures, 2 for invalid arguments or output aliases of an
-#          input SBOM, 3 for a malformed old SBOM.
+# Returns: 0 when the changelog is written, or when the old SBOM is missing
+#          (warning logged, output_file untouched); 1 on operational failures,
+#          including an unreadable or malformed new SBOM; 2 on invalid arguments
+#          or an output path that aliases an input SBOM; 3 on a malformed old
+#          SBOM. The argument, alias and new-SBOM checks run before the
+#          missing-old return, so a missing old SBOM still yields 1 or 2 when
+#          one of them fails.
 compare_sboms() (
     set -uo pipefail
     if [[ "$#" -ne 3 || -z "$1" || -z "$2" || -z "$3" ]]; then
@@ -815,6 +914,10 @@ append_build_history() (
     local history_file="$3"
     local max_entries="${4:-10}"
 
+    if [[ -L "$history_file" ]]; then
+        log_error "Build history output path must not be a symlink: $history_file"
+        return 1
+    fi
     if [[ -d "$history_file" ]]; then
         log_error "Build history output path is a directory: $history_file"
         return 1
@@ -824,7 +927,13 @@ append_build_history() (
         return 2
     fi
 
-    local output_dir
+    local output_dir staged_history=""
+    cleanup_staged_history() {
+        if [[ -n "$staged_history" && -e "$staged_history" ]] && ! rm -f -- "$staged_history"; then
+            log_error "Could not remove staged build history temporary file; retained: $staged_history"
+            return 1
+        fi
+    }
     if ! output_dir=$(dirname -- "$history_file"); then
         log_error "Failed to determine build history output directory: $history_file"
         return 1
@@ -905,6 +1014,13 @@ append_build_history() (
         changes_summary="+$added_count -$removed_count ~$updated_count"
     fi
 
+    if ! staged_history=$(mktemp -- "$output_dir/.history-stage.XXXXXX"); then
+        log_error "Failed to create staged build history file in: $output_dir"
+        return 1
+    fi
+    trap cleanup_staged_history EXIT
+    trap 'exit 128' INT TERM
+
     # Create new entry and prepend to history, keeping max_entries.
     # extensions_build_seconds is conditionally added only when the source
     # lineage carried it — preserves the "container has no extensions concept"
@@ -933,19 +1049,24 @@ append_build_history() (
             duration_seconds: $duration
         } + (if $ext_present then {extensions_build_seconds: $ext_duration} else {} end))] + $history |
         .[:$max]
-    ' > "$history_file"; then
+    ' > "$staged_history"; then
         log_error "Failed to generate build history: $history_file"
         return 1
     fi
-    if [[ ! -f "$history_file" || ! -r "$history_file" ]] \
-        || ! _is_single_json_type array "$history_file"; then
+    if [[ ! -f "$staged_history" || ! -r "$staged_history" ]] \
+        || ! _is_single_json_type array "$staged_history"; then
         log_error "Generated build history is not readable valid JSON: $history_file"
         return 1
     fi
-    if ! entry_count=$(jq -er 'length | select(type == "number" and . >= 0 and floor == .)' "$history_file"); then
+    if ! entry_count=$(jq -er 'length | select(type == "number" and . >= 0 and floor == .)' "$staged_history"); then
         log_error "Generated build history has an invalid entry count: $history_file"
         return 1
     fi
+    if ! mv -fT -- "$staged_history" "$history_file"; then
+        log_error "Failed to publish build history: $history_file"
+        return 1
+    fi
+    staged_history=""
 
     log_info "Build history updated: $history_file (${entry_count} entries)"
     return 0

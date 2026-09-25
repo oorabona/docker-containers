@@ -294,6 +294,7 @@ jobs:
     # so packages:read is enough and none of the workflow's global id-token /
     # attestations / security-events / issues grants are needed.
     permissions:
+      actions: read
       contents: read
       packages: read
     env:
@@ -309,6 +310,7 @@ jobs:
       # this run. '*' preserves the detector's all-extensions scope. Skipped or
       # failed extension stages publish no usable scoped refs, so force nothing.
       FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
+      PUBLISHED_EXTENSION_DIGESTS: ${{ needs.merge-extension-manifests.outputs.published_extension_digests }}
     strategy:
       fail-fast: false
       matrix:
@@ -318,6 +320,33 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Download declared extension lineage
+        id: download-extension-lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          name: ext-lineage-${{ github.run_id }}
+          path: .build-lineage/
+
+      - name: Require declared extension lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        shell: bash
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-extension-lineage.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$DOWNLOAD_OUTCOME" == "success" ]] || {
+            echo "::error::Declared extension digest lineage is unavailable"
+            exit 1
+          }
+          for ext in ${PUBLISHED_EXTENSION_DIGESTS//,/ }; do
+            compgen -G ".build-lineage/ext-${ext}-pg*-versionset.json" >/dev/null || {
+              echo "::error::Declared extension digest lineage is incomplete for ${ext}"
+              exit 1
+            }
+          done
 
       - name: Ensure /dev/net/tun
         shell: bash
@@ -758,6 +787,8 @@ jobs:
   merge-extension-manifests:
     name: Merge Extension Manifests (multi-arch)
     needs: [detect-containers, build-extensions, sync-base-images]
+    outputs:
+      published_extension_digests: ${{ steps.published-extension-digests.outputs.value }}
     if: |
       always() &&
       needs.detect-containers.outputs.count > 0 &&
@@ -916,6 +947,30 @@ jobs:
             done
           done
 
+      - name: Emit published extension digest set
+        id: published-extension-digests
+        if: steps.merge-manifests-step.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          declare -A published=()
+          for lineage in .build-lineage/ext-*-versionset.json; do
+            ext=$(jq -er '.ext | strings | select(test("^[A-Za-z0-9_-]+$"))' "$lineage")
+            jq -e '
+              . as $artifact
+              | (.available | type == "array" and length > 0)
+              and (.version_digests | type == "object")
+              and all(.available[]; . as $version | $artifact.version_digests[$version] | strings | test("^sha256:[0-9a-f]{64}$"))
+            ' "$lineage" >/dev/null
+            published["$ext"]=1
+          done
+          value=""
+          if [[ ${#published[@]} -gt 0 ]]; then
+            value=$(printf '%s\n' "${!published[@]}" | LC_ALL=C sort | paste -sd, -)
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
       - name: Upload canonical lineage (versionset + consolidated duration files)
         id: upload_ext_lineage_canonical
         if: always() && hashFiles('.build-lineage/ext-*.json') != ''
@@ -936,6 +991,7 @@ jobs:
           include-hidden-files: true
 
       - name: Upload canonical lineage (versionset + consolidated duration files) (retry on transient failure)
+        id: upload_ext_lineage_canonical_retry
         if: always() && steps.upload_ext_lineage_canonical.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
@@ -952,6 +1008,20 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
           overwrite: true
+
+      - name: Require declared extension lineage upload
+        if: always() && steps.published-extension-digests.outputs.value != ''
+        shell: bash
+        env:
+          PUBLISHED_EXTENSION_DIGESTS: ${{ steps.published-extension-digests.outputs.value }}
+          UPLOAD_INITIAL: ${{ steps.upload_ext_lineage_canonical.outcome }}
+          UPLOAD_RETRY: ${{ steps.upload_ext_lineage_canonical_retry.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$UPLOAD_INITIAL" != "success" && "$UPLOAD_RETRY" != "success" ]]; then
+            echo "::error::Declared extension digest lineage (${PUBLISHED_EXTENSION_DIGESTS}) was not uploaded"
+            exit 1
+          fi
 
       - name: Emit build-result artifact (postgres extmerge)
         if: always()
@@ -1163,6 +1233,7 @@ jobs:
       # Resolver contract: only extensions published successfully by this run.
       # An empty value covers skipped or failed extension stages.
       FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
+      PUBLISHED_EXTENSION_DIGESTS: ${{ needs.merge-extension-manifests.outputs.published_extension_digests }}
     runs-on: ${{ matrix.build.os == 'windows' && 'windows-latest' || matrix.runner }}
     timeout-minutes: ${{ matrix.build.os == 'windows' && 120 || 60 }}
     strategy:
@@ -1186,6 +1257,33 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download declared extension lineage
+        id: download-extension-lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          name: ext-lineage-${{ github.run_id }}
+          path: .build-lineage/
+
+      - name: Require declared extension lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        shell: bash
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-extension-lineage.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$DOWNLOAD_OUTCOME" == "success" ]] || {
+            echo "::error::Declared extension digest lineage is unavailable"
+            exit 1
+          }
+          for ext in ${PUBLISHED_EXTENSION_DIGESTS//,/ }; do
+            compgen -G ".build-lineage/ext-${ext}-pg*-versionset.json" >/dev/null || {
+              echo "::error::Declared extension digest lineage is incomplete for ${ext}"
+              exit 1
+            }
+          done
 
       # yq is pre-installed on ubuntu-latest. On Windows we download the binary
       # directly (no Chocolatey — avoids flaky 503s). Action mikefarah/yq is
@@ -1886,6 +1984,7 @@ jobs:
       CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
       # Resolver contract: only extensions published successfully by this run.
       FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
+      PUBLISHED_EXTENSION_DIGESTS: ${{ needs.merge-extension-manifests.outputs.published_extension_digests }}
     permissions:
       contents: read
       packages: read
@@ -1934,16 +2033,36 @@ jobs:
           echo "::notice::bake containers (lineage plan): ${containers}"
           echo "::notice::bake retained-eligible containers (lineage plan): ${retained_containers:-<none>}"
 
-      - name: Download extension lineage (postgres final-image bake)
-        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+      - name: Download declared extension lineage
+        id: download-extension-lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
-        continue-on-error: true
+
+      - name: Require declared extension lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        shell: bash
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-extension-lineage.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$DOWNLOAD_OUTCOME" == "success" ]] || {
+            echo "::error::Declared extension digest lineage is unavailable"
+            exit 1
+          }
+          for ext in ${PUBLISHED_EXTENSION_DIGESTS//,/ }; do
+            compgen -G ".build-lineage/ext-${ext}-pg*-versionset.json" >/dev/null || {
+              echo "::error::Declared extension digest lineage is incomplete for ${ext}"
+              exit 1
+            }
+          done
 
       - name: Compute bake lineage plan
         env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
           BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
@@ -2043,7 +2162,9 @@ jobs:
       CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
       # Resolver contract: only extensions published successfully by this run.
       FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
+      PUBLISHED_EXTENSION_DIGESTS: ${{ needs.merge-extension-manifests.outputs.published_extension_digests }}
     permissions:
+      actions: read
       contents: read
       packages: write
       id-token: write
@@ -2150,13 +2271,32 @@ jobs:
             fi
           done <<< "$versions"
 
-      - name: Download extension lineage (postgres final-image bake)
-        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+      - name: Download declared extension lineage
+        id: download-extension-lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
-        continue-on-error: true
+
+      - name: Require declared extension lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        shell: bash
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-extension-lineage.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$DOWNLOAD_OUTCOME" == "success" ]] || {
+            echo "::error::Declared extension digest lineage is unavailable"
+            exit 1
+          }
+          for ext in ${PUBLISHED_EXTENSION_DIGESTS//,/ }; do
+            compgen -G ".build-lineage/ext-${ext}-pg*-versionset.json" >/dev/null || {
+              echo "::error::Declared extension digest lineage is incomplete for ${ext}"
+              exit 1
+            }
+          done
 
       - name: Download bake lineage plan
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
@@ -2527,11 +2667,6 @@ jobs:
           ncells=$(jq -r 'length' "$BAKE_PLAN_FILE")
           mkdir -p .build-lineage
 
-          # Attest manifest: [{subject_name, subject_digest, sbom_path}] written for the
-          # real-attestation step below (parity with flat matrix).
-          attest_manifest=".build-lineage/.bake-attest-entries.json"
-          printf '[]' > "$attest_manifest"
-
           for (( i=0; i<ncells; i++ )); do
             cell=$(jq -c ".[$i]" "$BAKE_PLAN_FILE")
             container=$(jq -r '.container'       <<< "$cell")
@@ -2543,30 +2678,15 @@ jobs:
 
             # SBOM
             sbom_file=".build-lineage/${container}-${tag}.sbom.json"
-            generate_sbom "$image_ref" "$sbom_file" || \
-              echo "::warning::SBOM generation failed for ${container}:${tag} — continuing"
-
-            # Capture digest for attestation (mirrors build-and-push job pattern)
-            digest=""
-            raw_manifest=$(retry_with_backoff 3 10 docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
-            if [[ -n "$raw_manifest" ]]; then
-              digest="sha256:$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}')"
-            fi
-            echo "digest_${container}_${tag}=${digest}" >> "$GITHUB_OUTPUT"
-
-            # Append to attest manifest when digest + SBOM are both present
-            if [[ -n "$digest" && -f "$sbom_file" ]]; then
-              jq -c \
-                --arg sn "${REMOTE_CR}/${container}" \
-                --arg sd "$digest" \
-                --arg sp "$sbom_file" \
-                '. + [{subject_name:$sn, subject_digest:$sd, sbom_path:$sp}]' \
-                "$attest_manifest" > "${attest_manifest}.tmp" && mv "${attest_manifest}.tmp" "$attest_manifest" || true
+            if ! generate_sbom "$image_ref" "$sbom_file"; then
+              # The following upload uses a broad glob.  A failed current producer
+              # must not leave a prior cell's SBOM eligible for attestation.
+              rm -f -- "$sbom_file"
+              echo "::warning::SBOM generation failed for ${container}:${tag} — removed failed-cell output and continuing"
             fi
 
             echo "::endgroup::"
           done
-          echo "attest_manifest=${attest_manifest}" >> "$GITHUB_OUTPUT"
         continue-on-error: true
 
       # Upload all bake SBOMs as a single combined artifact so the bake-attest
@@ -2647,7 +2767,9 @@ jobs:
       CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
       # Resolver contract: only extensions published successfully by this run.
       FORCE_SCOPED_EXTENSION_REFS: ${{ needs.build-extensions.result == 'success' && needs.merge-extension-manifests.result == 'success' && needs.detect-containers.outputs.force_extension_builds == 'true' && (fromJSON(needs.detect-containers.outputs.container_scopes || '{}').postgres.extensions || '*') || '' }}
+      PUBLISHED_EXTENSION_DIGESTS: ${{ needs.merge-extension-manifests.outputs.published_extension_digests }}
     permissions:
+      actions: read
       contents: read
       packages: write
       id-token: write
@@ -2751,13 +2873,32 @@ jobs:
             fi
           done <<< "$versions"
 
-      - name: Download extension lineage (postgres final-image bake)
-        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+      - name: Download declared extension lineage
+        id: download-extension-lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
-        continue-on-error: true
+
+      - name: Require declared extension lineage
+        if: env.PUBLISHED_EXTENSION_DIGESTS != ''
+        shell: bash
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-extension-lineage.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$DOWNLOAD_OUTCOME" == "success" ]] || {
+            echo "::error::Declared extension digest lineage is unavailable"
+            exit 1
+          }
+          for ext in ${PUBLISHED_EXTENSION_DIGESTS//,/ }; do
+            compgen -G ".build-lineage/ext-${ext}-pg*-versionset.json" >/dev/null || {
+              echo "::error::Declared extension digest lineage is incomplete for ${ext}"
+              exit 1
+            }
+          done
 
       - name: Install skopeo (extension final-build self-heal fallback)
         if: needs.detect-containers.outputs.bake_final_builds != '[]'
@@ -3255,11 +3396,14 @@ jobs:
       - name: Canonical GHCR manifest merge (strict, fail-closed)
         id: bake-merge-step
         env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
           BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
           DRY_RUN: ${{ env.DRY_RUN }}
+          BAKE_MERGE_RECEIPT_DIR: .bake-merge-receipts
+          BAKE_MERGE_PUBLISHED_TAGS_FILE: .bake-merge-published-tags.jsonl
         run: |
           set -euo pipefail
           chmod +x scripts/bake-merge-manifests.sh scripts/generate-bake-hcl.sh
@@ -3310,15 +3454,28 @@ jobs:
             fi
           fi
 
+      - name: Upload bake merge receipts
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: bake-merge-receipts-${{ github.run_id }}
+          path: .bake-merge-receipts/*.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+
       - name: Best-effort DockerHub mirror (bake)
         if: always() && steps.bake-merge-step.outcome == 'success'
         continue-on-error: true
         env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
           BAKE_GENERATE_FINAL_BUILD: ${{ needs.detect-containers.outputs.bake_final_builds != '[]' && 'true' || 'false' }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+          BAKE_MERGE_PUBLISHED_TAGS_FILE: .bake-merge-published-tags.jsonl
         run: |
           set -euo pipefail
           chmod +x helpers/mirror-dockerhub.sh
@@ -3565,8 +3722,9 @@ jobs:
       issue_mode: ${{ steps.publish.outputs.issue_mode }}
       # Precise failure set for THIS run (artifact-attributed).  Used by summary Path 1
       # as FAILED_ALLOWLIST to prevent spurious dep:<c> issues when the commit names a
-      # container that did not actually fail.  Empty string when checkpoint was skipped/
-      # crashed or when guard-break fired (summary must treat '' as "no allowlist").
+      # container that did not actually fail. Empty or unset uses failing-job evidence;
+      # a non-empty valid array is authoritative; a non-empty invalid value skips the
+      # dep-attributed open.
       failed_this_run: ${{ steps.publish.outputs.failed_this_run }}
     steps:
       - name: Checkout repository
@@ -3666,10 +3824,9 @@ jobs:
           published=false
           prior_failed='[]'
           new_failed='[]'
-          # ftr_safe: safe default for the failed_this_run output on guard-break/CAS-exhaust.
-          # ftr is set by classify (Step 3) above; this ensures failed_this_run is always
-          # a valid JSON array even if the loop exits early via guard-break.
-          ftr_safe="${ftr:-[]}"
+          # Only a real-push run may publish its attributed failures to Path 1.
+          # All not-published outcomes start with an authoritative empty allowlist.
+          ftr_safe='[]'
           for attempt in 1 2 3 4 5; do
             # Re-fetch the current remote tag (force, so our local ref tracks remote exactly).
             git fetch --force --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
@@ -3743,6 +3900,10 @@ jobs:
             base="uncovered"
           fi
 
+          if [[ "$published" == "true" ]]; then
+            ftr_safe="${ftr:-[]}"
+          fi
+
           # Per-container issue management — only when this run published the tag (real-push).
           # Open loop iterates ftr (precise artifact-attributed failures for THIS run only).
           # new_failed (carry-forward set) is intentionally NOT used here: carried-from-prior
@@ -3783,8 +3944,8 @@ jobs:
           echo "issue_mode=${base}" >> "$GITHUB_OUTPUT"
 
           # Emit failed_this_run: the precise artifact-attributed failure set for THIS run.
-          # ftr_safe is initialized from ftr (Step 3) before the CAS loop; it is '[]' on
-          # guard-break (published=false, pushed=true) and on CAS-exhaust (pushed=false).
+          # It is '[]' for every not-published outcome, including guard-break
+          # (published=false, pushed=true) and CAS-exhaust (pushed=false).
           # The summary job reads this as FAILED_ALLOWLIST; '' means "no allowlist".
           echo "failed_this_run=${ftr_safe}" >> "$GITHUB_OUTPUT"
 
@@ -3994,7 +4155,7 @@ jobs:
           fi
 
           failed_jobs_json=$(retry_with_backoff 3 5 gh run view "$GH_RUN_ID" --repo "$GH_REPOSITORY" --json jobs \
-            --jq '[.jobs[] | select(.conclusion == "failure") | {name, id: .databaseId}] | .[:5]' \
+            --jq '[.jobs[] | select(.conclusion == "failure") | {name, id: .databaseId}]' \
             2>/dev/null || echo '[]')
 
           {
@@ -4046,9 +4207,9 @@ jobs:
           PR_BODY: ${{ steps.ctx.outputs.pr_body }}
           PR_LABELS: ${{ steps.ctx.outputs.pr_labels }}
           FAILED_JOBS_JSON: ${{ steps.ctx.outputs.failed_jobs_json }}
-          # Allowlist for Path 1: only open a dep-attributed issue when the commit-attributed
-          # container actually failed this run.  '' (checkpoint skipped/guard-break/CAS-exhaust)
-          # means no cross-check — original behaviour for non-checkpoint runs preserved.
+          # Allowlist for Path 1: '' (checkpoint skipped or crashed, and non-checkpoint
+          # dispatch/call runs) makes the script require a failing job of the detected container.
+          # A valid array is authoritative; anything else makes the script skip the dep-attributed open.
           FAILED_ALLOWLIST: ${{ needs.publish-coverage-checkpoint.outputs.failed_this_run }}
         run: |
           chmod +x scripts/open-dep-failure-issue.sh
@@ -4071,7 +4232,7 @@ jobs:
             if [ "$dep_rc" -eq 0 ]; then
               echo "Dep-attributed issue opened/updated"
             elif [ "$dep_rc" -eq 1 ]; then
-              echo "No dep-bump context detected — dep-attributed open skipped (info only)"
+              echo "No attributable dependency failure — dep-attributed open skipped (info only)"
             elif [ "$dep_rc" -eq 3 ]; then
               echo "::warning::open-dep-failure-issue.sh: gh issue operation failed (rc=3) — dep-attributed issue may be missing"
             elif [ "$dep_rc" -eq 2 ]; then
@@ -4324,6 +4485,14 @@ jobs:
           path: .build-lineage-artifacts/
           merge-multiple: false
 
+      - name: Download bake merge receipts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          pattern: bake-merge-receipts-*
+          path: .bake-merge-receipts-artifacts/
+          merge-multiple: false
+        continue-on-error: true
+
       - name: Download Trivy scan history artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
@@ -4374,14 +4543,52 @@ jobs:
         env:
           BAKE_MERGE_RESULT: ${{ needs.bake-merge.result }}
         run: |
+          source helpers/base-image-utils.sh
           mkdir -p .build-lineage
+          declare -A bake_merge_receipt_keys=()
+          load_bake_merge_receipts() {
+            local receipt_file receipt_key
+            [[ -d ".bake-merge-receipts-artifacts" ]] || return 0
+            while IFS= read -r -d '' receipt_file; do
+              if ! receipt_key=$(jq -cer 'select(
+                  (type == "object") and
+                  (keys == ["container", "tag"]) and
+                  ((.container | type) == "string") and
+                  ((.container | length) > 0) and
+                  ((.tag | type) == "string") and
+                  ((.tag | length) > 0)
+                ) |
+                  [.container, .tag] | tojson' "$receipt_file" 2>/dev/null); then
+                echo "::warning::Ignoring malformed bake merge receipt: $receipt_file"
+                continue
+              fi
+              bake_merge_receipt_keys["$receipt_key"]=1
+            done < <(find .bake-merge-receipts-artifacts -name '*.json' -print0)
+          }
+          receipt_matches_lineage() {
+            local lineage_record="$1" lineage_key
+            if ! lineage_key=$(jq -cer '[.container, .tag] | tojson' <<< "$lineage_record"); then
+              return 1
+            fi
+            [[ "${bake_merge_receipt_keys[$lineage_key]+present}" == "present" ]]
+          }
+          if [[ "$BAKE_MERGE_RESULT" != "success" ]]; then
+            load_bake_merge_receipts
+          fi
           if [ -d ".build-lineage-artifacts" ]; then
             while IFS= read -r -d '' lineage_file; do
               case "$lineage_file" in
                 .build-lineage-artifacts/build-lineage-bake-*/*)
                   if [[ "$BAKE_MERGE_RESULT" != "success" ]]; then
-                    echo "::notice::Skipping bake lineage because bake-merge result is ${BAKE_MERGE_RESULT}"
-                    continue
+                    if ! lineage_record=$(cat "$lineage_file") \
+                        || ! lineage_complete_record_valid "$lineage_record"; then
+                      echo "::warning::Preserving cached bake lineage; candidate is not a valid complete record: $lineage_file"
+                      continue
+                    fi
+                    if ! receipt_matches_lineage "$lineage_record"; then
+                      echo "::notice::Preserving cached bake lineage without matching publication receipt: $lineage_file"
+                      continue
+                    fi
                   fi
                   ;;
               esac

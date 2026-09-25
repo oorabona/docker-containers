@@ -724,6 +724,28 @@ _force_scoped_extension_ref() {
     return 1
 }
 
+# _published_extension_digest_contract_contains <extension>
+#
+# PUBLISHED_EXTENSION_DIGESTS is the merge job's narrow producer-to-consumer
+# contract.  It is a comma-separated set of extension names for which Stage B
+# published digest-bearing lineage in this run.  A named extension must consume
+# that lineage; it may not fall back to mutable-tag resolution or self-heal.
+#
+# Returns 0 when named, 1 when unnamed or unset, and 2 for malformed input.
+_published_extension_digest_contract_contains() {
+    local ext="$1" scope="${PUBLISHED_EXTENSION_DIGESTS:-}" published_ext
+    local -a published_exts
+
+    [[ -n "$scope" ]] || return 1
+    [[ "$scope" =~ ^[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+)*$ ]] || return 2
+
+    IFS=',' read -ra published_exts <<< "$scope"
+    for published_ext in "${published_exts[@]}"; do
+        [[ "$ext" == "$published_ext" ]] && return 0
+    done
+    return 1
+}
+
 # _parse_rotation_candidate_ref
 #
 # Parse ROTATION_CANDIDATE_REF's promotion selector grammar.  The fixed
@@ -1468,6 +1490,17 @@ generate_dockerfile() {
             local _artifact_valid=0
             local _artifact_json=""
             local _artifact_has_version_digests=false
+            local _published_digest_contract_rc=0
+            local _published_digest_contract=false
+            _published_extension_digest_contract_contains "$ext_name" || _published_digest_contract_rc=$?
+            case "$_published_digest_contract_rc" in
+                0) _published_digest_contract=true ;;
+                1) ;;
+                *)
+                    log_error "generate_dockerfile: PUBLISHED_EXTENSION_DIGESTS is malformed — fail closed"
+                    return 1
+                    ;;
+            esac
             if [[ -f "$versionset_file" ]]; then
                 # mapfile is a Bash builtin.  Unlike an assignment containing only
                 # a redirection, its failed file-open status is preserved when
@@ -1507,6 +1540,17 @@ generate_dockerfile() {
                         fi
                     fi
                 fi
+            fi
+
+            # A producer-declared extension is an authority boundary: its
+            # digest-bearing lineage must be present and valid for this exact
+            # package.  Do not reinterpret an unavailable artifact as a normal
+            # local/skip-extensions invocation, because that would silently
+            # replace the producer's immutable publication with mutable tags.
+            if [[ "$_published_digest_contract" == "true" ]] && \
+               { [[ "$_artifact_valid" -ne 1 ]] || [[ "$_artifact_has_version_digests" != "true" ]]; }; then
+                log_error "generate_dockerfile: $ext_name pg${pg_major} is declared by PUBLISHED_EXTENSION_DIGESTS but its valid digest-bearing versionset artifact is unavailable — fail closed"
+                return 1
             fi
 
             # _versionset_json holds the JSON source for the multi-version emission

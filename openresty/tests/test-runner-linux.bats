@@ -2,6 +2,8 @@
 # Runtime smoke tests for the openresty container (PCRE2 migration — #453 volet 1).
 # Runs against the LOCALLY BUILT image via ./make build openresty.
 # Requires: docker, bats-core >= 1.8.
+# Enumerated images are accepted only when their build-digest label matches the
+# digest recomputed with their resty_version label and the canonical build hook.
 #
 # Mutation this test catches: nginx built without PCRE2 (or with PCRE1) =>
 #   - /re/42 returns 4xx/5xx instead of "m=42" (regex location never matched)
@@ -13,15 +15,46 @@
 # Helpers
 # ---------------------------------------------------------------------------
 
+OPENRESTY_TEST_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+OPENRESTY_BUILD_CACHE_UTILS="$OPENRESTY_TEST_DIR/../../helpers/build-cache-utils.sh"
+BUILD_DIGEST_LABEL="$(
+    # shellcheck source=../../helpers/build-cache-utils.sh
+    # shellcheck disable=SC1091 # The dynamic path above names the checked-in helper.
+    source "$OPENRESTY_BUILD_CACHE_UTILS"
+    printf '%s' "$BUILD_DIGEST_LABEL"
+)"
+
+_compute_expected_build_digest() (
+    local resty_version="$1"
+    cd "$OPENRESTY_TEST_DIR/.." || exit
+    # shellcheck source=../../helpers/build-cache-utils.sh
+    # shellcheck disable=SC1091 # The dynamic path above names the checked-in helper.
+    source "$OPENRESTY_BUILD_CACHE_UTILS"
+    unset CUSTOM_BUILD_ARGS
+    export VERSION="$resty_version"
+    # shellcheck source=../build
+    source ./build >/dev/null
+    compute_build_digest Dockerfile ""
+)
+
 # Determine the image name that ./make build produces for openresty.
 # The build system tags as <container>:<version>; for the smoke test we
 # accept any locally-built tag that starts with "openresty:" (or the GHCR form).
 _find_image() {
-    # Deterministic image resolution — fail-closed on no image or ambiguity.
+    # Deterministic image resolution — fail-closed except for an empty reachable
+    # store without an explicit override, which lets setup skip this smoke suite.
     # $OPENRESTY_IMAGE is the explicit override: local runs and CI SHOULD set it
     # (a tracked follow-up will wire it in the upstream workflow).
     if [[ -n "${OPENRESTY_IMAGE:-}" ]]; then
-        echo "$OPENRESTY_IMAGE"
+        local override_id
+        if ! override_id=$(docker image inspect --format '{{.Id}}' "$OPENRESTY_IMAGE"); then
+            return 1
+        fi
+        if [[ -z "$override_id" ]]; then
+            echo "ERROR: could not resolve OPENRESTY_IMAGE to an image ID" >&2
+            return 1
+        fi
+        echo "$override_id"
         return 0
     fi
 
@@ -55,20 +88,24 @@ _find_image() {
     fi
 
     local ids
-    ids=$(printf '%s\n' "$images" \
+    if ! ids=$(set -o pipefail; printf '%s\n' "$images" \
           | awk '$2 ~ /^(ghcr\.io\/oorabona\/openresty|docker\.io\/oorabona\/openresty|openresty):/ {print $1}' \
-          | sort -u)
+          | sort -u); then
+        echo "ERROR: could not process container image listing; set OPENRESTY_IMAGE to run the openresty smoke suite" >&2
+        return 1
+    fi
 
     local count
-    count=$(echo "$ids" | grep -c .) 2>/dev/null || count=0
-    # grep -c on empty string returns 1 (the empty line); guard for that:
     if [[ -z "$ids" ]]; then
         count=0
+    elif ! count=$(set -o pipefail; printf '%s\n' "$ids" | grep -c .); then
+        echo "ERROR: could not count built openresty images; set OPENRESTY_IMAGE to run the openresty smoke suite" >&2
+        return 1
     fi
 
     if [[ "$count" -eq 0 ]]; then
         echo "ERROR: no built openresty image found (run ./make build openresty, or set OPENRESTY_IMAGE)" >&2
-        return 1
+        return 3
     fi
 
     if [[ "$count" -gt 1 ]]; then
@@ -76,11 +113,8 @@ _find_image() {
         return 1
     fi
 
-    # Exactly 1 distinct image ID — return the first matching tag (docker run <tag> works).
-    local tag
-    tag=$(printf '%s\n' "$images" \
-          | awk -v id="$ids" '$1 == id && $2 ~ /^(ghcr\.io\/oorabona\/openresty|docker\.io\/oorabona\/openresty|openresty):/ {print $2; exit}')
-    echo "$tag"
+    # Run exactly the unique ID we established above: a retag cannot alter it.
+    echo "$ids"
     return 0
 }
 
@@ -89,12 +123,41 @@ _find_image() {
 # ---------------------------------------------------------------------------
 
 setup() {
+    CONTAINER_ID=""
+    NGINX_CONF=""
+
     if IMAGE=$(_find_image); then
         :
     else
         local resolver_status=$?
+        if [[ "$resolver_status" -eq 3 ]]; then
+            skip "no built openresty image found; set OPENRESTY_IMAGE or run ./make build openresty"
+        fi
         return "$resolver_status"
     fi
+
+    # An explicit override is an operator choice. Enumerated images, however,
+    # must be from this checkout: their resty_version is replayed through the
+    # same build hook as ./make build openresty before computing the digest.
+    if [[ -z "${OPENRESTY_IMAGE:-}" ]]; then
+        local expected_digest image_digest resty_version
+        if ! resty_version=$(docker image inspect --format '{{ with index .Config.Labels "resty_version" }}{{ . }}{{ else }}none{{ end }}' "$IMAGE"); then
+            return 1
+        fi
+        if [[ "$resty_version" == "none" || -z "$resty_version" ]]; then
+            skip "resolved openresty image $IMAGE has resty_version label ${resty_version:-none}; run ./make build openresty, or set OPENRESTY_IMAGE"
+        fi
+        if ! expected_digest=$(_compute_expected_build_digest "$resty_version"); then
+            return 1
+        fi
+        if ! image_digest=$(docker image inspect --format "{{ with index .Config.Labels \"$BUILD_DIGEST_LABEL\" }}{{ . }}{{ else }}none{{ end }}" "$IMAGE"); then
+            return 1
+        fi
+        if [[ "$image_digest" != "$expected_digest" ]]; then
+            skip "resolved openresty image $IMAGE has $BUILD_DIGEST_LABEL label ${image_digest:-none}; expected $expected_digest; run ./make build openresty, or set OPENRESTY_IMAGE"
+        fi
+    fi
+
     CONTAINER_ID=""
 
     # Nginx config with a regex location that proves PCRE2 regex matching is functional.
@@ -157,7 +220,9 @@ teardown() {
     if [[ -n "${CONTAINER_ID:-}" ]]; then
         docker rm -f "$CONTAINER_ID" 2>/dev/null || true
     fi
-    rm -f "$NGINX_CONF" 2>/dev/null || true
+    if [[ -n "${NGINX_CONF:-}" ]]; then
+        rm -f "$NGINX_CONF" 2>/dev/null || true
+    fi
 }
 
 # ---------------------------------------------------------------------------

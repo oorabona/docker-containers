@@ -347,6 +347,96 @@ if (pullInput.value !== expected || pullInput.value.includes('undefined')) {
 console.log('PASS: persisted dockerhub preference resolved to GHCR');
 NODE
 
+node - "${DASHBOARD_JS}" <<'NODE' || fail 'dashboard did not degrade to the GHCR default when storage throws'
+const fs = require('fs');
+const dashboardPath = process.argv[2];
+const pullInput = {
+  value: '',
+  addEventListener: function () {},
+  select: function () {}
+};
+const pullSection = {
+  dataset: { ghcrBase: 'ghcr.io/oorabona/confirmed-image', defaultTag: 'confirmed-tag' }
+};
+const card = {
+  dataset: { container: 'confirmed-image' },
+  querySelector: function (selector) {
+    return selector === '.pull-section' ? pullSection : null;
+  },
+  querySelectorAll: function () { return []; },
+  classList: { contains: function () { return false; } }
+};
+const registryButton = {
+  dataset: { registry: 'ghcr' },
+  addEventListener: function (event, listener) {
+    if (event === 'click') this.clickListener = listener;
+  },
+  classList: { toggle: function () {} },
+  setAttribute: function () {}
+};
+
+global.localStorage = {
+  getItem: function () { throw new Error('storage reads are denied'); },
+  setItem: function () { throw new Error('storage writes are denied'); }
+};
+global.document = {
+  addEventListener: function (event, listener) {
+    if (event === 'DOMContentLoaded') listener();
+  },
+  getElementById: function (id) {
+    return id === 'pull-confirmed-image' ? pullInput : null;
+  },
+  querySelector: function () { return null; },
+  querySelectorAll: function (selector) {
+    if (selector === '.registry-btn[data-registry]' || selector === '.registry-btn') return [registryButton];
+    if (selector === '.container-card') return [card];
+    if (selector === 'input[id^="pull-"]') return [pullInput];
+    return [];
+  }
+};
+
+eval(fs.readFileSync(dashboardPath, 'utf8'));
+registryButton.clickListener.call(registryButton);
+const expected = 'docker pull ghcr.io/oorabona/confirmed-image:confirmed-tag';
+if (pullInput.value !== expected || pullInput.value.includes('undefined')) {
+  throw new Error('expected ' + expected + ', got ' + pullInput.value);
+}
+console.log('PASS: dashboard storage errors preserve the GHCR default');
+NODE
+
+THEME_JS="${SITE_DIR}/assets/js/theme.js"
+[[ -f ${THEME_JS} ]] || fail 'rendered theme.js is missing'
+node - "${THEME_JS}" <<'NODE' || fail 'theme manager did not continue when storage throws'
+const fs = require('fs');
+const themePath = process.argv[2];
+const attributes = {};
+
+global.localStorage = {
+  getItem: function () { throw new Error('storage reads are denied'); },
+  setItem: function () { throw new Error('storage writes are denied'); }
+};
+global.window = {
+  matchMedia: function () { return { matches: true }; }
+};
+global.document = {
+  documentElement: {
+    setAttribute: function (name, value) { attributes[name] = value; }
+  },
+  body: { classList: { contains: function () { return false; } } },
+  querySelector: function () { return null; },
+  addEventListener: function (event, listener) {
+    if (event === 'DOMContentLoaded') listener();
+  }
+};
+
+eval(fs.readFileSync(themePath, 'utf8'));
+window.ThemeManager.toggleTheme();
+if (attributes['data-theme'] !== 'light' || window.ThemeManager.currentTheme !== 'light') {
+  throw new Error('expected light theme after toggle, got ' + attributes['data-theme']);
+}
+console.log('PASS: theme manager continues when storage errors');
+NODE
+
 echo 'PASS: dashboard registry controls are absent'
 
 if [[ ${WITH_CONTAINERS} == true ]]; then

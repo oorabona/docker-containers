@@ -41,8 +41,9 @@ response=$(curl "${curl_args[@]}" "${API}") || {
 
 version=$(echo "${response}" | jq -r '.tag_name | ltrimstr("v")')
 
-if [[ -z "${version}" || "${version}" == "null" ]]; then
-    log_error "Could not parse version from GitHub API response"
+if [[ -z "${version}" || "${version}" == "null" || \
+      ! "${version}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]; then
+    log_error "Could not parse a Docker-tag-safe version from GitHub API response"
     exit 1
 fi
 

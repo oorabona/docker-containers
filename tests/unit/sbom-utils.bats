@@ -24,6 +24,9 @@ teardown() {
 write_syft_stub() {
     cat > "$TEST_TEMP_DIR/bin/syft" <<'STUB'
 #!/usr/bin/env bash
+if [[ -n "${SYFT_STUB_ARGV_LOG:-}" ]]; then
+    printf '%s\n' "$@" >> "$SYFT_STUB_ARGV_LOG"
+fi
 for argument in "$@"; do
     [[ "$argument" == "--help" ]] && exit 0
 done
@@ -36,12 +39,39 @@ for argument in "$@"; do
 done
 
 case "${SYFT_STUB_MODE:-valid}" in
-    valid) printf '{"packages":[]}' > "$output_file" ;;
+    valid) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[]}' > "$output_file" ;;
+    invalid-filterable) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[],"files":"not-an-array"}' > "$output_file" ;;
+    files-null) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[],"files":null}' > "$output_file" ;;
+    relationships-null) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[],"relationships":null}' > "$output_file" ;;
+    has-files-null) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[{"hasFiles":null}]}' > "$output_file" ;;
+    null-package) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[null]}' > "$output_file" ;;
+    string-package) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":["not-an-object"]}' > "$output_file" ;;
     no-output) ;;
     multi-root) printf '[]\n{"packages":[]}\n' > "$output_file" ;;
+    invalid-spdx) printf '{"packages":[]}' > "$output_file" ;;
     invalid) printf 'not-json' > "$output_file" ;;
+    fragment-fail) printf '{"incomplete":' > "$output_file"; exit 1 ;;
     fail) exit 1 ;;
 esac
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/syft"
+}
+
+write_file_relationships_syft_stub() {
+    cat > "$TEST_TEMP_DIR/bin/syft" <<'STUB'
+#!/usr/bin/env bash
+for argument in "$@"; do
+    [[ "$argument" == "--help" ]] && exit 0
+done
+
+output_file=""
+for argument in "$@"; do
+    case "$argument" in
+        spdx-json=*) output_file="${argument#spdx-json=}" ;;
+    esac
+done
+
+printf '%s\n' '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[{"SPDXID":"SPDXRef-Package-a","name":"a","hasFiles":["SPDXRef-File-a"]},{"SPDXID":"SPDXRef-Package-b","name":"b"}],"files":[{"SPDXID":"SPDXRef-File-a","fileName":"/a"}],"relationships":[{"spdxElementId":"SPDXRef-Package-a","relationshipType":"OTHER","relatedSpdxElement":"SPDXRef-File-a"},{"spdxElementId":"SPDXRef-Package-a","relationshipType":"DEPENDS_ON","relatedSpdxElement":"SPDXRef-Package-b"}]}' > "$output_file"
 STUB
     chmod +x "$TEST_TEMP_DIR/bin/syft"
 }
@@ -139,6 +169,125 @@ JSON
     jq -e '.packages == []' "$output_file" >/dev/null || return 1
 }
 
+@test "generate_sbom excludes only the PE binary package cataloger for github-runner" {
+    write_syft_stub
+    local output_file="$TEST_TEMP_DIR/github-runner.sbom.json"
+    local argv_log="$TEST_TEMP_DIR/syft.argv"
+    : > "$argv_log"
+
+    run env SYFT_STUB_ARGV_LOG="$argv_log" bash -c 'source "$1"; generate_sbom ghcr.io/oorabona/github-runner:windows-dev "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    grep -Fqx -- '--select-catalogers=-pe-binary-package-cataloger' "$argv_log"
+}
+
+@test "generate_sbom leaves cataloger selection unchanged for ordinary images" {
+    write_syft_stub
+    local output_file="$TEST_TEMP_DIR/ordinary.sbom.json"
+    local argv_log="$TEST_TEMP_DIR/syft.argv"
+    : > "$argv_log"
+
+    run env SYFT_STUB_ARGV_LOG="$argv_log" bash -c 'source "$1"; generate_sbom ghcr.io/oorabona/ordinary-image:tag "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    ! grep -Fqx -- '--select-catalogers=-pe-binary-package-cataloger' "$argv_log"
+}
+
+@test "generate_sbom removes SPDX file entries and their relationships for github-runner" {
+    write_file_relationships_syft_stub
+    local output_file="$TEST_TEMP_DIR/github-runner.sbom.json"
+
+    run bash -c 'source "$1"; generate_sbom ghcr.io/oorabona/github-runner:windows-dev "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    "$SYSTEM_JQ" -e '(.files | not) and
+        ([.relationships[] | select(.spdxElementId == "SPDXRef-File-a" or .relatedSpdxElement == "SPDXRef-File-a")] | length == 0) and
+        ([.packages[].SPDXID] | sort == ["SPDXRef-Package-a", "SPDXRef-Package-b"]) and
+        ([.packages[] | .hasFiles? // [] | .[]] | index("SPDXRef-File-a") | not) and
+        .relationships == [{spdxElementId: "SPDXRef-Package-a", relationshipType: "DEPENDS_ON", relatedSpdxElement: "SPDXRef-Package-b"}]' "$output_file" >/dev/null
+}
+
+@test "generate_sbom filters github-runner output in a relative -dir destination" {
+    write_file_relationships_syft_stub
+    local output_file="-dir/github-runner.sbom.json"
+
+    run bash -c 'cd "$3" && source "$1" && generate_sbom ghcr.io/oorabona/github-runner:windows-dev "$2"' _ "$SBOM_UTILS" "$output_file" "$TEST_TEMP_DIR"
+
+    [ "$status" -eq 0 ] || return 1
+    [ -f "$TEST_TEMP_DIR/$output_file" ]
+}
+
+@test "generate_sbom leaves ordinary SPDX documents byte-identical" {
+    write_file_relationships_syft_stub
+    local output_file="$TEST_TEMP_DIR/ordinary.sbom.json"
+    local expected_file="$TEST_TEMP_DIR/expected.sbom.json"
+    printf '%s\n' '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[{"SPDXID":"SPDXRef-Package-a","name":"a","hasFiles":["SPDXRef-File-a"]},{"SPDXID":"SPDXRef-Package-b","name":"b"}],"files":[{"SPDXID":"SPDXRef-File-a","fileName":"/a"}],"relationships":[{"spdxElementId":"SPDXRef-Package-a","relationshipType":"OTHER","relatedSpdxElement":"SPDXRef-File-a"},{"spdxElementId":"SPDXRef-Package-a","relationshipType":"DEPENDS_ON","relatedSpdxElement":"SPDXRef-Package-b"}]}' > "$expected_file"
+
+    run bash -c 'source "$1"; generate_sbom ghcr.io/oorabona/ordinary-image:tag "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    cmp -s "$expected_file" "$output_file"
+}
+
+@test "generate_sbom fails when the github-runner SPDX filter cannot process output" {
+    write_syft_stub
+    local output_file="$TEST_TEMP_DIR/github-runner.sbom.json"
+
+    run env SYFT_STUB_MODE=invalid-filterable bash -c 'source "$1"; generate_sbom ghcr.io/oorabona/github-runner:windows-dev "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -ne 0 ] || return 1
+    [ ! -e "$output_file" ]
+}
+
+@test "generate_sbom rejects null SPDX fields and non-object github-runner packages" {
+    write_syft_stub
+    local fixture output_file
+
+    for fixture in files-null relationships-null has-files-null null-package string-package; do
+        output_file="$TEST_TEMP_DIR/${fixture}.sbom.json"
+
+        run env SYFT_STUB_MODE="$fixture" bash -c 'source "$1"; generate_sbom ghcr.io/oorabona/github-runner:windows-dev "$2"' _ "$SBOM_UTILS" "$output_file"
+
+        [ "$status" -ne 0 ] || return 1
+        [ ! -e "$output_file" ] || return 1
+    done
+}
+
+@test "generate_sbom stages and publishes a relative destination under -dir" {
+    local output_file="-dir/result.sbom.json"
+
+    run bash -c '
+        cd "$1"
+        source "$2"
+        syft() {
+            local argument staged_output=""
+            for argument in "$@"; do
+                [[ "$argument" == "--help" ]] && return 0
+                case "$argument" in spdx-json=*) staged_output="${argument#spdx-json=}" ;; esac
+            done
+            printf "{\"spdxVersion\":\"SPDX-2.3\",\"SPDXID\":\"SPDXRef-DOCUMENT\",\"packages\":[]}" > "$staged_output"
+        }
+        generate_sbom example/image:tag "$3"
+    ' _ "$TEST_TEMP_DIR" "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    [ -f "$TEST_TEMP_DIR/$output_file" ] || return 1
+}
+
+@test "generate_sbom preserves a prior SBOM when syft writes a fragment then fails" {
+    write_syft_stub
+    local output_file="$TEST_TEMP_DIR/prior.sbom.json"
+    local original_file="$TEST_TEMP_DIR/prior.original.json"
+    printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[{"name":"prior"}]}' > "$output_file"
+    cp -- "$output_file" "$original_file"
+
+    run env SYFT_STUB_MODE=fragment-fail bash -c 'source "$1"; generate_sbom example/image:tag "$2"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -ne 0 ] || return 1
+    cmp -s -- "$original_file" "$output_file" || return 1
+    [ -z "$(find "$TEST_TEMP_DIR" -maxdepth 1 -name '.sbom-stage.*' -print -quit)" ] || return 1
+}
+
 @test "generate_sbom returns failure to if and || when syft writes no output" {
     write_syft_stub
 
@@ -186,6 +335,17 @@ JSON
 
     [ "$status" -eq 0 ] || return 1
     [[ "$output" == *"failure-observed"* ]] || return 1
+}
+
+@test "generate_sbom rejects a JSON object without the required SPDX fields" {
+    write_syft_stub
+    local output_file="$TEST_TEMP_DIR/invalid-spdx.sbom.json"
+
+    run env SYFT_STUB_MODE=invalid-spdx bash -c 'source "$1"; generate_sbom example/image:tag "$2" || printf "failure-observed\\n"' _ "$SBOM_UTILS" "$output_file"
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"failure-observed"* ]]
+    [[ "$output" == *"valid SPDX JSON document"* ]]
 }
 
 @test "generate_sbom returns failure to if and || when mkdir fails" {
@@ -646,6 +806,33 @@ JSON
     [[ "$output" == *"or-failure-observed"* ]] || return 1
 }
 
+@test "append_build_history preserves prior history when jq writes a fragment then fails" {
+    local lineage_file="$TEST_TEMP_DIR/lineage.json"
+    local history_file="$TEST_TEMP_DIR/prior.history.json"
+    local original_file="$TEST_TEMP_DIR/prior.history.original.json"
+    local summary='{"total":1,"apk":1}'
+    write_lineage "$lineage_file"
+    printf '[{"built_at":"prior"}]\n' > "$history_file"
+    cp -- "$history_file" "$original_file"
+    cat > "$TEST_TEMP_DIR/bin/jq" <<'STUB'
+#!/usr/bin/env bash
+for argument in "$@"; do
+    if [[ "$argument" == "-n" ]]; then
+        printf '[{"incomplete":'
+        exit 1
+    fi
+done
+exec "$SYSTEM_JQ" "$@"
+STUB
+    chmod +x "$TEST_TEMP_DIR/bin/jq"
+
+    run bash -c 'source "$1"; append_build_history "$2" "$3" "$4"' _ "$SBOM_UTILS" "$lineage_file" "$summary" "$history_file"
+
+    [ "$status" -ne 0 ] || return 1
+    cmp -s -- "$original_file" "$history_file" || return 1
+    [ -z "$(find "$TEST_TEMP_DIR" -maxdepth 1 -name '.history-stage.*' -print -quit)" ] || return 1
+}
+
 @test "append_build_history publishes valid non-negative integer counters" {
     local lineage_file="$TEST_TEMP_DIR/lineage.json"
     local changelog_file="$TEST_TEMP_DIR/result.changelog.json"
@@ -659,4 +846,17 @@ JSON
 
     [ "$status" -eq 0 ] || return 1
     [ "$(jq -r '.[0].changes_summary' "$history_file")" = '+1 -2 ~3' ] || return 1
+}
+
+@test "append_build_history stages and publishes a relative destination under -dir" {
+    local lineage_file="$TEST_TEMP_DIR/lineage.json"
+    local history_file="-dir/result.history.json"
+    local summary='{"total":1,"apk":1}'
+    write_lineage "$lineage_file"
+
+    run bash -c 'cd "$1" && source "$2" && append_build_history "$3" "$4" "$5"' \
+        _ "$TEST_TEMP_DIR" "$SBOM_UTILS" "$lineage_file" "$summary" "$history_file"
+
+    [ "$status" -eq 0 ] || return 1
+    [ -f "$TEST_TEMP_DIR/$history_file" ] || return 1
 }

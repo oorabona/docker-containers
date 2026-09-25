@@ -10,7 +10,8 @@
 #
 # Exit codes:
 #   0  — issue created or commented successfully (or DRY_RUN printed)
-#   1  — no dep-bump detected (caller must fall back to generic issue logic; NOT a gh error)
+#   1  — auto-detect found no dependency failure attributable to the detected container
+#        (including no dep bump detected)
 #   2  — missing required env var
 #   3  — gh CLI / issue-operation failure (create failed, comment failed, number unparseable)
 #        Callers: rc=1 → "no dep-bump" (info); rc=3 → "gh op failed" (warning); neither
@@ -29,14 +30,14 @@ source "$ROOT_DIR/helpers/retry.sh"
 # ---------------------------------------------------------------------------
 # Required env vars
 # ---------------------------------------------------------------------------
-: "${GH_TOKEN:?GH_TOKEN is required}"
-: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
-: "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
-: "${GITHUB_SERVER_URL:?GITHUB_SERVER_URL is required}"
-: "${GITHUB_SHA:?GITHUB_SHA is required}"
-: "${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME is required}"
-: "${GITHUB_REF_NAME:?GITHUB_REF_NAME is required}"
-: "${COMMIT_SUBJECT:?COMMIT_SUBJECT is required}"
+for required_env in GH_TOKEN GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_SERVER_URL \
+    GITHUB_SHA GITHUB_EVENT_NAME GITHUB_REF_NAME COMMIT_SUBJECT; do
+    if [[ -z "${!required_env:-}" ]]; then
+        printf 'missing required env var: %s\n' "$required_env" >&2
+        exit 2
+    fi
+done
+unset required_env
 
 # Optional
 PR_NUMBER="${PR_NUMBER:-}"
@@ -59,6 +60,17 @@ run_gh() {
         return 0
     fi
     retry_with_backoff 3 5 gh "$@"
+}
+
+# ---------------------------------------------------------------------------
+# is_single_json_array
+#
+# Succeeds only when stdin contains exactly one JSON document and that document
+# is an array.  Failure evidence is passed as an environment string, so reject
+# concatenated documents rather than letting jq process them independently.
+# ---------------------------------------------------------------------------
+is_single_json_array() {
+    jq -se 'length == 1 and (.[0] | type == "array")' >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -312,19 +324,24 @@ build_issue_body() {
 
     # Failing jobs section
     local failing_jobs_section
-    if [[ -n "$FAILED_JOBS_JSON" ]]; then
+    if [[ -n "$FAILED_JOBS_JSON" ]] && \
+        printf '%s' "$FAILED_JOBS_JSON" | is_single_json_array; then
         failing_jobs_section="## Failing jobs
 
 "
         local job_item
+        local -a failing_job_names=()
         while IFS= read -r job_item; do
-            job_item="$(echo "$job_item" | tr -d '"' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+            [[ -n "$job_item" ]] && failing_job_names+=("$job_item")
+        done < <(printf '%s' "$FAILED_JOBS_JSON" | jq -r -se '.[0][]? | objects | .name? | strings')
+        for job_item in "${failing_job_names[@]:0:5}"; do
             [[ -n "$job_item" ]] && failing_jobs_section+="- ${job_item}
 "
-        done < <(echo "$FAILED_JOBS_JSON" \
-            | grep -o '"[^"]*"' \
-            | grep -v '^"name"\|^"conclusion"\|^"failure"\|^"cancelled"' \
-            | tr -d '"')
+        done
+        if (( ${#failing_job_names[@]} > 5 )); then
+            failing_jobs_section+="- … and $((${#failing_job_names[@]} - 5)) more
+"
+        fi
     else
         failing_jobs_section="## Failing jobs
 
@@ -1229,18 +1246,59 @@ main() {
     # that actually built fine (another job caused build_failed=true).
     #
     # Behaviour matrix:
-    #   FAILED_ALLOWLIST unset/empty → no cross-check (non-checkpoint runs: workflow_dispatch/call,
-    #                                   skipped checkpoint) — original #514 behaviour preserved.
+    #   FAILED_ALLOWLIST unset/empty, FAILED_JOBS_JSON valid array with container name → proceed normally.
+    #   FAILED_ALLOWLIST unset/empty, FAILED_JOBS_JSON valid array without container name → return 1 (no-op).
+    #   FAILED_ALLOWLIST unset/empty, FAILED_JOBS_JSON empty/not an array → return 1 (no-op; no attribution evidence).
     #   FAILED_ALLOWLIST set, valid JSON array, container present → proceed normally.
     #   FAILED_ALLOWLIST set, valid JSON array, container absent  → return 1 (no-op, same as no-dep-bump).
-    #   FAILED_ALLOWLIST set, invalid JSON                        → treat as empty (no cross-check; safe).
+    #   FAILED_ALLOWLIST set, malformed/not an array              → notice, return 1 (no-op).
+    local use_failed_job_evidence=false
     if [[ -n "${FAILED_ALLOWLIST:-}" ]]; then
-        local in_allowlist
-        in_allowlist=$(printf '%s' "$FAILED_ALLOWLIST" \
-            | jq -e --arg c "$container" 'if type=="array" then (index($c) != null) else false end' \
-            2>/dev/null || true)
-        if [[ "$in_allowlist" == "false" ]]; then
+        if ! printf '%s' "$FAILED_ALLOWLIST" | is_single_json_array; then
+            log_info "::notice::FAILED_ALLOWLIST is malformed (expected one JSON array) — skipping dep-attributed open"
+            exit 1
+        fi
+        if ! printf '%s' "$FAILED_ALLOWLIST" \
+            | jq -se --arg c "$container" '.[0] | index($c) != null' \
+            >/dev/null 2>&1; then
             log_info "::notice::detected container [${container}] is not in the checkpoint failure set (${FAILED_ALLOWLIST}) — skipping dep-attributed open (no spurious issue)"
+            exit 1
+        fi
+    else
+        use_failed_job_evidence=true
+    fi
+
+    if [[ "$use_failed_job_evidence" == "true" ]]; then
+        # workflow_dispatch/workflow_call runs do not provide the checkpoint
+        # allowlist. Attribute a dep failure only when a failing job name names
+        # this detected container.  A colon-bearing name uses the word before
+        # its first colon; otherwise accept the non-variant build-job form.
+        if [[ -z "$FAILED_JOBS_JSON" ]] || \
+            ! printf '%s' "$FAILED_JOBS_JSON" | is_single_json_array; then
+            log_info "::notice::no valid failing-job evidence for detected container [${container}] — skipping dep-attributed open"
+            exit 1
+        fi
+
+        local failing_job_name job_prefix job_container
+        local re_non_variant_build='^Build ([A-Za-z0-9._-]+) \([^)]*\)$'
+        local container_has_failed_job=false
+        while IFS= read -r failing_job_name; do
+            if [[ "$failing_job_name" == *:* ]]; then
+                job_prefix="${failing_job_name%%:*}"
+                job_container="${job_prefix##*[[:space:]]}"
+            elif [[ "$failing_job_name" =~ $re_non_variant_build ]]; then
+                job_container="${BASH_REMATCH[1]}"
+            else
+                continue
+            fi
+            if [[ "$job_container" == "$container" ]]; then
+                container_has_failed_job=true
+                break
+            fi
+        done < <(printf '%s' "$FAILED_JOBS_JSON" | jq -r -se '.[0][]? | objects | .name? | strings')
+
+        if [[ "$container_has_failed_job" != "true" ]]; then
+            log_info "::notice::detected container [${container}] is not named by a failing job — skipping dep-attributed open (no spurious issue)"
             exit 1
         fi
     fi

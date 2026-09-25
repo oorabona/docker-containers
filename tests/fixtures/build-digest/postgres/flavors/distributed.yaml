@@ -1,0 +1,32 @@
+# Citus PostgreSQL flavor
+# Distributed PostgreSQL for horizontal scaling
+# Use case: Multi-tenant SaaS, real-time analytics, high throughput
+#
+# License: AGPL-3.0
+# Note: Modifications must be shared under AGPL
+
+name: distributed
+description: "Distributed PostgreSQL with Citus for horizontal scaling"
+extends: base
+
+# Compiled extensions to include
+extensions:
+  - citus         # Distributed tables, sharding, columnar storage
+  - pg_cron       # Cron-based job scheduling
+  - pg_ivm        # Incremental View Maintenance
+
+# Additional built-in extensions
+builtin_extensions:
+  - pg_buffercache
+  - pg_prewarm
+
+# shared_preload_libraries
+# Citus and pg_cron require shared_preload_libraries
+shared_preload_libraries:
+  - citus
+  - pg_cron
+
+# Image tags to publish
+tags:
+  - "{version}-alpine-distributed"   # e.g., 17.5-alpine-distributed
+  - "{major}-alpine-distributed"     # e.g., 17-alpine-distributed

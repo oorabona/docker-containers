@@ -98,3 +98,6 @@ bats-*
 
 # Test run artifact (TAP output)
 report.tap
+
+# OG-image dependencies installed from scripts/og-images/package-lock.json
+scripts/og-images/node_modules/

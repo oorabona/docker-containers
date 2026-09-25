@@ -264,6 +264,21 @@ EOF
     [ "$status" -eq 1 ]
 }
 
+@test "github-runner version script rejects a release tag outside Docker tag grammar" {
+    local mock_bin="$TEST_TEMP_DIR/github-runner-version-bin"
+    mkdir -p "$mock_bin"
+    cat > "$mock_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"tag_name":"v2.337.0+metadata"}'
+EOF
+    chmod +x "$mock_bin/curl"
+
+    run env PATH="$mock_bin:$PATH" bash "$PROJECT_ROOT/github-runner/version.sh"
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Could not parse a Docker-tag-safe version"* ]]
+}
+
 # =============================================================================
 # check-dependency-versions gitlab-tags coverage
 # =============================================================================
