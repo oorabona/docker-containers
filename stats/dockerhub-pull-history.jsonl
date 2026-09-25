@@ -1643,3 +1643,4 @@
 {"ts":"2026-09-25T01:26:06Z","date":"2026-09-25","container":"vector","pull_count":10068,"star_count":0,"source":"dockerhub"}
 {"ts":"2026-09-25T01:26:06Z","date":"2026-09-25","container":"web-shell","pull_count":13413,"star_count":0,"source":"dockerhub"}
 {"ts":"2026-09-25T01:26:06Z","date":"2026-09-25","container":"wordpress","pull_count":11980,"star_count":0,"source":"dockerhub"}
+{"ts":"2026-09-25T21:52:26Z","date":"2026-09-25","container":"opentofu","pull_count":0,"star_count":0,"source":"dockerhub"}
