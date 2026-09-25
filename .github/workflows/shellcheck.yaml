@@ -186,6 +186,9 @@ jobs:
           # Add per-container test and version scripts (not runtime)
           collect . -maxdepth 2 \( -name 'test.sh' -o -name 'version.sh' \) -not -path './archive/*' -type f
 
+          # Add each example stack's test script (examples/<stack>/test.sh)
+          collect ./examples -mindepth 2 -maxdepth 2 -name 'test.sh' -type f
+
           # Every shell script under a container's own tests/, at any depth, so a
           # helper the test sources is linted too. The pattern is anchored on the
           # first path component rather than written with -path, whose * crosses
