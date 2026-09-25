@@ -6,9 +6,9 @@
 # the whole listing. It closes the tag-attachment window only.
 # Required env vars: GH_TOKEN, OWNER
 # Optional env vars: DRY_RUN (default: false; exactly true or false);
-# DOCKERHUB_DRY_RUN (default: plan-only; deletes only when exactly false). The
-# Docker Hub plans only until the operator enables it; candidates are tags
-# neither declared nor still published on GHCR.
+# DOCKERHUB_DRY_RUN (default: plan-only when unset; deletes only when exactly
+# false). Docker Hub deletion follows workflow dry_run; candidates are tags not
+# declared and whose digest GHCR no longer publishes.
 #
 # Usage: cleanup-outdated-tags.sh [container]
 # With an argument, process exactly one package. Multiple package names need a

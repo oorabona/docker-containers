@@ -2215,7 +2215,9 @@ EOF
     local purge_dry_run
     purge_dry_run=$(yq -r '.jobs.cleanup.steps[] | select(.id == "purge_obsolete_images") | .env.DRY_RUN' "$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml")
     [[ "$purge_dry_run" == "\${{ inputs.dry_run || 'false' }}" ]]
-    [[ "$purge_step" == *"DOCKERHUB_DRY_RUN: 'true'"* ]]
+    local dockerhub_dry_run
+    dockerhub_dry_run=$(yq -r '.jobs.cleanup.steps[] | select(.id == "purge_obsolete_images") | .env.DOCKERHUB_DRY_RUN' "$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml")
+    [[ "$dockerhub_dry_run" == "\${{ inputs.dry_run || 'false' }}" ]]
 
     # This is the failure path that GitHub Actions evaluates: continue-on-error
     # preserves the age-pruner outcome while always() still starts the second

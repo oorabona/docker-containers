@@ -7,12 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Dry-run the age and obsolete-tag pruners (no deletions); extension cleanup remains global and is controlled by execute_ext_cleanup alone; Docker Hub plans only until the operator enables it; candidates are tags neither declared nor still published on GHCR.'
+        description: 'Dry-run the age and obsolete-tag pruners (no deletions); extension cleanup remains global and is controlled by execute_ext_cleanup alone; Docker Hub deletion follows dry_run; Docker Hub candidates are tags not declared and whose digest GHCR no longer publishes.'
         required: false
         type: boolean
         default: false
       purge_obsolete:
-        description: 'Purge images with tags not matching current valid builds (GHCR deletes; Docker Hub only plans until #1574)'
+        description: 'Purge images with tags not declared and whose digest GHCR no longer publishes; Docker Hub deletion follows dry_run'
         required: false
         type: boolean
         default: false
@@ -75,8 +75,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
-          # Docker Hub plans only until the operator enables it; candidates are tags neither declared nor still published on GHCR.
-          DOCKERHUB_DRY_RUN: 'true'
+          # Docker Hub deletion follows dry_run; candidates are tags not declared and whose digest GHCR no longer publishes.
+          DOCKERHUB_DRY_RUN: ${{ inputs.dry_run || 'false' }}
           OWNER: ${{ github.repository_owner }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
