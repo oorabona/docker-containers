@@ -249,7 +249,7 @@ build_valid_tags() {
   if ! tags=$(jq -r '.[].tag' <<< "$builds_json"); then
     return 1
   fi
-  if ! declared_bare_majors=$(set -o pipefail; jq -r '.[] | select(.tag | test("^[0-9]+\\z")) | .tag' <<< "$builds_json" | sort -u); then
+  if ! declared_bare_majors=$(set -o pipefail; jq -r '.[] | select(.version | type == "string" and test("^[0-9]+\\z")) | .version' <<< "$builds_json" | sort -u); then
     return 1
   fi
   tags+=$'\nlatest\nbuildcache'
