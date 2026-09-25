@@ -2062,6 +2062,7 @@ jobs:
 
       - name: Compute bake lineage plan
         env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
           BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
@@ -3395,12 +3396,14 @@ jobs:
       - name: Canonical GHCR manifest merge (strict, fail-closed)
         id: bake-merge-step
         env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
           BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
           DRY_RUN: ${{ env.DRY_RUN }}
           BAKE_MERGE_RECEIPT_DIR: .bake-merge-receipts
+          BAKE_MERGE_PUBLISHED_TAGS_FILE: .bake-merge-published-tags.jsonl
         run: |
           set -euo pipefail
           chmod +x scripts/bake-merge-manifests.sh scripts/generate-bake-hcl.sh
@@ -3466,11 +3469,13 @@ jobs:
         if: always() && steps.bake-merge-step.outcome == 'success'
         continue-on-error: true
         env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
           BAKE_GENERATE_FINAL_BUILD: ${{ needs.detect-containers.outputs.bake_final_builds != '[]' && 'true' || 'false' }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+          BAKE_MERGE_PUBLISHED_TAGS_FILE: .bake-merge-published-tags.jsonl
         run: |
           set -euo pipefail
           chmod +x helpers/mirror-dockerhub.sh

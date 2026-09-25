@@ -2,14 +2,14 @@
 
 | Field | Value |
 |-------|-------|
-| **Container** | `php` |
+| **Container** | `terraform` |
 
-| **Version Change** | `8.5.10-fpm-alpine` → `8.5.11-fpm-alpine` |
+| **Version Change** | `1.16.2-alpine` → `1.16.3-alpine` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-09-25T10:56:59Z |
+| **Rebuild Date** | 2026-09-17T10:47:17Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/36126549158) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/35212150399) |
 
 ## Build Status
 
