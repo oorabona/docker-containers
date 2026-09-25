@@ -9,14 +9,27 @@ templates_file=$(mktemp "${TMPDIR:-/tmp}/terraform-tf-templates.XXXXXX") || exit
 trap 'rm -f "$templates_file"' EXIT
 if ! find . -name "*.tf.j2" -type f -print0 > "$templates_file"; then
     rm -f "$templates_file"
-  echo "Could not enumerate all Terraform templates; rendering none" >&2
-  exit 1
+    echo "Could not enumerate all Terraform templates; rendering none" >&2
+    exit 1
 fi
 
 while IFS= read -r -d '' j2file; do
-  outfile="${j2file%.tf.j2}.tf"
-  echo "\$ jinja2 ${j2file} ${CONFIGFILE} > ${outfile}" >&2
-  jinja2 "${j2file}" "${CONFIGFILE}" > "${outfile}"
+    outfile="${j2file%.tf.j2}.tf"
+    echo "\$ jinja2 ${j2file} ${CONFIGFILE} > ${outfile}" >&2
+    tmp=$(mktemp "${outfile}.XXXXXX") || {
+        echo "Could not create temporary file for Terraform template ${j2file}" >&2
+        exit 1
+    }
+    if ! jinja2 "${j2file}" "${CONFIGFILE}" > "$tmp"; then
+        rm -f -- "$tmp"
+        echo "Could not render Terraform template ${j2file}" >&2
+        exit 1
+    fi
+    if ! mv -f -- "$tmp" "$outfile"; then
+        rm -f -- "$tmp"
+        echo "Could not replace Terraform output for template ${j2file}" >&2
+        exit 1
+    fi
 done < "$templates_file"
 rm -f "$templates_file"
 trap - EXIT
