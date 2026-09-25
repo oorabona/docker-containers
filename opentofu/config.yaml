@@ -64,4 +64,4 @@ dependency_sources:
     lifecycle: tracked
     type: pypi
     package: jinja2-cli
-value_proposition: Multi-version retention (3 latest). OpenTofu with AWS, Azure and GCP CLI flavors and daily dependency monitoring.
+value_proposition: Multi-version retention (3 latest). OpenTofu with AWS, Azure and GCP CLI flavors and daily monitoring of tracked dependencies.
