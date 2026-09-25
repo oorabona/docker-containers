@@ -30,7 +30,7 @@ run_make_with_controlled_path() {
     run_make_with_controlled_path list
 
     [ "$status" -eq 0 ]
-    [ "$output" = $'ansible\ndebian\ngithub-runner\njekyll\nopenresty\nopenvpn\nphp\npostgres\nsslh\nterraform\ntor\nvector\nweb-shell\nwordpress' ]
+    [ "$output" = $'ansible\ndebian\ngithub-runner\njekyll\nopenresty\nopentofu\nopenvpn\nphp\npostgres\nsslh\nterraform\ntor\nvector\nweb-shell\nwordpress' ]
     [ -z "$stderr" ]
 }
 

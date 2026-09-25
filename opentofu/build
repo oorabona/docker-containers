@@ -1,0 +1,65 @@
+#!/bin/bash
+
+# OpenTofu build script - reads pinned tool versions and exports build args.
+# config.yaml is the single source of truth for tool versions.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/config.yaml"
+
+if ! command -v yq >/dev/null 2>&1; then
+    echo "ERROR: yq is required to read config.yaml" >&2
+    exit 1
+fi
+
+config_build_arg() {
+    local arg_name="$1"
+    YQ_BUILD_ARG="$arg_name" yq -r '.build_args[strenv(YQ_BUILD_ARG)] // ""' "$CONFIG_FILE"
+}
+
+TFLINT_VERSION=$(config_build_arg TFLINT_VERSION)
+TRIVY_VERSION=$(config_build_arg TRIVY_VERSION)
+TERRAGRUNT_VERSION=$(config_build_arg TERRAGRUNT_VERSION)
+TERRAFORM_DOCS_VERSION=$(config_build_arg TERRAFORM_DOCS_VERSION)
+INFRACOST_VERSION=$(config_build_arg INFRACOST_VERSION)
+GITHUB_CLI_VERSION=$(config_build_arg GITHUB_CLI_VERSION)
+AWS_CLI_VERSION=$(config_build_arg AWS_CLI_VERSION)
+AZURE_CLI_VERSION=$(config_build_arg AZURE_CLI_VERSION)
+GCP_CLI_VERSION=$(config_build_arg GCP_CLI_VERSION)
+
+# Honor $VERSION when set (CI/dep-rebuild path); otherwise resolve upstream.
+if [[ -n "${VERSION:-}" ]]; then
+    UPSTREAM_VERSION="${VERSION%-alpine}"
+    if [[ -z "$UPSTREAM_VERSION" ]]; then
+        echo "ERROR: VERSION=$VERSION resolves to empty UPSTREAM_VERSION after suffix strip" >&2
+        exit 1
+    fi
+else
+    if ! UPSTREAM_VERSION=$("$SCRIPT_DIR/version.sh" --upstream); then
+        echo "ERROR: version.sh --upstream failed; cannot resolve UPSTREAM_VERSION" >&2
+        exit 1
+    fi
+    if [[ -z "$UPSTREAM_VERSION" ]]; then
+        echo "ERROR: version.sh --upstream returned empty; cannot resolve UPSTREAM_VERSION" >&2
+        exit 1
+    fi
+fi
+
+if ! [[ "$UPSTREAM_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "ERROR: UPSTREAM_VERSION='$UPSTREAM_VERSION' contains unsafe characters (allowed: A-Z, a-z, 0-9, dot, underscore, hyphen)" >&2
+    exit 1
+fi
+
+echo "Building OpenTofu ${VERSION:-} (source: ${UPSTREAM_VERSION}) with pinned tools:"
+echo "  TFLint: ${TFLINT_VERSION}"
+echo "  Trivy: ${TRIVY_VERSION}"
+echo "  Terragrunt: ${TERRAGRUNT_VERSION}"
+echo "  Terraform-docs: ${TERRAFORM_DOCS_VERSION}"
+echo "  Infracost: ${INFRACOST_VERSION}"
+echo "  GitHub CLI: ${GITHUB_CLI_VERSION}"
+echo "  AWS CLI: ${AWS_CLI_VERSION}"
+echo "  Azure CLI: ${AZURE_CLI_VERSION}"
+echo "  GCP CLI: ${GCP_CLI_VERSION}"
+
+CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }--build-arg UPSTREAM_VERSION=${UPSTREAM_VERSION}"
+
+export CUSTOM_BUILD_ARGS

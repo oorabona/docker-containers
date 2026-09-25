@@ -655,8 +655,8 @@ The guard is deliberate: running a fork's code with this workflow's `DOCKERHUB_T
 is not worth trading for a green mark on a check that blocks nothing.
 
 Every container shipping a `test.sh` is e2e-enabled — ansible, debian, jekyll, openresty,
-openvpn, php, postgres, sslh, terraform, vector, web-shell, wordpress — so a pull request
-touching any of the twelve reaches this.
+openvpn, php, postgres, sslh, terraform, opentofu, vector, web-shell, wordpress — so a pull request
+touching any of the thirteen reaches this.
 
 ### Workflow Architecture Issues
 

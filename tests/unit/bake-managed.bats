@@ -329,11 +329,11 @@ ubuntu-1.0.0"
 
 # ---------------------------------------------------------------------------
 # is_bake_managed — PR-B slices 2-4 new containers (sslh/openvpn/php/
-#          openresty/terraform) return 0 (now in default set); synthetic
+#          openresty/terraform/opentofu) return 0 (now in default set); synthetic
 #          legacy-matrix returns 1.
 # Catches: MM3c
 # ---------------------------------------------------------------------------
-@test "is_bake_managed returns 0 for sslh/openvpn/php/openresty/terraform; 1 for legacy-matrix" {
+@test "is_bake_managed returns 0 for sslh/openvpn/php/openresty/terraform/opentofu; 1 for legacy-matrix" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -352,26 +352,29 @@ ubuntu-1.0.0"
     run is_bake_managed "terraform"
     [[ "$status" -eq 0 ]]
 
+    run is_bake_managed "opentofu"
+    [[ "$status" -eq 0 ]]
+
     run is_bake_managed "legacy-matrix"
     [[ "$status" -eq 1 ]]
 }
 
 # ---------------------------------------------------------------------------
-# Full 13-container bake-managed set — every Linux container that routes
+# Full 14-container bake-managed set — every Linux container that routes
 #          through bake is listed.
 #          Mutation guard for the complete set (MM3c comprehensive coverage).
 # ---------------------------------------------------------------------------
-@test "all 13 bake-managed containers return 0; legacy-matrix returns 1" {
+@test "all 14 bake-managed containers return 0; legacy-matrix returns 1" {
     # shellcheck disable=SC1090
     source "$BM"
 
-    local -a managed_13=(
+    local -a managed_14=(
         github-runner web-shell wordpress
         debian vector jekyll ansible
-        sslh openvpn php openresty terraform
+        sslh openvpn php openresty terraform opentofu
         postgres
     )
-    for c in "${managed_13[@]}"; do
+    for c in "${managed_14[@]}"; do
         run is_bake_managed "$c"
         [[ "$status" -eq 0 ]] || { echo "FAIL: $c should be bake-managed"; return 1; }
     done

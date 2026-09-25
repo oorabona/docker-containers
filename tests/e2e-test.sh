@@ -562,11 +562,11 @@ test_container() {
             # These need a command to stay running
             run_cmd="sleep infinity"
             ;;
-        terraform)
+        terraform|opentofu)
             # A CLI image: its default command prints help and exits, and its
-            # entrypoint ends in `exec /bin/terraform "$@"`, so any command passed
-            # becomes a terraform argument — `sleep infinity` would run
-            # `terraform sleep infinity` and fail. Override the entrypoint so the
+            # Terraform's entrypoint ends in `exec /bin/terraform "$@"` and
+            # OpenTofu's ends in `exec /usr/local/bin/tofu "$@"`, so any command
+            # passed becomes a CLI argument. Override the entrypoint so the
             # container stays up long enough for the suite to exec into it.
             run_opts="$run_opts --entrypoint sleep"
             run_cmd="infinity"
