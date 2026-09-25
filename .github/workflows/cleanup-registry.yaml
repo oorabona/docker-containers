@@ -77,6 +77,8 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           # Docker Hub deletion follows dry_run; candidates are tags not declared and whose digest GHCR no longer publishes.
           DOCKERHUB_DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          # Precise postgres tags are no longer published.
+          DOCKERHUB_KEEP_CONTAINERS: postgres
           OWNER: ${{ github.repository_owner }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
