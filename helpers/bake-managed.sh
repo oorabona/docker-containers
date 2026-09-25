@@ -41,7 +41,7 @@ source "${_BM_SCRIPT_DIR}/logging.sh"
 # operators and tests to expand the set without code changes.
 # ---------------------------------------------------------------------------
 bake_managed_containers() {
-    echo "${BAKE_MANAGED_CONTAINERS:-github-runner web-shell wordpress debian vector jekyll ansible sslh openvpn php openresty terraform postgres tor}"
+    echo "${BAKE_MANAGED_CONTAINERS:-github-runner web-shell wordpress debian vector jekyll ansible sslh openvpn php openresty terraform opentofu postgres tor}"
 }
 
 # ---------------------------------------------------------------------------
@@ -197,7 +197,7 @@ extension_containers_in() {
 # Override via BAKE_RETAINED_CORE_CONTAINERS for focused tests only.
 # ---------------------------------------------------------------------------
 _bake_retained_core_containers() {
-    echo "${BAKE_RETAINED_CORE_CONTAINERS:-web-shell wordpress debian vector jekyll ansible sslh openvpn openresty terraform}"
+    echo "${BAKE_RETAINED_CORE_CONTAINERS:-web-shell wordpress debian vector jekyll ansible sslh openvpn openresty terraform opentofu}"
 }
 
 # ---------------------------------------------------------------------------

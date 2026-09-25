@@ -864,10 +864,10 @@ _fixture_cells() {
     run --separate-stderr env REMOTE_CR=ghcr.io/oorabona GITHUB_REPOSITORY_OWNER=oorabona \
         bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells \
         github-runner web-shell wordpress debian vector jekyll ansible sslh \
-        openvpn php openresty terraform postgres tor
+        openvpn php openresty terraform opentofu postgres tor
     [ "$status" -eq 0 ]
     cells="$output"
-    [ "$(jq 'length' <<< "$cells")" -eq 24 ]
+    [ "$(jq 'length' <<< "$cells")" -eq 29 ]
 
     descriptor=$(jq -cn \
         --arg digest 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
@@ -888,7 +888,7 @@ _fixture_cells() {
         esac || exit 1
         printf '.'
     done < <(jq -c '.[].base_identity' <<< "$cells"))
-    [ "${#checked}" -eq 24 ]
+    [ "${#checked}" -eq 29 ]
 }
 
 # Resolve the FROM references BuildKit receives for one generated bake target.
@@ -987,17 +987,17 @@ _bake_target_reachable_froms() {
     run --separate-stderr env REMOTE_CR=ghcr.io/oorabona GITHUB_REPOSITORY_OWNER=oorabona \
         bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells \
         github-runner web-shell wordpress debian vector jekyll ansible sslh \
-        openvpn php openresty terraform postgres tor
+        openvpn php openresty terraform opentofu postgres tor
     [ "$status" -eq 0 ]
     cells="$output"
-    [ "$(jq 'length' <<< "$cells")" -eq 24 ]
+    [ "$(jq 'length' <<< "$cells")" -eq 29 ]
     [ "$(jq '[.[] | select(.base_identity.kind == "unresolved")] | length' <<< "$cells")" -eq 0 ]
 
     bake="$TEST_TEMP_DIR/fleet-bake.json"
     run --separate-stderr env REMOTE_CR=ghcr.io/oorabona GITHUB_REPOSITORY_OWNER=oorabona \
         bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" \
         github-runner web-shell wordpress debian vector jekyll ansible sslh \
-        openvpn php openresty terraform postgres tor
+        openvpn php openresty terraform opentofu postgres tor
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" > "$bake"
 

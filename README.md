@@ -12,6 +12,7 @@ Production-ready Docker images with **zero-touch upstream monitoring** — when 
 |-----------|-------------|----------|
 | [postgres](postgres/) | PostgreSQL with extension ecosystem | base, vector, analytics, timeseries, spatial, distributed, full |
 | [terraform](terraform/) | Terraform CLI, cloud-provider scoped | base, aws, azure, gcp, full |
+| [opentofu](opentofu/) | OpenTofu CLI, cloud-provider scoped | base, aws, azure, gcp, full |
 | [github-runner](github-runner/) | Self-hosted GitHub Actions runner | ubuntu-2404, debian-trixie, windows-ltsc2022 × base/dev |
 | [web-shell](web-shell/) | Browser-accessible shell over HTTPS | debian (default), alpine, ubuntu, rocky |
 | [wordpress](wordpress/) | WordPress with PHP optimizations | — |

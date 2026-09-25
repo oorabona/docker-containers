@@ -1,0 +1,74 @@
+# OpenTofu container variants
+build:
+  requires_extensions: false
+  version_retention: 3
+versions:
+  - tag: 1.12.6-alpine
+    variants:
+      - name: base
+        suffix: "-base"
+        flavor: base
+        description: "OpenTofu + TFLint + Trivy + Terragrunt + terraform-docs + Infracost + gh CLI"
+        build_args_include:
+          - TFLINT_VERSION
+          - TRIVY_VERSION
+          - TERRAGRUNT_VERSION
+          - TERRAFORM_DOCS_VERSION
+          - INFRACOST_VERSION
+          - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
+      - name: aws
+        suffix: "-aws"
+        flavor: aws
+        description: "OpenTofu base tools + AWS CLI"
+        build_args_include:
+          - TFLINT_VERSION
+          - TRIVY_VERSION
+          - TERRAGRUNT_VERSION
+          - TERRAFORM_DOCS_VERSION
+          - INFRACOST_VERSION
+          - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
+          - AWS_CLI_VERSION
+      - name: azure
+        suffix: "-azure"
+        flavor: azure
+        description: "OpenTofu base tools + Azure CLI"
+        build_args_include:
+          - TFLINT_VERSION
+          - TRIVY_VERSION
+          - TERRAGRUNT_VERSION
+          - TERRAFORM_DOCS_VERSION
+          - INFRACOST_VERSION
+          - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
+          - AZURE_CLI_VERSION
+      - name: gcp
+        suffix: "-gcp"
+        flavor: gcp
+        description: "OpenTofu base tools + Google Cloud SDK"
+        build_args_include:
+          - TFLINT_VERSION
+          - TRIVY_VERSION
+          - TERRAGRUNT_VERSION
+          - TERRAFORM_DOCS_VERSION
+          - INFRACOST_VERSION
+          - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
+          - GCP_CLI_VERSION
+      - name: full
+        suffix: ""
+        flavor: full
+        description: "OpenTofu with all cloud CLIs (AWS + Azure + GCP)"
+        default: true
+        build_args_include:
+          - TFLINT_VERSION
+          - TRIVY_VERSION
+          - TERRAGRUNT_VERSION
+          - TERRAFORM_DOCS_VERSION
+          - INFRACOST_VERSION
+          - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
+          - AWS_CLI_VERSION
+          - AZURE_CLI_VERSION
+          - GCP_CLI_VERSION

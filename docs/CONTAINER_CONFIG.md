@@ -339,6 +339,12 @@ docker run --rm -v $(pwd):/workspace -w /workspace \
 
 ---
 
+## opentofu
+
+OpenTofu mirrors the Terraform layout and downloads its `tofu` binary from the matching release tarball, checksum-checked against that release's `SHA256SUMS` manifest.
+
+---
+
 ## wordpress
 
 WordPress optimized for production with PHP-FPM.
