@@ -47,12 +47,12 @@ docker run --rm -v "$(pwd)":/data \
   ghcr.io/oorabona/opentofu:1.12.6-alpine plan
 
 # Generate module documentation
-docker run --rm -v "$(pwd)":/data \
-  ghcr.io/oorabona/opentofu:1.12.6-alpine terraform-docs markdown table .
+docker run --rm -v "$(pwd)":/data --entrypoint terraform-docs \
+  ghcr.io/oorabona/opentofu:1.12.6-alpine markdown table .
 
 # Scan the current configuration
-docker run --rm -v "$(pwd)":/data \
-  ghcr.io/oorabona/opentofu:1.12.6-alpine trivy config .
+docker run --rm -v "$(pwd)":/data --entrypoint trivy \
+  ghcr.io/oorabona/opentofu:1.12.6-alpine config .
 ```
 
 The entrypoint renders `*.tf.j2` templates using `CONFIGFILE` (default:
