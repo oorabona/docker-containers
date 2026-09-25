@@ -355,6 +355,7 @@ EOF
         "terraform gcp 938f9817b6e1"
     )
     local case container flavor expected
+    unset CUSTOM_BUILD_ARGS DIGEST_DEBUG
 
     for case in "${cases[@]}"; do
         read -r container flavor expected <<< "$case"
