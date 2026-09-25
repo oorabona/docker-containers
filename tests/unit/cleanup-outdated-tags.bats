@@ -2198,13 +2198,13 @@ run_orphan_phase_completion_case() {
 
 }
 
-@test "cleanup workflow keeps postgres Docker Hub tags" {
+@test "cleanup workflow lets Docker Hub prune postgres tags" {
     local workflow_path
     workflow_path="$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml"
 
-    run yq -r '.jobs.cleanup.steps[] | select(.id == "purge_obsolete_images") | .env.DOCKERHUB_KEEP_CONTAINERS' "$workflow_path"
+    run yq -r '.jobs.cleanup.steps[] | select(.id == "purge_obsolete_images") | .env | has("DOCKERHUB_KEEP_CONTAINERS") | not' "$workflow_path"
     [[ "$status" -eq 0 ]]
-    [[ "$output" == "postgres" ]]
+    [[ "$output" == "true" ]]
 }
 
 @test "cleanup workflow serializes registry cleanup runs" {
