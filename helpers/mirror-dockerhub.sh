@@ -218,6 +218,7 @@ mirror_to_dockerhub() {
                     (.published_tags | type == "array") and
                     all(.published_tags[]; type == "string" and length > 0)
                   ) ]
+                | unique
                 | if length == 1 then .[0].published_tags[]
                   else error("missing or ambiguous bake merge published-tag verdict")
                   end

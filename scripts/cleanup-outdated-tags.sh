@@ -216,7 +216,7 @@ _get_ghcr_version_tags() {
 }
 
 build_valid_tags() {
-  local container="$1" builds_json tags variant_tags flavor_tags
+  local container="$1" valid_tags_output="$2" bare_major_output="$3" builds_json tags declared_bare_majors variant_tags flavor_tags
   if ! builds_json=$("$ROOT_DIR/make" list-builds "$container" 2>/dev/null); then
     return 1
   fi
@@ -247,6 +247,9 @@ build_valid_tags() {
   if ! tags=$(jq -r '.[].tag' <<< "$builds_json"); then
     return 1
   fi
+  if ! declared_bare_majors=$(set -o pipefail; jq -r '.[] | select(.tag | test("^[0-9]+\\z")) | .tag' <<< "$builds_json" | sort -u); then
+    return 1
+  fi
   tags+=$'\nlatest\nbuildcache'
   if ! variant_tags=$(set -o pipefail; jq -r '.[] | select(.variant != "" and .is_latest_version == true) | "latest-" + .variant' <<< "$builds_json" | sort -u); then
     return 1
@@ -261,11 +264,15 @@ build_valid_tags() {
   if [[ -n "$flavor_tags" ]]; then
     tags+=$'\n'"$flavor_tags"
   fi
-  printf '%s\n' "$tags" | sort -u
+  if ! tags=$(printf '%s\n' "$tags" | sort -u); then
+    return 1
+  fi
+  printf -v "$valid_tags_output" '%s' "$tags"
+  printf -v "$bare_major_output" '%s' "$declared_bare_majors"
 }
 
 is_valid_tag() {
-  local tag="$1" valid_tags="$2" base_tag remainder cache_base_tag grep_status
+  local tag="$1" valid_tags="$2" bare_majors="${3-}" base_tag remainder cache_base_tag grep_status
   # grep returns 1 for no match and 2 for an I/O or resource error. The latter
   # is not an obsolete verdict, so callers must fail closed on it.
   if grep -qxF "$tag" <<< "$valid_tags"; then return 0; else grep_status=$?; fi
@@ -276,15 +283,21 @@ is_valid_tag() {
     if grep -qxF "$base_tag" <<< "$valid_tags"; then return 0; else grep_status=$?; fi
     [[ "$grep_status" -eq 1 ]] || return "$grep_status"
   fi
-  # A precise major.minor alias remains valid while its corresponding declared
-  # major tag (with the same optional suffix) remains valid.  The suffix must
-  # be empty or begin with '-' so 2.334.0 never aliases a hypothetical 2.0.
-  # Apply this after architecture stripping, preserving the existing -amd64
-  # and -arm64 behavior for both registries.
+  # A precise major.minor alias remains valid only while its major is declared
+  # as a bare numeric version and the corresponding major tag with the same
+  # optional suffix remains valid. The suffix must be empty or begin with '-'
+  # so 2.334.0 never aliases a hypothetical 2.0. Apply this after architecture
+  # stripping, preserving the existing -amd64 and -arm64 behavior for both
+  # registries.
   if [[ "$base_tag" =~ ^([0-9]+)\.[0-9]+($|-.+)$ ]]; then
-    local major_tag="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-    if grep -qxF "$major_tag" <<< "$valid_tags"; then return 0; else grep_status=$?; fi
-    [[ "$grep_status" -eq 1 ]] || return "$grep_status"
+    local major="${BASH_REMATCH[1]}" major_tag="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+    if grep -qxF "$major" <<< "$bare_majors"; then
+      if grep -qxF "$major_tag" <<< "$valid_tags"; then return 0; else grep_status=$?; fi
+      [[ "$grep_status" -eq 1 ]] || return "$grep_status"
+    else
+      grep_status=$?
+      [[ "$grep_status" -eq 1 ]] || return "$grep_status"
+    fi
   fi
   if [[ "$tag" == buildcache-* ]]; then
     remainder="${tag#buildcache-}"
@@ -298,7 +311,7 @@ is_valid_tag() {
       return 1
     fi
     [[ -n "$cache_base_tag" ]] || return 1
-    is_valid_tag "$cache_base_tag" "$valid_tags"
+    is_valid_tag "$cache_base_tag" "$valid_tags" "$bare_majors"
     return $?
   fi
   return 1
@@ -312,7 +325,7 @@ purge_ghcr() {
   # Replaying a completed deletion list is execution only after every replay
   # payload has passed preflight; preflight failure returns the completed
   # tagged-plan record, but only returns 13 when no orphan remains unresolved.
-  local container="$1" valid_tags="$2"
+  local container="$1" valid_tags="$2" bare_majors="${3-}"
   local versions package_metadata version_count reported_version_count versions_file="" obsolete_file="" protected_file=""
   local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 reread_failures=0 validation_error validation_status index
   local record_b64 record_json
@@ -427,7 +440,7 @@ purge_ghcr() {
       return "$PROCESSING_FAILURE"
     fi
     while IFS= read -r tag; do
-      if is_valid_tag "$tag" "$valid_tags"; then
+      if is_valid_tag "$tag" "$valid_tags" "$bare_majors"; then
         has_valid=true
         break
       else
@@ -585,7 +598,7 @@ purge_ghcr() {
     else
       current_has_valid=false
       while IFS= read -r current_tag; do
-        if is_valid_tag "$current_tag" "$valid_tags"; then
+        if is_valid_tag "$current_tag" "$valid_tags" "$bare_majors"; then
           current_has_valid=true
           break
         else
@@ -712,7 +725,7 @@ list_tagged_ghcr_digests() {
 # Docker Hub credentials means it was not attempted (0|0|0|0); a returned
 # non-zero status is always a real failure.
 _purge_dockerhub() {
-  local container="$1" valid_tags="$2" ghcr_digests="${3-}" dh_jwt dh_registry_token="" ghcr_token="" dh_next dh_listing_url dh_repository_path dh_continuation_prefix dh_page dh_listing_file=""
+  local container="$1" valid_tags="$2" ghcr_digests="${3-}" bare_majors="${4-}" dh_jwt dh_registry_token="" ghcr_token="" dh_next dh_listing_url dh_repository_path dh_continuation_prefix dh_page dh_listing_file=""
   local dh_namespace_path dh_container_path dh_tag_path dh_page_total dh_reported_total="" tag dh_digest dh_manifest_result ghcr_status dh_record dh_record_json dh_new_tags dh_pages_read=0 validation_status
   local dh_kept=0 dh_kept_by_ghcr_digest=0 dh_candidates=0 dh_successful_deletes=0 delete_failures=0
   local -a dh_page_values=() dh_tags=() dh_obsolete_tags=() dh_obsolete_digests=()
@@ -871,7 +884,7 @@ _purge_dockerhub() {
   done
   for index in "${!dh_tags[@]}"; do
     tag="${dh_tags[$index]}"
-    if is_valid_tag "$tag" "$valid_tags"; then
+    if is_valid_tag "$tag" "$valid_tags" "$bare_majors"; then
       dh_kept=$((dh_kept + 1))
       continue
     else
@@ -1018,7 +1031,7 @@ main() {
   # 16 is fail-closed when the listing required an orphan assessment but a
   # prior deletion failure or replay abort prevented that phase from running.
   local LISTING_FAILURE=10 PROCESSING_FAILURE=11 DELETE_FAILURE=12 POST_DELETE_PROCESSING_FAILURE=13 UNINTERPRETABLE_RECORD_FAILURE=14 PROTECTION_FAILURE=15 INCOMPLETE_DELETION_FAILURE=16
-  local containers_output container valid_tags valid_count result ghcr_status ghcr_digests="" dh_result dh_requests_used dh_status containers_discovered=true
+  local containers_output container valid_tags bare_majors valid_count result ghcr_status ghcr_digests="" dh_result dh_requests_used dh_status containers_discovered=true
   local -a containers=()
   # shellcheck disable=SC2034 # parse_result_counters assigns this dynamic output destination.
   local kept obsolete orphans delete_failures reread_failures dh_assessed dh_candidates dh_successful_deletes dh_delete_failures package_assessed skip_dockerhub
@@ -1039,7 +1052,7 @@ main() {
 
   for container in "${containers[@]}"; do
     echo ""; echo "========================================"; echo "Purging obsolete images: $container"; echo "========================================"
-    if ! valid_tags=$(build_valid_tags "$container"); then
+    if ! build_valid_tags "$container" valid_tags bare_majors; then
       echo "  Failed to get builds for $container, skipping"; total_build_failures=$((total_build_failures + 1)); continue
     fi
     valid_count=$(wc -l <<< "$valid_tags")
@@ -1047,7 +1060,7 @@ main() {
     package_assessed=false
     skip_dockerhub=false
 
-    if result=$(purge_ghcr "$container" "$valid_tags"); then ghcr_status=0; else ghcr_status=$?; fi
+    if result=$(purge_ghcr "$container" "$valid_tags" "$bare_majors"); then ghcr_status=0; else ghcr_status=$?; fi
     case "$ghcr_status" in
       0|"$DELETE_FAILURE"|"$POST_DELETE_PROCESSING_FAILURE")
         if parse_result_counters "$result" "GHCR cleanup result" \
@@ -1087,7 +1100,7 @@ main() {
       fi
     fi
 
-    if dh_result=$(DOCKERHUB_REPORT_REQUESTS=true purge_dockerhub "$container" "$valid_tags" "$ghcr_digests"); then dh_status=0; else dh_status=$?; fi
+    if dh_result=$(DOCKERHUB_REPORT_REQUESTS=true purge_dockerhub "$container" "$valid_tags" "$ghcr_digests" "$bare_majors"); then dh_status=0; else dh_status=$?; fi
     if [[ "$dh_result" == *$'\036'* ]]; then
       dh_requests_used=${dh_result##*$'\036'}
       dh_result=${dh_result%$'\n'$'\036'*}
