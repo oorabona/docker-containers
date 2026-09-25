@@ -152,7 +152,7 @@ run_dockerhub_manifest_authority_case() {
         DRY_RUN=true DOCKERHUB_DRY_RUN=true bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" latest; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_ghcr() { printf "%s\\n" "0|0|0|0|0"; }
             gh() {
                 if [[ "$*" == *"/versions"* ]]; then printf "%s\\n" "[]";
@@ -221,7 +221,7 @@ run_dockerhub_delete_reread_case() {
         DRY_RUN=false DOCKERHUB_DRY_RUN=false bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" latest; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_ghcr() { printf "%s\\n" "0|0|0|0|0"; }
             gh() {
                 if [[ "$*" == *"/versions"* ]]; then printf "%s\\n" "[]";
@@ -285,7 +285,7 @@ run_dockerhub_delete_reread_case() {
         DRY_RUN=true bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" latest; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_ghcr() { printf "%s\\n" "0|0|0|0|0"; }
             list_tagged_ghcr_digests() { printf called >> "$GHCR_RELIST_LOG"; }
             main app
@@ -791,7 +791,7 @@ run_dockerhub_delete_reread_case() {
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
             DOCKERHUB_REQUESTS_REMAINING=2
-            build_valid_tags() { printf "%s\n" latest; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_ghcr() { printf "%s\n" "0|0|0|0|0"; }
             list_tagged_ghcr_digests() { :; }
             curl() {
@@ -940,12 +940,84 @@ run_dockerhub_delete_reread_case() {
     done < "$DH_CURL_LOG"
 }
 
+@test "Docker Hub keep containers skip exact matches while other containers still run" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-keep-containers-curl.log"
+    local ghcr_log="$BATS_TEST_TMPDIR/dockerhub-keep-containers-ghcr.log"
+    : > "$curl_log"
+    : > "$ghcr_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" CURL_LOG="$curl_log" GHCR_LOG="$ghcr_log" \
+        GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false DOCKERHUB_DRY_RUN=false \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password \
+        DOCKERHUB_KEEP_CONTAINERS=postgres bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
+            purge_ghcr() { printf "%s\n" "$1" >> "$GHCR_LOG"; printf "%s\n" "0|0|0|0|0"; }
+            list_tagged_ghcr_digests() { :; }
+            gh() { printf "%s\n" "$*" >&2; }
+            curl() {
+                printf "%s\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
+                        printf "%s" "{\"count\":1,\"results\":[{\"name\":\"latest\"}],\"next\":null}" > "$output_file"
+                        ;;
+                    *) return 1 ;;
+                esac
+            }
+            main postgres app
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Docker Hub: postgres kept by DOCKERHUB_KEEP_CONTAINERS"* ]]
+    [[ "$(<"$ghcr_log")" == $'postgres\napp' ]]
+    [[ "$(<"$curl_log")" != *"/postgres/"* ]]
+    [[ "$(<"$curl_log")" == *"/app/tags"* ]]
+}
+
+@test "Docker Hub keep containers does not match prefixes" {
+    local curl_log="$BATS_TEST_TMPDIR/dockerhub-keep-prefix-curl.log"
+    : > "$curl_log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" CURL_LOG="$curl_log" \
+        GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false DOCKERHUB_DRY_RUN=false \
+        DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password \
+        DOCKERHUB_KEEP_CONTAINERS=postgre bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
+            purge_ghcr() { printf "%s\n" "0|0|0|0|0"; }
+            list_tagged_ghcr_digests() { :; }
+            gh() { printf "%s\n" "$*" >&2; }
+            curl() {
+                printf "%s\n" "$*" >> "$CURL_LOG"
+                case "$*" in
+                    *"/users/login"*) printf "%s\n" "{\"token\":\"fixture-jwt\"}" ;;
+                    *"page_size=100"*)
+                        output_file="" previous=""
+                        for curl_arg in "$@"; do [[ "$previous" != "--output" ]] || output_file="$curl_arg"; previous="$curl_arg"; done
+                        printf "%s" "{\"count\":1,\"results\":[{\"name\":\"latest\"}],\"next\":null}" > "$output_file"
+                        ;;
+                    *) return 1 ;;
+                esac
+            }
+            main postgres
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *"kept by DOCKERHUB_KEEP_CONTAINERS"* ]]
+    [[ "$(<"$curl_log")" == *"/postgres/tags"* ]]
+}
+
 @test "outdated-tag main aggregates Docker Hub counters and continues after a delete failure" {
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" \
         DOCKERHUB_USERNAME=test-user DOCKERHUB_TOKEN=test-password DRY_RUN=false DOCKERHUB_DRY_RUN=false bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" latest; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_ghcr() { printf "%s\\n" "0|0|0|0|0"; }
             list_tagged_ghcr_digests() { :; }
             purge_dockerhub() {
@@ -990,8 +1062,8 @@ run_dockerhub_delete_reread_case() {
         'fi' > "$root_dir/make"
     chmod +x "$root_dir/make"
 
-    local valid_tags expected_tags
-    valid_tags=$(build_valid_tags "github-runner")
+    local valid_tags bare_majors expected_tags
+    build_valid_tags "github-runner" valid_tags bare_majors
     expected_tags=$(make_valid_tags \
         "2.333.0-windows-ltsc2019-dev" \
         "2.334.0" \
@@ -1020,6 +1092,7 @@ run_dockerhub_delete_reread_case() {
         return 1
     fi
     [[ "$valid_tags" == "$expected_tags" ]]
+    [[ -z "$bare_majors" ]]
     run ! is_valid_tag "latest-debian-trixie" "$valid_tags"
     run ! is_valid_tag "latest-windows-ltsc2025" "$valid_tags"
     run ! is_valid_tag "latest-windows-ltsc2019" "$valid_tags"
@@ -1093,7 +1166,7 @@ run_manifest_protection_refusal() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "0|0|0|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
@@ -1145,7 +1218,7 @@ run_outdated_tags_safety_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then
                     printf "DELETE:%s\\n" "$*" >> "$GH_LOG"
@@ -1189,7 +1262,7 @@ run_orphan_phase_completion_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then
@@ -1307,7 +1380,7 @@ run_orphan_phase_completion_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then
                     [[ "$*" != *"/stale/versions/101"* ]]
@@ -1384,7 +1457,7 @@ run_orphan_phase_completion_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" latest; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             eval "$(declare -f load_framed_work_list | sed "1s/^load_framed_work_list /original_load_framed_work_list /")"
             load_framed_work_list() {
@@ -1419,7 +1492,7 @@ run_orphan_phase_completion_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" latest; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             eval "$(declare -f load_framed_work_list | sed "1s/^load_framed_work_list /original_load_framed_work_list /")"
             load_framed_work_list() {
@@ -1625,7 +1698,7 @@ run_orphan_phase_completion_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
                 if [[ "$*" == *"/versions/104"* ]]; then printf "%s\\n" "{\"id\":104,\"metadata\":{\"container\":{\"tags\":[]}}}"; return 0; fi
@@ -1661,7 +1734,7 @@ run_orphan_phase_completion_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
                 if [[ "$*" == *"/versions/102"* ]]; then printf "%s\\n" "{\"id\":102,\"metadata\":{\"container\":{\"tags\":[]}}}"; return 0; fi
@@ -1716,6 +1789,58 @@ run_orphan_phase_completion_case() {
     local valid_tags
     valid_tags=$(make_valid_tags "2.334.0" "latest" "buildcache")
     is_valid_tag "2.334.0-arm64" "$valid_tags"
+}
+
+@test "is_valid_tag: retained postgres precise tag follows its declared major tag" {
+    local valid_tags
+    valid_tags=$(make_valid_tags "16-alpine-vector")
+    is_valid_tag "16.13-alpine-vector" "$valid_tags" "16"
+    is_valid_tag "16.13-alpine-vector-arm64" "$valid_tags" "16"
+}
+
+@test "is_valid_tag: precise tags require a declared bare numeric major" {
+    local postgres_tags full_version_tags root_dir valid_tags bare_majors
+    postgres_tags=$(make_valid_tags "16-alpine-vector")
+    full_version_tags=$(make_valid_tags "1-alpine")
+
+    is_valid_tag "16.13-alpine-vector" "$postgres_tags" "16"
+    run ! is_valid_tag "1.6-alpine" "$full_version_tags" ""
+
+    root_dir="$BATS_TEST_TMPDIR/full-version-only-builds-root"
+    mkdir -p "$root_dir"
+    export ROOT_DIR="$root_dir"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        'case "$2" in' \
+        '  postgres) printf "%s\\n" '\''[{"tag":"16-alpine-vector","version":"16","variant":"vector","flavor":"","os":"linux","is_default":true,"is_latest_version":true},{"tag":"16-alpine","version":"16","variant":"","flavor":"","os":"linux","is_default":true,"is_latest_version":true}]'\'' ;;' \
+        '  example) printf "%s\\n" '\''[{"tag":"1-alpine","version":"1.7.7","variant":"","flavor":"","os":"linux","is_default":true,"is_latest_version":true}]'\'' ;;' \
+        'esac' \
+        > "$root_dir/make"
+    chmod +x "$root_dir/make"
+    build_valid_tags postgres valid_tags bare_majors
+
+    [[ "$bare_majors" == "16" ]]
+    is_valid_tag "16.13-alpine-vector" "$valid_tags" "$bare_majors"
+    is_valid_tag "16.13-alpine-vector-arm64" "$valid_tags" "$bare_majors"
+    run ! is_valid_tag "16-full-alpine" "$valid_tags" "$bare_majors"
+    run ! is_valid_tag "15.9-alpine" "$valid_tags" "$bare_majors"
+
+    build_valid_tags example valid_tags bare_majors
+
+    [[ "$valid_tags" == *"1-alpine"* ]]
+    [[ -z "$bare_majors" ]]
+    run ! is_valid_tag "1.6-alpine" "$valid_tags" "$bare_majors"
+}
+
+@test "is_valid_tag: obsolete postgres precise tag is invalid without its declared major" {
+    local valid_tags
+    valid_tags=$(make_valid_tags "16-alpine-vector")
+    run ! is_valid_tag "15.9-alpine" "$valid_tags"
+}
+
+@test "is_valid_tag: decimal patch form never aliases a major tag" {
+    local valid_tags
+    valid_tags=$(make_valid_tags "2.0")
+    run ! is_valid_tag "2.334.0" "$valid_tags"
 }
 
 # ---------------------------------------------------------------------------
@@ -1838,7 +1963,7 @@ run_orphan_phase_completion_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             gh() {
                 echo "gh: API rate limit exceeded" >&2
                 return 1
@@ -1923,7 +2048,7 @@ run_orphan_phase_completion_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             gh() { printf "%s\\n" "not-json"; }
             main broken
         '
@@ -1943,7 +2068,7 @@ run_orphan_phase_completion_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             gh() { return 0; }
             main broken
         '
@@ -1963,7 +2088,7 @@ run_orphan_phase_completion_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_dockerhub() { printf "%s\\n" "0|0|0|0"; }
             gh() {
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":2}"; return 0; fi
@@ -1987,7 +2112,7 @@ run_orphan_phase_completion_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             gh() { printf "%s\\n" "{}" "[]"; }
             main broken
         '
@@ -2013,7 +2138,7 @@ run_orphan_phase_completion_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             list_tagged_ghcr_digests() { :; }
             for expectation in success:0:complete:success listing:10:incomplete:failure processing:11:incomplete:failure delete:12:complete:failure post-complete:13:complete:failure uninterpretable:14:incomplete:failure protection:15:incomplete:failure incomplete-delete:16:incomplete:failure unexpected:99:incomplete:failure; do
@@ -2081,6 +2206,15 @@ run_orphan_phase_completion_case() {
         return 1
     fi
 
+}
+
+@test "cleanup workflow lets Docker Hub prune postgres tags" {
+    local workflow_path
+    workflow_path="$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml"
+
+    run yq -r '.jobs.cleanup.steps[] | select(.id == "purge_obsolete_images") | .env | has("DOCKERHUB_KEEP_CONTAINERS") | not' "$workflow_path"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "true" ]]
 }
 
 @test "cleanup workflow serializes registry cleanup runs" {
@@ -2253,7 +2387,7 @@ EOF
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then
                     echo "gh: delete denied" >&2
@@ -2303,7 +2437,7 @@ EOF
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then
                     return 0
@@ -2336,7 +2470,7 @@ EOF
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
@@ -2371,7 +2505,7 @@ EOF
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "DELETE:%s\\n" "$*" >> "$GH_LOG"; return 0; fi
@@ -2401,7 +2535,7 @@ EOF
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" latest; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_ghcr() { printf "%s\\n" stray "0|0|0|0|0"; }
             purge_dockerhub() { printf "%s\\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\\n" "1|0|0|0"; }
             main stale
@@ -2416,7 +2550,7 @@ EOF
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" latest; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_ghcr() { printf "%s\\n" "0|0|0|0|0"; }
             list_tagged_ghcr_digests() { :; }
             purge_dockerhub() { printf "%s\\n" "1|0|0|0" stray; }
@@ -2437,7 +2571,7 @@ EOF
                 bash -c '
                     set -euo pipefail
                     source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-                    build_valid_tags() { printf "%s\\n" latest; }
+                    build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
                     list_tagged_ghcr_digests() { :; }
                     case "$CONSUMER" in
                       ghcr-complete)
@@ -2500,7 +2634,7 @@ run_outdated_validation_case() {
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_dockerhub() { printf "%s\n" "$1" >> "$DOCKERHUB_CALLS"; printf "%s\n" "1|0|0|0"; }
             gh() {
                 if [[ "$*" == *"--method DELETE"* ]]; then printf "%s\n" "$*" >> "$GH_LOG"; return 0; fi
@@ -2595,7 +2729,7 @@ EOF
         bash -c '
             set -euo pipefail
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\n" "latest"; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             gh() {
                 [[ "$*" == *"--method DELETE"* ]] && return 1
                 if [[ "$*" != *"/versions"* ]]; then printf "%s\n" "{\"version_count\":1}"; return 0; fi
@@ -2648,7 +2782,7 @@ EOF
 }
 
 @test "build_valid_tags accepts a Linux build with an empty flavor" {
-    local root_dir="$BATS_TEST_TMPDIR/build-empty-flavor-root"
+    local root_dir="$BATS_TEST_TMPDIR/build-empty-flavor-root" valid_tags bare_majors
     mkdir -p "$root_dir"
     export ROOT_DIR="$root_dir"
     printf '%s\n' '#!/usr/bin/env bash' \
@@ -2656,15 +2790,15 @@ EOF
         > "$root_dir/make"
     chmod +x "$root_dir/make"
 
-    run build_valid_tags example
+    build_valid_tags example valid_tags bare_majors
 
-    [[ "$status" -eq 0 ]]
-    [[ "$output" == *"latest-debian"* ]]
+    [[ "$valid_tags" == *"latest-debian"* ]]
+    [[ -z "$bare_majors" ]]
 }
 
 run_invalid_build_case() {
     local build_json="$1"
-    local root_dir="$BATS_TEST_TMPDIR/build-invalid-element-root"
+    local root_dir="$BATS_TEST_TMPDIR/build-invalid-element-root" valid_tags="" bare_majors=""
     mkdir -p "$root_dir"
     export ROOT_DIR="$root_dir"
     printf '%s\n' '#!/usr/bin/env bash' \
@@ -2672,12 +2806,11 @@ run_invalid_build_case() {
         > "$root_dir/make"
     chmod +x "$root_dir/make"
 
-    run build_valid_tags example
-
-    if [[ "$status" -ne 1 || "$output" == *"latest-"* ]]; then
-        echo "ASSERTION FAILED: invalid build data must return 1 without emitting a rolling alias (status=$status, output=$output)" >&2
+    if build_valid_tags example valid_tags bare_majors; then
+        echo "ASSERTION FAILED: invalid build data must return 1" >&2
         return 1
     fi
+    [[ -z "$valid_tags" && -z "$bare_majors" ]]
 }
 
 @test "build_valid_tags rejects os darwin without emitting latest-" {
@@ -2703,7 +2836,7 @@ run_invalid_build_case() {
 }
 
 @test "build_valid_tags validates the full emitted latest alias length" {
-    local variant_121 variant_122 root_dir build_json
+    local variant_121 variant_122 root_dir build_json valid_tags bare_majors
     variant_121=$(printf '%*s' 121 '' | tr ' ' a)
     variant_122=$(printf '%*s' 122 '' | tr ' ' a)
     root_dir="$BATS_TEST_TMPDIR/build-alias-length-root"
@@ -2713,10 +2846,10 @@ run_invalid_build_case() {
     printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' '$build_json'" > "$root_dir/make"
     chmod +x "$root_dir/make"
 
-    run build_valid_tags example
+    build_valid_tags example valid_tags bare_majors
 
-    [[ "$status" -eq 0 ]]
-    [[ "$output" == *"latest-$variant_121"* ]]
+    [[ "$valid_tags" == *"latest-$variant_121"* ]]
+    [[ -z "$bare_majors" ]]
 
     run_invalid_build_case "[{\"tag\":\"release\",\"variant\":\"$variant_122\",\"flavor\":\"\",\"os\":\"linux\",\"is_default\":true,\"is_latest_version\":true}]"
 }
@@ -2746,7 +2879,7 @@ run_invalid_build_case() {
         DRY_RUN=TRUE \
         KEEP_LATEST_COUNT=0 \
         KEEP_MONTHS=0 \
-        bash -c 'source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"; build_valid_tags() { printf "%s\\n" latest; }; main stale'
+        bash -c 'source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"; build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }; main stale'
 
     [[ "$status" -eq 64 ]]
     [[ "$output" == "cleanup configuration rejected: DRY_RUN must be exactly true or false" ]]
@@ -2766,7 +2899,7 @@ run_invalid_build_case() {
         KEEP_MONTHS=not-a-number \
         bash -c '
             source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-            build_valid_tags() { printf "%s\\n" latest; }
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
             purge_ghcr() { printf "%s\\n" "0|0|0|0|0"; }
             list_tagged_ghcr_digests() { :; }
             purge_dockerhub() { printf "%s\\n" "0|0|0|0"; }
@@ -2823,7 +2956,7 @@ run_invalid_build_case() {
 
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false bash -c '
         source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-        build_valid_tags() { printf "%s\n" latest; }
+        build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
         gh() {
             [[ "$*" == *"--method DELETE"* ]] && { printf "DELETE\n" >> "$GH_LOG"; return 0; }
             [[ "$*" == *"/versions/101"* ]] && { printf "%s\n" "{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"stale\",\"latest\"]}}}"; return 0; }
@@ -2842,7 +2975,7 @@ run_invalid_build_case() {
 
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false bash -c '
         source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-        build_valid_tags() { printf "%s\n" latest; }
+        build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
         gh() {
             [[ "$*" == *"--method DELETE"* ]] && { printf "DELETE\n" >> "$GH_LOG"; return 0; }
             [[ "$*" == *"/versions/102"* ]] && { printf "%s\n" "{\"id\":102,\"metadata\":{\"container\":{\"tags\":[\"latest\"]}}}"; return 0; }
@@ -2859,7 +2992,7 @@ run_invalid_build_case() {
 @test "outdated-tag cleanup fails closed for failed or malformed version re-reads" {
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false bash -c '
         source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
-        build_valid_tags() { printf "%s\n" latest; }
+        build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
         for mode in failed malformed; do
             delete_log=$(mktemp)
             gh() {

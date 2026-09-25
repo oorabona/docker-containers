@@ -39,6 +39,25 @@ teardown() {
     teardown_temp_dir
 }
 
+@test "--cells carries detector full_version for a postgres cell" {
+    local base_cells bake_plan cells
+    base_cells=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --include-final-build postgres)
+    bake_plan=$(jq '[.[] | {
+        container,
+        version: .matrix_version,
+        variant,
+        full_version: (if .tag == "16-alpine-vector" then "16.13-alpine" else "" end)
+    }]' <<< "$base_cells")
+
+    run env BAKE_BUILDS_JSON="$bake_plan" \
+        bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --include-final-build postgres
+
+    [ "$status" -eq 0 ]
+    cells="$output"
+    [ "$(jq -r '.[] | select(.tag == "16-alpine-vector") | .full_version' <<< "$cells")" = "16.13-alpine" ]
+    [ "$(jq -r '.[] | select(.tag == "16-alpine-vector") | .matrix_version' <<< "$cells")" = "16" ]
+}
+
 # ---------------------------------------------------------------------------
 # Internal dependency base refs are a per-consumer invariant. This synthetic
 # emitted-target fixture models two consumer cells selecting different PHP refs;

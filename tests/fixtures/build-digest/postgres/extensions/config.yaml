@@ -1,0 +1,244 @@
+# PostgreSQL Extensions Configuration
+# Used by scripts/build-extensions.sh to compile and manage extensions
+#
+# Workflow:
+# 1. CI checks if artifacts exist in GitHub Releases for current PG major version
+# 2. Missing extensions are compiled using their Dockerfile
+# 3. Artifacts uploaded to release "extensions-pg{major}"
+# 4. Flavor images assemble pre-compiled artifacts
+
+# PostgreSQL versions to support
+pg_versions:
+  - "18"
+  - "17"
+  - "16"
+# Base image variant
+base_variant: "alpine"
+# GitHub release prefix for artifacts
+release_prefix: "extensions-pg"
+# Extensions requiring compilation
+# Each extension produces: {name}-{version}-pg{major}-alpine.tar.gz
+extensions:
+  pgvector:
+    version: "0.8.6"
+    description: "Vector similarity search for AI/RAG applications"
+    repo: "pgvector/pgvector"
+    build_deps:
+      - build-base
+      - clang-dev
+      - llvm-dev
+    shared_preload: false
+    initdb:
+      mode: create
+      sql_name: vector
+    priority: 1 # Build order (lower = first)
+  pg_partman:
+    version: "5.5.0"
+    description: "Partition management for time-series and large tables"
+    repo: "pgpartman/pg_partman"
+    build_deps:
+      - build-base
+    shared_preload: false
+    initdb:
+      mode: create
+    priority: 2
+  hypopg:
+    version: "1.4.3"
+    description: "Hypothetical indexes for query planning analysis"
+    repo: "HypoPG/hypopg"
+    build_deps:
+      - build-base
+    shared_preload: false
+    initdb:
+      mode: create
+    priority: 2
+  pg_qualstats:
+    version: "2.1.4"
+    description: "Statistics about predicates for index suggestions"
+    repo: "powa-team/pg_qualstats"
+    build_deps:
+      - build-base
+    shared_preload: true
+    initdb:
+      mode: create
+    priority: 2
+  paradedb:
+    version: "0.25.9"
+    rust_version: "1.96.0" # Pinned Rust toolchain; update manually when adopting new stable Rust (see postgres/version-extension.sh).
+    description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
+    repo: "paradedb/paradedb"
+    license: "AGPL-3.0"
+    build_deps:
+      - build-base
+      - rust
+      - cargo
+      - clang-dev
+      - clang-libclang
+      - llvm-dev
+      - openssl-dev
+      - icu-dev
+      # 0.25.0 links pg_search against OpenBLAS; without this the build fails at
+      # the link step with `ld: cannot find -lopenblas`.
+      - openblas-dev
+    # Needed in the final image too: the extension is dynamically linked, so
+    # libopenblas.so.3 must be present where postgres loads pg_search.
+    runtime_deps:
+      - openblas
+    shared_preload: false # Not required for PG17+
+    initdb:
+      mode: create
+      sql_name: pg_search
+    priority: 3
+    # EXPERIMENTAL: Alpine/musl build with RUSTFLAGS="-C target-feature=-crt-static"
+    # If build fails, re-add disabled: true and fall back to Debian-based build
+  citus:
+    version: "14.2.0"
+    description: "Distributed PostgreSQL for horizontal scaling"
+    repo: "citusdata/citus"
+    license: "AGPL-3.0"
+    build_deps:
+      - build-base
+      - curl-dev
+      - lz4-dev
+      - zstd-dev
+      - icu-dev
+    runtime_deps:
+      - libcurl
+    shared_preload: true
+    initdb:
+      mode: create
+    priority: 3
+    # Citus 14.0.0 adds PG 18 support
+    max_pg_version: 18
+  timescaledb:
+    version: "2.30.1"
+    description: "Time-series database for high-performance analytics"
+    repo: "timescale/timescaledb"
+    license: "Apache-2.0 + TSL"
+    build_deps:
+      - build-base
+      - cmake
+      - openssl-dev
+    shared_preload: true
+    initdb:
+      mode: create
+    priority: 3
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+      retain_count: 12
+  pg_cron:
+    version: "1.6.8"
+    description: "Cron-based job scheduling inside PostgreSQL"
+    repo: "citusdata/pg_cron"
+    build_deps:
+      - build-base
+    shared_preload: true
+    initdb:
+      mode: manual
+      reason: "Creatable only in cron.database_name, which may differ from POSTGRES_DB."
+    priority: 1
+  pg_ivm:
+    version: "1.15"
+    description: "Incremental View Maintenance for materialized views"
+    repo: "sraoss/pg_ivm"
+    build_deps:
+      - build-base
+    shared_preload: false
+    initdb:
+      mode: create
+    priority: 1
+  postgis:
+    version: "3.6.4"
+    description: "Geospatial database extension (PostGIS)"
+    repo: "postgis/postgis"
+    build_deps:
+      - build-base
+      # bison (yacc) + flex (lex) generate the WKT/WKB parser and lexer
+      # (lwin_wkt_parse.c / lwin_wkt_lex.c). The source is a git checkout via
+      # autogen.sh, which does not ship the pre-generated files a release tarball
+      # would, so both are required at build time ("No yacc found, cannot build parser").
+      - bison
+      - flex
+      - geos-dev
+      - proj-dev
+      - gdal-dev
+      - json-c-dev
+      - libxml2-dev
+      - protobuf-c-dev
+    shared_preload: false
+    initdb:
+      mode: create
+    priority: 2
+    # Runtime dependencies: apk packages needed in the final image
+    runtime_deps:
+      - geos
+      - gdal
+      - proj
+      - json-c
+      - libxml2
+      - protobuf-c
+# Built-in extensions (no compilation needed, just CREATE EXTENSION)
+builtin_extensions:
+  # Statistics and monitoring
+  - pg_stat_statements
+  - pg_buffercache
+  - pg_prewarm
+  # Cryptography
+  - pgcrypto
+  # Data types and indexing
+  - uuid-ossp
+  - btree_gin
+  - btree_gist
+  - pg_trgm
+  # Foreign data wrappers
+  - file_fdw
+  - postgres_fdw
+  # Administration
+  - name: adminpack
+    max_major: 16
+# Flavors define which compiled extensions are included per flavor
+# Each flavor maps to a list of extension names from the 'extensions' section above
+# The build system uses this to generate per-flavor Dockerfile FROM/COPY blocks
+# Extensions are filtered at build time by max_pg_version and disabled status
+#
+# Each compiled extension declares an explicit initdb policy above. Generated
+# Dockerfiles use the filtered flavor list for stages, copies, installs, and SQL.
+flavors:
+  base: []
+  vector:
+    - pgvector
+    - paradedb
+    - pg_cron
+    - pg_ivm
+  analytics:
+    - pg_partman
+    - hypopg
+    - pg_qualstats
+    - postgis
+    - pg_cron
+    - pg_ivm
+  timeseries:
+    - timescaledb
+    - pg_partman
+    - postgis
+    - pg_cron
+    - pg_ivm
+  spatial:
+    - postgis
+    - pg_cron
+    - pg_ivm
+  distributed:
+    - citus
+    - pg_cron
+    - pg_ivm
+  full:
+    - pgvector
+    - paradedb
+    - pg_partman
+    - hypopg
+    - pg_qualstats
+    - postgis
+    - citus
+    - timescaledb
+    - pg_cron
+    - pg_ivm

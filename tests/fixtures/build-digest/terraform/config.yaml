@@ -1,0 +1,80 @@
+# Terraform container configuration
+# Base image and third-party dependency versions
+# NOTE: Tool versions are pinned here and updated by upstream-monitor, not at build time.
+
+base_image: "${REMOTE_CR}/hashicorp/terraform:${UPSTREAM_VERSION}"
+base_image_cache:
+  # Cache must include ALL retained upstream versions, not just the latest:
+  # each retained variant build does
+  # `FROM ${REMOTE_CR}/hashicorp/terraform:<that-version>`, so a cache holding
+  # only the latest tag would 404 retained builds on the GHCR path.
+  # rotate-versions.sh keeps this array in sync with variants.yaml on each bump.
+  - source: hashicorp/terraform
+    tags: ["1.16.3", "1.16.2", "1.16.1"]
+  - source: library/alpine
+    tags: ["latest"]
+  - source: library/python
+    tags: ["3.12-alpine"]
+build_args:
+  TFLINT_VERSION: "0.64.0"
+  TRIVY_VERSION: "0.74.0"
+  TERRAGRUNT_VERSION: "1.1.5"
+  TERRAFORM_DOCS_VERSION: "0.24.0"
+  INFRACOST_VERSION: "0.10.45"
+  GITHUB_CLI_VERSION: "2.101.0"
+  AWS_CLI_VERSION: "1.46.1"
+  AZURE_CLI_VERSION: "2.90.0"
+  GCP_CLI_VERSION: "latest"
+  JINJA2_CLI_VERSION: "1.0.1"
+# Maps build_arg names to their upstream source for monitoring
+# All build_args with pinned versions MUST have an entry here:
+# - monitored deps: type + source info
+# - frozen/excluded deps: monitor: false with reason
+dependency_sources:
+  TFLINT_VERSION:
+    lifecycle: tracked
+    type: github-release
+    repo: terraform-linters/tflint
+    strip_v: true
+  TRIVY_VERSION:
+    lifecycle: tracked
+    type: github-release
+    repo: aquasecurity/trivy
+    strip_v: true
+  TERRAGRUNT_VERSION:
+    lifecycle: tracked
+    type: github-release
+    repo: gruntwork-io/terragrunt
+    strip_v: true
+  TERRAFORM_DOCS_VERSION:
+    lifecycle: tracked
+    type: github-release
+    repo: terraform-docs/terraform-docs
+    strip_v: true
+  INFRACOST_VERSION:
+    lifecycle: tracked
+    type: github-release
+    repo: infracost/infracost
+    strip_v: true
+  GITHUB_CLI_VERSION:
+    lifecycle: tracked
+    type: github-release
+    repo: cli/cli
+    strip_v: true
+  AWS_CLI_VERSION:
+    lifecycle: tracked
+    type: pypi
+    package: awscli
+  AZURE_CLI_VERSION:
+    lifecycle: tracked
+    type: pypi
+    package: azure-cli
+  GCP_CLI_VERSION:
+    monitor: false
+    lifecycle: untracked
+    reason: "Always latest — no version to track"
+  JINJA2_CLI_VERSION:
+    lifecycle: tracked
+    type: pypi
+    package: jinja2-cli
+value_proposition: Multi-version retention (3 latest). GCP/AWS/Azure providers pre-fetched, full provider cache layer. Daily upstream monitoring of all dependencies.
