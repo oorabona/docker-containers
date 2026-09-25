@@ -1718,6 +1718,25 @@ run_orphan_phase_completion_case() {
     is_valid_tag "2.334.0-arm64" "$valid_tags"
 }
 
+@test "is_valid_tag: retained postgres precise tag follows its declared major tag" {
+    local valid_tags
+    valid_tags=$(make_valid_tags "16-alpine-vector")
+    is_valid_tag "16.13-alpine-vector" "$valid_tags"
+    is_valid_tag "16.13-alpine-vector-arm64" "$valid_tags"
+}
+
+@test "is_valid_tag: obsolete postgres precise tag is invalid without its declared major" {
+    local valid_tags
+    valid_tags=$(make_valid_tags "16-alpine-vector")
+    run ! is_valid_tag "15.9-alpine" "$valid_tags"
+}
+
+@test "is_valid_tag: decimal patch form never aliases a major tag" {
+    local valid_tags
+    valid_tags=$(make_valid_tags "2.0")
+    run ! is_valid_tag "2.334.0" "$valid_tags"
+}
+
 # ---------------------------------------------------------------------------
 # Bare buildcache (flat-matrix rolling cache) — must stay preserved
 # ---------------------------------------------------------------------------

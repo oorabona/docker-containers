@@ -43,6 +43,7 @@ setup() {
     setup_temp_dir
     mkdir -p "${TEST_TEMP_DIR}/bin"
     _setup_docker_mock
+    unset BAKE_MERGE_PUBLISHED_TAGS_FILE
 }
 
 teardown() {
@@ -59,6 +60,106 @@ receipt_path_for_pair() {
     digest=$(printf '%s\0%s' "$container" "$tag" | sha256sum)
     digest="${digest%%[[:space:]]*}"
     printf 'bake-merge-%s.json' "$digest"
+}
+
+_set_postgres_inspect_mock() {
+    local amd64_version="$1" arm64_version="$2"
+    cat > "$DOCKER" <<MOCK
+#!/usr/bin/env bash
+if [[ "\$*" == *"imagetools inspect"* ]]; then
+    if [[ "\$*" == *"-arm64" ]]; then
+        printf '%s\\n' '{"config":{"Env":["PG_VERSION=${arm64_version}"]}}'
+    else
+        printf '%s\\n' '{"config":{"Env":["PG_VERSION=${amd64_version}"]}}'
+    fi
+    exit 0
+fi
+printf '%s\\n' "\$*" >> "\${DOCKER_LOG}"
+MOCK
+    chmod +x "$DOCKER"
+}
+
+@test "postgres retained bake cell publishes its PG_VERSION-verified precise alias" {
+    _set_postgres_inspect_mock "16.13" "16.13"
+    export BAKE_MERGE_PUBLISHED_TAGS_FILE="${TEST_TEMP_DIR}/published-tags.jsonl"
+
+    _call_merge_cell "postgres" "16-alpine-vector" "vector" "false" \
+        "ghcr.io/oorabona/postgres:16-alpine-vector" "false" "vector" "linux" "16" "16.13-alpine"
+
+    [ "$status" -eq 0 ]
+    local create_line
+    create_line=$(grep 'imagetools create' "$DOCKER_LOG")
+    [[ "$create_line" == *"ghcr.io/oorabona/postgres:16-alpine-vector"* ]]
+    [[ "$create_line" == *"ghcr.io/oorabona/postgres:16.13-alpine-vector"* ]]
+    [[ "$create_line" != *"ghcr.io/oorabona/postgres:latest"* ]]
+    [ "$(jq -r '.published_tags | join(",")' "$BAKE_MERGE_PUBLISHED_TAGS_FILE")" = "16-alpine-vector,16.13-alpine-vector" ]
+}
+
+@test "postgres PG_VERSION disagreement warns and skips only the precise alias" {
+    _set_postgres_inspect_mock "16.13" "16.14"
+
+    _call_merge_cell "postgres" "16-alpine-vector" "vector" "false" \
+        "ghcr.io/oorabona/postgres:16-alpine-vector" "false" "vector" "linux" "16" "16.13-alpine"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::warning::Skipping precise Postgres alias"* ]]
+    local create_line
+    create_line=$(grep 'imagetools create' "$DOCKER_LOG")
+    [[ "$create_line" == *"ghcr.io/oorabona/postgres:16-alpine-vector"* ]]
+    [[ "$create_line" != *"16.13-alpine-vector"* ]]
+}
+
+@test "postgres PG_VERSION must equal FULL_VERSION's numeric part" {
+    _set_postgres_inspect_mock "16.13" "16.13"
+
+    _call_merge_cell "postgres" "16-alpine-vector" "vector" "false" \
+        "ghcr.io/oorabona/postgres:16-alpine-vector" "false" "vector" "linux" "16" "16.14-alpine"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::warning::Skipping precise Postgres alias"* ]]
+    local create_line
+    create_line=$(grep 'imagetools create' "$DOCKER_LOG")
+    [[ "$create_line" == *"ghcr.io/oorabona/postgres:16-alpine-vector"* ]]
+    [[ "$create_line" != *"16.14-alpine-vector"* ]]
+}
+
+@test "cell without full_version keeps its existing merge refs" {
+    _call_merge_cell "postgres" "16-alpine-vector" "vector" "false" \
+        "ghcr.io/oorabona/postgres:16-alpine-vector" "false" "vector" "linux" "16" ""
+
+    [ "$status" -eq 0 ]
+    local create_line
+    create_line=$(grep 'imagetools create' "$DOCKER_LOG")
+    [[ "$create_line" == *"ghcr.io/oorabona/postgres:16-alpine-vector"* ]]
+    [[ "$create_line" != *"16.13-alpine-vector"* ]]
+}
+
+@test "duplicate preflight includes the admitted postgres precise alias" {
+    local generator caller
+    generator="${TEST_TEMP_DIR}/bin/generate-bake-hcl.sh"
+    caller="${TEST_TEMP_DIR}/precise-duplicate-caller.sh"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[
+  {"container":"postgres","tag":"16-alpine-vector","flavor":"vector","variant":"vector","is_default":false,"is_latest_version":false,"os":"linux","matrix_version":"16","full_version":"16.13-alpine","intermediate_ref":"ghcr.io/oorabona/postgres:16-alpine-vector"},
+  {"container":"postgres","tag":"16.13-alpine-vector","flavor":"vector","variant":"vector","is_default":false,"is_latest_version":false,"os":"linux","matrix_version":"16.13","full_version":"","intermediate_ref":"ghcr.io/oorabona/postgres:16.13-alpine-vector"}
+]'
+EOF
+    cat > "$caller" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${PROJECT_ROOT}/scripts/bake-merge-manifests.sh"
+SCRIPT_DIR="${TEST_TEMP_DIR}/bin"
+main postgres
+EOF
+    chmod +x "$generator" "$caller"
+
+    run bash "$caller"
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Duplicate final ref detected"* ]]
+    [[ "$output" == *"16.13-alpine-vector"* ]]
+    [ ! -s "$DOCKER_LOG" ]
 }
 
 # ---------------------------------------------------------------------------

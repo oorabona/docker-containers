@@ -97,6 +97,9 @@ _mdh_any_bake_final() {
 #                                 contract as helpers/bake-buildresult.sh)
 #   BAKE_GENERATE_FINAL_BUILD   — when "true", pass --include-final-build to the generator
 #                                 so flag-gated final-image cells are mirrored.
+#   BAKE_MERGE_PUBLISHED_TAGS_FILE — optional JSONL verdict from bake merge. When
+#                                 set, mirror exactly the GHCR tag suffixes that
+#                                 merge published for each cell.
 #   DRY_RUN                     — when "true", print commands without executing
 #   DOCKER                      — docker binary / mock (set by logging.sh)
 #   MIRROR_STRICT               — when "true", enables fail-closed return semantics:
@@ -189,7 +192,7 @@ mirror_to_dockerhub() {
         local cell
         cell=$(jq -c ".[$i]" <<< "$cells_json")
 
-        local container tag variant flavor os is_default is_latest_version intermediate_ref
+        local container tag variant flavor os is_default is_latest_version
         container=$(jq -r '.container'        <<< "$cell")
         tag=$(jq -r '.tag'                    <<< "$cell")
         variant=$(jq -r '.variant // ""'      <<< "$cell")
@@ -198,44 +201,64 @@ mirror_to_dockerhub() {
         is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
         # Gate rolling aliases on is_latest_version (same logic as _merge_cell)
         is_latest_version=$(jq -r 'if has("is_latest_version") then (if .is_latest_version then "true" else "false" end) else "true" end' <<< "$cell")
-        # intermediate_ref holds the GHCR per-arch base ref (token already expanded
-        # by --cells for the default REMOTE_CR; override expansion when REMOTE_CR differs)
-        intermediate_ref=$(jq -r '.intermediate_ref' <<< "$cell")
-        intermediate_ref="${intermediate_ref//\$\{REMOTE_CR\}/${remote_cr}}"
-
-        # The final merged GHCR manifest ref (no arch suffix) is the source for the mirror.
-        local ghcr_src="${remote_cr}/${container}:${tag}"
-
         # Enumerate tags from the cell's manifest publisher ownership view.
-        # For retained non-latest cells, publish ONLY the versioned tag.
+        # When bake merge supplied a verdict, it is authoritative: notably it
+        # excludes a precise Postgres alias whose PG_VERSION validation failed.
         local publisher sfx
-        if ! publisher=$(cell_manifest_publisher_for_os "$os"); then
-            printf '::warning::mirror-dockerhub: could not select a manifest publisher for %s:%s; mirroring none for this cell\n' \
-                "$container" "$tag" >&2
-            if [[ "$_strict" == "true" ]]; then
-                return 1
-            fi
-            continue
-        fi
         local suffixes_file
         suffixes_file=$(mktemp "${TMPDIR:-/tmp}/mirror-dockerhub-suffixes.XXXXXX") || return 1
-        if ! collect_lines "$suffixes_file" -- compute_cell_publisher_tag_suffixes "$publisher" "$tag" "$os" "$variant" "$flavor" "$is_default"; then
-            rm -f "$suffixes_file"
-            printf '::warning::mirror-dockerhub: could not enumerate all tags for %s:%s; mirroring none for this cell\n' \
-                "$container" "$tag" >&2
-            if [[ "$_strict" == "true" ]]; then
-                return 1
+        local use_merge_verdict=false
+        # Merge has no registry inspection in dry-run, so it deliberately
+        # emits no verdict; retain the existing dry-run planner in that case.
+        if [[ -n "${BAKE_MERGE_PUBLISHED_TAGS_FILE:-}" && ( -f "$BAKE_MERGE_PUBLISHED_TAGS_FILE" || "${DRY_RUN:-false}" != "true" ) ]]; then
+            use_merge_verdict=true
+            if ! jq -ser --arg container "$container" --arg tag "$tag" '
+                [ .[] | select(
+                    (.container // null) == $container and (.tag // null) == $tag and
+                    (.published_tags | type == "array") and
+                    all(.published_tags[]; type == "string" and length > 0)
+                  ) ]
+                | if length == 1 then .[0].published_tags[]
+                  else error("missing or ambiguous bake merge published-tag verdict")
+                  end
+            ' "$BAKE_MERGE_PUBLISHED_TAGS_FILE" > "$suffixes_file"; then
+                rm -f "$suffixes_file"
+                printf '::warning::mirror-dockerhub: no usable bake merge verdict for %s:%s; mirroring none for this cell\n' \
+                    "$container" "$tag" >&2
+                if [[ "$_strict" == "true" ]]; then
+                    return 1
+                fi
+                continue
             fi
-            continue
+        else
+            if ! publisher=$(cell_manifest_publisher_for_os "$os"); then
+                rm -f "$suffixes_file"
+                printf '::warning::mirror-dockerhub: could not select a manifest publisher for %s:%s; mirroring none for this cell\n' \
+                    "$container" "$tag" >&2
+                if [[ "$_strict" == "true" ]]; then
+                    return 1
+                fi
+                continue
+            fi
+            if ! collect_lines "$suffixes_file" -- compute_cell_publisher_tag_suffixes "$publisher" "$tag" "$os" "$variant" "$flavor" "$is_default"; then
+                rm -f "$suffixes_file"
+                printf '::warning::mirror-dockerhub: could not enumerate all tags for %s:%s; mirroring none for this cell\n' \
+                    "$container" "$tag" >&2
+                if [[ "$_strict" == "true" ]]; then
+                    return 1
+                fi
+                continue
+            fi
         fi
         while IFS= read -r sfx; do
             [[ -n "$sfx" ]] || continue
             # F2 gate: retained non-latest → versioned tag only
-            if [[ "$is_latest_version" != "true" && "$sfx" != "$tag" ]]; then
+            if [[ "$use_merge_verdict" != "true" && "$is_latest_version" != "true" && "$sfx" != "$tag" ]]; then
                 continue
             fi
 
             local dh_dst="docker.io/${DOCKERHUB_USERNAME}/${container}:${sfx}"
+            local ghcr_src="${remote_cr}/${container}:${sfx}"
 
             # Dry-run: explicit branch prints the command and skips execution.
             # Real path: "$DOCKER" (quoted) runs the actual binary or bats mock.

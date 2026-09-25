@@ -276,6 +276,16 @@ is_valid_tag() {
     if grep -qxF "$base_tag" <<< "$valid_tags"; then return 0; else grep_status=$?; fi
     [[ "$grep_status" -eq 1 ]] || return "$grep_status"
   fi
+  # A precise major.minor alias remains valid while its corresponding declared
+  # major tag (with the same optional suffix) remains valid.  The suffix must
+  # be empty or begin with '-' so 2.334.0 never aliases a hypothetical 2.0.
+  # Apply this after architecture stripping, preserving the existing -amd64
+  # and -arm64 behavior for both registries.
+  if [[ "$base_tag" =~ ^([0-9]+)\.[0-9]+($|-.+)$ ]]; then
+    local major_tag="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+    if grep -qxF "$major_tag" <<< "$valid_tags"; then return 0; else grep_status=$?; fi
+    [[ "$grep_status" -eq 1 ]] || return "$grep_status"
+  fi
   if [[ "$tag" == buildcache-* ]]; then
     remainder="${tag#buildcache-}"
     [[ "$remainder" == buildcache-* || -z "$remainder" ]] && return 1

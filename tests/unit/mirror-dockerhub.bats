@@ -65,7 +65,46 @@ MOCK_EOF
 
 teardown() {
     rm -rf "$TEST_LOG_DIR"
-    unset DOCKERHUB_USERNAME REMOTE_CR DRY_RUN BAKE_GENERATE_ALL_RETAINED MIRROR_STRICT _MDH_GENERATOR_OVERRIDE || true
+    unset DOCKERHUB_USERNAME REMOTE_CR DRY_RUN BAKE_GENERATE_ALL_RETAINED MIRROR_STRICT _MDH_GENERATOR_OVERRIDE BAKE_MERGE_PUBLISHED_TAGS_FILE || true
+}
+
+@test "mirror copies a PG_VERSION-approved precise postgres alias from the merge verdict" {
+    local generator verdict
+    generator="${TEST_LOG_DIR}/postgres-cell-generator.sh"
+    verdict="${TEST_LOG_DIR}/published-tags.jsonl"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"container":"postgres","tag":"16-alpine-vector","flavor":"vector","variant":"vector","is_default":false,"is_latest_version":false,"intermediate_ref":"ghcr.io/oorabona/postgres:16-alpine-vector"}]'
+EOF
+    chmod +x "$generator"
+    printf '%s\n' '{"container":"postgres","tag":"16-alpine-vector","published_tags":["16-alpine-vector","16.13-alpine-vector"]}' > "$verdict"
+    export _MDH_GENERATOR_OVERRIDE="$generator"
+    export BAKE_MERGE_PUBLISHED_TAGS_FILE="$verdict"
+
+    run _run_mirror postgres
+
+    [ "$status" -eq 0 ]
+    grep -Fq -- '-t docker.io/testuser/postgres:16.13-alpine-vector ghcr.io/oorabona/postgres:16.13-alpine-vector' "$DOCKER_LOG"
+}
+
+@test "mirror does not invent a postgres precise alias absent from the merge verdict" {
+    local generator verdict
+    generator="${TEST_LOG_DIR}/postgres-cell-generator.sh"
+    verdict="${TEST_LOG_DIR}/published-tags.jsonl"
+    cat > "$generator" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"container":"postgres","tag":"16-alpine-vector","flavor":"vector","variant":"vector","is_default":false,"is_latest_version":false,"intermediate_ref":"ghcr.io/oorabona/postgres:16-alpine-vector"}]'
+EOF
+    chmod +x "$generator"
+    printf '%s\n' '{"container":"postgres","tag":"16-alpine-vector","published_tags":["16-alpine-vector"]}' > "$verdict"
+    export _MDH_GENERATOR_OVERRIDE="$generator"
+    export BAKE_MERGE_PUBLISHED_TAGS_FILE="$verdict"
+
+    run _run_mirror postgres
+
+    [ "$status" -eq 0 ]
+    grep -Fq -- '-t docker.io/testuser/postgres:16-alpine-vector ghcr.io/oorabona/postgres:16-alpine-vector' "$DOCKER_LOG"
+    ! grep -Fq -- '16.13-alpine-vector' "$DOCKER_LOG"
 }
 
 # ---------------------------------------------------------------------------
