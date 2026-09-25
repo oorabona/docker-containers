@@ -336,6 +336,9 @@ EOF
     [[ "$output" != *"cat:"* ]]
 }
 
+# The inputs are frozen copies under tests/fixtures/build-digest, taken at
+# 513f87e5 where these digests were recorded. Reading the live container
+# directories instead made every postgres or terraform version bump fail here.
 @test "digest serialization preserves established postgres and terraform digests" {
     local -a cases=(
         "postgres analytics 08a1a6eed3a1"
@@ -355,7 +358,7 @@ EOF
 
     for case in "${cases[@]}"; do
         read -r container flavor expected <<< "$case"
-        cd "$ORIG_DIR/$container"
+        cd "$ORIG_DIR/tests/fixtures/build-digest/$container"
         run compute_build_digest "Dockerfile" "$flavor"
         [ "$status" -eq 0 ]
         [ "$output" = "$expected" ]
