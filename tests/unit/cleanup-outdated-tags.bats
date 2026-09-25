@@ -1810,14 +1810,24 @@ run_orphan_phase_completion_case() {
     mkdir -p "$root_dir"
     export ROOT_DIR="$root_dir"
     printf '%s\n' '#!/usr/bin/env bash' \
-        'printf "%s\n" '\''[{"tag":"16","variant":"","flavor":"","os":"linux","is_default":true,"is_latest_version":true},{"tag":"16-alpine-vector","variant":"","flavor":"","os":"linux","is_default":true,"is_latest_version":true},{"tag":"1.7.7","variant":"","flavor":"","os":"linux","is_default":true,"is_latest_version":true},{"tag":"1-alpine","variant":"","flavor":"","os":"linux","is_default":true,"is_latest_version":true}]'\''' \
+        'case "$2" in' \
+        '  postgres) printf "%s\\n" '\''[{"tag":"16-alpine-vector","version":"16","variant":"vector","flavor":"","os":"linux","is_default":true,"is_latest_version":true},{"tag":"16-alpine","version":"16","variant":"","flavor":"","os":"linux","is_default":true,"is_latest_version":true}]'\'' ;;' \
+        '  example) printf "%s\\n" '\''[{"tag":"1-alpine","version":"1.7.7","variant":"","flavor":"","os":"linux","is_default":true,"is_latest_version":true}]'\'' ;;' \
+        'esac' \
         > "$root_dir/make"
     chmod +x "$root_dir/make"
+    build_valid_tags postgres valid_tags bare_majors
+
+    [[ "$bare_majors" == "16" ]]
+    is_valid_tag "16.13-alpine-vector" "$valid_tags" "$bare_majors"
+    is_valid_tag "16.13-alpine-vector-arm64" "$valid_tags" "$bare_majors"
+    run ! is_valid_tag "16-full-alpine" "$valid_tags" "$bare_majors"
+    run ! is_valid_tag "15.9-alpine" "$valid_tags" "$bare_majors"
+
     build_valid_tags example valid_tags bare_majors
 
     [[ "$valid_tags" == *"1-alpine"* ]]
-    [[ "$bare_majors" == "16" ]]
-    is_valid_tag "16.13-alpine-vector" "$valid_tags" "$bare_majors"
+    [[ -z "$bare_majors" ]]
     run ! is_valid_tag "1.6-alpine" "$valid_tags" "$bare_majors"
 }
 
