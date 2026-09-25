@@ -112,6 +112,27 @@ _assert_arg_key() {
     fi
 }
 
+# The bake matrix intentionally does not call version.sh after a build: the
+# detector's BAKE_BUILDS_JSON is the authoritative per-run resolution.  Match
+# on the same cell identity used for the bake target (container, matrix version
+# and variant) and carry only its already-resolved full_version into --cells.
+_bake_plan_full_version() {
+    local container="$1" matrix_version="$2" variant="$3"
+    [[ -n "${BAKE_BUILDS_JSON:-}" ]] || return 1
+
+    jq -er --arg c "$container" --arg v "$matrix_version" --arg variant "$variant" '
+        if type != "array" then error("BAKE_BUILDS_JSON is not an array") else . end
+        | [ .[]
+            | select((.container // null) == $c and (.version // null) == $v and (.variant // "") == $variant)
+            | .full_version // ""
+          ]
+        | if length == 1 and (.[0] | type == "string") then .[0]
+          elif length == 0 then error("bake plan has no matching cell")
+          else error("ambiguous bake plan cell identity")
+          end
+    ' <<< "$BAKE_BUILDS_JSON"
+}
+
 # Print CLI help.
 _usage() {
     cat <<'EOF'
@@ -1804,7 +1825,7 @@ _emit_cells_json() {
     # #595: include target_id (byte-identical to the bake target key) so that
     #        bake-buildresult.sh can correlate --metadata-file keys to cells.
     _on_cell_plain() {
-        local _c="$1" _tag="$2" _flavor="$3" _is_default="$4" _iref="$5" _is_latest="${6:-false}" _variant="${7:-}" _tid="${8:-}" _version="${9:-}" _dockerfile="${10:-}" _build_args="${11:-}" _base_identity="${12:-}"
+        local _c="$1" _tag="$2" _flavor="$3" _is_default="$4" _iref="$5" _is_latest="${6:-false}" _variant="${7:-}" _tid="${8:-}" _version="${9:-}" _dockerfile="${10:-}" _build_args="${11:-}" _base_identity="${12:-}" _matrix_version="${13:-}" _full_version="${14:-}"
         [[ -n "$_build_args" && -n "$_base_identity" ]] || return 1
         local _obj
         _obj=$(jq -cn \
@@ -1817,10 +1838,12 @@ _emit_cells_json() {
             --arg intermediate_ref "$_iref" \
             --arg target_id    "$_tid" \
             --arg version      "$_version" \
+            --arg matrix_version "$_matrix_version" \
+            --arg full_version "$_full_version" \
             --arg dockerfile   "$_dockerfile" \
             --argjson build_args "$_build_args" \
             --argjson base_identity "$_base_identity" \
-            '{container: $container, tag: $tag, flavor: $flavor, variant: $variant, is_default: $is_default, is_latest_version: $is_latest_version, intermediate_ref: $intermediate_ref, target_id: $target_id, version: $version, dockerfile: $dockerfile, build_args: $build_args, base_identity: $base_identity}')
+            '{container: $container, tag: $tag, flavor: $flavor, variant: $variant, is_default: $is_default, is_latest_version: $is_latest_version, intermediate_ref: $intermediate_ref, target_id: $target_id, version: $version, matrix_version: $matrix_version, full_version: $full_version, dockerfile: $dockerfile, build_args: $build_args, base_identity: $base_identity}')
         cells_json=$(jq -cn --argjson arr "$cells_json" --argjson obj "$_obj" '$arr + [$obj]')
     }
 
@@ -1867,7 +1890,7 @@ _emit_cells_json() {
             fi
 
             local intermediate_ref="${_BAKE_REMOTE_CR}/${c}:${_EC_cell_tag}"
-            local cell_dockerfile abs_dockerfile args_json base_identity base_sfx cell_version
+            local cell_dockerfile abs_dockerfile args_json base_identity base_sfx cell_version full_version=""
             cell_dockerfile=$(_cell_dockerfile_source "$c" "$_EC_cell_dockerfile" \
                 "$_EC_cell_flavor" "$_EC_cell_build_flavor")
             abs_dockerfile="${PROJECT_ROOT}/${c}/${cell_dockerfile}"
@@ -1898,10 +1921,17 @@ _emit_cells_json() {
             esac
             base_sfx=$(base_suffix "${PROJECT_ROOT}/${c}" 2>/dev/null || true)
             cell_version="${_EC_cell_version}${base_sfx}"
+            if [[ -n "${BAKE_BUILDS_JSON:-}" ]]; then
+                if ! full_version=$(_bake_plan_full_version "$c" "$_EC_cell_version" "$_EC_cell_variant"); then
+                    printf 'ERROR: could not resolve authoritative full_version for bake cell %s version=%s variant=%s\n' \
+                        "$c" "$_EC_cell_version" "$_EC_cell_variant" >&2
+                    return 1
+                fi
+            fi
             _on_cell_plain "$c" "$_EC_cell_tag" "$_EC_cell_flavor" \
                 "$_EC_cell_is_default" "$intermediate_ref" "$_EC_cell_is_latest_version" \
                 "$_EC_cell_variant" "$cell_tid" "$cell_version" "$cell_dockerfile" \
-                "$args_json" "$base_identity"
+                "$args_json" "$base_identity" "$_EC_cell_version" "$full_version"
         done
     done
 
