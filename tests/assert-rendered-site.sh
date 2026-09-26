@@ -465,4 +465,11 @@ if [[ ${WITH_CONTAINERS} == true ]]; then
   for container_page in "${postgres_page}" "${sslh_page}"; do
     assert_token_absent "${container_page}" '\{\{|\{%' 'container page contains raw Liquid syntax'
   done
+
+  while IFS= read -r -d '' container_page; do
+    assert_token_absent "${container_page}" 'n/a — runtime' \
+      'container disclosure metric contains a runtime placeholder'
+    assert_token_absent "${container_page}" '<span class="disclosure__metric">[[:space:]]*sha256:[[:space:]]*</span>' \
+      'container disclosure metric contains a bare sha256 prefix'
+  done < <(find "${SITE_DIR}/container" -mindepth 2 -maxdepth 2 -name index.html -print0)
 fi

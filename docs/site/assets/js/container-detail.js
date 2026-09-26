@@ -961,14 +961,6 @@
     var defaultVariant = document.querySelector('.variant-tag.selected');
     if (defaultVariant) {
       selectVariant(defaultVariant);
-    } else {
-      // Non-variant containers: read SBOM data from hidden carrier element
-      var carrier = document.getElementById('sbom-data-carrier');
-      if (carrier) {
-        updateSbomSection(carrier);
-        updateChangelogSection(carrier);
-        updateHistorySection(carrier);
-      }
     }
 
     // Registry toggle + pull input init removed PR1 — handled by <variant-action-bar>

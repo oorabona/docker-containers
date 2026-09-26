@@ -1108,14 +1108,16 @@
                 will update the lineage-value field on variant switch; this <summary> metric is
                 Liquid-only and intentionally stays fixed at the default variant's value.
               {%- endcomment -%}
-              {%- if page.build_digest != "per-variant" and page.build_digest != blank -%}
-                {%- assign _initial_digest = page.build_digest | slice: 0, 7 -%}
+              {%- if page.build_digest != "per-variant" and page.build_digest != blank and page.build_digest != "unknown" -%}
+                {%- assign _initial_digest = page.build_digest | remove_first: "sha256:" | slice: 0, 12 -%}
                 {%- assign _body_digest = page.build_digest -%}
               {%- elsif default_variant.build_digest and default_variant.build_digest != blank and default_variant.build_digest != "unknown" -%}
-                {%- assign _initial_digest = default_variant.build_digest | slice: 0, 7 -%}
+                {%- assign _initial_digest = default_variant.build_digest | remove_first: "sha256:" | slice: 0, 12 -%}
                 {%- assign _body_digest = default_variant.build_digest -%}
               {%- endif -%}
-              <span class="disclosure__metric">{{ _initial_digest | default: 'n/a' }}</span>
+              {%- if _initial_digest and _initial_digest != blank -%}
+              <span class="disclosure__metric">{{ _initial_digest }}</span>
+              {%- endif -%}
               <i class="ti ti-chevron-right disclosure__chevron" aria-hidden="true"></i>
             </summary>
             <div class="disclosure__body">
@@ -1156,23 +1158,17 @@
           </details>
           {% endif %}
 
-          <!-- SBOM data carrier for non-variant containers (hidden, read by JS) -->
-          {% unless page.has_variants %}
-          {% if page.sbom_summary or page.changelog or page.build_history %}
-          <div id="sbom-data-carrier" style="display:none;"
-               {% if page.sbom_summary %}data-sbom-summary='{{ page.sbom_summary | jsonify }}'{% endif %}
-               {% if page.sbom_packages %}data-sbom-packages='{{ page.sbom_packages | jsonify }}'{% endif %}
-               {% if page.changelog %}data-changelog='{{ page.changelog | jsonify | escape }}'{% endif %}
-               {% if page.build_history %}data-build-history='{{ page.build_history | jsonify }}'{% endif %}>
-          </div>
-          {% endif %}
-          {% endunless %}
-
           <!-- Package Summary (from SBOM) -->
+          {%- assign _summary_sbom = page.sbom_summary -%}
+          {%- if _summary_sbom == nil or _summary_sbom == empty -%}
+            {%- assign _summary_sbom = default_variant.sbom_summary -%}
+          {%- endif -%}
           <details id="dep-health" class="disclosure">
             <summary>
               <span class="disclosure__title">Package summary</span>
-              <span class="disclosure__metric">n/a — runtime parsed</span>
+              {%- if _summary_sbom and _summary_sbom != empty and _summary_sbom.total != nil -%}
+              <span class="disclosure__metric">{{ _summary_sbom.total }} packages</span>
+              {%- endif -%}
               <i class="ti ti-chevron-right disclosure__chevron" aria-hidden="true"></i>
             </summary>
             <div class="disclosure__body">
@@ -1189,10 +1185,23 @@
           </details>
 
           <!-- Recent Changes (from SBOM changelog) -->
+          {%- assign _summary_changelog = page.changelog -%}
+          {%- if _summary_changelog == nil or _summary_changelog == empty -%}
+            {%- assign _summary_changelog = default_variant.changelog -%}
+          {%- endif -%}
           <details class="disclosure">
             <summary>
               <span class="disclosure__title">Recent changes</span>
-              <span class="disclosure__metric">n/a — runtime parsed</span>
+              {%- if _summary_changelog.summary and _summary_changelog.summary != empty -%}
+                {%- assign _changes_added = _summary_changelog.summary.added | default: 0 -%}
+                {%- assign _changes_removed = _summary_changelog.summary.removed | default: 0 -%}
+                {%- assign _changes_updated = _summary_changelog.summary.updated | default: 0 -%}
+                {%- if _changes_added == 0 and _changes_removed == 0 and _changes_updated == 0 -%}
+              <span class="disclosure__metric">no changes</span>
+                {%- else -%}
+              <span class="disclosure__metric">+{{ _changes_added }} −{{ _changes_removed }} ~{{ _changes_updated }}</span>
+                {%- endif -%}
+              {%- endif -%}
               <i class="ti ti-chevron-right disclosure__chevron" aria-hidden="true"></i>
             </summary>
             <div class="disclosure__body">
@@ -1208,10 +1217,16 @@
           </details>
 
           <!-- Build History (from SBOM history) -->
+          {%- assign _summary_build_history = page.build_history -%}
+          {%- if _summary_build_history == nil or _summary_build_history == empty -%}
+            {%- assign _summary_build_history = default_variant.build_history -%}
+          {%- endif -%}
           <details id="build-history" class="disclosure">
             <summary>
               <span class="disclosure__title">Build history</span>
-              <span class="disclosure__metric">n/a — runtime fetched</span>
+              {%- if _summary_build_history and _summary_build_history != empty -%}
+              <span class="disclosure__metric">{{ _summary_build_history | size }} builds</span>
+              {%- endif -%}
               <i class="ti ti-chevron-right disclosure__chevron" aria-hidden="true"></i>
             </summary>
             <div class="disclosure__body">

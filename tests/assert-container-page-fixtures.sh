@@ -253,12 +253,67 @@ assert_variant_action_bar_options() {
   done
 }
 
+assert_summary_metric() {
+  local container=$1
+  local title=$2
+  local expected_metric=$3
+  PAGE="${SITE_DIR}/container/${container}/index.html"
+  [[ -f "${PAGE}" && -s "${PAGE}" ]] || fail 'container fixture page must be a non-empty regular file'
+
+  local summary_markup
+  summary_markup=$(awk -v title="${title}" '
+    index($0, "<span class=\"disclosure__title\">" title "</span>") { in_summary = 1 }
+    in_summary { print }
+    in_summary && /<\/summary>/ { exit }
+  ' "${PAGE}")
+  [[ -n ${summary_markup} ]] || fail "could not extract ${title} summary"
+
+  if [[ -n ${expected_metric} ]]; then
+    local metric_element="<span class=\"disclosure__metric\">${expected_metric}</span>"
+    if grep -Fq -- "${metric_element}" <<<"${summary_markup}"; then
+      :
+    else
+      classify_grep_status $? "${title} summary is missing metric ${metric_element}"
+    fi
+  elif grep -Fq -- '<span class="disclosure__metric">' <<<"${summary_markup}"; then
+    classify_grep_status 0 "${title} summary renders a metric without source data" absent
+  else
+    classify_grep_status $? "could not check ${title} summary for an absent metric" absent
+  fi
+}
+
+assert_absent_metric_element() {
+  local container=$1
+  local metric=$2
+  local claim=$3
+  PAGE="${SITE_DIR}/container/${container}/index.html"
+  [[ -f "${PAGE}" && -s "${PAGE}" ]] || fail 'container fixture page must be a non-empty regular file'
+
+  local metric_element="<span class=\"disclosure__metric\">${metric}</span>"
+  if grep -Fq -- "${metric_element}" "${PAGE}"; then
+    classify_grep_status 0 "${claim}" absent
+  else
+    classify_grep_status $? "could not check ${claim}" absent
+  fi
+}
+
 assert_page fixture-first-empty-later-evidence retained-evidence-alpine evidenced 2026-09-12 0 1 0 0 0 pending retained-evidence-sibling
 assert_selected_image_consumers fixture-first-empty-later-evidence retained-evidence-alpine current-without-variant retained-evidence alpine
 assert_variant_action_bar_options fixture-first-empty-later-evidence current-without-variant retained-evidence alpine,sibling
 assert_page fixture-no-security-evidence no-evidence-alpine absent '' '' '' '' '' '' pending ''
 assert_page fixture-selected-security-evidence selected-evidence-alpine evidenced 2026-09-12 0 0 0 0 0 pending selected-evidence-sibling
 assert_page fixture-contract-invalid-security-evidence bogus-source-alpine not-recorded '' '' '' '' '' '' attested ''
+assert_summary_metric fixture-detail-summary-metrics 'Build lineage' '1b56ba6ead9d'
+assert_summary_metric fixture-detail-summary-metrics 'Package summary' '55 packages'
+assert_summary_metric fixture-detail-summary-metrics 'Recent changes' '+2 −1 ~3'
+assert_summary_metric fixture-detail-summary-metrics 'Build history' '2 builds'
+assert_summary_metric fixture-detail-summary-no-changes 'Recent changes' 'no changes'
+assert_summary_metric fixture-no-security-evidence 'Package summary' ''
+assert_summary_metric fixture-no-security-evidence 'Recent changes' ''
+assert_summary_metric fixture-no-security-evidence 'Build history' ''
+assert_absent_metric_element fixture-no-security-evidence 'sha256:' 'missing-data fixture renders a sha256:-only build lineage metric'
+assert_absent_metric_element fixture-no-security-evidence 'n/a — runtime parsed' 'missing-data fixture renders the package runtime placeholder'
+assert_absent_metric_element fixture-no-security-evidence 'n/a — runtime fetched' 'missing-data fixture renders the build-history runtime placeholder'
 
 DASHBOARD_PAGE="${SITE_DIR}/index.html"
 PAGE=${DASHBOARD_PAGE}

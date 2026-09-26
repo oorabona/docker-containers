@@ -740,7 +740,7 @@ JSON
     local layout
     layout="${PROJECT_ROOT}/docs/site/_layouts/container-detail.html"
 
-    [[ "$(grep -c "data-changelog='{{ .* | jsonify | escape }}" "$layout")" -eq 3 ]]
+    [[ "$(grep -c "data-changelog='{{ .* | jsonify | escape }}" "$layout")" -eq 2 ]]
     if grep -q "data-changelog='{{ .* | jsonify }}'" "$layout"; then
         fail "changelog JSON data attributes should be escaped"
     fi
