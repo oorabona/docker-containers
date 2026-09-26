@@ -444,6 +444,16 @@ if [[ ${WITH_CONTAINERS} == true ]]; then
   # check's dataless build renders no cards. Keep this positive control with the
   # data-backed assertions rather than letting it fail on every pull request.
   # The control is sslh because postgres' publication is not confirmed until #1575.
+  [[ -d "${SITE_DIR}/container" ]] || fail 'no container pages found'
+  container_pages_file=$(mktemp) || fail 'could not create a temporary container-page list'
+  if ! find "${SITE_DIR}/container" -mindepth 2 -maxdepth 2 -name index.html -print0 > "${container_pages_file}"; then
+    rm -f "${container_pages_file}"
+    fail 'could not collect container pages'
+  fi
+  mapfile -d '' -t container_pages < "${container_pages_file}"
+  rm -f "${container_pages_file}"
+  [[ ${#container_pages[@]} -gt 0 ]] || fail 'no container pages found'
+
   sslh_pull_command=$(python3 "${EXTRACTOR}" attribute value --id pull-sslh "${DASHBOARD_PAGE}") \
     || fail "could not read the value of #pull-sslh in ${DASHBOARD_PAGE}"
   expected_sslh_pull_command_pattern='^docker pull ghcr\.io/oorabona/sslh:[^[:space:]]+$'
@@ -464,5 +474,12 @@ if [[ ${WITH_CONTAINERS} == true ]]; then
     || fail "container/sslh/index.html must not contain an element whose class list contains \"variants-table\"; found ${sslh_variants_count}"
   for container_page in "${postgres_page}" "${sslh_page}"; do
     assert_token_absent "${container_page}" '\{\{|\{%' 'container page contains raw Liquid syntax'
+  done
+
+  for container_page in "${container_pages[@]}"; do
+    assert_token_absent "${container_page}" 'n/a — runtime' \
+      'container disclosure metric contains a runtime placeholder'
+    assert_token_absent "${container_page}" '<span class="disclosure__metric">[[:space:]]*sha256:[[:space:]]*</span>' \
+      'container disclosure metric contains a bare sha256 prefix'
   done
 fi
