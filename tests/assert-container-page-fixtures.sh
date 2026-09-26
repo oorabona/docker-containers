@@ -268,17 +268,36 @@ assert_summary_metric() {
   ' "${PAGE}")
   [[ -n ${summary_markup} ]] || fail "could not extract ${title} summary"
 
+  local metric_hook=''
+  case ${title} in
+    'Package summary') metric_hook='sbom-summary-metric' ;;
+    'Recent changes') metric_hook='changelog-summary-metric' ;;
+    'Build history') metric_hook='history-summary-metric' ;;
+  esac
+
   if [[ -n ${expected_metric} ]]; then
-    local metric_element="<span class=\"disclosure__metric\">${expected_metric}</span>"
+    local metric_element
+    if [[ -n ${metric_hook} ]]; then
+      metric_element="<span class=\"disclosure__metric\" id=\"${metric_hook}\">${expected_metric}</span>"
+    else
+      metric_element="<span class=\"disclosure__metric\">${expected_metric}</span>"
+    fi
     if grep -Fq -- "${metric_element}" <<<"${summary_markup}"; then
       :
     else
       classify_grep_status $? "${title} summary is missing metric ${metric_element}"
     fi
-  elif grep -Fq -- '<span class="disclosure__metric">' <<<"${summary_markup}"; then
-    classify_grep_status 0 "${title} summary renders a metric without source data" absent
   else
-    classify_grep_status $? "could not check ${title} summary for an absent metric" absent
+    [[ -n ${metric_hook} ]] || fail "${title} has no metric hook for an absent-data assertion"
+    local hidden_metric_element="<span class=\"disclosure__metric\" id=\"${metric_hook}\" hidden></span>"
+    if grep -Fq -- "${hidden_metric_element}" <<<"${summary_markup}"; then
+      :
+    else
+      classify_grep_status $? "${title} summary is missing hidden metric hook ${hidden_metric_element}"
+    fi
+    if grep -Fq -- "<span class=\"disclosure__metric\" id=\"${metric_hook}\">" <<<"${summary_markup}"; then
+      classify_grep_status 0 "${title} summary renders a visible metric without source data" absent
+    fi
   fi
 }
 
@@ -307,7 +326,7 @@ assert_summary_metric fixture-detail-summary-metrics 'Build lineage' '1b56ba6ead
 assert_summary_metric fixture-detail-summary-metrics 'Package summary' '55 packages'
 assert_summary_metric fixture-detail-summary-metrics 'Recent changes' '+2 −1 ~3'
 assert_summary_metric fixture-detail-summary-metrics 'Build history' '2 builds'
-assert_summary_metric fixture-detail-summary-no-changes 'Recent changes' 'no changes'
+assert_summary_metric fixture-detail-summary-no-changes 'Recent changes' ''
 assert_summary_metric fixture-no-security-evidence 'Package summary' ''
 assert_summary_metric fixture-no-security-evidence 'Recent changes' ''
 assert_summary_metric fixture-no-security-evidence 'Build history' ''

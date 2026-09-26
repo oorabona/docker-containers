@@ -1158,7 +1158,20 @@
           </details>
           {% endif %}
 
+          <!-- SBOM data carrier for non-variant containers (hidden, read by JS) -->
+          {% unless page.has_variants %}
+          {% if page.sbom_summary or page.changelog or page.build_history %}
+          <div id="sbom-data-carrier" style="display:none;"
+               {% if page.sbom_summary %}data-sbom-summary='{{ page.sbom_summary | jsonify }}'{% endif %}
+               {% if page.sbom_packages %}data-sbom-packages='{{ page.sbom_packages | jsonify }}'{% endif %}
+               {% if page.changelog %}data-changelog='{{ page.changelog | jsonify | escape }}'{% endif %}
+               {% if page.build_history %}data-build-history='{{ page.build_history | jsonify }}'{% endif %}>
+          </div>
+          {% endif %}
+          {% endunless %}
+
           <!-- Package Summary (from SBOM) -->
+          {%- comment -%} Invariant: when page.has_variants is true, page-level summary data is absent or equals the selected variant's. {%- endcomment -%}
           {%- assign _summary_sbom = page.sbom_summary -%}
           {%- if _summary_sbom == nil or _summary_sbom == empty -%}
             {%- assign _summary_sbom = default_variant.sbom_summary -%}
@@ -1166,9 +1179,7 @@
           <details id="dep-health" class="disclosure">
             <summary>
               <span class="disclosure__title">Package summary</span>
-              {%- if _summary_sbom and _summary_sbom != empty and _summary_sbom.total != nil -%}
-              <span class="disclosure__metric">{{ _summary_sbom.total }} packages</span>
-              {%- endif -%}
+              <span class="disclosure__metric" id="sbom-summary-metric"{% unless _summary_sbom and _summary_sbom != empty and _summary_sbom.total > 0 %} hidden{% endunless %}>{% if _summary_sbom and _summary_sbom != empty and _summary_sbom.total > 0 %}{{ _summary_sbom.total }} packages{% endif %}</span>
               <i class="ti ti-chevron-right disclosure__chevron" aria-hidden="true"></i>
             </summary>
             <div class="disclosure__body">
@@ -1192,16 +1203,11 @@
           <details class="disclosure">
             <summary>
               <span class="disclosure__title">Recent changes</span>
-              {%- if _summary_changelog.summary and _summary_changelog.summary != empty -%}
+              <span class="disclosure__metric" id="changelog-summary-metric"{% unless _summary_changelog.changes and _summary_changelog.changes != empty %} hidden{% endunless %}>{% if _summary_changelog.changes and _summary_changelog.changes != empty %}
                 {%- assign _changes_added = _summary_changelog.summary.added | default: 0 -%}
                 {%- assign _changes_removed = _summary_changelog.summary.removed | default: 0 -%}
                 {%- assign _changes_updated = _summary_changelog.summary.updated | default: 0 -%}
-                {%- if _changes_added == 0 and _changes_removed == 0 and _changes_updated == 0 -%}
-              <span class="disclosure__metric">no changes</span>
-                {%- else -%}
-              <span class="disclosure__metric">+{{ _changes_added }} −{{ _changes_removed }} ~{{ _changes_updated }}</span>
-                {%- endif -%}
-              {%- endif -%}
+              +{{ _changes_added }} −{{ _changes_removed }} ~{{ _changes_updated }}{% endif %}</span>
               <i class="ti ti-chevron-right disclosure__chevron" aria-hidden="true"></i>
             </summary>
             <div class="disclosure__body">
@@ -1224,9 +1230,7 @@
           <details id="build-history" class="disclosure">
             <summary>
               <span class="disclosure__title">Build history</span>
-              {%- if _summary_build_history and _summary_build_history != empty -%}
-              <span class="disclosure__metric">{{ _summary_build_history | size }} builds</span>
-              {%- endif -%}
+              <span class="disclosure__metric" id="history-summary-metric"{% unless _summary_build_history and _summary_build_history != empty %} hidden{% endunless %}>{% if _summary_build_history and _summary_build_history != empty %}{{ _summary_build_history | size }} builds{% endif %}</span>
               <i class="ti ti-chevron-right disclosure__chevron" aria-hidden="true"></i>
             </summary>
             <div class="disclosure__body">

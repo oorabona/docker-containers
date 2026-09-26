@@ -369,16 +369,28 @@
       other: 'Other'
     };
 
+    function setSummaryMetric(id, text, visible) {
+      var metric = document.getElementById(id);
+      if (!metric) return;
+
+      metric.textContent = visible ? text : '';
+      if (visible) {
+        metric.removeAttribute('hidden');
+      } else {
+        metric.setAttribute('hidden', '');
+      }
+    }
+
     function updateSbomSection(variantEl) {
       var section = document.getElementById('sbom-section');
-      if (!section) return;
+      if (!section) { setSummaryMetric('sbom-summary-metric', '', false); return; }
 
       var attr = variantEl.dataset.sbomSummary;
-      if (!attr) { section.style.display = 'none'; return; }
+      if (!attr) { section.style.display = 'none'; setSummaryMetric('sbom-summary-metric', '', false); return; }
 
       var summary;
-      try { summary = JSON.parse(attr); } catch(e) { section.style.display = 'none'; return; }
-      if (!summary.total || summary.total === 0) { section.style.display = 'none'; return; }
+      try { summary = JSON.parse(attr); } catch(e) { section.style.display = 'none'; setSummaryMetric('sbom-summary-metric', '', false); return; }
+      if (!summary.total || summary.total <= 0) { section.style.display = 'none'; setSummaryMetric('sbom-summary-metric', '', false); return; }
 
       // Parse packages data
       currentSbomPackages = null;
@@ -388,6 +400,7 @@
       }
 
       section.style.display = '';
+      setSummaryMetric('sbom-summary-metric', summary.total + ' packages', true);
       var badge = document.getElementById('sbom-total-badge');
       if (badge) badge.textContent = summary.total + ' packages';
 
@@ -521,16 +534,19 @@
 
     function updateChangelogSection(variantEl) {
       var section = document.getElementById('changelog-section');
-      if (!section) return;
+      if (!section) { setSummaryMetric('changelog-summary-metric', '', false); return; }
 
       var attr = variantEl.dataset.changelog;
-      if (!attr) { section.style.display = 'none'; return; }
+      if (!attr) { section.style.display = 'none'; setSummaryMetric('changelog-summary-metric', '', false); return; }
 
       var changelog;
-      try { changelog = JSON.parse(attr); } catch(e) { section.style.display = 'none'; return; }
-      if (!changelog.changes || changelog.changes.length === 0) { section.style.display = 'none'; return; }
+      try { changelog = JSON.parse(attr); } catch(e) { section.style.display = 'none'; setSummaryMetric('changelog-summary-metric', '', false); return; }
+      if (!changelog.changes || changelog.changes.length === 0) { section.style.display = 'none'; setSummaryMetric('changelog-summary-metric', '', false); return; }
 
       section.style.display = '';
+      var summary = changelog.summary || {};
+      setSummaryMetric('changelog-summary-metric', '+' + (summary.added || 0) +
+        ' −' + (summary.removed || 0) + ' ~' + (summary.updated || 0), true);
       var badge = document.getElementById('changelog-summary-badge');
       if (badge && changelog.summary) {
         badge.textContent = '+' + (changelog.summary.added || 0) +
@@ -743,19 +759,20 @@
 
     function updateHistorySection(variantEl) {
       var section = document.getElementById('history-section');
-      if (!section) return;
+      if (!section) { setSummaryMetric('history-summary-metric', '', false); return; }
 
       var attr = variantEl.dataset.buildHistory;
-      if (!attr) { section.style.display = 'none'; return; }
+      if (!attr) { section.style.display = 'none'; setSummaryMetric('history-summary-metric', '', false); return; }
 
       var history;
-      try { history = JSON.parse(attr); } catch(e) { section.style.display = 'none'; return; }
+      try { history = JSON.parse(attr); } catch(e) { section.style.display = 'none'; setSummaryMetric('history-summary-metric', '', false); return; }
       // Defensive: if the data-build-history attribute carries a non-array
       // payload (Liquid template misuse, future schema drift), bail out
       // instead of crashing on `history.slice()` later.
-      if (!Array.isArray(history) || history.length === 0) { section.style.display = 'none'; return; }
+      if (!Array.isArray(history) || history.length === 0) { section.style.display = 'none'; setSummaryMetric('history-summary-metric', '', false); return; }
 
       section.style.display = '';
+      setSummaryMetric('history-summary-metric', history.length + ' builds', true);
 
       // Render trend chart — title shows "container:tag" so the user always
       // knows which variant the chart reflects (default landing page may be
@@ -961,6 +978,14 @@
     var defaultVariant = document.querySelector('.variant-tag.selected');
     if (defaultVariant) {
       selectVariant(defaultVariant);
+    } else {
+      // Non-variant containers: read SBOM data from hidden carrier element
+      var carrier = document.getElementById('sbom-data-carrier');
+      if (carrier) {
+        updateSbomSection(carrier);
+        updateChangelogSection(carrier);
+        updateHistorySection(carrier);
+      }
     }
 
     // Registry toggle + pull input init removed PR1 — handled by <variant-action-bar>

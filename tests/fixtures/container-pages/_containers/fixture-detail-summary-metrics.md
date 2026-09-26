@@ -25,7 +25,28 @@ versions:
             added: 2
             removed: 1
             updated: 3
-          changes: []
+          changes:
+            - type: added
+              name: added-package-one
+              version: 1.0.0
+            - type: added
+              name: added-package-two
+              version: 2.0.0
+            - type: removed
+              name: removed-package
+              version: 3.0.0
+            - type: updated
+              name: updated-package-one
+              from: 1.0.0
+              to: 1.1.0
+            - type: updated
+              name: updated-package-two
+              from: 2.0.0
+              to: 2.1.0
+            - type: updated
+              name: updated-package-three
+              from: 3.0.0
+              to: 3.1.0
         build_history:
           - built_at: "2026-09-26T10:00:00Z"
             version: summary-metrics-alpine
