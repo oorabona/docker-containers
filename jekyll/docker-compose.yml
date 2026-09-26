@@ -2,9 +2,14 @@ services:
   jekyll:
     build: .
     image: oorabona/jekyll:latest
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     ports:
       - "4000:4000"
       - "35729:35729"
     volumes:
       - ../docs/site:/site:rw
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     command: ["serve", "--host", "0.0.0.0", "--livereload", "--force_polling"]

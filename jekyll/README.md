@@ -62,6 +62,14 @@ docker compose up
 
 Site available at: http://localhost:4000
 
+The Compose profile runs with uid/gid `1000` by default, matching the image's
+`jekyll` user. To keep bind-mounted files owned by your host account, pass your
+numeric identity explicitly:
+
+```bash
+LOCAL_UID="$(id -u)" LOCAL_GID="$(id -g)" docker compose up
+```
+
 ## Features
 
 - **Ruby 3.3** on Alpine Linux (minimal footprint)
@@ -136,11 +144,15 @@ The container will automatically run `bundle install` if it detects a `Gemfile`.
 
 ### Volume Permissions
 
-The container runs as root by default for volume mount compatibility. For production deployments:
+The image runs as the non-root `jekyll` user (uid/gid `1000`), and `/site` is
+writable by that user. Its `HOME` and Ruby/Bundler cache locations use `/tmp`,
+which is writable even when Docker runs the image with an arbitrary numeric uid
+that has no passwd entry. For a bind mount, use your host uid/gid so generated
+files remain owned by your account:
 
 ```bash
-# Run as specific user (match host UID)
-docker run --user $(id -u):$(id -g) \
+# Run as the host user
+docker run --user "$(id -u):$(id -g)" \
   -v "$(pwd):/site" \
   ghcr.io/oorabona/jekyll:latest build
 ```

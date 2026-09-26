@@ -249,6 +249,45 @@ resolve_e2e_image() {
     fi
 }
 
+# Containers that must begin as root before their own entrypoint drops privileges.
+# Keep this exception map next to the baseline check: every e2e-tested image not
+# listed here must declare a non-root Config.User in the built image.
+e2e_runtime_user_exception_reason() {
+    case "$1" in
+        postgres) printf '%s\n' 'the upstream entrypoint drops to postgres' ;;
+        github-runner) printf '%s\n' 'the entrypoint fixes volume ownership, then execs gosu runner' ;;
+        openvpn) printf '%s\n' 'network setup needs root before OpenVPN drops to nobody' ;;
+        web-shell) printf '%s\n' 'the root supervisor performs account setup and starts sshd' ;;
+        *) return 1 ;;
+    esac
+}
+
+# Config.User can be "user" or "user:group". Docker treats an empty user as
+# root, so reject an empty user part as well as the two root spellings.
+#
+# This is defined before source-only mode so the baseline's refusal cases can be
+# tested without a Docker daemon.
+e2e_image_has_allowed_runtime_user() {
+    local container="$1"
+    local runtime_user="$2"
+    local user_part
+
+    if e2e_runtime_user_exception_reason "$container" >/dev/null; then
+        return 0
+    fi
+
+    user_part="${runtime_user%%:*}"
+    case "$user_part" in
+        ""|root|0)
+            printf '::error::e2e: %s image has root effective user (Config.User=%q)\n' \
+                "$container" "$runtime_user" >&2
+            return 1
+            ;;
+    esac
+
+    return 0
+}
+
 # This must stay before shell options, argument parsing, ./make, command
 # validation, and the banner: sourcing for the helper above must not mutate the
 # caller's shell state or run startup work.
@@ -491,7 +530,7 @@ test_container() {
     fi
 
     # Determine image name
-    local image_resolution image identity selected_cell image_id
+    local image_resolution image identity selected_cell image_id runtime_user
     if ! image_resolution=$(resolve_e2e_image "$container" "$image_tag" --json); then
         return 1
     fi
@@ -520,6 +559,13 @@ test_container() {
             log_error "Could not resolve local image ID for $image"
             return 1
         fi
+    fi
+    if ! runtime_user=$(_DOCKER_TIMEOUT=10 _DOCKER_TIMEOUT_KILL_AFTER=2 _e2e_docker image inspect --format '{{.Config.User}}' "$image_id"); then
+        log_error "Could not inspect the runtime user for $image"
+        return 1
+    fi
+    if ! e2e_image_has_allowed_runtime_user "$container" "$runtime_user"; then
+        return 1
     fi
 
     # Clean up any existing test container before reusing its fixed name.
