@@ -70,6 +70,15 @@ numeric identity explicitly:
 LOCAL_UID="$(id -u)" LOCAL_GID="$(id -g)" docker compose up
 ```
 
+With rootless Podman, container uids are remapped, so uid `1000` in the
+container is not your host account and cannot write the bind mount
+(`Permission denied @ dir_s_mkdir - /site/.jekyll-cache`). Map your host
+identity into the container instead:
+
+```bash
+podman run --rm --userns=keep-id -v "$(pwd):/site" ghcr.io/oorabona/jekyll:latest build
+```
+
 ## Features
 
 - **Ruby 3.3** on Alpine Linux (minimal footprint)

@@ -58,6 +58,8 @@ The fifth was jekyll, which ran as root and wrote `_site/` and `.jekyll-cache/` 
 
 jekyll now runs as `jekyll` (uid 1000). `HOME` and Bundler state live in `/tmp`, so an arbitrary `--user` uid without a passwd entry also works, and the compose file takes `LOCAL_UID`/`LOCAL_GID` so generated files belong to the host user.
 
+One consequence showed up the same day. With rootless Podman, container uids are remapped, so uid 1000 inside the container is not the host account, and a bind-mounted site fails with `Permission denied @ dir_s_mkdir - /site/.jekyll-cache`. As root, the old image had been mapped to the host user and did not hit this. `podman run --userns=keep-id` maps the host identity into the container; with it the build succeeds and the output belongs to the host user. The README documents it.
+
 The e2e harness now reads `.Config.User` from each image it tests and fails on root (empty, `root`, or any decimal spelling of 0) unless the container is one of the four above. Run against the previously published jekyll image, it failed with `jekyll image has root effective user`.
 
 Compose capabilities, `no-new-privileges` and read-only root filesystems stay per deployment profile. The compose files are documentation, and several containers document their runtime in `examples/`, so a repository-wide rule on them would check files no test runs.
