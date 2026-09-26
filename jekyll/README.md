@@ -128,17 +128,8 @@ your-site/
 
 ### Using a Gemfile
 
-If your site requires additional gems, create a `Gemfile`:
-
-```ruby
-source 'https://rubygems.org'
-
-gem 'jekyll', '~> 4.4'
-gem 'jekyll-theme-minimal'
-gem 'jekyll-paginate'
-```
-
-The container will automatically run `bundle install` if it detects a `Gemfile`.
+The container does not run `bundle install`. For gems the image does not ship,
+see [Adding Custom Dependencies](#adding-custom-dependencies).
 
 ## Security
 
@@ -192,19 +183,15 @@ All Ruby gem versions are pinned and monitored for updates:
 
 ### Adding Custom Dependencies
 
-Use a `Gemfile` in your site directory to add gems not included in the image:
+The image installs its gems at build time and runs as a non-root user, so it
+does not install a site's `Gemfile`. To add gems, extend the image:
 
-```ruby
-# Gemfile
-source 'https://rubygems.org'
-
-gem 'jekyll', '~> 4.4'
-gem 'jekyll-theme-cayman'
-gem 'jekyll-redirect-from'
-gem 'jemoji'
+```dockerfile
+FROM ghcr.io/oorabona/jekyll:latest
+USER root
+RUN gem install jekyll-theme-cayman jekyll-redirect-from jemoji
+USER jekyll
 ```
-
-The container will install these automatically on startup.
 
 ## Architecture
 

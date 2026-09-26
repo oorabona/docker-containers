@@ -263,7 +263,7 @@ e2e_runtime_user_exception_reason() {
 }
 
 # Config.User can be "user" or "user:group". Docker treats an empty user as
-# root, so reject an empty user part as well as the two root spellings.
+# root, so reject an empty user part, root, and decimal spellings of uid 0.
 #
 # This is defined before source-only mode so the baseline's refusal cases can be
 # tested without a Docker daemon.
@@ -278,12 +278,18 @@ e2e_image_has_allowed_runtime_user() {
 
     user_part="${runtime_user%%:*}"
     case "$user_part" in
-        ""|root|0)
+        ""|root)
             printf '::error::e2e: %s image has root effective user (Config.User=%q)\n' \
                 "$container" "$runtime_user" >&2
             return 1
             ;;
     esac
+
+    if [[ "$user_part" =~ ^[+-]?0+$ ]]; then
+        printf '::error::e2e: %s image has root effective user (Config.User=%q)\n' \
+            "$container" "$runtime_user" >&2
+        return 1
+    fi
 
     return 0
 }

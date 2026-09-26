@@ -126,8 +126,9 @@ is a run snapshot, not a pin for either build (#1823) or dependency-closure targ
 ## Runtime user baseline
 
 A Linux image's effective user (`.Config.User` of the built image) is non-root.
-Exceptions are named, with the reason, in `tests/e2e-test.sh`, which inspects every
-image it tests:
+`tests/e2e-test.sh` enforces this on every image it tests, which is the e2e-enabled
+Linux cells a pull request selects; an image outside that set is not checked.
+Exceptions are named, with the reason, in the same script:
 
 - `postgres`: the user comes from the upstream base image's entrypoint, which drops
   to `postgres`.

@@ -250,6 +250,42 @@ add_single_image_identity_fixture() {
     [ -e "$SOURCE_ONLY_HELPER_DOCKER_MARKER" ]
 }
 
+@test "runtime user baseline refuses root user spellings" {
+    local runtime_user
+
+    for runtime_user in "" root 0 00 000000 +0 -0 0:0 00:wheel root:wheel; do
+        run env E2E_TEST_SOURCE_ONLY=1 bash -c '
+            source "$1"
+            e2e_image_has_allowed_runtime_user "$2" "$3"
+        ' _ "$FIXTURE_REPO/tests/e2e-test.sh" web-shell-test "$runtime_user"
+
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"root effective user"* ]]
+    done
+}
+
+@test "runtime user baseline accepts non-root users and exempt root images" {
+    local runtime_user
+
+    for runtime_user in 1000 0100 +1000 jekyll nobody:nobody; do
+        run env E2E_TEST_SOURCE_ONLY=1 bash -c '
+            source "$1"
+            e2e_image_has_allowed_runtime_user "$2" "$3"
+        ' _ "$FIXTURE_REPO/tests/e2e-test.sh" web-shell-test "$runtime_user"
+
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
+
+    run env E2E_TEST_SOURCE_ONLY=1 bash -c '
+        source "$1"
+        e2e_image_has_allowed_runtime_user "$2" "$3"
+    ' _ "$FIXTURE_REPO/tests/e2e-test.sh" postgres root
+
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
 @test "S3/AD3: an E2E image ID and passed build cell bypass routing and run unchanged" {
     add_openvpn_fixture
     install_docker_stub
