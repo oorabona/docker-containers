@@ -1176,10 +1176,14 @@
           {%- if _summary_sbom == nil or _summary_sbom == empty -%}
             {%- assign _summary_sbom = default_variant.sbom_summary -%}
           {%- endif -%}
+          {%- assign _summary_sbom_unit = "packages" -%}
+          {%- if _summary_sbom and _summary_sbom != empty and _summary_sbom.total == 1 -%}
+            {%- assign _summary_sbom_unit = "package" -%}
+          {%- endif -%}
           <details id="dep-health" class="disclosure">
             <summary>
               <span class="disclosure__title">Package summary</span>
-              <span class="disclosure__metric" id="sbom-summary-metric"{% unless _summary_sbom and _summary_sbom != empty and _summary_sbom.total > 0 %} hidden{% endunless %}>{% if _summary_sbom and _summary_sbom != empty and _summary_sbom.total > 0 %}{{ _summary_sbom.total }} packages{% endif %}</span>
+              <span class="disclosure__metric" id="sbom-summary-metric"{% unless _summary_sbom and _summary_sbom != empty and _summary_sbom.total > 0 %} hidden{% endunless %}>{% if _summary_sbom and _summary_sbom != empty and _summary_sbom.total > 0 %}{{ _summary_sbom.total }} {{ _summary_sbom_unit }}{% endif %}</span>
               <i class="ti ti-chevron-right disclosure__chevron" aria-hidden="true"></i>
             </summary>
             <div class="disclosure__body">
@@ -1227,10 +1231,15 @@
           {%- if _summary_build_history == nil or _summary_build_history == empty -%}
             {%- assign _summary_build_history = default_variant.build_history -%}
           {%- endif -%}
+          {%- assign _summary_build_count = _summary_build_history | size -%}
+          {%- assign _summary_build_unit = "builds" -%}
+          {%- if _summary_build_count == 1 -%}
+            {%- assign _summary_build_unit = "build" -%}
+          {%- endif -%}
           <details id="build-history" class="disclosure">
             <summary>
               <span class="disclosure__title">Build history</span>
-              <span class="disclosure__metric" id="history-summary-metric"{% unless _summary_build_history and _summary_build_history != empty %} hidden{% endunless %}>{% if _summary_build_history and _summary_build_history != empty %}{{ _summary_build_history | size }} builds{% endif %}</span>
+              <span class="disclosure__metric" id="history-summary-metric"{% unless _summary_build_history and _summary_build_history != empty %} hidden{% endunless %}>{% if _summary_build_history and _summary_build_history != empty %}{{ _summary_build_count }} {{ _summary_build_unit }}{% endif %}</span>
               <i class="ti ti-chevron-right disclosure__chevron" aria-hidden="true"></i>
             </summary>
             <div class="disclosure__body">

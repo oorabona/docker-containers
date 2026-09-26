@@ -381,6 +381,10 @@
       }
     }
 
+    function formatCount(count, singular, plural) {
+      return count + ' ' + (count === 1 ? singular : plural);
+    }
+
     function updateSbomSection(variantEl) {
       var section = document.getElementById('sbom-section');
       if (!section) { setSummaryMetric('sbom-summary-metric', '', false); return; }
@@ -400,9 +404,9 @@
       }
 
       section.style.display = '';
-      setSummaryMetric('sbom-summary-metric', summary.total + ' packages', true);
+      setSummaryMetric('sbom-summary-metric', formatCount(summary.total, 'package', 'packages'), true);
       var badge = document.getElementById('sbom-total-badge');
-      if (badge) badge.textContent = summary.total + ' packages';
+      if (badge) badge.textContent = formatCount(summary.total, 'package', 'packages');
 
       var breakdown = document.getElementById('sbom-breakdown');
       var panel = document.getElementById('sbom-package-panel');
@@ -772,7 +776,7 @@
       if (!Array.isArray(history) || history.length === 0) { section.style.display = 'none'; setSummaryMetric('history-summary-metric', '', false); return; }
 
       section.style.display = '';
-      setSummaryMetric('history-summary-metric', history.length + ' builds', true);
+      setSummaryMetric('history-summary-metric', formatCount(history.length, 'build', 'builds'), true);
 
       // Render trend chart — title shows "container:tag" so the user always
       // knows which variant the chart reflects (default landing page may be
