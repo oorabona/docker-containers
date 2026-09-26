@@ -122,3 +122,24 @@ image's build metadata; it is admitted to the durable cache only when the
 merge where some cells publish and others fail admits nothing (#1829). The digest
 is a run snapshot, not a pin for either build (#1823) or dependency-closure target
 (#1824).
+
+## Runtime user baseline
+
+A Linux image's effective user (`.Config.User` of the built image) is non-root.
+`tests/e2e-test.sh` enforces this on every image it tests, which is the e2e-enabled
+Linux cells a pull request selects; an image outside that set is not checked.
+Exceptions are named, with the reason, in the same script:
+
+- `postgres`: the user comes from the upstream base image's entrypoint, which drops
+  to `postgres`.
+- `github-runner` (Linux): starts as root to fix volume ownership, then
+  `exec gosu runner` (`github-runner/entrypoint.sh`).
+- `openvpn`: starts as root for network setup and drops to `nobody` with
+  `SETUID`/`SETGID`.
+- `web-shell`: a root supervisor (account setup, `sshd`) whose shell runs as the
+  unprivileged shell user.
+
+Compose capabilities, `no-new-privileges`, read-only root filesystems and
+HEALTHCHECKs are properties of each tested deployment profile, not a repository-wide
+rule: the compose files are documentation, and several containers document their
+runtime in `examples/` instead.

@@ -8,7 +8,7 @@ setup() {
     # Cleared going in, not just coming out: one of these exported in the shell
     # that runs the suite would otherwise steer the stub through tests that never
     # asked for it.
-    unset E2E_IMAGE E2E_BUILD_TAG E2E_BUILD_VERSION E2E_BUILD_VARIANT E2E_BUILD_FLAVOR FLAVOR E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_IMAGE_ID DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT \
+    unset E2E_IMAGE E2E_BUILD_TAG E2E_BUILD_VERSION E2E_BUILD_VARIANT E2E_BUILD_FLAVOR FLAVOR E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_IMAGE_ID DOCKER_IMAGE_USER DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT \
         DOCKER_INSPECT_ERROR DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_PS_ERROR \
         DOCKER_IMAGES_OUTPUT DOCKER_RM_FAIL_ON_SECOND
     # Each bats test is its own process, so it inherits these from the shell that
@@ -25,7 +25,7 @@ setup() {
 
 teardown() {
     export PATH="$ORIG_PATH"
-    unset E2E_IMAGE E2E_BUILD_TAG E2E_BUILD_VERSION E2E_BUILD_VARIANT E2E_BUILD_FLAVOR FLAVOR E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_LOG DOCKER_IMAGES_OUTPUT DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_PS_ERROR DOCKER_IMAGE_ID DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT DOCKER_INSPECT_ERROR DOCKER_RM_FAIL_ON_SECOND PS_COUNT_FILE TEST_SCRIPT_MARKER RUN_STARTED TEST_SUITE_STARTED HARNESS_PID_FILE
+    unset E2E_IMAGE E2E_BUILD_TAG E2E_BUILD_VERSION E2E_BUILD_VARIANT E2E_BUILD_FLAVOR FLAVOR E2E_READY_TIMEOUT E2E_TEST_TIMEOUT DOCKER_LOG DOCKER_IMAGES_OUTPUT DOCKER_PS_OUTPUT DOCKER_PS_EXIT DOCKER_PS_ERROR DOCKER_IMAGE_ID DOCKER_IMAGE_USER DOCKER_INSPECT_OUTPUT DOCKER_INSPECT_EXIT DOCKER_INSPECT_ERROR DOCKER_RM_FAIL_ON_SECOND PS_COUNT_FILE TEST_SCRIPT_MARKER RUN_STARTED TEST_SUITE_STARTED HARNESS_PID_FILE
     teardown_temp_dir
 }
 
@@ -94,6 +94,10 @@ case "$1" in
         done
         if [ "$inspect_format" = '{{.Id}}' ]; then
             printf '%s\n' "${DOCKER_IMAGE_ID:-sha256:e2e-loaded-image}"
+            exit 0
+        fi
+        if [ "$inspect_format" = '{{.Config.User}}' ]; then
+            printf '%s\n' "${DOCKER_IMAGE_USER:-nonroot}"
             exit 0
         fi
         if [ "$inspect_format" != '{{if .State.Health}}{{.State.Health.Status}}{{else}}nohealth{{end}}' ]; then
@@ -244,6 +248,42 @@ add_single_image_identity_fixture() {
     [ -e "$SOURCE_ONLY_DOCKER_MARKER" ]
     [ -e "$SOURCE_ONLY_HELPER_TIMEOUT_MARKER" ]
     [ -e "$SOURCE_ONLY_HELPER_DOCKER_MARKER" ]
+}
+
+@test "runtime user baseline refuses root user spellings" {
+    local runtime_user
+
+    for runtime_user in "" root 0 00 000000 +0 -0 0:0 00:wheel root:wheel; do
+        run env E2E_TEST_SOURCE_ONLY=1 bash -c '
+            source "$1"
+            e2e_image_has_allowed_runtime_user "$2" "$3"
+        ' _ "$FIXTURE_REPO/tests/e2e-test.sh" web-shell-test "$runtime_user"
+
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"root effective user"* ]]
+    done
+}
+
+@test "runtime user baseline accepts non-root users and exempt root images" {
+    local runtime_user
+
+    for runtime_user in 1000 0100 +1000 jekyll nobody:nobody; do
+        run env E2E_TEST_SOURCE_ONLY=1 bash -c '
+            source "$1"
+            e2e_image_has_allowed_runtime_user "$2" "$3"
+        ' _ "$FIXTURE_REPO/tests/e2e-test.sh" web-shell-test "$runtime_user"
+
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
+
+    run env E2E_TEST_SOURCE_ONLY=1 bash -c '
+        source "$1"
+        e2e_image_has_allowed_runtime_user "$2" "$3"
+    ' _ "$FIXTURE_REPO/tests/e2e-test.sh" postgres root
+
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
 }
 
 @test "S3/AD3: an E2E image ID and passed build cell bypass routing and run unchanged" {

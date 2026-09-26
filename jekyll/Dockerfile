@@ -39,9 +39,21 @@ LABEL org.opencontainers.image.title="Jekyll" \
       org.opencontainers.image.vendor="oorabona" \
       org.opencontainers.image.licenses="MIT"
 
-# Create working directory
-# Note: Running as root for compatibility with mounted volumes
-# For production, consider using --user flag with matching UID
+# Runtime contract: the default image user is jekyll (uid/gid 1000), /site is
+# writable by that user, and HOME/cache state uses /tmp so an arbitrary Docker
+# uid without a passwd entry can run Jekyll as well. Gems remain system-wide.
+ENV HOME=/tmp \
+    BUNDLE_APP_CONFIG=/tmp \
+    BUNDLE_USER_HOME=/tmp \
+    BUNDLE_USER_CACHE=/tmp \
+    XDG_CACHE_HOME=/tmp
+
+RUN addgroup -g 1000 -S jekyll \
+    && adduser -S -D -H -u 1000 -h /tmp -s /sbin/nologin -G jekyll -g jekyll jekyll \
+    && mkdir -p /site \
+    && chown jekyll:jekyll /site \
+    && chmod 1777 /tmp
+
 WORKDIR /site
 
 # Default: serve with live reload
@@ -49,3 +61,5 @@ EXPOSE 4000 35729
 
 ENTRYPOINT ["jekyll"]
 CMD ["serve", "--host", "0.0.0.0", "--livereload"]
+
+USER jekyll

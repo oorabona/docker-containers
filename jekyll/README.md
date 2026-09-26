@@ -62,6 +62,14 @@ docker compose up
 
 Site available at: http://localhost:4000
 
+The Compose profile runs with uid/gid `1000` by default, matching the image's
+`jekyll` user. To keep bind-mounted files owned by your host account, pass your
+numeric identity explicitly:
+
+```bash
+LOCAL_UID="$(id -u)" LOCAL_GID="$(id -g)" docker compose up
+```
+
 ## Features
 
 - **Ruby 3.3** on Alpine Linux (minimal footprint)
@@ -120,27 +128,22 @@ your-site/
 
 ### Using a Gemfile
 
-If your site requires additional gems, create a `Gemfile`:
-
-```ruby
-source 'https://rubygems.org'
-
-gem 'jekyll', '~> 4.4'
-gem 'jekyll-theme-minimal'
-gem 'jekyll-paginate'
-```
-
-The container will automatically run `bundle install` if it detects a `Gemfile`.
+The container does not run `bundle install`. For gems the image does not ship,
+see [Adding Custom Dependencies](#adding-custom-dependencies).
 
 ## Security
 
 ### Volume Permissions
 
-The container runs as root by default for volume mount compatibility. For production deployments:
+The image runs as the non-root `jekyll` user (uid/gid `1000`), and `/site` is
+writable by that user. Its `HOME` and Ruby/Bundler cache locations use `/tmp`,
+which is writable even when Docker runs the image with an arbitrary numeric uid
+that has no passwd entry. For a bind mount, use your host uid/gid so generated
+files remain owned by your account:
 
 ```bash
-# Run as specific user (match host UID)
-docker run --user $(id -u):$(id -g) \
+# Run as the host user
+docker run --user "$(id -u):$(id -g)" \
   -v "$(pwd):/site" \
   ghcr.io/oorabona/jekyll:latest build
 ```
@@ -180,19 +183,15 @@ All Ruby gem versions are pinned and monitored for updates:
 
 ### Adding Custom Dependencies
 
-Use a `Gemfile` in your site directory to add gems not included in the image:
+The image installs its gems at build time and runs as a non-root user, so it
+does not install a site's `Gemfile`. To add gems, extend the image:
 
-```ruby
-# Gemfile
-source 'https://rubygems.org'
-
-gem 'jekyll', '~> 4.4'
-gem 'jekyll-theme-cayman'
-gem 'jekyll-redirect-from'
-gem 'jemoji'
+```dockerfile
+FROM ghcr.io/oorabona/jekyll:latest
+USER root
+RUN gem install jekyll-theme-cayman jekyll-redirect-from jemoji
+USER jekyll
 ```
-
-The container will install these automatically on startup.
 
 ## Architecture
 

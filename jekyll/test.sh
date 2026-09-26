@@ -15,6 +15,11 @@ CONTAINER_NAME="${CONTAINER_NAME:-e2e-jekyll}"
 
 th_init --name "Jekyll E2E" --report "${REPORT_FORMAT:-table}"
 
+th_group "Runtime user"
+
+th_capture "container reports its effective uid" docker exec "$CONTAINER_NAME" id -u &&
+    th_assert_ne "container runs as a non-root user" "${TH_OUTPUT//[[:space:]]/}" "0"
+
 # Bundler 4 prints a bare version number — no "Bundler" anywhere in it — so the
 # assertion is on the shape of what it prints, not on a word. Kept because the
 # image advertises Bundler, and the build below uses the global jekyll rather
@@ -39,6 +44,29 @@ if docker exec "$CONTAINER_NAME" sh -c '
 else
     th_fail "Jekyll builds a minimal site" "jekyll build failed for the minimal site"
 fi
+
+# The numeric uid deliberately has no passwd entry in this image. This verifies
+# that HOME and Bundler's state do not depend on account lookup or a root-owned
+# home directory when a host supplies its own uid through Docker.
+arbitrary_uid_site="e2e-jekyll-arbitrary-$$-${RANDOM}"
+if docker exec -u 12345:12345 "$CONTAINER_NAME" sh -c '
+    rm -rf "/tmp/$1" &&
+    mkdir -p "/tmp/$1" &&
+    cd "/tmp/$1" &&
+    printf "%s\\n" "title: Arbitrary UID Site" > _config.yml &&
+    printf "%s\\n" "---" "---" "Rendered: {{ site.title }}" > index.md &&
+    jekyll build --source . --destination _site >/dev/null
+' _ "$arbitrary_uid_site"; then
+    th_pass "Jekyll builds as an arbitrary uid without a passwd entry"
+else
+    th_fail "Jekyll builds as an arbitrary uid without a passwd entry" \
+        "jekyll build failed as uid 12345"
+fi
+
+# shellcheck disable=SC2016 # $1 is expanded by the container's sh, not this script.
+th_capture "arbitrary uid owns generated output" \
+    docker exec "$CONTAINER_NAME" sh -c 'stat -c %u "/tmp/$1/_site/index.html"' _ "$arbitrary_uid_site" &&
+    th_assert_eq "arbitrary uid owns generated output" "${TH_OUTPUT//[[:space:]]/}" "12345"
 
 if docker exec "$CONTAINER_NAME" sh -c \
     'test -f /tmp/e2e-jekyll/_site/index.html && grep -Fq "Rendered: Harness Site" /tmp/e2e-jekyll/_site/index.html'; then
