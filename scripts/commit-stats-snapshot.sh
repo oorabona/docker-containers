@@ -40,11 +40,18 @@ fi
 # may have already added while still carrying this run's candidate forward after
 # a stale PR, transient git/GitHub failure, or retry.
 #
-# The run FAILS (exit 1) whenever it ends without a fully merged PR. This
-# job has no downstream dependents (deploy only needs build), so failing it
-# is isolated and visible rather than a silent, permanently-green job that
-# would otherwise mask a real regression (revoked token scope, branch
-# protection change) behind routine warning text.
+# The run succeeds only when its own PR merges; an attempt's merged candidate
+# leaves $STATS_FILE unchanged from origin/master; or, after a merge-wait
+# timeout and a verified closed PR, origin/master already holds every
+# (date, container) key from this run's candidate because a concurrent run
+# landed it. A PR found merged after the timeout stays red: the timeout path
+# does not read mergedAt, so it cannot tell a merge after the deadline from an
+# in-budget merge observed late. Step 8 of the workflow separately fails the
+# job while any container lacks a row for the current UTC day. This job has no
+# downstream dependents (deploy only needs build), so a failure is isolated and
+# visible rather than a silent, permanently-green job that would otherwise mask
+# a real regression (revoked token scope, branch protection change): under such
+# a regression no run lands rows, master stays uncovered, and the run stays red.
 #
 # No explicit follow-up dispatch: the calling workflow authenticates the PR
 # branch push and PR merge with a GitHub App installation token. Unlike
@@ -770,6 +777,79 @@ reset_worktree_to_fresh_master() {
   fi
 }
 
+timeout_pr_candidate_is_covered_by_master() {
+  local pr_number="$1"
+  local attempt="$2"
+  local pr_view pr_state coverage
+
+  # cleanup_failed_pr deliberately returns success even when gh pr close fails.
+  # Re-read the PR so sibling coverage applies only to a verified CLOSED PR.
+  # A PR found merged after the timeout stays red: this path does not read
+  # mergedAt, so it cannot tell a merge after the deadline from an in-budget
+  # merge observed late. A close failure cannot turn an armed OPEN PR into a
+  # green run just because a sibling happened to land matching rows.
+  if ! pr_view=$(inspect_stats_snapshot_pr "$pr_number" 2>&1); then
+    printf '%s\n' "$pr_view" >&2
+    gha_warning 'Could not read stats snapshot PR #%s after timeout cleanup' "$pr_number"
+    return 1
+  fi
+  IFS='|' read -r pr_state _ <<< "$pr_view"
+  if [[ "$pr_state" != "CLOSED" ]]; then
+    gha_warning 'Stats snapshot PR #%s is not closed after timeout cleanup (state=%s); only a closed PR can be covered by rows another run landed' "$pr_number" "$pr_state"
+    return 1
+  fi
+
+  # This fetch/reset intentionally leaves STATS_FILE at origin/master for both
+  # the key comparison and the final completeness reconciliation.
+  if ! reset_worktree_to_fresh_master "$attempt"; then
+    return 1
+  fi
+
+  if ! coverage=$(jq -Rrn \
+    --arg candidate_file "$CANDIDATE_FILE" \
+    --arg stats_file "$STATS_FILE" \
+    --arg container_allowlist "$CONTAINER_ALLOWLIST" \
+    --arg stats_date_floor "$STATS_DATE_FLOOR" \
+    --arg stats_date_ceiling "$STATS_DATE_CEILING" \
+    "${JQ_STATS_HELPERS}"'
+      reduce inputs as $line (
+        {candidate_keys: {}, master_keys: {}};
+        input_filename as $file
+        | if $line == "" then
+            .
+          else
+            ($line | parsed_stats_row) as $row
+            | if $row == null then
+                .
+              else
+                ($row.date + "\u0000" + $row.container) as $key
+                | if $file == $candidate_file then
+                    .candidate_keys[$key] = true
+                  elif $file == $stats_file then
+                    .master_keys[$key] = true
+                  else
+                    .
+                  end
+              end
+          end
+      )
+      | . as $state
+      | (.candidate_keys | keys) as $candidate_keys
+      | $candidate_keys != []
+        and all($candidate_keys[]; ($state.master_keys[.] // false))
+    ' "$CANDIDATE_FILE" "$STATS_FILE"); then
+    gha_warning 'Could not compare timed-out stats snapshot candidate with origin/master'
+    return 1
+  fi
+
+  if [[ "$coverage" != "true" ]]; then
+    return 1
+  fi
+
+  gha_notice "Stats snapshot PR #%s timed out, but origin/master already holds every (date, container) row of this run's candidate, landed by another run" "$pr_number"
+  return 0
+}
+
 ensure_stats_snapshot_pr() {
   local pr_branch="$1"
   local pr_create_output
@@ -955,6 +1035,9 @@ persist_stats_snapshot_via_pr() {
         ;;
       timeout)
         cleanup_failed_pr "$attempt_pr_number" "$attempt_pr_branch" "$attempt_remote_branch_maybe_pushed"
+        if timeout_pr_candidate_is_covered_by_master "$attempt_pr_number" "$attempt"; then
+          return 0
+        fi
         return 1
         ;;
       *)
@@ -977,6 +1060,9 @@ persist_stats_snapshot_via_pr() {
         ;;
       timeout)
         cleanup_failed_pr "$attempt_pr_number" "$attempt_pr_branch" "$attempt_remote_branch_maybe_pushed"
+        if timeout_pr_candidate_is_covered_by_master "$attempt_pr_number" "$attempt"; then
+          return 0
+        fi
         return 1
         ;;
       *)

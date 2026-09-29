@@ -166,6 +166,12 @@ case "${1:-}" in
     exit 64
     ;;
   fetch)
+    fetches=$(cat "$state/fetch_count" 2>/dev/null || echo 0)
+    fetches=$((fetches + 1))
+    echo "$fetches" > "$state/fetch_count"
+    if [[ -n "${FAKE_GIT_FAIL_FETCH_ON_CALL:-}" && "$fetches" -eq "$FAKE_GIT_FAIL_FETCH_ON_CALL" ]]; then
+      exit 1
+    fi
     exit 0
     ;;
   reset)
@@ -224,6 +230,9 @@ done
 duration="${1:-}"
 shift
 if [[ "${FAKE_TIMEOUT_MERGE_MODE:-}" == "exceeds_budget" && "${1:-}" == "gh" && "${2:-}" == "pr" && "${3:-}" == "merge" ]]; then
+  if [[ "${FAKE_TIMEOUT_LAND_SIBLING:-}" == "1" && -n "${FAKE_GH_SIBLING_STATS_FILE:-}" ]]; then
+    cp "$FAKE_GH_SIBLING_STATS_FILE" "$state/head_stats"
+  fi
   : > "$state/timeout_killed_merge"
   if [[ "$duration" =~ ^([0-9]+)s?$ ]]; then
     now=$(cat "$state/fake_time_epoch")
@@ -248,7 +257,16 @@ fi
 if [[ -n "\${FAKE_JQ_FAIL_MERGE_ON_CALL:-}" && "\$count" -eq "\$FAKE_JQ_FAIL_MERGE_ON_CALL" ]]; then
   exit 42
 fi
-exec "$real_jq" "\$@"
+args=("\$@")
+if [[ "\${FAKE_JQ_COVERAGE_EMPTY_CANDIDATE:-}" == "1" ]]; then
+  for arg in "\${args[@]}"; do
+    if [[ "\$arg" == *candidate_keys* ]]; then
+      args[\$((\${#args[@]} - 2))]="/dev/null"
+      break
+    fi
+  done
+fi
+exec "$real_jq" "\${args[@]}"
 EOF
     chmod +x "$TEST_REPO/bin/jq"
 
@@ -329,6 +347,14 @@ advance_pending_merge_for_view() {
 
   if [[ "$(cat "$(pr_field_path "$number" state)")" != "OPEN" ]]; then
     return 0
+  fi
+
+  if [[ -n "${FAKE_GH_LAND_SIBLING_AT_VIEW:-}" &&
+      "$per_pr_views" -ge "$FAKE_GH_LAND_SIBLING_AT_VIEW" &&
+      ! -f "$state/sibling_landed" &&
+      -n "${FAKE_GH_SIBLING_STATS_FILE:-}" ]]; then
+    cp "$FAKE_GH_SIBLING_STATS_FILE" "$head_stats"
+    : > "$state/sibling_landed"
   fi
 
   case "$mode" in
@@ -578,6 +604,16 @@ case "${1:-} ${2:-}" in
     exit 0
     ;;
   "pr close")
+    if [[ "${FAKE_GH_PR_CLOSE_MODE:-}" == "already_merged" ]]; then
+      number="${3:-}"
+      if ! number=$(pr_number_for_ref "$number"); then
+        echo "could not resolve pull request: ${3:-}" >&2
+        exit 1
+      fi
+      merge_pr_branch "$number"
+      echo "simulated gh pr close failure after merge" >&2
+      exit 1
+    fi
     if [[ "${FAKE_GH_PR_CLOSE_FAIL:-}" == "1" ]]; then
       echo "simulated gh pr close failure" >&2
       exit 1
@@ -614,6 +650,51 @@ EOF
 
 teardown() {
     teardown_temp_dir
+}
+
+configure_timeout_coverage_inputs() {
+    local master_variant="${1:-covered}"
+    local today yesterday
+    today="$(date -u +%Y-%m-%d)"
+    yesterday="$(date -u -d '-1 day' +%Y-%m-%d)"
+    candidate_file="$TEST_TEMP_DIR/timeout-candidate.jsonl"
+    sibling_file="$TEST_TEMP_DIR/timeout-sibling.jsonl"
+
+    printf '{"ts":"%sT07:00:00Z","date":"%s","container":"alpha","pull_count":42,"star_count":1,"source":"dockerhub"}\n{"ts":"%sT07:01:00Z","date":"%s","container":"gamma","pull_count":43,"star_count":2,"source":"dockerhub"}\n' \
+        "$today" "$today" "$today" "$today" > "$candidate_file"
+    case "$master_variant" in
+      covered)
+        printf '{"ts":"%sT08:00:00Z","date":"%s","container":"alpha","pull_count":99,"star_count":3,"source":"dockerhub"}\n{"ts":"%sT08:01:00Z","date":"%s","container":"gamma","pull_count":100,"star_count":4,"source":"dockerhub"}\n' \
+            "$today" "$today" "$today" "$today" > "$sibling_file"
+        ;;
+      missing-key)
+        printf '{"ts":"%sT08:00:00Z","date":"%s","container":"alpha","pull_count":99,"star_count":3,"source":"dockerhub"}\n' \
+            "$today" "$today" > "$sibling_file"
+        ;;
+      wrong-date)
+        printf '{"ts":"%sT08:00:00Z","date":"%s","container":"alpha","pull_count":99,"star_count":3,"source":"dockerhub"}\n{"ts":"%sT08:01:00Z","date":"%s","container":"gamma","pull_count":100,"star_count":4,"source":"dockerhub"}\n' \
+            "$yesterday" "$yesterday" "$yesterday" "$yesterday" > "$sibling_file"
+        ;;
+      invalid-master)
+        printf '{"ts":"%sT08:00:00Z","date":"%s","container":"alpha","pull_count":99,"star_count":3,"source":"dockerhub"}\n{"ts":"%sT08:01:00Z","date":"%s","container":"gamma","pull_count":-1,"star_count":4,"source":"dockerhub"}\n' \
+            "$today" "$today" "$today" "$today" > "$sibling_file"
+        ;;
+      *)
+        echo "unsupported timeout coverage master variant: $master_variant" >&2
+        return 1
+        ;;
+    esac
+
+    export CANDIDATE_SOURCE_FILE="$candidate_file"
+    export FAKE_GH_SIBLING_STATS_FILE="$sibling_file"
+}
+
+configure_second_wait_timeout() {
+    export FAKE_GH_PR_VIEW_MODE="always_open"
+    export FAKE_GH_LAND_SIBLING_AT_VIEW="3"
+    export STATS_PR_MERGE_TIMEOUT_SECONDS="10"
+    export STATS_PR_MERGE_POLL_SECONDS="5"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
 }
 
 @test "commit-stats-snapshot refuses to run outside GitHub Actions before touching git state" {
@@ -808,7 +889,9 @@ teardown() {
     [ "$(get_output persisted)" = "false" ]
     ! grep -qF -- "--auto" "$FAKE_GIT_STATE/gh.log"
     [[ "$output" != *"enabling pinned auto-merge"* ]]
-    [ "$(cat "$FAKE_GIT_STATE/fake_time_epoch")" -eq 5 ]
+    # The timeout path now re-reads the PR after cleanup before it can consider
+    # sibling coverage; this fake makes every PR read advance three seconds.
+    [ "$(cat "$FAKE_GIT_STATE/fake_time_epoch")" -eq 8 ]
 }
 
 @test "commit-stats-snapshot reconciles a merge command killed at its remaining budget without arming auto-merge" {
@@ -1214,6 +1297,142 @@ teardown() {
     grep -qF "pr create --base master --head bot/stats-snapshot-876123-1-attempt-1" "$FAKE_GIT_STATE/gh.log"
     ! grep -qF "bot/stats-snapshot-876123-1-attempt-2" "$FAKE_GIT_STATE/gh.log"
     [ ! -e "$FAKE_GIT_STATE/branch_bot_stats-snapshot-876123-1-attempt-1_stats" ]
+}
+
+@test "commit-stats-snapshot treats sibling-covered rows as persisted after the second wait timeout" {
+    configure_timeout_coverage_inputs covered
+    configure_second_wait_timeout
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -eq 0 ]
+    [ "$(get_output persisted)" = "true" ]
+    [ "$(get_output still_missing_after_reconcile)" = "false" ]
+    [[ "$output" == *"Stats snapshot PR #123 timed out, but origin/master already holds every (date, container) row of this run's candidate, landed by another run"* ]]
+    [ "$(cat "$FAKE_GIT_STATE/pr_close_count")" -eq 1 ]
+    [ "$(cat "$FAKE_GIT_STATE/fetch_count")" -eq 2 ]
+}
+
+@test "commit-stats-snapshot treats sibling-covered rows as persisted after the first wait timeout" {
+    configure_timeout_coverage_inputs covered
+    export FAKE_TIMEOUT_MERGE_MODE="exceeds_budget"
+    export FAKE_TIMEOUT_LAND_SIBLING="1"
+    export STATS_PR_MERGE_TIMEOUT_SECONDS="10"
+    export STATS_PR_MERGE_POLL_SECONDS="5"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -eq 0 ]
+    [ "$(get_output persisted)" = "true" ]
+    [ "$(get_output still_missing_after_reconcile)" = "false" ]
+    [[ "$output" == *"Stats snapshot PR #123 timed out, but origin/master already holds every (date, container) row of this run's candidate, landed by another run"* ]]
+    [ "$(cat "$FAKE_GIT_STATE/pr_close_count")" -eq 1 ]
+}
+
+@test "commit-stats-snapshot keeps a timed-out run red when sibling master misses a candidate key" {
+    configure_timeout_coverage_inputs missing-key
+    configure_second_wait_timeout
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [ "$(get_output still_missing_after_reconcile)" = "true" ]
+    [[ "$output" == *"Could not persist stats snapshot this run"* ]]
+    [[ "$output" != *"landed by another run"* ]]
+}
+
+@test "commit-stats-snapshot keeps a timed-out run red when sibling master has another date" {
+    configure_timeout_coverage_inputs wrong-date
+    configure_second_wait_timeout
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [ "$(get_output still_missing_after_reconcile)" = "true" ]
+    [[ "$output" == *"Could not persist stats snapshot this run"* ]]
+    [[ "$output" != *"landed by another run"* ]]
+}
+
+@test "commit-stats-snapshot keeps a timed-out run red when post-timeout master fetch fails" {
+    configure_timeout_coverage_inputs covered
+    configure_second_wait_timeout
+    export FAKE_GIT_FAIL_FETCH_ON_CALL="2"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [ "$(get_output still_missing_after_reconcile)" = "true" ]
+    [[ "$output" == *"Could not fetch origin/master before stats snapshot attempt 1"* ]]
+}
+
+@test "commit-stats-snapshot does not apply coverage to an uninspectable wait" {
+    configure_timeout_coverage_inputs covered
+    export FAKE_GH_PR_VIEW_MODE="always_open"
+    export FAKE_GH_LAND_SIBLING_AT_VIEW="1"
+    export FAKE_GH_PR_VIEW_PAYLOAD="not-a-pr-view-payload"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [ "$(get_output still_missing_after_reconcile)" = "true" ]
+    [[ "$output" == *"received an unusable payload"* ]]
+    [ ! -e "$FAKE_GIT_STATE/pr_close_called" ]
+}
+
+@test "commit-stats-snapshot does not vacuously cover a timed-out candidate with no valid keys" {
+    configure_timeout_coverage_inputs covered
+    configure_second_wait_timeout
+    export FAKE_JQ_COVERAGE_EMPTY_CANDIDATE="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [ "$(get_output still_missing_after_reconcile)" = "true" ]
+    [[ "$output" == *"Could not persist stats snapshot this run"* ]]
+    [[ "$output" != *"landed by another run"* ]]
+}
+
+@test "commit-stats-snapshot rejects an invalid master row during timeout coverage" {
+    configure_timeout_coverage_inputs invalid-master
+    configure_second_wait_timeout
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [ "$(get_output still_missing_after_reconcile)" = "true" ]
+    [[ "$output" == *"Could not persist stats snapshot this run"* ]]
+    [[ "$output" != *"landed by another run"* ]]
+}
+
+@test "commit-stats-snapshot does not cover a timed-out PR whose close failed and remains open" {
+    configure_timeout_coverage_inputs covered
+    configure_second_wait_timeout
+    export FAKE_GH_PR_CLOSE_FAIL="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [ "$(get_output still_missing_after_reconcile)" = "true" ]
+    [[ "$output" == *"Could not close stale stats snapshot PR #123"* ]]
+    [[ "$output" == *"is not closed after timeout cleanup (state=OPEN)"* ]]
+}
+
+@test "commit-stats-snapshot keeps a timed-out run red when its PR merges before close" {
+    configure_timeout_coverage_inputs covered
+    configure_second_wait_timeout
+    unset FAKE_GH_LAND_SIBLING_AT_VIEW
+    export FAKE_GH_PR_CLOSE_MODE="already_merged"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [[ "$output" == *"Timed out waiting for stats snapshot PR #123 to merge into master"* ]]
+    [[ "$output" != *"landed by another run"* ]]
+    [[ "$output" == *"is not closed after timeout cleanup (state=MERGED)"* ]]
+    [ "$(cat "$FAKE_GIT_STATE/pr_123_state")" = "MERGED" ]
+    while IFS= read -r candidate_row; do
+        grep -qF "$candidate_row" "$FAKE_GIT_STATE/head_stats"
+    done < "$CANDIDATE_SOURCE_FILE"
 }
 
 @test "commit-stats-snapshot uses a fresh PR when a prior attempt's PR closes" {
