@@ -109,3 +109,19 @@ Build status will be available in GitHub Actions after merge.
 - Variant: 2.336.0-debian-trixie, base ghcr.io/oorabona/debian:trixie
   Old digest: sha256:7ae54e6974bec6dd2065140ebdb6cad3330e886ff8081aa8a91afca512b4c5fb
   New digest: sha256:81cb70daff011143c7676c1f4e8d87231e7874554967ffd5effdb79425952109
+
+<!-- drift-content-hash: eef2f3089af8dade run:36564666977 -->
+## base-digest-drift (2026-09-29)
+
+- Variant: 2.335.1-debian-trixie-dev, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:81cb70daff011143c7676c1f4e8d87231e7874554967ffd5effdb79425952109
+  New digest: sha256:df7258ff0650fc5066dacb8e3d214eeb447f80e0f32dde971c7ef81814ad9c9f
+- Variant: 2.335.1-debian-trixie, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:81cb70daff011143c7676c1f4e8d87231e7874554967ffd5effdb79425952109
+  New digest: sha256:df7258ff0650fc5066dacb8e3d214eeb447f80e0f32dde971c7ef81814ad9c9f
+- Variant: 2.336.0-debian-trixie-dev, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:81cb70daff011143c7676c1f4e8d87231e7874554967ffd5effdb79425952109
+  New digest: sha256:df7258ff0650fc5066dacb8e3d214eeb447f80e0f32dde971c7ef81814ad9c9f
+- Variant: 2.336.0-debian-trixie, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:81cb70daff011143c7676c1f4e8d87231e7874554967ffd5effdb79425952109
+  New digest: sha256:df7258ff0650fc5066dacb8e3d214eeb447f80e0f32dde971c7ef81814ad9c9f
