@@ -604,6 +604,16 @@ case "${1:-} ${2:-}" in
     exit 0
     ;;
   "pr close")
+    if [[ "${FAKE_GH_PR_CLOSE_MODE:-}" == "already_merged" ]]; then
+      number="${3:-}"
+      if ! number=$(pr_number_for_ref "$number"); then
+        echo "could not resolve pull request: ${3:-}" >&2
+        exit 1
+      fi
+      merge_pr_branch "$number"
+      echo "simulated gh pr close failure after merge" >&2
+      exit 1
+    fi
     if [[ "${FAKE_GH_PR_CLOSE_FAIL:-}" == "1" ]]; then
       echo "simulated gh pr close failure" >&2
       exit 1
@@ -1404,7 +1414,25 @@ configure_second_wait_timeout() {
     [ "$(get_output persisted)" = "false" ]
     [ "$(get_output still_missing_after_reconcile)" = "true" ]
     [[ "$output" == *"Could not close stale stats snapshot PR #123"* ]]
-    [[ "$output" == *"remains open or has an unusable state after timeout cleanup (state=OPEN)"* ]]
+    [[ "$output" == *"is not closed after timeout cleanup (state=OPEN)"* ]]
+}
+
+@test "commit-stats-snapshot keeps a timed-out run red when its PR merges before close" {
+    configure_timeout_coverage_inputs covered
+    configure_second_wait_timeout
+    unset FAKE_GH_LAND_SIBLING_AT_VIEW
+    export FAKE_GH_PR_CLOSE_MODE="already_merged"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [ "$status" -ne 0 ]
+    [ "$(get_output persisted)" = "false" ]
+    [[ "$output" == *"Timed out waiting for stats snapshot PR #123 to merge into master"* ]]
+    [[ "$output" != *"landed by another run"* ]]
+    [[ "$output" == *"is not closed after timeout cleanup (state=MERGED)"* ]]
+    [ "$(cat "$FAKE_GIT_STATE/pr_123_state")" = "MERGED" ]
+    while IFS= read -r candidate_row; do
+        grep -qF "$candidate_row" "$FAKE_GIT_STATE/head_stats"
+    done < "$CANDIDATE_SOURCE_FILE"
 }
 
 @test "commit-stats-snapshot uses a fresh PR when a prior attempt's PR closes" {

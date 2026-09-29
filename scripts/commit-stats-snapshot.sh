@@ -42,14 +42,16 @@ fi
 #
 # The run succeeds only when its own PR merges; an attempt's merged candidate
 # leaves $STATS_FILE unchanged from origin/master; or, after a merge-wait
-# timeout and a verified non-open PR, origin/master already holds every
+# timeout and a verified closed PR, origin/master already holds every
 # (date, container) key from this run's candidate because a concurrent run
-# landed it. Step 8 of the workflow separately fails the job while any
-# container lacks a row for the current UTC day. This job has no downstream
-# dependents (deploy only needs build), so a failure is isolated and visible
-# rather than a silent, permanently-green job that would otherwise mask a real
-# regression (revoked token scope, branch protection change): under such a
-# regression no run lands rows, master stays uncovered, and the run stays red.
+# landed it. A PR found merged after the timeout stays red: the timeout path
+# does not read mergedAt, so it cannot tell a merge after the deadline from an
+# in-budget merge observed late. Step 8 of the workflow separately fails the
+# job while any container lacks a row for the current UTC day. This job has no
+# downstream dependents (deploy only needs build), so a failure is isolated and
+# visible rather than a silent, permanently-green job that would otherwise mask
+# a real regression (revoked token scope, branch protection change): under such
+# a regression no run lands rows, master stays uncovered, and the run stays red.
 #
 # No explicit follow-up dispatch: the calling workflow authenticates the PR
 # branch push and PR merge with a GitHub App installation token. Unlike
@@ -781,16 +783,19 @@ timeout_pr_candidate_is_covered_by_master() {
   local pr_view pr_state coverage
 
   # cleanup_failed_pr deliberately returns success even when gh pr close fails.
-  # Re-read the PR so a close failure cannot turn an armed OPEN PR into a green
-  # run just because a sibling happened to land matching rows.
+  # Re-read the PR so sibling coverage applies only to a verified CLOSED PR.
+  # A PR found merged after the timeout stays red: this path does not read
+  # mergedAt, so it cannot tell a merge after the deadline from an in-budget
+  # merge observed late. A close failure cannot turn an armed OPEN PR into a
+  # green run just because a sibling happened to land matching rows.
   if ! pr_view=$(inspect_stats_snapshot_pr "$pr_number" 2>&1); then
     printf '%s\n' "$pr_view" >&2
     gha_warning 'Could not read stats snapshot PR #%s after timeout cleanup' "$pr_number"
     return 1
   fi
   IFS='|' read -r pr_state _ <<< "$pr_view"
-  if [[ "$pr_state" != "CLOSED" && "$pr_state" != "MERGED" ]]; then
-    gha_warning 'Stats snapshot PR #%s remains open or has an unusable state after timeout cleanup (state=%s)' "$pr_number" "$pr_state"
+  if [[ "$pr_state" != "CLOSED" ]]; then
+    gha_warning 'Stats snapshot PR #%s is not closed after timeout cleanup (state=%s); only a closed PR can be covered by rows another run landed' "$pr_number" "$pr_state"
     return 1
   fi
 
