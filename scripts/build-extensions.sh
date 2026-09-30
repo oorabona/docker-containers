@@ -2358,6 +2358,39 @@ _consolidate_version_duration_file() {
     fi
 }
 
+# _write_nonresolver_versionset <ext> <pg_major> <ceiling> <ref>
+#
+# Record the verified multi-arch index digest of <ref> in the versionset schema
+# for a non-resolver (single configured version) extension, so a downstream
+# consumer can use the immutable source instead of re-resolving a mutable tag.
+# Used both after creating the manifest and when an already-published manifest
+# is reused: without it a reused manifest leaves no versionset for this major,
+# and the final-image generator fails closed once another major of the same
+# extension did write one (PUBLISHED_EXTENSION_DIGESTS declares the extension).
+# Returns non-zero (fail-closed) on digest capture or write failure.
+_write_nonresolver_versionset() {
+    local ext="$1" major_ver="$2" ceiling="$3" ref="$4"
+    local digest digest_rc=0 repository lineage_file
+
+    digest=$(_capture_index_digest "$ref") || digest_rc=$?
+    if [[ "$digest_rc" -ne 0 ]] || ! is_valid_oci_digest "$digest"; then
+        log_error "$ext $ceiling pg${major_ver}: index digest capture failed for non-resolver manifest (got: '$(_sanitize_for_log "${digest:-<empty>}")') — fail closed"
+        return 1
+    fi
+    repository=$(ext_image_repository "$ext") || return 1
+    lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
+    # shellcheck disable=SC2016 # jq program is intentionally single-quoted.
+    _write_lineage_artifact "$lineage_file" jq -nc \
+        --arg ext "$ext" \
+        --arg pg_major "$major_ver" \
+        --arg ceiling "$ceiling" \
+        --arg digest "$digest" \
+        --arg repository "$repository" \
+        '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:[$ceiling], available:[$ceiling], excluded:[], version_digests:{($ceiling):$digest}, version_digests_repository:$repository}' \
+        || return 1
+    log_success "Versionset artifact written: $lineage_file"
+}
+
 # finalize_multiarch_manifests <config_file> <major_ver> <container_dir>
 #
 # Stage B (multi-arch): invoked after BOTH arch build legs finish.
@@ -2461,6 +2494,9 @@ finalize_multiarch_manifests() {
                         case "$_nr_ma_rc" in
                             0)
                                 log_info "$ext $ceiling pg${major_ver}: manifest present — reused (unchanged, non-resolver)"
+                                # A reused manifest still needs its versionset: another major of
+                                # this extension may have written one in this run.
+                                _write_nonresolver_versionset "$ext" "$major_ver" "$ceiling" "$_nr_resolved_ref" || _failed=true
                                 continue
                                 ;;
                             1)
@@ -2573,27 +2609,7 @@ finalize_multiarch_manifests() {
                     # verified index digest in the existing versionset schema so a
                     # downstream consumer can use the immutable source rather than
                     # re-resolving this mutable tag.
-                    local _nr_digest _nr_digest_rc=0 _nr_repository _nr_lineage_file
-                    _nr_digest=$(_capture_index_digest "$_nr_target") || _nr_digest_rc=$?
-                    if [[ "$_nr_digest_rc" -ne 0 ]] || ! is_valid_oci_digest "$_nr_digest"; then
-                        log_error "$ext $ceiling pg${major_ver}: index digest capture failed after non-resolver manifest create (got: '$(_sanitize_for_log "${_nr_digest:-<empty>}")') — fail closed"
-                        _failed=true
-                    else
-                        _nr_repository=$(ext_image_repository "$ext") || { _failed=true; continue; }
-                        _nr_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
-                        # shellcheck disable=SC2016 # jq program is intentionally single-quoted.
-                        if ! _write_lineage_artifact "$_nr_lineage_file" jq -nc \
-                            --arg ext "$ext" \
-                            --arg pg_major "$major_ver" \
-                            --arg ceiling "$ceiling" \
-                            --arg digest "$_nr_digest" \
-                            --arg repository "$_nr_repository" \
-                            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:[$ceiling], available:[$ceiling], excluded:[], version_digests:{($ceiling):$digest}, version_digests_repository:$repository}'; then
-                            _failed=true
-                        else
-                            log_success "Versionset artifact written: $_nr_lineage_file"
-                        fi
-                    fi
+                    _write_nonresolver_versionset "$ext" "$major_ver" "$ceiling" "$_nr_target" || _failed=true
                 fi
             fi
             # AX-3: consolidate per-arch duration files so the summer counts the

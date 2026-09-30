@@ -14496,6 +14496,90 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# A reused non-resolver manifest must still leave a versionset artifact.
+# Regression: the reuse path `continue`d without writing one, so once another
+# PG major of the same extension wrote a versionset (extension declared in
+# PUBLISHED_EXTENSION_DIGESTS) the final-image generator failed closed for the
+# major whose manifest was merely reused.
+# ---------------------------------------------------------------------------
+@test "non-resolver canonical manifest reused → versionset artifact still written with its index digest" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local imagetools_log="$tmpd/reuse_vs_imagetools.log"
+
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX=''
+        export imagetools_log='${imagetools_log}'
+        cd '${sd}'
+        source ./build-extensions.sh
+        export ROOT_DIR='${tmpd}'
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                pgvector:version) echo '0.8.0' ;;
+                pgvector:repo)    echo 'https://github.com/pgvector/pgvector' ;;
+                *)                echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        docker() {
+            local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
+                return 1
+            fi
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
+                printf 'Platform: linux/amd64\nPlatform: linux/arm64\n'
+                return 0
+            fi
+            if [[ \"\$_dc\" == 'manifest' && \"\$_d2\" == 'inspect' ]]; then
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
+
+        _capture_index_digest() { echo 'sha256:1111111111111111111111111111111111111111111111111111111111111111'; return 0; }
+
+        list_extensions_by_priority() { echo 'pgvector'; }
+        export -f list_extensions_by_priority
+
+        finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
+    "
+
+    [ "$status" -eq 0 ]
+
+    # Reused, not re-created.
+    [ ! -f "$imagetools_log" ]
+
+    local vs="$tmpd/.build-lineage/ext-pgvector-pg18-versionset.json"
+    [ -f "$vs" ]
+    [ "$(jq -r '.ext' "$vs")" = "pgvector" ]
+    [ "$(jq -r '.pg_major' "$vs")" = "18" ]
+    [ "$(jq -r '.version_digests["0.8.0"]' "$vs")" = "sha256:1111111111111111111111111111111111111111111111111111111111111111" ]
+}
+
+# ---------------------------------------------------------------------------
 # PR context, non-resolver ext NOT in
 # canonical (built this PR, pr-scoped arch tags exist) → creates the
 # PR-scoped multi-arch manifest from the -pr42 arch tags.
