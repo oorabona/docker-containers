@@ -2083,9 +2083,18 @@ jobs:
           # shellcheck disable=SC2086
           cells_json=$(./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" ${BAKE_CONTAINERS})
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            # The retained plan only covers BAKE_RETAINED_CONTAINERS; the generator refuses
+            # per-container filters keyed to containers outside the request, so narrow the map.
+            retained_scope_args=("${scope_args[@]}")
+            if [[ -n "${CONTAINER_SCOPES:-}" ]]; then
+              retained_container_scopes=$(jq -c --arg names "${BAKE_RETAINED_CONTAINERS}" '($names | split(" ")) as $n | with_entries(select(.key as $k | $n | index($k)))' <<< "$CONTAINER_SCOPES")
+              for i in "${!retained_scope_args[@]}"; do
+                [[ "${retained_scope_args[$i]}" == "$CONTAINER_SCOPES" ]] && retained_scope_args[i]="$retained_container_scopes"
+              done
+            fi
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
-            retained_cells=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
+            retained_cells=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${retained_scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
             cells_json=$(jq -s '(.[0] + .[1]) | unique_by([.container, (.tag // ""), (.flavor // "")])' <<< "$cells_json"$'\n'"$retained_cells")
           fi
           if ! jq -e 'type == "array"' <<< "$cells_json" >/dev/null; then
@@ -2384,11 +2393,20 @@ jobs:
           cp "$bake_latest_file" "$bake_file"
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            # The retained plan only covers BAKE_RETAINED_CONTAINERS; the generator refuses
+            # per-container filters keyed to containers outside the request, so narrow the map.
+            retained_scope_args=("${scope_args[@]}")
+            if [[ -n "${CONTAINER_SCOPES:-}" ]]; then
+              retained_container_scopes=$(jq -c --arg names "${BAKE_RETAINED_CONTAINERS}" '($names | split(" ")) as $n | with_entries(select(.key as $k | $n | index($k)))' <<< "$CONTAINER_SCOPES")
+              for i in "${!retained_scope_args[@]}"; do
+                [[ "${retained_scope_args[$i]}" == "$CONTAINER_SCOPES" ]] && retained_scope_args[i]="$retained_container_scopes"
+              done
+            fi
             bake_retained_file="${RUNNER_TEMP}/bake-amd64-retained.json"
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
             REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=true \
-              ./scripts/generate-bake-hcl.sh "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
+              ./scripts/generate-bake-hcl.sh "${retained_scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
             ./scripts/bake-merge-hcl.sh "$bake_latest_file" "$bake_retained_file" > "$bake_file"
           fi
 
@@ -2446,6 +2464,15 @@ jobs:
             ${BAKE_CONTAINERS}
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            # The retained plan only covers BAKE_RETAINED_CONTAINERS; the generator refuses
+            # per-container filters keyed to containers outside the request, so narrow the map.
+            retained_scope_args=("${scope_args[@]}")
+            if [[ -n "${CONTAINER_SCOPES:-}" ]]; then
+              retained_container_scopes=$(jq -c --arg names "${BAKE_RETAINED_CONTAINERS}" '($names | split(" ")) as $n | with_entries(select(.key as $k | $n | index($k)))' <<< "$CONTAINER_SCOPES")
+              for i in "${!retained_scope_args[@]}"; do
+                [[ "${retained_scope_args[$i]}" == "$CONTAINER_SCOPES" ]] && retained_scope_args[i]="$retained_container_scopes"
+              done
+            fi
             export BAKE_GENERATE_ALL_RETAINED=true
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
@@ -2969,11 +2996,20 @@ jobs:
           cp "$bake_latest_file" "$bake_file"
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            # The retained plan only covers BAKE_RETAINED_CONTAINERS; the generator refuses
+            # per-container filters keyed to containers outside the request, so narrow the map.
+            retained_scope_args=("${scope_args[@]}")
+            if [[ -n "${CONTAINER_SCOPES:-}" ]]; then
+              retained_container_scopes=$(jq -c --arg names "${BAKE_RETAINED_CONTAINERS}" '($names | split(" ")) as $n | with_entries(select(.key as $k | $n | index($k)))' <<< "$CONTAINER_SCOPES")
+              for i in "${!retained_scope_args[@]}"; do
+                [[ "${retained_scope_args[$i]}" == "$CONTAINER_SCOPES" ]] && retained_scope_args[i]="$retained_container_scopes"
+              done
+            fi
             bake_retained_file="${RUNNER_TEMP}/bake-arm64-retained.json"
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
             REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=true \
-              ./scripts/generate-bake-hcl.sh "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
+              ./scripts/generate-bake-hcl.sh "${retained_scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
             ./scripts/bake-merge-hcl.sh "$bake_latest_file" "$bake_retained_file" > "$bake_file"
           fi
 
@@ -3028,6 +3064,15 @@ jobs:
             ${BAKE_CONTAINERS}
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            # The retained plan only covers BAKE_RETAINED_CONTAINERS; the generator refuses
+            # per-container filters keyed to containers outside the request, so narrow the map.
+            retained_scope_args=("${scope_args[@]}")
+            if [[ -n "${CONTAINER_SCOPES:-}" ]]; then
+              retained_container_scopes=$(jq -c --arg names "${BAKE_RETAINED_CONTAINERS}" '($names | split(" ")) as $n | with_entries(select(.key as $k | $n | index($k)))' <<< "$CONTAINER_SCOPES")
+              for i in "${!retained_scope_args[@]}"; do
+                [[ "${retained_scope_args[$i]}" == "$CONTAINER_SCOPES" ]] && retained_scope_args[i]="$retained_container_scopes"
+              done
+            fi
             export BAKE_GENERATE_ALL_RETAINED=true
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
@@ -3443,14 +3488,23 @@ jobs:
           fi
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            # The retained plan only covers BAKE_RETAINED_CONTAINERS; the generator refuses
+            # per-container filters keyed to containers outside the request, so narrow the map.
+            retained_scope_args=("${scope_args[@]}")
+            if [[ -n "${CONTAINER_SCOPES:-}" ]]; then
+              retained_container_scopes=$(jq -c --arg names "${BAKE_RETAINED_CONTAINERS}" '($names | split(" ")) as $n | with_entries(select(.key as $k | $n | index($k)))' <<< "$CONTAINER_SCOPES")
+              for i in "${!retained_scope_args[@]}"; do
+                [[ "${retained_scope_args[$i]}" == "$CONTAINER_SCOPES" ]] && retained_scope_args[i]="$retained_container_scopes"
+              done
+            fi
             if [[ "$DRY_RUN" == "true" ]]; then
               # shellcheck disable=SC2086
               DRY_RUN=true REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=true \
-                ./scripts/bake-merge-manifests.sh "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS}
+                ./scripts/bake-merge-manifests.sh "${retained_scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS}
             else
               # shellcheck disable=SC2086
               REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=true \
-                ./scripts/bake-merge-manifests.sh "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS}
+                ./scripts/bake-merge-manifests.sh "${retained_scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS}
             fi
           fi
 
@@ -3491,6 +3545,15 @@ jobs:
           mirror_to_dockerhub "${scope_args[@]}" ${BAKE_CONTAINERS}
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            # The retained plan only covers BAKE_RETAINED_CONTAINERS; the generator refuses
+            # per-container filters keyed to containers outside the request, so narrow the map.
+            retained_scope_args=("${scope_args[@]}")
+            if [[ -n "${CONTAINER_SCOPES:-}" ]]; then
+              retained_container_scopes=$(jq -c --arg names "${BAKE_RETAINED_CONTAINERS}" '($names | split(" ")) as $n | with_entries(select(.key as $k | $n | index($k)))' <<< "$CONTAINER_SCOPES")
+              for i in "${!retained_scope_args[@]}"; do
+                [[ "${retained_scope_args[$i]}" == "$CONTAINER_SCOPES" ]] && retained_scope_args[i]="$retained_container_scopes"
+              done
+            fi
             export BAKE_GENERATE_ALL_RETAINED=true
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
@@ -3550,9 +3613,18 @@ jobs:
           emit_manifest_results "$cells_json"
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            # The retained plan only covers BAKE_RETAINED_CONTAINERS; the generator refuses
+            # per-container filters keyed to containers outside the request, so narrow the map.
+            retained_scope_args=("${scope_args[@]}")
+            if [[ -n "${CONTAINER_SCOPES:-}" ]]; then
+              retained_container_scopes=$(jq -c --arg names "${BAKE_RETAINED_CONTAINERS}" '($names | split(" ")) as $n | with_entries(select(.key as $k | $n | index($k)))' <<< "$CONTAINER_SCOPES")
+              for i in "${!retained_scope_args[@]}"; do
+                [[ "${retained_scope_args[$i]}" == "$CONTAINER_SCOPES" ]] && retained_scope_args[i]="$retained_container_scopes"
+              done
+            fi
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
-            cells_json=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
+            cells_json=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${retained_scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
             emit_manifest_results "$cells_json"
           fi
 
