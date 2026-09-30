@@ -2989,6 +2989,26 @@ run_invalid_build_case() {
     [[ "$output" == *"version 102 not deleted: re-read has tags"* ]]
 }
 
+@test "outdated-tag cleanup treats a 404 orphan re-read as already deleted" {
+    local gh_log="$_STUB_DIR/reread-orphan-404-gh.log"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" GH_LOG="$gh_log" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false bash -c '
+        source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+        build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
+        gh() {
+            [[ "$*" == *"--method DELETE"* ]] && { printf "DELETE\n" >> "$GH_LOG"; return 0; }
+            [[ "$*" == *"/versions/102"* ]] && { printf "%s\n" "{\"message\":\"Not Found\"}"; printf "gh: Not Found (HTTP 404)\n" >&2; return 1; }
+            [[ "$*" == *"/versions"* ]] && printf "%s\n" "[{\"id\":102,\"name\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"metadata\":{\"container\":{\"tags\":[]}}}]" || printf "%s\n" "{\"version_count\":1}"
+        }
+        main stale
+    '
+
+    [[ "$status" -eq 0 ]]
+    [[ ! -s "$gh_log" ]]
+    [[ "$output" == *"version 102 already gone (404)"* ]]
+    [[ "$output" == *"reread_failures=0"* ]]
+}
+
 @test "outdated-tag cleanup fails closed for failed or malformed version re-reads" {
     run env PROJECT_ROOT="$PROJECT_ROOT" GH_TOKEN="$GH_TOKEN" OWNER="$OWNER" DRY_RUN=false bash -c '
         source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"

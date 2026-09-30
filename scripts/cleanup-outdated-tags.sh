@@ -199,22 +199,34 @@ _cleanup_outdated_tags_delete() {
 # Re-read the exact GHCR version record just before DELETE. A listing is only a
 # snapshot, so a missing, malformed, or different record must fail closed.
 _get_ghcr_version_tags() {
-  local container="$1" version_id="$2"
+  local container="$1" version_id="$2" response err_file
 
-  gh api \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "/users/${OWNER}/packages/container/${container}/versions/${version_id}" 2>/dev/null \
-    | jq -ce --arg expected_version_id "$version_id" '
-      if type != "object" then error("GHCR version record must be an object")
-      elif (.id? | tostring) != $expected_version_id then error("GHCR version record id does not match requested version id")
-      elif (.metadata? | type) != "object" then error("GHCR version record metadata is invalid")
-      elif (.metadata.container? | type) != "object" then error("GHCR version record metadata.container is invalid")
-      elif (.metadata.container.tags? | type) != "array" then error("GHCR version record tags are invalid")
-      elif all(.metadata.container.tags[]; type == "string") | not then error("GHCR version record tags must be strings")
-      else .metadata.container.tags
-      end
-    '
+  err_file=$(mktemp) || return 1
+  if ! response=$(gh api \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "/users/${OWNER}/packages/container/${container}/versions/${version_id}" 2>"$err_file"); then
+    # 44 = the version no longer exists (deleted since the listing snapshot).
+    if grep -q 'HTTP 404' "$err_file"; then
+      rm -f "$err_file"
+      return 44
+    fi
+    echo "    gh api re-read error: $(head -c 300 "$err_file" | tr '\n' ' ')" >&2
+    rm -f "$err_file"
+    return 1
+  fi
+  rm -f "$err_file"
+
+  jq -ce --arg expected_version_id "$version_id" '
+    if type != "object" then error("GHCR version record must be an object")
+    elif (.id? | tostring) != $expected_version_id then error("GHCR version record id does not match requested version id")
+    elif (.metadata? | type) != "object" then error("GHCR version record metadata is invalid")
+    elif (.metadata.container? | type) != "object" then error("GHCR version record metadata.container is invalid")
+    elif (.metadata.container.tags? | type) != "array" then error("GHCR version record tags are invalid")
+    elif all(.metadata.container.tags[]; type == "string") | not then error("GHCR version record tags must be strings")
+    else .metadata.container.tags
+    end
+  ' <<< "$response"
 }
 
 build_valid_tags() {
@@ -331,7 +343,7 @@ purge_ghcr() {
   local versions package_metadata version_count reported_version_count versions_file="" obsolete_file="" protected_file=""
   local version_id digest tags tag tag_list has_valid kept=0 obsolete=0 orphans=0 delete_failures=0 reread_failures=0 validation_error validation_status index
   local record_b64 record_json
-  local protected_digests="" ghcr_token manifest children protection_result current_tags_json current_tag_list current_tag current_has_valid parent_not_deleted=0
+  local protected_digests="" ghcr_token manifest children protection_result current_tags_json current_tag_list current_tag current_has_valid parent_not_deleted=0 read_status
   local -a kept_digests=() version_records=() obsolete_source_ids=() obsolete_source_digests=() obsolete_source_tags=()
   local -a untagged_ids=() untagged_digests=() orphan_ids=() orphan_digests=() obsolete_replay=()
   local -a parent_ids=() parent_digests=() parent_tags=() obsolete_ids=() obsolete_digests=() obsolete_tags=()
@@ -647,19 +659,27 @@ purge_ghcr() {
       echo "  ✗ Orphan (digest: ${digest:0:19}...)" >&2
       if [[ "$DRY_RUN" == true ]]; then
         echo "    [DRY RUN] Would delete version $version_id" >&2
-      elif ! current_tags_json=$(_get_ghcr_version_tags "$container" "$version_id"); then
-        echo "    ✗ version $version_id not deleted: re-read failed" >&2
-        reread_failures=$((reread_failures + 1))
-      elif ! current_tag_list=$(jq -r '.[]' <<< "$current_tags_json"); then
-        echo "    ✗ version $version_id not deleted: re-read tags could not be read" >&2
-        reread_failures=$((reread_failures + 1))
-      elif [[ -n "$current_tag_list" ]]; then
-        echo "    ✓ version $version_id not deleted: re-read has tags" >&2
-      elif _cleanup_outdated_tags_delete ghcr-version "$container" "$version_id"; then
-        echo "    ✓ Deleted" >&2
       else
-        echo "    ✗ Failed to delete" >&2
-        delete_failures=$((delete_failures + 1))
+        # The re-read guards against a concurrent build tagging this digest
+        # after the listing snapshot; a 404 means it is already gone.
+        read_status=0
+        current_tags_json=$(_get_ghcr_version_tags "$container" "$version_id") || read_status=$?
+        if [[ "$read_status" -eq 44 ]]; then
+          echo "    ✓ version $version_id already gone (404); nothing to delete" >&2
+        elif [[ "$read_status" -ne 0 ]]; then
+          echo "    ✗ version $version_id not deleted: re-read failed" >&2
+          reread_failures=$((reread_failures + 1))
+        elif ! current_tag_list=$(jq -r '.[]' <<< "$current_tags_json"); then
+          echo "    ✗ version $version_id not deleted: re-read tags could not be read" >&2
+          reread_failures=$((reread_failures + 1))
+        elif [[ -n "$current_tag_list" ]]; then
+          echo "    ✓ version $version_id not deleted: re-read has tags" >&2
+        elif _cleanup_outdated_tags_delete ghcr-version "$container" "$version_id"; then
+          echo "    ✓ Deleted" >&2
+        else
+          echo "    ✗ Failed to delete" >&2
+          delete_failures=$((delete_failures + 1))
+        fi
       fi
     done
   fi
