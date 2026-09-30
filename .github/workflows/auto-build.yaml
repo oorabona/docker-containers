@@ -459,14 +459,57 @@ jobs:
             *) echo "e2e-gate FAIL (e2e-test=$r)"; exit 1 ;;
           esac
 
+  # Plans the build-extensions legs: one per PostgreSQL major that needs
+  # extensions. Compiling every major back-to-back in a single job per arch
+  # (paradedb's pgrx build alone is ~1h45 cold per major) exhausted the job
+  # timeout when an extension version bumped. Splitting by major bounds each leg
+  # to roughly one cold compile and runs the majors in parallel.
+  plan-extension-legs:
+    name: Plan extension legs
+    needs: [detect-containers]
+    if: |
+      always() &&
+      needs.detect-containers.result == 'success' &&
+      needs.detect-containers.outputs.count > 0 &&
+      needs.detect-containers.outputs.extension_builds != '[]' &&
+      github.event.inputs.skip_extensions != 'true' && inputs.skip_extensions != true && inputs.skip_extensions != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      majors: ${{ steps.plan.outputs.majors }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64"
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: List PostgreSQL majors requiring extensions
+        id: plan
+        env:
+          EXTENSION_CONTAINERS_JSON: ${{ needs.detect-containers.outputs.container_scopes != '' && needs.detect-containers.outputs.extension_builds || '' }}
+        run: |
+          set -euo pipefail
+          listing="$(mktemp)"
+          GITHUB_OUTPUT="$listing" scripts/list-extension-versions.sh
+          versions_map=$(sed -n 's/^versions_map=//p' "$listing")
+          majors=$(printf '%s' "$versions_map" | tr '|' '\n' | sed 's/^[^:]*://' | tr ',' '\n' | awk 'NF' | sort -un | jq -R . | jq -sc .)
+          # No major listed: keep one catch-all leg (empty major = build everything in scope).
+          [[ "$majors" == "[]" ]] && majors='[""]'
+          echo "Extension legs: $majors"
+          echo "majors=$majors" >> "$GITHUB_OUTPUT"
+
   # Build and push PostgreSQL extension images if postgres is in the build list.
-  # Runs as a two-leg arch matrix (amd64 + arm64) on native runners so each leg
-  # pushes platform-suffixed single-arch images (-amd64 / -arm64).  The
-  # merge-extension-manifests job below then fuses them into multi-arch manifests
-  # and writes the versionset artifact (stage B).
+  # Runs as an arch x PostgreSQL-major matrix (amd64 + arm64) on native runners so
+  # each leg pushes platform-suffixed single-arch images (-amd64 / -arm64) for one
+  # major.  The merge-extension-manifests job below then fuses them into
+  # multi-arch manifests and writes the versionset artifact (stage B).
   build-extensions:
-    name: Build PostgreSQL Extensions (${{ matrix.arch }})
-    needs: [detect-containers, sync-base-images]
+    name: Build PostgreSQL Extensions (${{ matrix.arch }}${{ matrix.pg != '' && format(', pg{0}', matrix.pg) || '' }})
+    needs: [detect-containers, sync-base-images, plan-extension-legs]
     # Ordered after sync-base-images so the per-major-version GHCR probe below
     # (docker manifest inspect ghcr.io/<owner>/library/postgres:<ver>-alpine) runs
     # AFTER sync-base-images has seeded that tag, which is what lets the extension
@@ -491,6 +534,7 @@ jobs:
       needs.detect-containers.outputs.count > 0 &&
       needs.detect-containers.outputs.extension_builds != '[]' &&
       github.event.inputs.skip_extensions != 'true' && inputs.skip_extensions != true && inputs.skip_extensions != 'true' &&
+      needs.plan-extension-legs.result == 'success' &&
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped') &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
@@ -506,12 +550,13 @@ jobs:
       packages: write
     # Serialize extension builds across runs — shared builder images race otherwise.
     concurrency:
-      group: build-extensions-${{ github.ref }}-${{ matrix.arch }}
+      group: build-extensions-${{ github.ref }}-${{ matrix.arch }}-pg${{ matrix.pg }}
       cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
+        pg: ${{ fromJSON(needs.plan-extension-legs.outputs.majors || '[""]') }}
         include:
           - arch: amd64
             platform: linux/amd64
@@ -521,7 +566,7 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     # Headroom for paradedb's pgrx Rust compile (~1h45 cold) plus a second
-    # extension rebuilding in the same run. Pre-fix #416, this regularly
+    # extension rebuilding in the same leg (one leg = one PG major). Pre-fix #416, this regularly
     # cancelled at 120; with skip-as-existing the job is fast unless an
     # extension version actually bumps. Defensive step-level timeouts on
     # the network-bound prerequisite steps keep their failure modes from
@@ -605,6 +650,8 @@ jobs:
           # merge-extension-manifests (stage B) fuses them into multi-arch manifests.
           ARCH_SUFFIX: ${{ matrix.arch }}
           BUILD_PLATFORM: ${{ matrix.platform }}
+          # This leg builds a single PG major; empty = all majors (catch-all leg).
+          LEG_MAJOR: ${{ matrix.pg }}
           # supply-chain: resolver-backed Stage B targets on same-repo PRs are PR-scoped,
           # so they do not overwrite canonical production-consumed refs by accident. A PR author
           # who changes the executed script is outside what this suffix constrains.
@@ -647,6 +694,11 @@ jobs:
             IFS=',' read -ra VERSION_LIST <<< "$versions"
             for major_version in "${VERSION_LIST[@]}"; do
               [[ -z "$major_version" ]] && continue
+
+              # Other majors are built by their own matrix leg.
+              if [[ -n "${LEG_MAJOR:-}" && "$major_version" != "$LEG_MAJOR" ]]; then
+                continue
+              fi
 
               # Skip versions not in scope (if scope_versions is set)
               if [[ -n "$container_scope_versions" ]]; then
@@ -707,7 +759,7 @@ jobs:
           # Per-version duration files use arch-suffixed names (ext-*-<ver>-amd64.json,
           # etc.) to avoid collision when both arch artifacts are downloaded together;
           # AX-3 consolidation in stage B merges them with MAX policy.
-          name: ext-lineage-${{ github.run_id }}-${{ matrix.arch }}
+          name: ext-lineage-${{ github.run_id }}-${{ matrix.arch }}${{ matrix.pg != '' && format('-pg{0}', matrix.pg) || '' }}
           path: .build-lineage/ext-*.json
           retention-days: 1
           if-no-files-found: ignore
@@ -724,7 +776,7 @@ jobs:
           # Per-version duration files use arch-suffixed names (ext-*-<ver>-amd64.json,
           # etc.) to avoid collision when both arch artifacts are downloaded together;
           # AX-3 consolidation in stage B merges them with MAX policy.
-          name: ext-lineage-${{ github.run_id }}-${{ matrix.arch }}
+          name: ext-lineage-${{ github.run_id }}-${{ matrix.arch }}${{ matrix.pg != '' && format('-pg{0}', matrix.pg) || '' }}
           path: .build-lineage/ext-*.json
           retention-days: 1
           if-no-files-found: ignore
@@ -760,7 +812,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
-          name: build-result-postgres-ext-${{ matrix.arch }}
+          name: build-result-postgres-ext-${{ matrix.arch }}${{ matrix.pg != '' && format('-pg{0}', matrix.pg) || '' }}
           path: .build-lineage/build-result-postgres-ext-${{ matrix.arch }}.json
           if-no-files-found: ignore
           include-hidden-files: true
@@ -770,7 +822,7 @@ jobs:
         if: always() && steps.upload_build_result_ext.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
-          name: build-result-postgres-ext-${{ matrix.arch }}
+          name: build-result-postgres-ext-${{ matrix.arch }}${{ matrix.pg != '' && format('-pg{0}', matrix.pg) || '' }}
           path: .build-lineage/build-result-postgres-ext-${{ matrix.arch }}.json
           if-no-files-found: ignore
           include-hidden-files: true
@@ -852,14 +904,16 @@ jobs:
       - name: Download amd64 arch-leg lineage (AX-3 duration files)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
-          name: ext-lineage-${{ github.run_id }}-amd64
+          pattern: ext-lineage-${{ github.run_id }}-amd64*
+          merge-multiple: true
           path: .build-lineage/
         continue-on-error: true
 
       - name: Download arm64 arch-leg lineage (AX-3 duration files)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
-          name: ext-lineage-${{ github.run_id }}-arm64
+          pattern: ext-lineage-${{ github.run_id }}-arm64*
+          merge-multiple: true
           path: .build-lineage/
         continue-on-error: true
 
@@ -4230,7 +4284,26 @@ jobs:
             --jq '[.jobs[] | select(.conclusion == "failure") | {name, id: .databaseId}]' \
             2>/dev/null || echo '[]')
 
+          # A job that hits timeout-minutes reports conclusion=cancelled, not failure,
+          # so it never shows up above. The check-run annotation that says so needs
+          # `checks: read`, which this workflow does not grant, so infer it instead: a
+          # cancelled job whose wall-clock duration lands on one of the job-level
+          # timeout-minutes values declared in this workflow (post-job cleanup can
+          # add a few minutes) ran into its limit rather than being superseded.
+          timeouts_json=$(grep -oP '^    timeout-minutes:\s*\K[0-9]+' .github/workflows/auto-build.yaml \
+            | sort -un | awk '$1 >= 30' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)' \
+            2>/dev/null || echo '[]')
+          timed_out_jobs_json=$(gh run view "$GH_RUN_ID" --repo "$GH_REPOSITORY" --json jobs \
+            --jq '[.jobs[] | select(.conclusion == "cancelled" and .startedAt != null and .completedAt != null)
+                   | {name, id: .databaseId, minutes: (((.completedAt | fromdateiso8601) - (.startedAt | fromdateiso8601)) / 60)}]' \
+            2>/dev/null \
+            | jq -c --argjson t "$timeouts_json" \
+                '[.[] | . as $j | select($t | any(. as $limit | $j.minutes >= ($limit - 1) and $j.minutes <= ($limit + 5))) | {name, id}]' \
+            2>/dev/null || echo '[]')
+          [ -n "$timed_out_jobs_json" ] || timed_out_jobs_json='[]'
+
           {
+            printf 'timed_out_jobs_json=%s\n' "$timed_out_jobs_json"
             printf 'commit_subject=%s\n' "$commit_subject"
             printf 'pr_number=%s\n' "$pr_number"
             printf 'pr_title=%s\n' "$pr_title"
@@ -4279,6 +4352,7 @@ jobs:
           PR_BODY: ${{ steps.ctx.outputs.pr_body }}
           PR_LABELS: ${{ steps.ctx.outputs.pr_labels }}
           FAILED_JOBS_JSON: ${{ steps.ctx.outputs.failed_jobs_json }}
+          TIMED_OUT_JOBS_JSON: ${{ steps.ctx.outputs.timed_out_jobs_json }}
           # Allowlist for Path 1: '' (checkpoint skipped or crashed, and non-checkpoint
           # dispatch/call runs) makes the script require a failing job of the detected container.
           # A valid array is authoritative; anything else makes the script skip the dep-attributed open.
