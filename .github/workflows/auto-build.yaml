@@ -595,17 +595,7 @@ jobs:
         # apt mirror stalls hung this step to its timeout (master run 36922857023);
         # bound each attempt and retry instead of failing the whole build.
         timeout-minutes: 10
-        uses: ./.github/actions/retry-run
-        with:
-          run: |
-            if ! command -v skopeo >/dev/null 2>&1; then
-              sudo apt-get update -qq
-              sudo apt-get install -y skopeo
-            fi
-            skopeo --version
-          max-attempts: '3'
-          delay: '10'
-          timeout: '120s'
+        uses: ./.github/actions/install-skopeo
 
       - name: Log in to container registries
         id: login
@@ -892,17 +882,7 @@ jobs:
         # apt mirror stalls hung this step to its timeout (master run 36922857023);
         # bound each attempt and retry instead of failing the whole build.
         timeout-minutes: 10
-        uses: ./.github/actions/retry-run
-        with:
-          run: |
-            if ! command -v skopeo >/dev/null 2>&1; then
-              sudo apt-get update -qq
-              sudo apt-get install -y skopeo
-            fi
-            skopeo --version
-          max-attempts: '3'
-          delay: '10'
-          timeout: '120s'
+        uses: ./.github/actions/install-skopeo
 
       - name: Log in to container registries
         uses: ./.github/actions/docker-login
@@ -2412,17 +2392,7 @@ jobs:
       - name: Install skopeo (extension final-build self-heal fallback)
         if: needs.detect-containers.outputs.bake_final_builds != '[]'
         timeout-minutes: 10
-        uses: ./.github/actions/retry-run
-        with:
-          run: |
-            if ! command -v skopeo >/dev/null 2>&1; then
-              sudo apt-get update -qq
-              sudo apt-get install -y skopeo
-            fi
-            skopeo --version
-          max-attempts: '3'
-          delay: '10'
-          timeout: '120s'
+        uses: ./.github/actions/install-skopeo
 
       - name: Generate bake HCL and build (amd64)
         id: bake-build
@@ -3031,17 +3001,7 @@ jobs:
       - name: Install skopeo (extension final-build self-heal fallback)
         if: needs.detect-containers.outputs.bake_final_builds != '[]'
         timeout-minutes: 10
-        uses: ./.github/actions/retry-run
-        with:
-          run: |
-            if ! command -v skopeo >/dev/null 2>&1; then
-              sudo apt-get update -qq
-              sudo apt-get install -y skopeo
-            fi
-            skopeo --version
-          max-attempts: '3'
-          delay: '10'
-          timeout: '120s'
+        uses: ./.github/actions/install-skopeo
 
       - name: Generate bake HCL and build (arm64)
         id: bake-build
@@ -4530,13 +4490,7 @@ jobs:
         if: github.event_name != 'pull_request'
         continue-on-error: true
         timeout-minutes: 5
-        uses: ./.github/actions/retry-run
-        with:
-          run: |
-            sudo apt-get update -qq
-            sudo apt-get install -y skopeo
-          max-attempts: '3'
-          timeout: '60s'
+        uses: ./.github/actions/install-skopeo
 
       - name: Install yq (summary job)
         # Required by check-version-drift.sh → helpers/variant-utils.sh.

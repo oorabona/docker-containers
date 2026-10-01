@@ -1282,8 +1282,10 @@ MAKE_EOF
     [ -n "$sweep_line" ]
     [ "$skopeo_line" -lt "$sweep_line" ]
 
-    # The install step must call apt-get install skopeo (mirrors build jobs)
-    grep -q 'apt-get install.*skopeo\|apt-get.*install.*skopeo' "$DRIFT_YAML"
+    # The install step must go through the shared install-skopeo action, which
+    # owns the bounded/retried apt-get install (mirrors the build jobs)
+    grep -q 'uses: ./.github/actions/install-skopeo' "$DRIFT_YAML"
+    grep -q 'apt-get.*install.*skopeo' "$PROJECT_ROOT/.github/actions/install-skopeo/action.yaml"
 }
 
 @test "auto-build.yaml summary job installs skopeo before Check version drift" {

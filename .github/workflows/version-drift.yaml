@@ -83,17 +83,7 @@ jobs:
         # fallback. retry-run bounds each attempt and retries before giving up.
         timeout-minutes: 10
         continue-on-error: true
-        uses: ./.github/actions/retry-run
-        with:
-          run: |
-            if ! command -v skopeo >/dev/null 2>&1; then
-              sudo apt-get update -qq
-              sudo apt-get install -y skopeo
-            fi
-            skopeo --version
-          max-attempts: '3'
-          delay: '10'
-          timeout: '120s'
+        uses: ./.github/actions/install-skopeo
 
       - name: Run version-drift sweep
         id: sweep
