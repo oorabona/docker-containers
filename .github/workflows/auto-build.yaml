@@ -592,10 +592,20 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
 
       - name: Install skopeo
-        timeout-minutes: 5
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y skopeo
+        # apt mirror stalls hung this step to its timeout (master run 36922857023);
+        # bound each attempt and retry instead of failing the whole build.
+        timeout-minutes: 10
+        uses: ./.github/actions/retry-run
+        with:
+          run: |
+            if ! command -v skopeo >/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo apt-get install -y skopeo
+            fi
+            skopeo --version
+          max-attempts: '3'
+          delay: '10'
+          timeout: '120s'
 
       - name: Log in to container registries
         id: login
@@ -879,10 +889,20 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
 
       - name: Install skopeo
-        timeout-minutes: 5
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y skopeo
+        # apt mirror stalls hung this step to its timeout (master run 36922857023);
+        # bound each attempt and retry instead of failing the whole build.
+        timeout-minutes: 10
+        uses: ./.github/actions/retry-run
+        with:
+          run: |
+            if ! command -v skopeo >/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo apt-get install -y skopeo
+            fi
+            skopeo --version
+          max-attempts: '3'
+          delay: '10'
+          timeout: '120s'
 
       - name: Log in to container registries
         uses: ./.github/actions/docker-login
@@ -2391,13 +2411,18 @@ jobs:
 
       - name: Install skopeo (extension final-build self-heal fallback)
         if: needs.detect-containers.outputs.bake_final_builds != '[]'
-        shell: bash
-        run: |
-          if ! command -v skopeo >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y skopeo
-          fi
-          skopeo --version
+        timeout-minutes: 10
+        uses: ./.github/actions/retry-run
+        with:
+          run: |
+            if ! command -v skopeo >/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo apt-get install -y skopeo
+            fi
+            skopeo --version
+          max-attempts: '3'
+          delay: '10'
+          timeout: '120s'
 
       - name: Generate bake HCL and build (amd64)
         id: bake-build
@@ -3005,13 +3030,18 @@ jobs:
 
       - name: Install skopeo (extension final-build self-heal fallback)
         if: needs.detect-containers.outputs.bake_final_builds != '[]'
-        shell: bash
-        run: |
-          if ! command -v skopeo >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y skopeo
-          fi
-          skopeo --version
+        timeout-minutes: 10
+        uses: ./.github/actions/retry-run
+        with:
+          run: |
+            if ! command -v skopeo >/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo apt-get install -y skopeo
+            fi
+            skopeo --version
+          max-attempts: '3'
+          delay: '10'
+          timeout: '120s'
 
       - name: Generate bake HCL and build (arm64)
         id: bake-build
