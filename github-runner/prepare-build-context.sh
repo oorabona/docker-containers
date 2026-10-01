@@ -12,6 +12,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../helpers/logging.sh"
+source "$SCRIPT_DIR/../helpers/retry.sh"
+
+# Downloads from github.com occasionally return a transient 5xx (a 504 failed
+# the windows build on 2026-10-01). Retry the asset download with exponential
+# backoff (5 attempts: 5+10+20+40 = 75s of waiting by default) instead of
+# relying only on the caller's coarse whole-script retry.
+FETCH_ATTEMPTS="${RUNNER_FETCH_ATTEMPTS:-5}"
+FETCH_DELAY="${RUNNER_FETCH_DELAY:-5}"
 
 VERSION="${1:?Usage: prepare-build-context.sh <version> <arch>}"
 ARCH_DOCKER="${2:-amd64}"
@@ -55,7 +63,7 @@ if [[ -f "$TARGET_FILE" && -f "$TARGET_SHA" ]]; then
         _tmp_dir=$(mktemp -d)
         _expected_raw=""
         if command -v gh &>/dev/null && [[ -n "${GITHUB_TOKEN:-}" ]]; then
-            if gh release download "v${VERSION}" \
+            if retry_with_backoff "$FETCH_ATTEMPTS" "$FETCH_DELAY" gh release download "v${VERSION}" \
                 --repo actions/runner \
                 --pattern "${FILE}.sha256" \
                 --dir "$_tmp_dir" \
@@ -63,7 +71,9 @@ if [[ -f "$TARGET_FILE" && -f "$TARGET_SHA" ]]; then
                 _expected_raw=$(cat "$_tmp_dir/${FILE}.sha256" 2>/dev/null || true)
             fi
         else
-            _expected_raw=$(curl -fsSL "${SHA_URL}" 2>/dev/null || true)
+            # curl's own --retry only covers transient errors (timeouts, 5xx), so a
+            # missing .sha256 asset (404) still falls through immediately.
+            _expected_raw=$(curl -fsSL --retry 3 --retry-delay 5 "${SHA_URL}" 2>/dev/null || true)
         fi
         rm -rf "$_tmp_dir"
 
@@ -92,14 +102,14 @@ log_info "Downloading runner agent: $FILE"
 
 # Prefer gh CLI (authenticated, avoids CDN 404 issues) over curl
 if command -v gh &>/dev/null && [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    gh release download "v${VERSION}" \
+    retry_with_backoff "$FETCH_ATTEMPTS" "$FETCH_DELAY" gh release download "v${VERSION}" \
         --repo actions/runner \
         --pattern "$FILE" \
         --dir "$TARGET_DIR" \
         --clobber
     mv "$TARGET_DIR/$FILE" "$TARGET_FILE"
 else
-    curl -fsSL "$URL" -o "$TARGET_FILE"
+    retry_with_backoff "$FETCH_ATTEMPTS" "$FETCH_DELAY" curl -fsSL "$URL" -o "$TARGET_FILE"
 fi
 
 # Generate SHA256 checksum file (GitHub doesn't publish .sha256 as release assets)
