@@ -176,7 +176,7 @@ runs:
       if: runner.os != 'Windows'
       uses: ./.github/actions/preflight-buildkit
       with:
-        image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+        image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
     - name: Set up Docker Buildx
       if: runner.os != 'Windows'
@@ -188,7 +188,7 @@ runs:
         version: 'v0.33.0'
         # Pin BuildKit image to GHCR-seeded copy (docker.io egress containment, #628).
         # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
-        driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+        driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
     - name: Set up Docker Buildx (Windows)
       # On Windows, setup-buildx-action downloads the buildx binary from GitHub Releases

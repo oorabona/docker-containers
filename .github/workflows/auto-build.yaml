@@ -612,14 +612,14 @@ jobs:
       - name: Preflight BuildKit image
         uses: ./.github/actions/preflight-buildkit
         with:
-          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         timeout-minutes: 10
         with:
           # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
-          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Get versions requiring extensions
         id: ext-versions
@@ -896,14 +896,14 @@ jobs:
       - name: Preflight BuildKit image
         uses: ./.github/actions/preflight-buildkit
         with:
-          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         timeout-minutes: 10
         with:
           # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
-          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Download amd64 arch-leg lineage (AX-3 duration files)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
@@ -1169,13 +1169,13 @@ jobs:
       - name: Preflight BuildKit image
         uses: ./.github/actions/preflight-buildkit
         with:
-          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
-          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Sync base images to GHCR
         env:
@@ -1794,13 +1794,13 @@ jobs:
       - name: Preflight BuildKit image
         uses: ./.github/actions/preflight-buildkit
         with:
-          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
-          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       # GHCR Manifest - PRIMARY (required)
       - name: Create GHCR multi-arch manifest (primary)
@@ -2282,13 +2282,13 @@ jobs:
       - name: Preflight BuildKit image
         uses: ./.github/actions/preflight-buildkit
         with:
-          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         timeout-minutes: 10
         with:
-          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Resolve bake container names
         id: bake-containers
@@ -2905,13 +2905,13 @@ jobs:
       - name: Preflight BuildKit image
         uses: ./.github/actions/preflight-buildkit
         with:
-          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         timeout-minutes: 10
         with:
-          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Resolve bake container names
         id: bake-containers
@@ -3486,13 +3486,13 @@ jobs:
       - name: Preflight BuildKit image
         uses: ./.github/actions/preflight-buildkit
         with:
-          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         timeout-minutes: 10
         with:
-          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Resolve bake container names
         id: bake-containers
