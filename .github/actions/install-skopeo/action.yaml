@@ -1,0 +1,66 @@
+name: Install skopeo
+description: |
+  Install skopeo on an Ubuntu runner, tolerating apt stalls.
+
+  Hung `apt-get` calls have failed jobs at the 5-minute step timeout with no
+  output at all (master run 36922857023, drift guard run 36888485637): the old
+  inline `apt-get update -qq && apt-get install -y skopeo` hid both the phase
+  that stalled and the reason. This action:
+    - skips the install when skopeo is already on PATH;
+    - makes apt fail fast on a stalled connection (Acquire::*::Timeout) and
+      retry the download (Acquire::Retries) instead of waiting out the step;
+    - waits for a held dpkg/apt lock (DPkg::Lock::Timeout) instead of failing;
+    - drops -qq so the log shows which phase was running;
+    - bounds each attempt at 120s and retries 3 times with backoff;
+    - on failure prints the running apt/dpkg processes and lock files, so the
+      next occurrence carries evidence of the cause.
+
+  PREREQUISITE: the calling job has checked out the repository (the retry
+  helper is sourced from the workspace).
+
+runs:
+  using: composite
+  steps:
+    - name: Install skopeo (bounded apt, retried)
+      shell: bash
+      run: |
+        set -uo pipefail
+        if command -v skopeo >/dev/null 2>&1; then
+          skopeo --version
+          exit 0
+        fi
+
+        # shellcheck disable=SC1091
+        source "${GITHUB_ACTION_PATH}/../../../helpers/retry.sh"
+
+        # The attempt body lives in a file so `timeout` can bound it as one unit
+        # (retry-run is not used here: its block must not contain the apt option
+        # names, which look like workflow commands to its annotation guard).
+        attempt="$(mktemp)"
+        trap 'rm -f "$attempt"' EXIT
+        cat > "$attempt" <<'ATTEMPT'
+        diagnose() {
+          rc=$?
+          if [[ "$rc" -ne 0 ]]; then
+            echo "--- skopeo install failed (exit ${rc}); apt/dpkg state ---"
+            ps -eo pid,etime,stat,args | grep -E '[a]pt|[d]pkg|[u]nattended' || echo "no apt/dpkg processes"
+            ls -l /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock 2>&1 || true
+            grep -rh '^URIs:\|^deb ' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null | head -5 || true
+          fi
+        }
+        trap diagnose EXIT
+        trap 'exit 124' TERM   # timeout sends TERM: let the EXIT diagnostics run
+
+        export DEBIAN_FRONTEND=noninteractive
+        apt_opts=(
+          -o Acquire::Retries=3
+          -o Acquire::http::Timeout=20
+          -o Acquire::https::Timeout=20
+          -o DPkg::Lock::Timeout=60
+        )
+        sudo apt-get "${apt_opts[@]}" update
+        sudo apt-get "${apt_opts[@]}" install -y skopeo
+        skopeo --version
+        ATTEMPT
+
+        retry_with_backoff 3 10 timeout 120s bash -e -o pipefail "$attempt"

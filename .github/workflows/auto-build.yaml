@@ -204,8 +204,12 @@ on:
 # so unrelated PRs (different branches) still build in parallel — the rationale
 # for keeping serialization per-job historically. Only PR runs cancel in
 # progress; push (master deploy) and workflow_call runs always run to
-# completion. The per-job `concurrency` blocks below add finer-grained
-# serialization within a run.
+# completion. GitHub still keeps at most ONE pending run per group, so a burst
+# of master pushes shows the middle runs as "cancelled" without any build
+# running: that is expected, not a failure. Nothing is stranded because the
+# detect-containers job diffs master pushes against the coverage checkpoint tag
+# (#595), not against the single push's event.before. The per-job `concurrency`
+# blocks below add finer-grained serialization within a run.
 concurrency:
   group: auto-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -588,10 +592,10 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
 
       - name: Install skopeo
-        timeout-minutes: 5
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y skopeo
+        # apt mirror stalls hung this step to its timeout (master run 36922857023);
+        # bound each attempt and retry instead of failing the whole build.
+        timeout-minutes: 10
+        uses: ./.github/actions/install-skopeo
 
       - name: Log in to container registries
         id: login
@@ -875,10 +879,10 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
 
       - name: Install skopeo
-        timeout-minutes: 5
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y skopeo
+        # apt mirror stalls hung this step to its timeout (master run 36922857023);
+        # bound each attempt and retry instead of failing the whole build.
+        timeout-minutes: 10
+        uses: ./.github/actions/install-skopeo
 
       - name: Log in to container registries
         uses: ./.github/actions/docker-login
@@ -1436,6 +1440,24 @@ jobs:
           echo "**Tag:** \`$tag\`" >> $GITHUB_STEP_SUMMARY
           echo "**Status:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Quote the last error lines captured by the build-container action so
+          # the failing cause is visible without opening the raw job log.
+          build_log="${RUNNER_TEMP:-}/build-container-output.log"
+          if [[ -n "${RUNNER_TEMP:-}" && -s "$build_log" ]]; then
+            last_errors=$(sed -E 's/\x1b\[[0-9;]*m//g' "$build_log" | tr -d '\r' \
+              | grep -E '❌|ERROR|[Ee]rror|[Ff]ailed|curl: \(' | tail -n 8 || true)
+            if [[ -n "$last_errors" ]]; then
+              {
+                echo "**Last errors:**"
+                echo '```'
+                echo "$last_errors"
+                echo '```'
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
           echo "**Possible causes:**" >> $GITHUB_STEP_SUMMARY
           echo "- Network connectivity issues" >> $GITHUB_STEP_SUMMARY
           echo "- Upstream dependency changes" >> $GITHUB_STEP_SUMMARY
@@ -2369,13 +2391,8 @@ jobs:
 
       - name: Install skopeo (extension final-build self-heal fallback)
         if: needs.detect-containers.outputs.bake_final_builds != '[]'
-        shell: bash
-        run: |
-          if ! command -v skopeo >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y skopeo
-          fi
-          skopeo --version
+        timeout-minutes: 10
+        uses: ./.github/actions/install-skopeo
 
       - name: Generate bake HCL and build (amd64)
         id: bake-build
@@ -2983,13 +3000,8 @@ jobs:
 
       - name: Install skopeo (extension final-build self-heal fallback)
         if: needs.detect-containers.outputs.bake_final_builds != '[]'
-        shell: bash
-        run: |
-          if ! command -v skopeo >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y skopeo
-          fi
-          skopeo --version
+        timeout-minutes: 10
+        uses: ./.github/actions/install-skopeo
 
       - name: Generate bake HCL and build (arm64)
         id: bake-build
@@ -4478,13 +4490,7 @@ jobs:
         if: github.event_name != 'pull_request'
         continue-on-error: true
         timeout-minutes: 5
-        uses: ./.github/actions/retry-run
-        with:
-          run: |
-            sudo apt-get update -qq
-            sudo apt-get install -y skopeo
-          max-attempts: '3'
-          timeout: '60s'
+        uses: ./.github/actions/install-skopeo
 
       - name: Install yq (summary job)
         # Required by check-version-drift.sh → helpers/variant-utils.sh.

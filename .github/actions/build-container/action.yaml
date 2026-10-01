@@ -598,7 +598,14 @@ runs:
         # retry_with_backoff 3 10: retry transient build failures (network blips
         # on FROM pulls, apk add timeouts) BEFORE any registry push occurs.
         # A build that fails all 3 attempts aborts before touching the registry.
-        if ! retry_with_backoff 3 10 ./make "${make_args[@]}"; then
+        #
+        # The output is also tee'd to a file so the caller's failure handler can
+        # quote the last error lines in the job summary (pipefail keeps the
+        # build's exit status through the pipe).
+        build_log="${RUNNER_TEMP}/build-container-output.log"
+        : > "$build_log"
+        set -o pipefail
+        if ! retry_with_backoff 3 10 ./make "${make_args[@]}" 2>&1 | tee -a "$build_log"; then
           echo "::error::Build failed for $container:$current_tag after 3 attempts"
           exit 1
         fi

@@ -117,11 +117,8 @@ jobs:
 
       - name: Install skopeo for canonical index read
         if: steps.select.outputs.selected == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y skopeo
+        timeout-minutes: 10
+        uses: ./.github/actions/install-skopeo
 
       - name: Log in to GitHub Container Registry
         if: steps.select.outputs.selected == 'true'
@@ -203,11 +200,8 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
 
       - name: Install skopeo
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y skopeo
+        timeout-minutes: 10
+        uses: ./.github/actions/install-skopeo
 
       - name: Log in to container registries
         uses: ./.github/actions/docker-login
@@ -503,11 +497,8 @@ jobs:
           persist-credentials: false
 
       - name: Install skopeo
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y skopeo
+        timeout-minutes: 10
+        uses: ./.github/actions/install-skopeo
 
       - name: Log in to container registries
         uses: ./.github/actions/docker-login

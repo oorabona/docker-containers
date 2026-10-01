@@ -77,11 +77,13 @@ jobs:
         # The docker/login-action above stores credentials that skopeo honours
         # when reading private packages.  Without skopeo the script falls back
         # to the curl path, which does not use the docker login.
-        timeout-minutes: 5
-        shell: bash
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y skopeo
+        #
+        # Best-effort: an apt mirror stall (run 36888485637 hung until the step
+        # timeout) must not fail the whole sweep, since the script has a curl
+        # fallback. retry-run bounds each attempt and retries before giving up.
+        timeout-minutes: 10
+        continue-on-error: true
+        uses: ./.github/actions/install-skopeo
 
       - name: Run version-drift sweep
         id: sweep

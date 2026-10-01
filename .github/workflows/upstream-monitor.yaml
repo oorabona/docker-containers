@@ -1512,13 +1512,7 @@ jobs:
           steps.prepare.outputs.update_count != '0' &&
           matrix.container == 'postgres' &&
           contains(steps.prepare.outputs.updates, '"timescaledb"')
-        uses: ./.github/actions/retry-run
-        with:
-          run: |
-            sudo apt-get update -qq
-            sudo apt-get install -y skopeo
-          max-attempts: '3'
-          timeout: '60s'
+        uses: ./.github/actions/install-skopeo
 
       - name: Refresh timescaledb committed version-set
         # Runs when the postgres container has a timescaledb update so the PR
