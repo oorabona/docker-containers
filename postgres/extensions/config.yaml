@@ -138,7 +138,7 @@ extensions:
       reason: "Creatable only in cron.database_name, which may differ from POSTGRES_DB."
     priority: 1
   pg_ivm:
-    version: "1.15"
+    version: "1.16"
     description: "Incremental View Maintenance for materialized views"
     repo: "sraoss/pg_ivm"
     build_deps:
