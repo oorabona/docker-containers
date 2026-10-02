@@ -317,11 +317,16 @@ runs:
         # thought, and reading its variants.yaml again would spawn one yq per
         # changed file. A pull request touching many files under one container
         # would otherwise pay that cost once per file.
+        # Membership tests on $valid_containers use a here-string, NOT
+        # `echo "$valid_containers" | grep -q`: this step runs under
+        # `bash -eo pipefail`, `grep -q` exits at the first match, and `echo` can
+        # then take a SIGPIPE that pipefail reports as "not a valid container",
+        # silently dropping that container from build/verification.
         note_verification() {
           local container="$1" reason="$2"
           [[ -n "$container" ]] || return 0
           [[ " ${containers_to_verify[*]} " =~ " ${container} " ]] && return 0
-          echo "$valid_containers" | grep -Fxq "$container" || return 0
+          grep -Fxq -- "$container" <<< "$valid_containers" || return 0
           container_e2e_enabled "$container" || return 0
           echo "🧪 Container needs verification: $container ($reason)"
           containers_to_verify+=("$container")
@@ -343,7 +348,7 @@ runs:
         # If specific container requested, validate it
         elif [ -n "$REQUESTED_CONTAINER" ]; then
           echo "🎯 Validating specific container: $REQUESTED_CONTAINER"
-          if echo "$valid_containers" | grep -Fxq "$REQUESTED_CONTAINER"; then
+          if grep -Fxq -- "$REQUESTED_CONTAINER" <<< "$valid_containers"; then
             containers_to_build=("$REQUESTED_CONTAINER")
             echo "✅ Container validated"
           else
@@ -503,7 +508,7 @@ runs:
                 normalized_container_scopes=$(jq -cn --arg extensions "$extension_scope" \
                   '{postgres: {extensions: $extensions}}')
               fi
-              if echo "$valid_containers" | grep -qx "postgres" &&
+              if grep -qx "postgres" <<< "$valid_containers" &&
                  [[ " ${containers_to_build[*]} " != *" postgres "* ]]; then
                 echo "🔧 Extension build input changed — adding postgres with forced extension scope: $extension_scope"
                 containers_to_build+=("postgres")
@@ -592,7 +597,7 @@ runs:
             fi
 
             # Verify container is in make's valid list (source of truth)
-            if echo "$valid_containers" | grep -qx "$container"; then
+            if grep -qx -- "$container" <<< "$valid_containers"; then
               echo "📦 Container needs building: $container (changed files detected, validated by make)"
               containers_to_build+=("$container")
             fi
@@ -619,7 +624,7 @@ runs:
         done <<< "$changed_files"
 
         if [[ "$shared_infra_changed" == "true" && ${#containers_to_build[@]} -eq 0 ]]; then
-          if echo "$valid_containers" | grep -qx "postgres"; then
+          if grep -qx "postgres" <<< "$valid_containers"; then
             echo "🔧 Shared build-infra change with no container dir touched — adding canary: postgres"
             containers_to_build+=("postgres")
           fi
