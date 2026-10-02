@@ -9,7 +9,13 @@ setup() {
     setup_temp_dir
     export GH_TOKEN="test-token"
     export OWNER="test-owner"
-    export EXT_CONFIG="$PROJECT_ROOT/postgres/extensions/config.yaml"
+    # The real config supplies the pair universe, but the tests below name one
+    # pgvector pair literally. Pin that one version in a private copy so a routine
+    # pgvector bump in postgres/extensions/config.yaml does not break them: they
+    # exercise the selector's ranking, not which version upstream ships today.
+    export EXT_CONFIG="$TEST_TEMP_DIR/config.yaml"
+    cp "$PROJECT_ROOT/postgres/extensions/config.yaml" "$EXT_CONFIG"
+    yq -i '.extensions.pgvector.version = "0.8.6"' "$EXT_CONFIG"
     export GH_FIXTURE_DIR="$TEST_TEMP_DIR/ghcr"
     export GH_ISSUES_JSON='[]'
     export GH_API_MODE="success"
