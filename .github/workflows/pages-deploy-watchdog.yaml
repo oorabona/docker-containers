@@ -1,0 +1,38 @@
+name: Pages Deploy Watchdog
+
+# `deploy` in update-dashboard.yaml holds the `pages-deploy` concurrency group with
+# cancel-in-progress: false. If its job is never assigned a runner (runner outage),
+# timeout-minutes never starts and all later deploys queue behind it indefinitely.
+# This watchdog cancels such runs so the next queued deploy can proceed.
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report stuck runs without cancelling them'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: pages-deploy-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Cancel stuck dashboard deploy runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: scripts/cancel-stuck-pages-deploys.sh
