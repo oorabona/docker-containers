@@ -17,6 +17,11 @@ if ! declare -F _vbc_validate_build_args_config &>/dev/null; then
     source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/validate-base-cache-schema.sh"
 fi
 
+# Source artifact helpers (resolve config.yaml artifact_url) if not already loaded.
+if ! declare -F resolve_artifact_url &>/dev/null; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/artifact-utils.sh"
+fi
+
 # Get build args as Docker --build-arg flags
 # Validates build_args keys and values before emitting flags (fail-closed).
 # Usage: build_args_flags "./container-dir"
@@ -90,6 +95,18 @@ prepare_build_args() {
         if [[ -n "$_UPSTREAM_VERSION" && "$_UPSTREAM_VERSION" != "$version" ]]; then
             _BUILD_ARGS="$_BUILD_ARGS --build-arg UPSTREAM_VERSION=$_UPSTREAM_VERSION"
         fi
+    fi
+
+    # ARTIFACT_URL: config.yaml `artifact_url` resolved for the upstream version,
+    # so the Dockerfile downloads exactly what `make check-updates` verified.
+    local artifact_template artifact_url
+    artifact_template=$(artifact_config_value "." artifact_url)
+    if [[ -n "$artifact_template" ]]; then
+        if ! artifact_url=$(resolve_artifact_url "$artifact_template" "${_UPSTREAM_VERSION:-$version}"); then
+            log_error "artifact_url in config.yaml cannot be resolved for version '${_UPSTREAM_VERSION:-$version}'" >&2
+            return 1
+        fi
+        _BUILD_ARGS="$_BUILD_ARGS --build-arg ARTIFACT_URL=$artifact_url"
     fi
 
     # Emit REMOTE_CR unconditionally — all matrix Dockerfiles declare ARG REMOTE_CR.

@@ -24,6 +24,7 @@ source "$(dirname "$0")/helpers/registry-utils.sh"
 source "$(dirname "$0")/helpers/version-utils.sh"
 source "$(dirname "$0")/helpers/sbom-utils.sh"
 source "$(dirname "$0")/helpers/dependency-graph.sh"
+source "$(dirname "$0")/helpers/artifact-utils.sh"
 
 # Source focused utility scripts
 source "$(dirname "$0")/scripts/check-version.sh"
@@ -820,6 +821,20 @@ check_updates() {
         else
           status="downgrade-guard-failed"
         fi
+      fi
+    fi
+
+    # A tag can exist before the release artifact is uploaded. Hold the
+    # candidate back (no error: the daily run re-evaluates it) until the
+    # artifact declared in config.yaml is downloadable.
+    if [[ "$update_available" == "true" && -n "$(artifact_config_value . artifact_url)" ]]; then
+      local artifact_upstream
+      artifact_upstream=$(./version.sh --upstream 2>/dev/null | head -1 || true)
+      if ! artifact_ready "." "${artifact_upstream:-$latest_version}"; then
+        printf 'check-updates: %s: %s detected but its release artifact is not downloadable yet; retrying next run\n' \
+          "$container" "$latest_version" >&2
+        update_available="false"
+        status="artifact-pending"
       fi
     fi
 

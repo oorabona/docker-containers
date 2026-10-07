@@ -73,6 +73,9 @@ source "${PROJECT_ROOT}/helpers/logging.sh"
 source "${PROJECT_ROOT}/helpers/gha.sh"
 # shellcheck source=../helpers/build-args-utils.sh
 source "${PROJECT_ROOT}/helpers/build-args-utils.sh"
+# artifact-utils resolves config.yaml artifact_url into the ARTIFACT_URL build arg.
+# shellcheck source=../helpers/artifact-utils.sh
+source "${PROJECT_ROOT}/helpers/artifact-utils.sh"
 # validate-base-cache-schema provides _vbc_validate_build_args_config — the
 # canonical fail-closed validator for config.yaml build_args entries.
 # shellcheck source=../helpers/validate-base-cache-schema.sh
@@ -963,8 +966,9 @@ _compute_cell_build_args() {
     #    and keeps parity with the matrix path, which only passes what the Dockerfile
     #    consumes — same rationale as NPROC in STEP 7 below).
     local version_sh="${PROJECT_ROOT}/${container}/version.sh"
+    local upstream=""
     if [[ -x "$version_sh" ]]; then
-        local suffix upstream
+        local suffix
         suffix=$(cd "${PROJECT_ROOT}/${container}" && ./version.sh --tag-suffix 2>/dev/null || true)
         # Robustness guard: treat suffix as valid ONLY when it is empty OR
         # (starts with '-' AND $version ends with it).  A version.sh that lacks
@@ -983,6 +987,23 @@ _compute_cell_build_args() {
             args=$(jq -cn --argjson base "$args" --arg u "$upstream" \
                 '$base + {UPSTREAM_VERSION: $u}')
         fi
+    fi
+
+    # 4b. ARTIFACT_URL — config.yaml `artifact_url` resolved for this cell's
+    #    upstream version (same deterministic derivation as STEP 4). Emitted only
+    #    when the Dockerfile declares ARG ARTIFACT_URL, mirroring prepare_build_args.
+    local artifact_template
+    artifact_template=$(artifact_config_value "${PROJECT_ROOT}/${container}" artifact_url)
+    if [[ -n "$artifact_template" ]] && \
+           _df_declares_arg "ARTIFACT_URL" "$df_content_or_path" "$is_inline"; then
+        local artifact_url
+        if ! artifact_url=$(resolve_artifact_url "$artifact_template" "${upstream:-$version}"); then
+            printf 'ERROR: %s: artifact_url cannot be resolved for %q\n' \
+                "$container" "${upstream:-$version}" >&2
+            return 1
+        fi
+        args=$(jq -cn --argjson base "$args" --arg u "$artifact_url" \
+            '$base + {ARTIFACT_URL: $u}')
     fi
 
     # 5. FLAVOR — explicit build_flavor takes priority, else fall back to flavor.

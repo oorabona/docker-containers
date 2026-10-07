@@ -73,6 +73,7 @@ Run `./make list` for the live list. See each `<container>/README.md` for usage.
 - Each container has `version.sh` for upstream version detection
 - Scripts must output JSON for automation
 - Build digest labels are descriptive provenance; ADR-002 records the superseded skip decision
+- Containers whose Dockerfile downloads a release artifact can declare `artifact_url` (+ optional `artifact_signature_suffix`) in `config.yaml`: it is passed to the build as `ARG ARTIFACT_URL` and `make check-updates` holds a new version back (`status: artifact-pending`, no error) until that URL answers — a git tag can exist before its release assets (see `helpers/artifact-utils.sh`)
 
 ### Multi-Distro Containers
 - `web-shell` and `github-runner` use the template+generator pattern (see ADR-006)

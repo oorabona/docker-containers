@@ -496,6 +496,7 @@ EOF
     # source line rather than in the test's subject.
     cp "$ORIG_DIR/helpers/collect-lines.sh" helpers/
     cp "$ORIG_DIR/helpers/version-utils.sh" helpers/
+    cp "$ORIG_DIR/helpers/artifact-utils.sh" helpers/
 
     # Copy make to $TEST_DIR so `./make check-updates` runs with TEST_DIR as $(dirname $0).
     # This ensures `source "$(dirname "$0")/helpers/..."` resolves to the TEST_DIR stubs.
@@ -587,6 +588,7 @@ EOF
 EOF
 
     cp "$ORIG_DIR/helpers/version-utils.sh" helpers/
+    cp "$ORIG_DIR/helpers/artifact-utils.sh" helpers/
 
     cp "$ORIG_DIR/make" ./make
     chmod +x ./make
@@ -714,6 +716,7 @@ EOF
 EOF
 
     cp "$ORIG_DIR/helpers/version-utils.sh" helpers/
+    cp "$ORIG_DIR/helpers/artifact-utils.sh" helpers/
 
     cp "$ORIG_DIR/make" ./make
     chmod +x ./make
@@ -972,6 +975,45 @@ EOF
     status_value=$(echo "$output" | jq -r '.[0].status')
     [[ "$update_available" == "true" ]]
     [[ "$status_value" == "update-available" ]]
+}
+
+# Stub curl so the artifact gate sees a controllable HTTP result.
+stub_artifact_curl() {
+    local result="$1"   # up | down
+    mkdir -p bin
+    printf '#!/bin/bash\n[[ "%s" == "up" ]] && exit 0 || exit 22\n' "$result" > bin/curl
+    chmod +x bin/curl
+    export PATH="$PWD/bin:$PATH"
+    cat > ansible/config.yaml <<'YAML'
+artifact_url: "https://example.org/rel/${UPSTREAM_VERSION}/ansible-${RELEASE_VERSION}.tar.gz"
+YAML
+}
+
+@test "check_updates default path: update is held back while its artifact is not downloadable" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    stub_artifact_curl down
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "artifact-pending" ]]
+}
+
+@test "check_updates default path: update is proposed once its artifact is downloadable" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    stub_artifact_curl up
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].update_available')" == "true" ]]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "update-available" ]]
 }
 
 @test "check_updates default path: an uncomparable upstream value cannot become an update" {
