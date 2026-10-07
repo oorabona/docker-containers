@@ -6,10 +6,11 @@ base_image_cache:
   - source: library/alpine
     tags: ["latest"]
 # Upstream release artifact. SINGLE SOURCE OF TRUTH: resolved into --build-arg
-# ARTIFACT_URL for the Dockerfile AND probed by `make check-updates`, which only
-# proposes a new version once this URL (and its detached signature) is
-# downloadable — the git tag appears before the release assets do.
-# ${UPSTREAM_VERSION} = version.sh --upstream (v2.7.8); ${RELEASE_VERSION} = without the "v".
+# ARTIFACT_URL (and ARTIFACT_SIGNATURE_URL = artifact_url + artifact_signature_suffix)
+# for the Dockerfile AND probed by `make check-updates`, which only proposes a new
+# version once both URLs answer 2xx — the git tag appears before the release assets.
+# ${UPSTREAM_VERSION} is derived from the frozen Docker tag minus its tag suffix
+# (v2.7.8-alpine -> v2.7.8), never from a live query; ${RELEASE_VERSION} drops the "v".
 artifact_url: "https://github.com/OpenVPN/openvpn/releases/download/${UPSTREAM_VERSION}/openvpn-${RELEASE_VERSION}.tar.gz"
 artifact_signature_suffix: ".asc"
 build_args:

@@ -611,6 +611,31 @@ check_updates_declared_actionable() {
   fi
 }
 
+# Release-artifact gate shared by every check_updates path (default and
+# latest_per_major). Holds a candidate back while the artifact declared in
+# config.yaml is not downloadable (the tag can exist before its assets).
+# The probed version comes from the frozen candidate tag, never from a second
+# version.sh query, so it is the version the Docker tag announces.
+# Returns 0 when ready or undeclared, 1 when pending. A configuration error
+# is explicit and fatal: it must never degrade to "pending" or "ready".
+# Runs inside the container directory.
+check_updates_artifact_ready() {
+  local container=$1 candidate=$2 rc=0
+  artifact_ready "." "$candidate" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1)
+      printf 'check-updates: %s: %s detected but its release artifact is not downloadable yet; retrying next run\n' \
+        "$container" "$candidate" >&2
+      return 1
+      ;;
+    *)
+      printf 'check-updates: %s: invalid artifact_url declaration in config.yaml; refusing to continue\n' "$container" >&2
+      exit 1
+      ;;
+  esac
+}
+
 check_updates() {
   local target=${1:-""}
   local output_json="[]"
@@ -722,6 +747,11 @@ check_updates() {
           fi
         fi
 
+        if [[ "$update_available" == "true" ]] && ! check_updates_artifact_ready "$container" "$latest_version"; then
+          update_available="false"
+          status="artifact-pending"
+        fi
+
         if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$upstream_lookup" != "failed" && "$declared_actionable" == "true" ]]; then
           actionable="true"
         fi
@@ -824,18 +854,11 @@ check_updates() {
       fi
     fi
 
-    # A tag can exist before the release artifact is uploaded. Hold the
-    # candidate back (no error: the daily run re-evaluates it) until the
-    # artifact declared in config.yaml is downloadable.
-    if [[ "$update_available" == "true" && -n "$(artifact_config_value . artifact_url)" ]]; then
-      local artifact_upstream
-      artifact_upstream=$(./version.sh --upstream 2>/dev/null | head -1 || true)
-      if ! artifact_ready "." "${artifact_upstream:-$latest_version}"; then
-        printf 'check-updates: %s: %s detected but its release artifact is not downloadable yet; retrying next run\n' \
-          "$container" "$latest_version" >&2
-        update_available="false"
-        status="artifact-pending"
-      fi
+    # A tag can exist before the release artifact is uploaded: hold the
+    # candidate back (not an error; the next run re-evaluates it).
+    if [[ "$update_available" == "true" ]] && ! check_updates_artifact_ready "$container" "$latest_version"; then
+      update_available="false"
+      status="artifact-pending"
     fi
 
     if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$upstream_lookup" != "failed" && "$declared_actionable" == "true" ]]; then

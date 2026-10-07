@@ -5,8 +5,10 @@ FROM ${REMOTE_CR}/library/alpine:${OS_VERSION}
 
 ARG VERSION
 ARG UPSTREAM_VERSION
-# Resolved from config.yaml `artifact_url` (also what check-updates probed).
+# Resolved from config.yaml `artifact_url` / `artifact_signature_suffix` for the
+# frozen tag (also exactly what check-updates probed).
 ARG ARTIFACT_URL
+ARG ARTIFACT_SIGNATURE_URL
 ARG EASYRSA_VERSION
 ARG EASYRSA_KEY_FPR
 ARG OPENVPN_KEY_FPR
@@ -19,7 +21,7 @@ ARG NPROC
 ARG PKCS11_HELPER_VERSION
 
 # Validate required build args
-RUN : "${VERSION:?required}" "${ARTIFACT_URL:?required}" "${EASYRSA_VERSION:?required}" "${EASYRSA_KEY_FPR:?required}" "${OPENVPN_KEY_FPR:?required}" "${OVPN_SHA256:?required}" "${NPROC:?required}" \
+RUN : "${VERSION:?required}" "${ARTIFACT_URL:?required}" "${ARTIFACT_SIGNATURE_URL:?required}" "${EASYRSA_VERSION:?required}" "${EASYRSA_KEY_FPR:?required}" "${OPENVPN_KEY_FPR:?required}" "${OVPN_SHA256:?required}" "${NPROC:?required}" \
     && [ -z "${PKCS11_HELPER_VERSION:-}" ] || { \
         echo "PKCS11_HELPER_VERSION is no longer honoured: pkcs11-helper comes from the Alpine repository (#957)." >&2; \
         echo "Remove the build argument. Its version now follows OS_VERSION, and Alpine carries it from 3.24 only." >&2; \
@@ -81,7 +83,7 @@ RUN set -ex \
     # throwaway keyring holds exactly the vendored primary key, so the signature
     # is checked before the archive is inspected, extracted, or compiled.
     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "${ARTIFACT_URL}" --output openvpn.tgz \
-    && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "${ARTIFACT_URL}.asc" --output openvpn.tgz.asc \
+    && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "${ARTIFACT_SIGNATURE_URL}" --output openvpn.tgz.asc \
     && GNUPGHOME="$(mktemp -d)" && export GNUPGHOME \
     && gpg --batch --import /usr/local/share/openvpn/openvpn-signing-key.asc \
     # A second primary key in the vendored key file must not widen trust.

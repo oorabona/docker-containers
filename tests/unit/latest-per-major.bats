@@ -977,16 +977,25 @@ EOF
     [[ "$status_value" == "update-available" ]]
 }
 
-# Stub curl so the artifact gate sees a controllable HTTP result.
+# Install the shared curl stand-in (tests/fixtures/artifact-curl-stub.sh) and
+# declare an artifact for <container>. Probe results come from $CURL_RULES
+# ("<url-substring> <HEAD-code> <GET-code>" per line, unmatched = 200).
 stub_artifact_curl() {
-    local result="$1"   # up | down
+    local container="$1"
     mkdir -p bin
-    printf '#!/bin/bash\n[[ "%s" == "up" ]] && exit 0 || exit 22\n' "$result" > bin/curl
-    chmod +x bin/curl
+    cp "$ORIG_DIR/tests/fixtures/artifact-curl-stub.sh" bin/curl
     export PATH="$PWD/bin:$PATH"
-    cat > ansible/config.yaml <<'YAML'
-artifact_url: "https://example.org/rel/${UPSTREAM_VERSION}/ansible-${RELEASE_VERSION}.tar.gz"
+    export CURL_LOG="$PWD/curl.log"
+    : > "$CURL_LOG"
+    cat > "$container/config.yaml" <<'YAML'
+artifact_url: "https://example.org/rel/${UPSTREAM_VERSION}/tool-${RELEASE_VERSION}.tar.gz"
 YAML
+}
+
+# Make a fixture version.sh answer --tag-suffix offline (as the real ones do).
+add_tag_suffix_to_version_sh() {
+    local container="$1" suffix="$2"
+    sed -i "2i if [[ \"\$1\" == \"--tag-suffix\" ]]; then echo \"${suffix}\"; exit 0; fi" "$container/version.sh"
 }
 
 @test "check_updates default path: update is held back while its artifact is not downloadable" {
@@ -994,7 +1003,9 @@ YAML
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
     create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
-    stub_artifact_curl down
+    add_tag_suffix_to_version_sh ansible "-ubuntu"
+    stub_artifact_curl ansible
+    export CURL_RULES='tool-1.1.0 404 404'
 
     run run_check_updates ansible
     [ "$status" -eq 0 ]
@@ -1008,12 +1019,90 @@ YAML
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
     create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
-    stub_artifact_curl up
+    add_tag_suffix_to_version_sh ansible "-ubuntu"
+    stub_artifact_curl ansible
 
     run run_check_updates ansible
     [ "$status" -eq 0 ]
     [[ "$(echo "$output" | jq -r '.[0].update_available')" == "true" ]]
     [[ "$(echo "$output" | jq -r '.[0].status')" == "update-available" ]]
+}
+
+@test "check_updates default path: the probed version is the candidate tag's, even if version.sh --upstream moves" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    add_tag_suffix_to_version_sh ansible "-ubuntu"
+    # --upstream answers a different (newer) version on every call
+    sed -i '2i if [[ "$1" == "--upstream" ]]; then echo "9.9.9"; exit 0; fi' ansible/version.sh
+    stub_artifact_curl ansible
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[0].status')" == "update-available" ]]
+    grep -q 'rel/1.1.0/tool-1.1.0.tar.gz' "$CURL_LOG"
+    [ "$(grep -c '9\.9\.9' "$CURL_LOG" || true)" -eq 0 ]
+}
+
+@test "check_updates default path: an invalid artifact_url is an explicit failure, not pending" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    stub_artifact_curl ansible
+    printf 'artifact_url: "https://example.org/${FOO}/tool.tar.gz"\n' > ansible/config.yaml
+
+    run run_check_updates ansible
+    [ "$status" -ne 0 ]
+    [[ "$output" != *artifact-pending* ]]
+    [ ! -s "$CURL_LOG" ]
+}
+
+@test "check_updates default path: build_args.ARTIFACT_URL cannot bypass the gate" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    stub_artifact_curl ansible
+    printf 'artifact_url: "https://example.org/rel/${UPSTREAM_VERSION}/t.tgz"\nbuild_args:\n  ARTIFACT_URL: "https://other.example/t.tgz"\n' > ansible/config.yaml
+
+    run run_check_updates ansible
+    [ "$status" -ne 0 ]
+}
+
+@test "check_updates multi-entry: the gate applies per major, one ready and one pending" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    # 7.0.0 -> 7.0.1 and 6.9.4 -> 6.9.5 are both real updates
+    create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.1-alpine" "6.9.5-alpine"
+    add_tag_suffix_to_version_sh wordpress "-alpine"
+    stub_artifact_curl wordpress
+    export CURL_RULES='tool-7.0.1 404 404'
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "7") | .status')" == "artifact-pending" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "7") | .update_available')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "7") | .actionable')" == "false" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')" == "update-available" ]]
+    [[ "$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')" == "true" ]]
+    # each candidate was probed with its own frozen version
+    grep -q 'rel/7.0.1/' "$CURL_LOG"
+    grep -q 'rel/6.9.5/' "$CURL_LOG"
+}
+
+@test "check_updates multi-entry: an invalid artifact_url fails explicitly" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.1-alpine" "6.9.5-alpine"
+    stub_artifact_curl wordpress
+    printf 'artifact_url: "ftp://example.org/${UPSTREAM_VERSION}"\n' > wordpress/config.yaml
+
+    run run_check_updates wordpress
+    [ "$status" -ne 0 ]
 }
 
 @test "check_updates default path: an uncomparable upstream value cannot become an update" {
