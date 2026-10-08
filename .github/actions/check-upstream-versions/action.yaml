@@ -80,6 +80,7 @@ runs:
             . == "new-container" or
             . == "update-available" or
             . == "downgrade-guard-failed" or
+            . == "artifact-pending" or
             . == "up_to_date";
 
           # The create-update-prs matrix resolves its downstream operation
@@ -169,6 +170,8 @@ runs:
             echo "   ⚠️ Upstream lookup did not conclude — no PR from this entry"
           elif [ "$status" = "upstream-no-match" ]; then
             echo "   ⚠️ Upstream lookup returned no version — no PR from this entry"
+          elif [ "$status" = "artifact-pending" ]; then
+            echo "   ⏳ Release artifact not downloadable yet — retried on the next run"
           elif [ "$status" = "downgrade-guard-failed" ]; then
             echo "   ⚠️ Version comparison did not conclude — no PR from this entry"
           elif { [ "$status" = "new-container" ] || [ "$status" = "update-available" ]; } && [ "$update_available" = "true" ]; then

@@ -73,6 +73,9 @@ source "${PROJECT_ROOT}/helpers/logging.sh"
 source "${PROJECT_ROOT}/helpers/gha.sh"
 # shellcheck source=../helpers/build-args-utils.sh
 source "${PROJECT_ROOT}/helpers/build-args-utils.sh"
+# artifact-utils resolves config.yaml artifact_url into the ARTIFACT_URL build arg.
+# shellcheck source=../helpers/artifact-utils.sh
+source "${PROJECT_ROOT}/helpers/artifact-utils.sh"
 # validate-base-cache-schema provides _vbc_validate_build_args_config — the
 # canonical fail-closed validator for config.yaml build_args entries.
 # shellcheck source=../helpers/validate-base-cache-schema.sh
@@ -962,28 +965,30 @@ _compute_cell_build_args() {
     #    Dockerfile declares ARG UPSTREAM_VERSION (avoids unused build-arg warnings
     #    and keeps parity with the matrix path, which only passes what the Dockerfile
     #    consumes — same rationale as NPROC in STEP 7 below).
-    local version_sh="${PROJECT_ROOT}/${container}/version.sh"
-    if [[ -x "$version_sh" ]]; then
-        local suffix upstream
-        suffix=$(cd "${PROJECT_ROOT}/${container}" && ./version.sh --tag-suffix 2>/dev/null || true)
-        # Robustness guard: treat suffix as valid ONLY when it is empty OR
-        # (starts with '-' AND $version ends with it).  A version.sh that lacks
-        # --tag-suffix support falls through to its default output (e.g. "8.5.7-fpm-alpine"),
-        # which does NOT start with '-' — treat that as no-suffix.
-        if [[ -n "$suffix" && ( "${suffix:0:1}" != "-" || "${version%"$suffix"}" == "$version" ) ]]; then
-            suffix=""  # invalid/garbage suffix — treat as no-suffix
-        fi
-        if [[ -n "$suffix" ]]; then
-            upstream="${version%"$suffix"}"
-        else
-            upstream="$version"
-        fi
-        if [[ -n "$upstream" && "$upstream" != "$version" ]] && \
-               _df_declares_arg "UPSTREAM_VERSION" "$df_content_or_path" "$is_inline"; then
-            args=$(jq -cn --argjson base "$args" --arg u "$upstream" \
-                '$base + {UPSTREAM_VERSION: $u}')
-        fi
+    local upstream
+    upstream=$(derive_upstream_version "${PROJECT_ROOT}/${container}" "$version" 2>/dev/null || true)
+    if [[ -n "$upstream" && "$upstream" != "$version" ]] && \
+           _df_declares_arg "UPSTREAM_VERSION" "$df_content_or_path" "$is_inline"; then
+        args=$(jq -cn --argjson base "$args" --arg u "$upstream" \
+            '$base + {UPSTREAM_VERSION: $u}')
     fi
+
+    # 4b. ARTIFACT_URL / ARTIFACT_SIGNATURE_URL — config.yaml `artifact_url`
+    #    resolved for this cell's frozen tag (same derivation as STEP 4 and as
+    #    the monitor). Emitted unconditionally when declared, exactly like
+    #    prepare_build_args, so both paths hand the Dockerfile the same URLs.
+    local artifact_lines artifact_rc=0 artifact_line
+    artifact_lines=$(artifact_build_args "${PROJECT_ROOT}/${container}" "$version") || artifact_rc=$?
+    if [[ "$artifact_rc" -ne 0 ]]; then
+        printf 'ERROR: %s: artifact_url cannot be resolved for %q (rc=%s)\n' \
+            "$container" "$version" "$artifact_rc" >&2
+        return 1
+    fi
+    while IFS= read -r artifact_line; do
+        [[ -n "$artifact_line" ]] || continue
+        args=$(jq -cn --argjson base "$args" --arg k "${artifact_line%%=*}" --arg v "${artifact_line#*=}" \
+            '$base + {($k): $v}')
+    done <<< "$artifact_lines"
 
     # 5. FLAVOR — explicit build_flavor takes priority, else fall back to flavor.
     #    Mirrors build_container parameter default: local build_flavor="${6:-$flavor}".

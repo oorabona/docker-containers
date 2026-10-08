@@ -17,6 +17,11 @@ if ! declare -F _vbc_validate_build_args_config &>/dev/null; then
     source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/validate-base-cache-schema.sh"
 fi
 
+# Source artifact helpers (resolve config.yaml artifact_url) if not already loaded.
+if ! declare -F resolve_artifact_url &>/dev/null; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/artifact-utils.sh"
+fi
+
 # Get build args as Docker --build-arg flags
 # Validates build_args keys and values before emitting flags (fail-closed).
 # Usage: build_args_flags "./container-dir"
@@ -84,13 +89,29 @@ prepare_build_args() {
     _MAJOR_VERSION=$(echo "$version" | grep -oE '^[0-9]+' | head -1 || true)
     [[ -n "$_MAJOR_VERSION" ]] && _BUILD_ARGS="$_BUILD_ARGS --build-arg MAJOR_VERSION=$_MAJOR_VERSION"
 
+    # UPSTREAM_VERSION is derived from the frozen tag (same helper as the bake
+    # path and the monitor), never from a live `version.sh --upstream`: a live
+    # query can drift past the tag and build a newer source under an older tag.
     _UPSTREAM_VERSION=""
     if [[ -f "./version.sh" ]]; then
-        _UPSTREAM_VERSION=$(./version.sh --upstream 2>/dev/null || true)
+        _UPSTREAM_VERSION=$(derive_upstream_version "." "$version" 2>/dev/null || true)
         if [[ -n "$_UPSTREAM_VERSION" && "$_UPSTREAM_VERSION" != "$version" ]]; then
             _BUILD_ARGS="$_BUILD_ARGS --build-arg UPSTREAM_VERSION=$_UPSTREAM_VERSION"
         fi
     fi
+
+    # ARTIFACT_URL / ARTIFACT_SIGNATURE_URL: config.yaml `artifact_url` resolved
+    # for the frozen tag, so the Dockerfile downloads exactly what
+    # `make check-updates` verified. A broken declaration aborts the build.
+    local artifact_lines artifact_rc=0 artifact_line
+    artifact_lines=$(artifact_build_args "." "$version") || artifact_rc=$?
+    if [[ "$artifact_rc" -ne 0 ]]; then
+        log_error "artifact_url in config.yaml cannot be resolved for tag '${version}' (rc=${artifact_rc})" >&2
+        return 1
+    fi
+    while IFS= read -r artifact_line; do
+        [[ -n "$artifact_line" ]] && _BUILD_ARGS="$_BUILD_ARGS --build-arg $artifact_line"
+    done <<< "$artifact_lines"
 
     # Emit REMOTE_CR unconditionally — all matrix Dockerfiles declare ARG REMOTE_CR.
     # Value mirrors the bake path (scripts/generate-bake-hcl.sh L45): env-or-default.

@@ -40,8 +40,15 @@ setup() {
 }
 
 @test "replacing the OpenVPN release asset with the unsigned codeload snapshot is rejected" {
-    grep -Fq 'https://github.com/OpenVPN/openvpn/releases/download/v${RELEASE_VERSION}/openvpn-${RELEASE_VERSION}.tar.gz' "$DOCKERFILE"
-    grep -Fq 'https://github.com/OpenVPN/openvpn/releases/download/v${RELEASE_VERSION}/openvpn-${RELEASE_VERSION}.tar.gz.asc' "$DOCKERFILE"
+    # The URL is declared once, in config.yaml `artifact_url`, and reaches the
+    # Dockerfile as ARG ARTIFACT_URL; the detached signature sits beside it.
+    # `check-updates` probes the same declaration, so the two cannot drift.
+    [ "$(yq -r '.artifact_url' "$CONFIG")" = 'https://github.com/OpenVPN/openvpn/releases/download/${UPSTREAM_VERSION}/openvpn-${RELEASE_VERSION}.tar.gz' ]
+    [ "$(yq -r '.artifact_signature_suffix' "$CONFIG")" = '.asc' ]
+    grep -Fq '"${ARTIFACT_URL}" --output openvpn.tgz' "$DOCKERFILE"
+    grep -Fq '"${ARTIFACT_SIGNATURE_URL}" --output openvpn.tgz.asc' "$DOCKERFILE"
+    grep -Fq '"${ARTIFACT_URL:?required}"' "$DOCKERFILE"
+    grep -Fq '"${ARTIFACT_SIGNATURE_URL:?required}"' "$DOCKERFILE"
     # grep, not ripgrep: rg is absent on the runner, and a test that shells out
     # to it fails there while passing locally. That cost a CI round in #1092.
     #

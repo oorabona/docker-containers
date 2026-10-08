@@ -24,6 +24,7 @@ source "$(dirname "$0")/helpers/registry-utils.sh"
 source "$(dirname "$0")/helpers/version-utils.sh"
 source "$(dirname "$0")/helpers/sbom-utils.sh"
 source "$(dirname "$0")/helpers/dependency-graph.sh"
+source "$(dirname "$0")/helpers/artifact-utils.sh"
 
 # Source focused utility scripts
 source "$(dirname "$0")/scripts/check-version.sh"
@@ -610,6 +611,31 @@ check_updates_declared_actionable() {
   fi
 }
 
+# Release-artifact gate shared by every check_updates path (default and
+# latest_per_major). Holds a candidate back while the artifact declared in
+# config.yaml is not downloadable (the tag can exist before its assets).
+# The probed version comes from the frozen candidate tag, never from a second
+# version.sh query, so it is the version the Docker tag announces.
+# Returns 0 when ready or undeclared, 1 when pending. A configuration error
+# is explicit and fatal: it must never degrade to "pending" or "ready".
+# Runs inside the container directory.
+check_updates_artifact_ready() {
+  local container=$1 candidate=$2 rc=0
+  artifact_ready "." "$candidate" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1)
+      printf 'check-updates: %s: %s detected but its release artifact is not downloadable yet; retrying next run\n' \
+        "$container" "$candidate" >&2
+      return 1
+      ;;
+    *)
+      printf 'check-updates: %s: invalid artifact_url declaration in config.yaml; refusing to continue\n' "$container" >&2
+      exit 1
+      ;;
+  esac
+}
+
 check_updates() {
   local target=${1:-""}
   local output_json="[]"
@@ -721,6 +747,11 @@ check_updates() {
           fi
         fi
 
+        if [[ "$update_available" == "true" ]] && ! check_updates_artifact_ready "$container" "$latest_version"; then
+          update_available="false"
+          status="artifact-pending"
+        fi
+
         if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$upstream_lookup" != "failed" && "$declared_actionable" == "true" ]]; then
           actionable="true"
         fi
@@ -821,6 +852,13 @@ check_updates() {
           status="downgrade-guard-failed"
         fi
       fi
+    fi
+
+    # A tag can exist before the release artifact is uploaded: hold the
+    # candidate back (not an error; the next run re-evaluates it).
+    if [[ "$update_available" == "true" ]] && ! check_updates_artifact_ready "$container" "$latest_version"; then
+      update_available="false"
+      status="artifact-pending"
     fi
 
     if [[ "$update_available" == "true" && "$registry_lookup" != "failed" && "$upstream_lookup" != "failed" && "$declared_actionable" == "true" ]]; then
