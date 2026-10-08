@@ -13,6 +13,7 @@
 #   aggregate_build_results       <results_json> <matrix_json> [jobs_json]  ← PRIMARY attribution (slice 2)
 #   extract_failed_recovered      <jobs_json> <matrix_json>      ← FALLBACK (name-matching)
 #   merge_failed_set              <prior_json> <failed_this_json> <recovered_cand_json> <matrix_json> <unmapped_failure>
+#   split_aborted_failures        <results_json> <failed_this_json>  ← issue routing (open vs. comment-only)
 #   compute_carry_forward         <queued_json> <baseline_failed_json> <valid_json>
 
 # failure_cause_note <results_json> <container>
@@ -42,6 +43,54 @@ failure_cause_note() {
             + ([ $r[] | .failed_targets[]? ] | unique | join(", "))
             + "). Its own build did not fail; it is retried on the next run."
           end' 2>/dev/null || true
+}
+
+# split_aborted_failures <results_json> <failed_this_json>
+#
+# Route the containers that failed this run: which ones deserve their own
+# "Build failed" issue, and which were only collateral of a sibling's failure.
+#
+# A multi-target bake cancels every sibling when one target fails, so containers
+# whose own build never failed are recorded as failures (cause=aborted, see
+# helpers/bake-buildresult.sh). A container is "aborted only" - and gets a
+# mention on the culprit's issue instead of an issue of its own - when ALL of
+# its failure records are cause=aborted AND every culprit those records name is
+# itself in failed_this_json with a cause=failed record in results_json (so the
+# culprit is guaranteed its own issue). Anything less
+# certain (no attribution keys, unknown culprit, mixed causes across arches)
+# keeps today's behaviour: one issue per failed container. This is deliberately
+# fail-safe: the worst outcome of a doubt is an extra issue, never a lost alert.
+#
+# This only routes ALERTS. Callers keep passing the full failed_this_json to
+# merge_failed_set, so aborted containers stay in the failed set and are retried.
+#
+# Output compact JSON:
+#   {"open": [...], "aborted": {"<culprit>": ["<sibling>", ...]}}
+# "open" is failed_this_json minus the aborted-only containers (sorted, unique);
+# "aborted" maps each culprit to the aborted-only siblings it caused.
+split_aborted_failures() {
+    local results_json="${1:-[]}" failed_json="${2:-[]}"
+    jq -cn --arg r "$results_json" --arg f "$failed_json" '
+        (($r | fromjson?) // []) as $raw
+        | (if ($raw | type) == "array" then [ $raw[] | select(type == "object") ] else [] end) as $rs
+        | (($f | fromjson?) // []) as $ff
+        | (if ($ff | type) == "array" then [ $ff[] | select(type == "string") ] else [] end) as $failed
+        | ([ $rs[] | select(.result == "failure" and .cause == "failed") | .container ]
+            | unique | map(select(. as $x | $failed | index($x) != null))) as $failers
+        | ( [ $failed[] | . as $c
+              | [ $rs[] | select(.container == $c and .result == "failure") ] as $mine
+              | ([ $mine[] | .culprits // [] | if type == "array" then .[] else empty end
+                   | select(type == "string") ] | unique) as $cul
+              | select(($mine | length) > 0
+                       and ([ $mine[] | .cause == "aborted" ] | all)
+                       and ($cul | length) > 0
+                       and ([ $cul[] | . as $x | $failers | index($x) != null ] | all))
+              | {container: $c, culprits: $cul} ] ) as $aborted
+        | ([ $aborted[].container ]) as $skip
+        | { open: ([ $failed[] | select(. as $c | $skip | index($c) | not) ] | unique | sort),
+            aborted: ( reduce $aborted[] as $a ({};
+                         reduce $a.culprits[] as $cu (.; .[$cu] = ((.[$cu] // []) + [$a.container] | unique | sort))) ) }
+    ' 2>/dev/null || jq -cn --arg f "$failed_json" '{open: (($f | fromjson? // []) | if type == "array" then . else [] end), aborted: {}}'
 }
 
 # checkpoint_failed_containers <state_str>

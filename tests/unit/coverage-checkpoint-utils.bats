@@ -1209,3 +1209,121 @@ make_results_json() {
     [ -z "$(failure_cause_note '{"a":1}' vector)" ]
     [ -z "$(failure_cause_note "$attributed" '')" ]
 }
+
+# ---------------------------------------------------------------------------
+# cause=aborted records: alerts are routed to the culprit, retry state is not
+# (#2057). A multi-target bake aborted by one failing target marks every sibling
+# a failure; siblings must stay in the failed set (retried next run) but must not
+# each get their own "Build failed" issue.
+#
+# Mutation guards:
+#   dropping aborted siblings from failed_this_run   -> retry coverage lost
+#   treating a record without attribution as aborted -> alert lost when the buildx log format changes
+#   skipping when the culprit has no failed record   -> sibling mentioned nowhere
+# ---------------------------------------------------------------------------
+
+_abort_records() {
+    ABORT_RESULTS='[
+      {"container":"openvpn","variant":"","tag":"v2.7.8-alpine","arch":"amd64","result":"failure","cause":"failed","culprits":["openvpn"],"failed_targets":["openvpn_v2_7_8_alpine"]},
+      {"container":"vector","variant":"","tag":"0.59.0-alpine","arch":"amd64","result":"failure","cause":"aborted","culprits":["openvpn"],"failed_targets":["openvpn_v2_7_8_alpine"]},
+      {"container":"ansible","variant":"","tag":"14.5.0-ubuntu","arch":"amd64","result":"failure","cause":"aborted","culprits":["openvpn"],"failed_targets":["openvpn_v2_7_8_alpine"]}
+    ]'
+    ABORT_MATRIX='["ansible","openvpn","vector"]'
+}
+
+@test "aggregate_build_results: aborted siblings are still failed_this_run" {
+    _abort_records
+    run aggregate_build_results "$ABORT_RESULTS" "$ABORT_MATRIX"
+    [ "$status" -eq 0 ]
+    json_eq "$(echo "$output" | jq -c .failed_this_run)" '["ansible","openvpn","vector"]'
+    json_eq "$(echo "$output" | jq -c .recovered_candidates)" '[]'
+    [ "$(echo "$output" | jq -r .unmapped_failure)" = "false" ]
+}
+
+@test "merge_failed_set: aborted siblings stay in the failed set for the retry" {
+    _abort_records
+    er=$(aggregate_build_results "$ABORT_RESULTS" "$ABORT_MATRIX")
+    ftr=$(echo "$er" | jq -c .failed_this_run)
+    run merge_failed_set '[]' "$ftr" '[]' "$ABORT_MATRIX" "false"
+    [ "$status" -eq 0 ]
+    json_eq "$output" '["ansible","openvpn","vector"]'
+}
+
+@test "merge_failed_set: an aborted sibling is not recovered by another arch's success" {
+    _abort_records
+    results=$(echo "$ABORT_RESULTS" | jq -c '. + [{"container":"vector","variant":"","tag":"0.59.0-alpine","arch":"arm64","result":"success"}]')
+    er=$(aggregate_build_results "$results" "$ABORT_MATRIX")
+    run merge_failed_set '["vector"]' "$(echo "$er" | jq -c .failed_this_run)" "$(echo "$er" | jq -c .recovered_candidates)" "$ABORT_MATRIX" "false"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e 'index("vector") != null'
+}
+
+@test "split_aborted_failures: aborted siblings go to the culprit, culprit keeps its issue" {
+    _abort_records
+    run split_aborted_failures "$ABORT_RESULTS" '["ansible","openvpn","vector"]'
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -c .open)" = '["openvpn"]' ]
+    [ "$(echo "$output" | jq -c .aborted)" = '{"openvpn":["ansible","vector"]}' ]
+}
+
+@test "split_aborted_failures: records without attribution keep one issue per container" {
+    results='[{"container":"openvpn","result":"failure"},{"container":"vector","result":"failure"}]'
+    run split_aborted_failures "$results" '["openvpn","vector"]'
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -c .open)" = '["openvpn","vector"]' ]
+    [ "$(echo "$output" | jq -c .aborted)" = '{}' ]
+}
+
+@test "split_aborted_failures: an aborted record whose culprit has no failed record still gets an issue" {
+    results='[{"container":"vector","result":"failure","cause":"aborted","culprits":["openvpn"],"failed_targets":["t"]}]'
+    run split_aborted_failures "$results" '["vector"]'
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -c .open)" = '["vector"]' ]
+}
+
+@test "split_aborted_failures: aborted with empty culprits (target not a container) still gets an issue" {
+    results='[{"container":"vector","result":"failure","cause":"aborted","culprits":[],"failed_targets":["t"]}]'
+    run split_aborted_failures "$results" '["vector"]'
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -c .open)" = '["vector"]' ]
+}
+
+@test "split_aborted_failures: aborted on one arch but failed on the other keeps the issue" {
+    results='[
+      {"container":"openvpn","result":"failure","cause":"failed","culprits":["openvpn"],"failed_targets":["o"]},
+      {"container":"vector","arch":"amd64","result":"failure","cause":"aborted","culprits":["openvpn"],"failed_targets":["o"]},
+      {"container":"vector","arch":"arm64","result":"failure","cause":"failed","culprits":["vector"],"failed_targets":["v"]}]'
+    run split_aborted_failures "$results" '["openvpn","vector"]'
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -c .open)" = '["openvpn","vector"]' ]
+    [ "$(echo "$output" | jq -c .aborted)" = '{}' ]
+}
+
+@test "split_aborted_failures: a culprit outside this run's failed set does not hide the sibling" {
+    results='[
+      {"container":"openvpn","result":"failure","cause":"failed","culprits":["openvpn"],"failed_targets":["o"]},
+      {"container":"vector","result":"failure","cause":"aborted","culprits":["openvpn"],"failed_targets":["o"]}]'
+    run split_aborted_failures "$results" '["vector"]'
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -c .open)" = '["vector"]' ]
+}
+
+@test "split_aborted_failures: sibling aborted by two culprits is listed under both" {
+    results='[
+      {"container":"a","result":"failure","cause":"failed","culprits":["a","b"],"failed_targets":["a","b"]},
+      {"container":"b","result":"failure","cause":"failed","culprits":["a","b"],"failed_targets":["a","b"]},
+      {"container":"s","result":"failure","cause":"aborted","culprits":["a","b"],"failed_targets":["a","b"]}]'
+    run split_aborted_failures "$results" '["a","b","s"]'
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -c .open)" = '["a","b"]' ]
+    [ "$(echo "$output" | jq -c .aborted)" = '{"a":["s"],"b":["s"]}' ]
+}
+
+@test "split_aborted_failures: malformed input degrades to today's behaviour" {
+    run split_aborted_failures "not json" '["x"]'
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -c .open)" = '["x"]' ]
+    run split_aborted_failures '[]' 'not json'
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -c .open)" = '[]' ]
+}
