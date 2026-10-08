@@ -4065,15 +4065,33 @@ jobs:
             recovered=$(jq -cn --argjson p "$prior_failed" --argjson n "$new_failed" \
               '[ $p[] | select( . as $x | ($n | index($x)) | not ) ]')
 
-            # Open/comment a per-container issue for each container that failed THIS run (ftr).
+            # Open/comment a per-container issue for each container that failed THIS run (ftr),
+            # except containers merely aborted by a sibling's bake failure (cause=aborted, culprit
+            # known and itself failing): they are listed in one comment on the culprit's issue.
+            # Alerts only — they stay in ftr/new_failed above, so the next run retries them.
+            # No/changed buildx "ERROR: target" line → no cause=aborted records → split_open == ftr,
+            # i.e. one issue per failed container as before.
+            split=$(split_aborted_failures "${results_json:-[]}" "$ftr")
+            split_open=$(echo "$split" | jq -c '.open')
+            # Path 1 (dep-attributed open in the summary) must not resurrect an issue for an
+            # aborted sibling either, e.g. a dep-bump commit naming a container that was only
+            # cancelled: publish the issue-worthy subset as the allowlist.
+            ftr_safe="$split_open"
             chmod +x scripts/open-dep-failure-issue.sh
             while IFS= read -r c; do
               [[ -z "$c" ]] && continue
-              # One-line root cause from the bake log attribution (empty when none), so a
-              # container cancelled by a sibling's failure says so instead of "no detail".
+              # One-line root cause from the bake log attribution (empty when none).
               cause_note=$(failure_cause_note "${results_json:-[]}" "$c")
               FAILURE_CAUSE_NOTE="$cause_note" ./scripts/open-dep-failure-issue.sh --mode failure --container "$c" || issue_open_failed=true
-            done < <(echo "$ftr" | jq -r '.[]' 2>/dev/null || true)
+            done < <(echo "$split_open" | jq -r '.[]' 2>/dev/null || true)
+
+            # One comment per culprit (after its issue exists) naming the aborted siblings.
+            # A failed comment counts as a failed open: issue_mode downgrades to generic and
+            # the summary's backstop alerts, so no aborted sibling is left unmentioned.
+            while IFS=$'\t' read -r culprit siblings; do
+              [[ -z "$culprit" ]] && continue
+              ABORTED_SIBLINGS="$siblings" ./scripts/open-dep-failure-issue.sh --mode aborted --container "$culprit" || issue_open_failed=true
+            done < <(echo "$split" | jq -r '.aborted | to_entries[] | [.key, (.value | join(" "))] | @tsv' 2>/dev/null || true)
 
             # Close the per-container issue for each recovered container (prior − new_failed).
             # Close is best-effort: a failure here does not affect issue_mode routing.

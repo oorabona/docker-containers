@@ -2026,3 +2026,55 @@ GHEOF
     [[ "$output" != *'`code`'* ]]
     [[ "$output" != *"## Injected heading"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# --mode aborted: one comment on the culprit's issue listing aborted siblings (#2057)
+#
+# Mutation guards:
+#   creating an issue when none exists would recreate the N-issues problem
+#   returning 0 when there is no culprit issue would leave siblings unmentioned
+#         with no generic backstop (rc!=0 downgrades issue_mode to generic)
+#   not validating sibling names would let an artifact inject into the comment
+# ---------------------------------------------------------------------------
+
+_gh_log() { echo "$TEST_TEMP_DIR/gh.log"; }
+
+@test "mode aborted: comments on the culprit's open issue and lists every sibling" {
+    export DRY_RUN=false
+    mock_command "gh" "echo \"\$*\" >> $(_gh_log)
+case \"\$2\" in list) echo 2048;; esac"
+    ABORTED_SIBLINGS="ansible github-runner vector" run "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode aborted --container openvpn
+    [ "$status" -eq 0 ]
+    grep -q -- "issue list.*--label dep:openvpn" "$(_gh_log)"
+    grep -q -- "issue comment --repo oorabona/docker-containers 2048 --body" "$(_gh_log)"
+    grep -q '`ansible`' "$(_gh_log)"
+    grep -q '`github-runner`' "$(_gh_log)"
+    grep -q '`vector`' "$(_gh_log)"
+    ! grep -q -- "issue create" "$(_gh_log)"
+}
+
+@test "mode aborted: no open culprit issue -> rc 3 and nothing is created" {
+    export DRY_RUN=false
+    mock_command "gh" "echo \"\$*\" >> $(_gh_log)
+exit 0"
+    ABORTED_SIBLINGS="vector" run "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode aborted --container openvpn
+    [ "$status" -eq 3 ]
+    ! grep -q -- "issue create\|issue comment" "$(_gh_log)"
+}
+
+@test "mode aborted: a failing comment -> rc 3" {
+    export DRY_RUN=false
+    mock_command "gh" 'case "$2" in list) echo 2048;; comment) exit 1;; esac'
+    ABORTED_SIBLINGS="vector" run "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode aborted --container openvpn
+    [ "$status" -eq 3 ]
+}
+
+@test "mode aborted: invalid culprit or sibling name -> rc 3, no gh call" {
+    export DRY_RUN=false
+    mock_command "gh" "echo \"\$*\" >> $(_gh_log)"
+    ABORTED_SIBLINGS="vector" run "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode aborted --container 'bad;name'
+    [ "$status" -eq 3 ]
+    ABORTED_SIBLINGS='vector $(id)' run "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode aborted --container openvpn
+    [ "$status" -eq 3 ]
+    [ ! -s "$(_gh_log)" ]
+}

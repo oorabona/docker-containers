@@ -551,3 +551,63 @@ _result_file() { # <container>
     [ "$(_result_file vector | jq -c .failed_targets)" = "[\"$OVPN_TID\"]" ]
     [ "$(_result_file vector | jq -r .cause)" = aborted ]
 }
+
+# ---------------------------------------------------------------------------
+# Replay of the real failure that motivated #2057: run 37623415329 (2026-10-07).
+# Only openvpn failed; the bake cancelled ansible, github-runner and vector,
+# which all got their own "Build failed" issue. The fixture is the captured tail
+# of that run's "Bake build (amd64)" job log. Cells are stubbed with that run's
+# target ids so the replay does not depend on today's pinned versions.
+# ---------------------------------------------------------------------------
+
+_replay_run() { # <log file> -> $REPLAY_RESULTS (JSON array of build-result records)
+    local stub="$TEST_OUT_DIR/stub"
+    mkdir -p "$stub/helpers" "$stub/scripts"
+    cp "$BBR" "${HELPERS_DIR}/logging.sh" "$stub/helpers/"
+    cat > "$stub/scripts/generate-bake-hcl.sh" <<'STUB'
+#!/usr/bin/env bash
+cat <<'JSON'
+[{"container":"openvpn","tag":"v2.7.8-alpine","variant":"","target_id":"openvpn_v2_7_8_alpine"},
+ {"container":"vector","tag":"0.59.0-alpine","variant":"","target_id":"vector_0_59_0_alpine"},
+ {"container":"ansible","tag":"14.5.0-ubuntu","variant":"","target_id":"ansible_14_5_0_ubuntu"},
+ {"container":"github-runner","tag":"2.338.0-ubuntu-2404","variant":"ubuntu-2404","target_id":"github_runner_2_338_0_ubuntu_2404_base"}]
+JSON
+STUB
+    chmod +x "$stub/scripts/generate-bake-hcl.sh"
+    BAKE_LOG_FILE="$1" run bash "$stub/helpers/bake-buildresult.sh" "$TEST_OUT_DIR/absent.json" amd64 "$TEST_OUT_DIR/out" openvpn vector ansible github-runner
+    [ "$status" -eq 0 ]
+    REPLAY_RESULTS=$(jq -s -c '.' "$TEST_OUT_DIR"/out/*.json)
+}
+
+@test "replay run 37623415329: only openvpn gets an issue, the cancelled siblings are listed on it" {
+    source "${HELPERS_DIR}/coverage-checkpoint-utils.sh"
+    _replay_run "${FIXTURES_DIR}/bake-abort-run-37623415329-amd64.txt"
+
+    [ "$(jq -r '.[] | select(.container=="openvpn") | .cause' <<< "$REPLAY_RESULTS")" = failed ]
+    [ "$(jq -r '[.[] | select(.container!="openvpn") | .cause] | unique | join(",")' <<< "$REPLAY_RESULTS")" = aborted ]
+
+    local matrix='["ansible","github-runner","openvpn","vector"]' er ftr
+    er=$(aggregate_build_results "$REPLAY_RESULTS" "$matrix")
+    ftr=$(jq -c .failed_this_run <<< "$er")
+    # every container stays failed -> all four are retried next run
+    [ "$ftr" = '["ansible","github-runner","openvpn","vector"]' ]
+    [ "$(merge_failed_set '[]' "$ftr" '[]' "$matrix" false)" = "$ftr" ]
+
+    run split_aborted_failures "$REPLAY_RESULTS" "$ftr"
+    [ "$status" -eq 0 ]
+    [ "$(jq -c .open <<< "$output")" = '["openvpn"]' ]
+    [ "$(jq -c .aborted <<< "$output")" = '{"openvpn":["ansible","github-runner","vector"]}' ]
+}
+
+@test "replay run 37623415329: if buildx's 'ERROR: target' line changes, every failed container keeps its issue" {
+    source "${HELPERS_DIR}/coverage-checkpoint-utils.sh"
+    sed 's/ERROR: target /ERROR: job /' "${FIXTURES_DIR}/bake-abort-run-37623415329-amd64.txt" > "$TEST_OUT_DIR/changed.log"
+    _replay_run "$TEST_OUT_DIR/changed.log"
+
+    [ "$(jq -c '[.[] | keys | length] | unique' <<< "$REPLAY_RESULTS")" = '[5]' ]
+    local ftr='["ansible","github-runner","openvpn","vector"]'
+    run split_aborted_failures "$REPLAY_RESULTS" "$ftr"
+    [ "$status" -eq 0 ]
+    [ "$(jq -c .open <<< "$output")" = "$ftr" ]
+    [ "$(jq -c .aborted <<< "$output")" = '{}' ]
+}

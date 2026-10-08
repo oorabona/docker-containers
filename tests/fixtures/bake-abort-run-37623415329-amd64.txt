@@ -1,0 +1,400 @@
+2026-10-07T13:48:29.2555232Z #55 15.38 Get:118 http://archive.ubuntu.com/ubuntu resolute/universe amd64 python3-pip all 25.1.1+dfsg-1ubuntu2 [1416 kB]
+2026-10-07T13:48:29.2555967Z #55 15.45 Get:119 http://archive.ubuntu.com/ubuntu resolute/universe amd64 python3-pip-whl all 25.1.1+dfsg-1ubuntu2 [1430 kB]
+2026-10-07T13:48:29.2556562Z #55 15.65 Get:120 http://archive.ubuntu.com/ubuntu resolute/universe amd64 python3-setuptools-whl all 78.1.1-0.1build1 [1174 kB]
+2026-10-07T13:48:29.2557135Z #55 15.88 Get:121 http://archive.ubuntu.com/ubuntu resolute-updates/universe amd64 python3.14-venv amd64 3.14.4-1ubuntu0.2 [5356 B]
+2026-10-07T13:48:29.2557561Z #55 15.88 Get:122 http://archive.ubuntu.com/ubuntu resolute/universe amd64 python3-venv amd64 3.14.3-0ubuntu2 [1032 B]
+2026-10-07T13:48:29.2559026Z #55 15.88 Get:123 http://archive.ubuntu.com/ubuntu resolute/main amd64 rustc amd64 1.93.1ubuntu1 [3810 B]
+2026-10-07T13:48:29.2559427Z #55 15.89 Get:124 http://archive.ubuntu.com/ubuntu resolute/main amd64 cargo amd64 1.93.1ubuntu1 [2246 B]
+2026-10-07T13:48:29.2559845Z #55 15.89 Get:125 http://archive.ubuntu.com/ubuntu resolute/main amd64 libffi-dev amd64 3.5.2-4 [66.5 kB]
+2026-10-07T13:48:29.2677177Z #55 CANCELED
+2026-10-07T13:48:29.2677616Z 
+2026-10-07T13:48:29.2712825Z #71 [github_runner_2_338_0_ubuntu_2404_base stage-0  9/12] RUN tar xzf runner.tar.gz &&     rm runner.tar.gz &&     ./bin/installdependencies.sh
+2026-10-07T13:48:29.2713713Z #71 10.15 Reading package lists...
+2026-10-07T13:48:29.2713956Z #71 10.73 Building dependency tree...
+2026-10-07T13:48:29.2714211Z #71 10.90 Reading state information...
+2026-10-07T13:48:29.2714505Z #71 11.03 The following additional packages will be installed:
+2026-10-07T13:48:29.2715090Z #71 11.03   liblttng-ust-common1t64 liblttng-ust-ctl5t64 libnuma1
+2026-10-07T13:48:29.2715424Z #71 11.05 The following NEW packages will be installed:
+2026-10-07T13:48:29.2715939Z #71 11.05   liblttng-ust-common1t64 liblttng-ust-ctl5t64 liblttng-ust1t64 libnuma1
+2026-10-07T13:48:29.2718143Z #71 11.19 0 upgraded, 4 newly installed, 0 to remove and 2 not upgraded.
+2026-10-07T13:48:29.2718559Z #71 11.19 Need to get 310 kB of archives.
+2026-10-07T13:48:29.2718910Z #71 11.19 After this operation, 1256 kB of additional disk space will be used.
+2026-10-07T13:48:29.2719546Z #71 11.19 Get:1 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libnuma1 amd64 2.0.18-1ubuntu0.24.04.1 [23.4 kB]
+2026-10-07T13:48:29.2720248Z #71 11.35 Get:2 http://archive.ubuntu.com/ubuntu noble/main amd64 liblttng-ust-common1t64 amd64 2.13.7-1.1ubuntu2 [27.5 kB]
+2026-10-07T13:48:29.2720946Z #71 11.40 Get:3 http://archive.ubuntu.com/ubuntu noble/main amd64 liblttng-ust-ctl5t64 amd64 2.13.7-1.1ubuntu2 [74.9 kB]
+2026-10-07T13:48:29.2721670Z #71 11.51 Get:4 http://archive.ubuntu.com/ubuntu noble/main amd64 liblttng-ust1t64 amd64 2.13.7-1.1ubuntu2 [185 kB]
+2026-10-07T13:48:29.2722195Z #71 12.12 debconf: delaying package configuration, since apt-utils is not installed
+2026-10-07T13:48:29.2722549Z #71 12.28 Fetched 310 kB in 1s (577 kB/s)
+2026-10-07T13:48:29.2722872Z #71 12.45 Selecting previously unselected package libnuma1:amd64.
+2026-10-07T13:48:29.2723243Z #71 12.45 (Reading database ... 
+2026-10-07T13:48:29.2723481Z (Reading database ... 5%
+2026-10-07T13:48:29.2723706Z (Reading database ... 10%
+2026-10-07T13:48:29.2723910Z (Reading database ... 15%
+2026-10-07T13:48:29.2724121Z (Reading database ... 20%
+2026-10-07T13:48:29.2724324Z (Reading database ... 25%
+2026-10-07T13:48:29.2725419Z (Reading database ... 30%
+2026-10-07T13:48:29.2725622Z (Reading database ... 35%
+2026-10-07T13:48:29.2725816Z (Reading database ... 40%
+2026-10-07T13:48:29.2726009Z (Reading database ... 45%
+2026-10-07T13:48:29.2726208Z (Reading database ... 50%
+2026-10-07T13:48:29.2726427Z (Reading database ... 55%
+2026-10-07T13:48:29.2726624Z (Reading database ... 60%
+2026-10-07T13:48:29.2726824Z (Reading database ... 65%
+2026-10-07T13:48:29.2727019Z (Reading database ... 70%
+2026-10-07T13:48:29.2727220Z (Reading database ... 75%
+2026-10-07T13:48:29.2727421Z (Reading database ... 80%
+2026-10-07T13:48:29.2727612Z (Reading database ... 85%
+2026-10-07T13:48:29.2727808Z (Reading database ... 90%
+2026-10-07T13:48:29.2728100Z (Reading database ... 95%
+2026-10-07T13:48:29.2728295Z (Reading database ... 100%
+2026-10-07T13:48:29.2728580Z (Reading database ... 8171 files and directories currently installed.)
+2026-10-07T13:48:29.2728992Z #71 12.46 Preparing to unpack .../libnuma1_2.0.18-1ubuntu0.24.04.1_amd64.deb ...
+2026-10-07T13:48:29.2729357Z #71 12.72 Unpacking libnuma1:amd64 (2.0.18-1ubuntu0.24.04.1) ...
+2026-10-07T13:48:29.2729822Z #71 12.90 Selecting previously unselected package liblttng-ust-common1t64:amd64.
+2026-10-07T13:48:29.2730280Z #71 12.90 Preparing to unpack .../liblttng-ust-common1t64_2.13.7-1.1ubuntu2_amd64.deb ...
+2026-10-07T13:48:29.2730705Z #71 12.94 Unpacking liblttng-ust-common1t64:amd64 (2.13.7-1.1ubuntu2) ...
+2026-10-07T13:48:29.2731107Z #71 13.58 Selecting previously unselected package liblttng-ust-ctl5t64:amd64.
+2026-10-07T13:48:29.2732570Z #71 13.58 Preparing to unpack .../liblttng-ust-ctl5t64_2.13.7-1.1ubuntu2_amd64.deb ...
+2026-10-07T13:48:29.2732982Z #71 13.78 Unpacking liblttng-ust-ctl5t64:amd64 (2.13.7-1.1ubuntu2) ...
+2026-10-07T13:48:29.2733414Z #71 14.79 Selecting previously unselected package liblttng-ust1t64:amd64.
+2026-10-07T13:48:29.2733868Z #71 14.79 Preparing to unpack .../liblttng-ust1t64_2.13.7-1.1ubuntu2_amd64.deb ...
+2026-10-07T13:48:29.2734244Z #71 15.01 Unpacking liblttng-ust1t64:amd64 (2.13.7-1.1ubuntu2) ...
+2026-10-07T13:48:29.2734621Z #71 15.91 Setting up liblttng-ust-common1t64:amd64 (2.13.7-1.1ubuntu2) ...
+2026-10-07T13:48:29.2734977Z #71 15.91 Setting up libnuma1:amd64 (2.0.18-1ubuntu0.24.04.1) ...
+2026-10-07T13:48:29.2735319Z #71 15.92 Setting up liblttng-ust-ctl5t64:amd64 (2.13.7-1.1ubuntu2) ...
+2026-10-07T13:48:29.2735836Z #71 15.92 Setting up liblttng-ust1t64:amd64 (2.13.7-1.1ubuntu2) ...
+2026-10-07T13:48:29.2736173Z #71 15.92 Processing triggers for libc-bin (2.39-0ubuntu8.9) ...
+2026-10-07T13:48:29.2736548Z #71 CANCELED
+2026-10-07T13:48:29.2736709Z ------
+2026-10-07T13:48:29.2737227Z  > [github_runner_2_338_0_ubuntu_2404_dev] importing cache manifest from ghcr.io/***/github-runner:buildcache-2.338.0-dev-amd64:
+2026-10-07T13:48:29.2737666Z ------
+2026-10-07T13:48:29.2737822Z ------
+2026-10-07T13:48:29.2738726Z  > [github_runner_2_338_0_ubuntu_2404_base] importing cache manifest from ghcr.io/***/github-runner:buildcache-2.338.0-amd64:
+2026-10-07T13:48:29.2739262Z ------
+2026-10-07T13:48:29.2739630Z ------
+2026-10-07T13:48:29.2739982Z  > [ansible_14_5_0_ubuntu] importing cache manifest from ghcr.io/***/ansible:buildcache-14.5.0-ubuntu-amd64:
+2026-10-07T13:48:29.2740365Z ------
+2026-10-07T13:48:29.2741106Z ------
+2026-10-07T13:48:29.2741473Z  > [openvpn_v2_7_8_alpine] importing cache manifest from ghcr.io/***/openvpn:buildcache-v2.7.8-alpine-amd64:
+2026-10-07T13:48:29.2742181Z ------
+2026-10-07T13:48:29.2742332Z ------
+2026-10-07T13:48:29.2743200Z  > [github_runner_2_338_0_debian_trixie_base] importing cache manifest from ghcr.io/***/github-runner:buildcache-2.338.0-debian-trixie-amd64:
+2026-10-07T13:48:29.2743678Z ------
+2026-10-07T13:48:29.2743825Z ------
+2026-10-07T13:48:29.2744280Z  > [github_runner_2_338_0_debian_trixie_dev] importing cache manifest from ghcr.io/***/github-runner:buildcache-2.338.0-debian-trixie-dev-amd64:
+2026-10-07T13:48:29.2744777Z ------
+2026-10-07T13:48:29.2744931Z ------
+2026-10-07T13:48:29.2758433Z  > [openvpn_v2_7_8_alpine 5/6] RUN set -ex     && DOWNLOAD_VERSION="v2.7.8"     && RELEASE_VERSION="${DOWNLOAD_VERSION#v}"     && apk add --update iptables bash ca-certificates curl linux-pam libselinux openssl nss gnutls gzip pkcs11-helper         google-authenticator libqrencode libcap-ng     && apk add --no-cache --virtual .build-deps         gcc         pkgconfig         build-base         coreutils         libconfig-dev         linux-headers         openssl-dev         linux-pam-dev         libselinux-dev         nss-dev         gnutls-dev         make         libcap-ng-dev         libcap-dev         pkcs11-helper-dev         gnupg     && cd /tmp     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "https://github.com/OpenVPN/openvpn/releases/download/v${RELEASE_VERSION}/openvpn-${RELEASE_VERSION}.tar.gz" --output openvpn.tgz     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "https://github.com/OpenVPN/openvpn/releases/download/v${RELEASE_VERSION}/openvpn-${RELEASE_VERSION}.tar.gz.asc" --output openvpn.tgz.asc     && GNUPGHOME="$(mktemp -d)" && export GNUPGHOME     && gpg --batch --import /usr/local/share/openvpn/openvpn-signing-key.asc     && [ "$(gpg --batch --list-keys --with-colons | grep -c '^pub:')" = "1" ]     && [ "$(gpg --batch --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')" = "F554A3687412CFFEBDEFE0A312F5F7B42F2B01E7" ]     && gpg --batch --status-fd 3 --verify openvpn.tgz.asc openvpn.tgz 3>/tmp/ovpn-gpg.status     && grep -qE '^\[GNUPG:\] (GOODSIG|EXPKEYSIG) ' /tmp/ovpn-gpg.status     && ! grep -qE '^\[GNUPG:\] (REVKEYSIG|BADSIG|ERRSIG|NO_PUBKEY) ' /tmp/ovpn-gpg.status     && rm -f /tmp/ovpn-gpg.status     && rm -rf "$GNUPGHOME" openvpn.tgz.asc     && unset GNUPGHOME     && tar tzf openvpn.tgz > /tmp/ovpn-members.txt     && [ "$(head -1 /tmp/ovpn-members.txt)" = "openvpn-${RELEASE_VERSION}/" ]     && rm -f /tmp/ovpn-members.txt     && tar zxvf openvpn.tgz && cd "openvpn-${RELEASE_VERSION}"     && ./configure --disable-lzo --disable-lz4 --enable-pkcs11 --enable-iproute2 --enable-async-push --enable-selinux         --enable-plugin-auth-pam --enable-plugin-down-root --disable-debug --disable-systemd --enable-comp-stub     && echo "Building OpenVPN using 1 cores..."     && make -j1     && make -C src/plugins -j1     && make -C src/plugins install     && make install-exec     && cd /usr/local/bin     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://raw.githubusercontent.com/***/scripts/f596677ab2f15da3a88a7b5f1e81b83ba25bf458/openvpn/setup.sh --output ovpn     && printf '%s  %s\n' "a1cfb43755aeb0e56d06cdb60be6e6bbf831468414ccbea8cb860729bd8ed451" ovpn | sha256sum -c -     && chmod +x ovpn     && apk add --no-cache --virtual .gpg-deps gnupg     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30         "https://github.com/OpenVPN/easy-rsa/releases/download/v3.2.7/EasyRSA-3.2.7.tgz"         --output "/usr/local/share/easyrsa/EasyRSA-3.2.7.tgz"     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30         "https://github.com/OpenVPN/easy-rsa/releases/download/v3.2.7/EasyRSA-3.2.7.tgz.sig"         --output "/usr/local/share/easyrsa/EasyRSA-3.2.7.tgz.sig"     && GNUPGHOME="$(mktemp -d)" && export GNUPGHOME     && gpg --batch --import /usr/local/share/easyrsa/easyrsa-signing-key.asc     && [ "$(gpg --batch --list-keys --with-colons | grep -c '^pub:')" = "1" ]     && [ "$(gpg --batch --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')" = "6F4056821152F03B6B24F2FCF8489F839D7367F3" ]     && gpg --batch --verify "/usr/local/share/easyrsa/EasyRSA-3.2.7.tgz.sig" "/usr/local/share/easyrsa/EasyRSA-3.2.7.tgz"     && rm -rf "$GNUPGHOME" "/usr/local/share/easyrsa/EasyRSA-3.2.7.tgz.sig"     && unset GNUPGHOME     && apk del .gpg-deps     && tar tzf "/usr/local/share/easyrsa/EasyRSA-3.2.7.tgz" > /tmp/er-members.txt     && [ "$(head -1 /tmp/er-members.txt)" = "EasyRSA-3.2.7/" ]     && rm -f /tmp/er-members.txt     && rm -rf /tmp/erverify && mkdir -p /tmp/erverify     && tar xzf "/usr/local/share/easyrsa/EasyRSA-3.2.7.tgz" --strip-components=1 -C /tmp/erverify     && test -x /tmp/erverify/easyrsa     && rm -rf /tmp/erverify     && grep -qF 'LATEST_EASYRSA_VERSION=$EASYRSA_VERSION' ovpn     && sed -i 's#wget -O ~/easy-rsa.tgz https://github.com/OpenVPN/easy-rsa/releases/download/.*EasyRSA-.*\.tgz#cp /usr/local/share/easyrsa/EasyRSA-${version}.tgz ~/easy-rsa.tgz#' ovpn     && grep -qF 'cp /usr/local/share/easyrsa/EasyRSA-${version}.tgz ~/easy-rsa.tgz' ovpn     && ! grep -qE 'releases/download/[^ ]*EasyRSA' ovpn     && apk del .build-deps     && rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*:
+2026-10-07T13:48:29.2772299Z 4.180 (89/90) Installing gnupg (2.4.9-r1)
+2026-10-07T13:48:29.2772634Z 4.180 (90/90) Installing .build-deps (20261007.134815)
+2026-10-07T13:48:29.2772967Z 4.180 Executing busybox-1.37.0-r31.trigger
+2026-10-07T13:48:29.2773248Z 4.187 OK: 323.5 MiB in 145 packages
+2026-10-07T13:48:29.2773503Z 4.218 + cd /tmp
+2026-10-07T13:48:29.2774589Z 4.218 + curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://github.com/OpenVPN/openvpn/releases/download/v2.7.8/openvpn-2.7.8.tar.gz --output openvpn.tgz
+2026-10-07T13:48:29.2775250Z 4.384 curl: (22) The requested URL returned error: 404
+2026-10-07T13:48:29.2775631Z 6.437 curl: (22) The requested URL returned error: 404
+2026-10-07T13:48:29.2775907Z 8.491 curl: (22) The requested URL returned error: 404
+2026-10-07T13:48:29.2776156Z 10.55 curl: (22) The requested URL returned error: 404
+2026-10-07T13:48:29.2776409Z ------
+2026-10-07T13:48:29.2776636Z 
+2026-10-07T13:48:29.2777032Z  [33m8 warnings found (use docker --debug to expand):
+2026-10-07T13:48:29.2777564Z [0m - SecretsUsedInArgOrEnv: Do not use ARG or ENV instructions for sensitive data (ARG "OPENVPN_KEY_FPR") (line 10)
+2026-10-07T13:48:29.2778423Z  - InvalidDefaultArgInFrom: Default value for ARG ${REMOTE_CR}/library/debian:${VERSION} results in empty or invalid base image name (line 3)
+2026-10-07T13:48:29.2779177Z  - FromAsCasing: 'as' and 'FROM' keywords' casing do not match (line 4)
+2026-10-07T13:48:29.2779720Z  - InvalidDefaultArgInFrom: Default value for ARG ${REMOTE_CR}/library/ubuntu:${OS_VERSION} results in empty or invalid base image name (line 4)
+2026-10-07T13:48:29.2780607Z  - InvalidDefaultArgInFrom: Default value for ARG ${REMOTE_CR}/library/ubuntu:${OS_VERSION} results in empty or invalid base image name (line 35)
+2026-10-07T13:48:29.2781735Z  - InvalidDefaultArgInFrom: Default value for ARG ${REMOTE_CR}/library/alpine:${OS_VERSION} results in empty or invalid base image name (line 4)
+2026-10-07T13:48:29.2782478Z  - InvalidDefaultArgInFrom: Default value for ARG ${REMOTE_CR}/library/alpine:${OS_IMAGE_TAG} results in empty or invalid base image name (line 10)
+2026-10-07T13:48:29.2783205Z  - SecretsUsedInArgOrEnv: Do not use ARG or ENV instructions for sensitive data (ARG "EASYRSA_KEY_FPR") (line 9)
+2026-10-07T13:48:29.2783499Z Dockerfile:49
+2026-10-07T13:48:29.2783627Z --------------------
+2026-10-07T13:48:29.2783819Z   48 |     # top of it.
+2026-10-07T13:48:29.2784044Z   49 | >>> RUN set -ex \
+2026-10-07T13:48:29.2784522Z   50 | >>>     && DOWNLOAD_VERSION="${UPSTREAM_VERSION:?required — VERSION carries the base suffix and is not a release ref}" \
+2026-10-07T13:48:29.2785155Z   51 | >>>     # The git tag carries a leading v and the release assets do not:
+2026-10-07T13:48:29.2785624Z   52 | >>>     # `v2.7.6` tags a release whose files are `openvpn-2.7.6.tar.gz` inside a
+2026-10-07T13:48:29.2786067Z   53 | >>>     # `openvpn-2.7.6/` directory. `version.sh --upstream` returns the tag form,
+2026-10-07T13:48:29.2786617Z   54 | >>>     # measured, so strip it once here rather than at each of the four uses.
+2026-10-07T13:48:29.2787123Z   55 | >>>     # `strip_v: true` in config.yaml governs the version monitor's comparison,
+2026-10-07T13:48:29.2787508Z   56 | >>>     # not this build argument.
+2026-10-07T13:48:29.2787811Z   57 | >>>     && RELEASE_VERSION="${DOWNLOAD_VERSION#v}" \
+2026-10-07T13:48:29.2790184Z   58 | >>>     && apk add --update iptables bash ca-certificates curl linux-pam libselinux openssl nss gnutls gzip pkcs11-helper \
+2026-10-07T13:48:29.2790765Z   59 | >>>         google-authenticator libqrencode libcap-ng \
+2026-10-07T13:48:29.2791146Z   60 | >>>     && apk add --no-cache --virtual .build-deps \
+2026-10-07T13:48:29.2791465Z   61 | >>>         gcc \
+2026-10-07T13:48:29.2791716Z   62 | >>>         pkgconfig \
+2026-10-07T13:48:29.2791962Z   63 | >>>         build-base \
+2026-10-07T13:48:29.2792195Z   64 | >>>         coreutils \
+2026-10-07T13:48:29.2792442Z   65 | >>>         libconfig-dev \
+2026-10-07T13:48:29.2792718Z   66 | >>>         linux-headers \
+2026-10-07T13:48:29.2792959Z   67 | >>>         openssl-dev \
+2026-10-07T13:48:29.2793185Z   68 | >>>         linux-pam-dev \
+2026-10-07T13:48:29.2793419Z   69 | >>>         libselinux-dev \
+2026-10-07T13:48:29.2793648Z   70 | >>>         nss-dev \
+2026-10-07T13:48:29.2793798Z   71 | >>>         gnutls-dev \
+2026-10-07T13:48:29.2793940Z   72 | >>>         make \
+2026-10-07T13:48:29.2794084Z   73 | >>>         libcap-ng-dev \
+2026-10-07T13:48:29.2794239Z   74 | >>>         libcap-dev \
+2026-10-07T13:48:29.2794401Z   75 | >>>         pkcs11-helper-dev \
+2026-10-07T13:48:29.2794561Z   76 | >>>         gnupg \
+2026-10-07T13:48:29.2794701Z   77 | >>>     && cd /tmp \
+2026-10-07T13:48:29.2794906Z   78 | >>>     # Fetch the OpenVPN release artifact and its detached signature. The
+2026-10-07T13:48:29.2795197Z   79 | >>>     # throwaway keyring holds exactly the vendored primary key, so the signature
+2026-10-07T13:48:29.2795510Z   80 | >>>     # is checked before the archive is inspected, extracted, or compiled.
+2026-10-07T13:48:29.2796122Z   81 | >>>     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "https://github.com/OpenVPN/openvpn/releases/download/v${RELEASE_VERSION}/openvpn-${RELEASE_VERSION}.tar.gz" --output openvpn.tgz \
+2026-10-07T13:48:29.2797093Z   82 | >>>     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "https://github.com/OpenVPN/openvpn/releases/download/v${RELEASE_VERSION}/openvpn-${RELEASE_VERSION}.tar.gz.asc" --output openvpn.tgz.asc \
+2026-10-07T13:48:29.2797631Z   83 | >>>     && GNUPGHOME="$(mktemp -d)" && export GNUPGHOME \
+2026-10-07T13:48:29.2798036Z   84 | >>>     && gpg --batch --import /usr/local/share/openvpn/openvpn-signing-key.asc \
+2026-10-07T13:48:29.2798476Z   85 | >>>     # A second primary key in the vendored key file must not widen trust.
+2026-10-07T13:48:29.2798842Z   86 | >>>     && [ "$(gpg --batch --list-keys --with-colons | grep -c '^pub:')" = "1" ] \
+2026-10-07T13:48:29.2799234Z   87 | >>>     && [ "$(gpg --batch --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')" = "${OPENVPN_KEY_FPR}" ] \
+2026-10-07T13:48:29.2799848Z   88 | >>>     # `gpg --verify` exits 0 for a signature made by a REVOKED or EXPIRED key —
+2026-10-07T13:48:29.2800318Z   89 | >>>     # measured, v2.7.4's signature returns 0 with "Note: This key has expired!".
+2026-10-07T13:48:29.2800798Z   90 | >>>     # The exactly-one-primary assertion above bounds primaries, not the ten
+2026-10-07T13:48:29.2801301Z   91 | >>>     # signing subkeys hanging off this one, of which eight are expired and two
+2026-10-07T13:48:29.2801804Z   92 | >>>     # revoked. So read the machine-readable status instead of the exit code.
+2026-10-07T13:48:29.2802191Z   93 | >>>     #
+2026-10-07T13:48:29.2802540Z   94 | >>>     # REVKEYSIG is never accepted. EXPKEYSIG is, and that is a bounded residual
+2026-10-07T13:48:29.2802974Z   95 | >>>     # rather than a proof of anything: a signature's timestamp is chosen by
+2026-10-07T13:48:29.2803413Z   96 | >>>     # whoever made it, so this does not establish that the signature predates the
+2026-10-07T13:48:29.2803824Z   97 | >>>     # subkey's expiry. Refusing EXPKEYSIG is not available either — v2.7.4 is in
+2026-10-07T13:48:29.2804136Z   98 | >>>     # the retained window and is signed by a now-expired subkey, and the EasyRSA
+2026-10-07T13:48:29.2804473Z   99 | >>>     # block below has the same shape, its single signing subkey being expired too.
+2026-10-07T13:48:29.2804737Z  100 | >>>     #
+2026-10-07T13:48:29.2804950Z  101 | >>>     # And nothing here sees a revocation published after this vendored snapshot.
+2026-10-07T13:48:29.2805275Z  102 | >>>     # The key-lifecycle monitor verifies with this same file, so it cannot learn
+2026-10-07T13:48:29.2805581Z  103 | >>>     # of one either; refreshing the snapshot is a commit somebody makes. Tracked
+2026-10-07T13:48:29.2805844Z  104 | >>>     # as the residual it is, not covered by this check.
+2026-10-07T13:48:29.2806197Z  105 | >>>     && gpg --batch --status-fd 3 --verify openvpn.tgz.asc openvpn.tgz 3>/tmp/ovpn-gpg.status \
+2026-10-07T13:48:29.2806553Z  106 | >>>     && grep -qE '^\[GNUPG:\] (GOODSIG|EXPKEYSIG) ' /tmp/ovpn-gpg.status \
+2026-10-07T13:48:29.2806848Z  107 | >>>     && ! grep -qE '^\[GNUPG:\] (REVKEYSIG|BADSIG|ERRSIG|NO_PUBKEY) ' /tmp/ovpn-gpg.status \
+2026-10-07T13:48:29.2807131Z  108 | >>>     && rm -f /tmp/ovpn-gpg.status \
+2026-10-07T13:48:29.2807325Z  109 | >>>     && rm -rf "$GNUPGHOME" openvpn.tgz.asc \
+2026-10-07T13:48:29.2807530Z  110 | >>>     && unset GNUPGHOME \
+2026-10-07T13:48:29.2807787Z  111 | >>>     # The signed release archive must be the requested version, which blocks an
+2026-10-07T13:48:29.2808275Z  112 | >>>     # older signed release replayed from this version's release-asset URL.
+2026-10-07T13:48:29.2808794Z  113 | >>>     #
+2026-10-07T13:48:29.2820150Z  114 | >>>     # This reads the first member only, so it does not prove every path in the
+2026-10-07T13:48:29.2820698Z  115 | >>>     # archive shares that prefix. An archive with a conforming first entry and
+2026-10-07T13:48:29.2821215Z  116 | >>>     # divergent later ones would need OpenVPN's signing key to be accepted at
+2026-10-07T13:48:29.2821655Z  117 | >>>     # all, and an actor holding that key has no reason to bother.
+2026-10-07T13:48:29.2822089Z  118 | >>>     # `tar | head -1` alone reports success when tar later hits a truncated
+2026-10-07T13:48:29.2822584Z  119 | >>>     # archive, because head exits 0 having read its line. Listing to a file first
+2026-10-07T13:48:29.2823039Z  120 | >>>     # lets tar's own status decide, so a corrupt archive stops here rather than
+2026-10-07T13:48:29.2823438Z  121 | >>>     # after the archive has been extracted.
+2026-10-07T13:48:29.2823931Z  122 | >>>     && tar tzf openvpn.tgz > /tmp/ovpn-members.txt \
+2026-10-07T13:48:29.2824292Z  123 | >>>     && [ "$(head -1 /tmp/ovpn-members.txt)" = "openvpn-${RELEASE_VERSION}/" ] \
+2026-10-07T13:48:29.2824786Z  124 | >>>     && rm -f /tmp/ovpn-members.txt \
+2026-10-07T13:48:29.2825161Z  125 | >>>     && tar zxvf openvpn.tgz && cd "openvpn-${RELEASE_VERSION}" \
+2026-10-07T13:48:29.2825555Z  126 | >>>     # Opinionated but lzo and lz4 are not required for OpenVPN to work
+2026-10-07T13:48:29.2825978Z  127 | >>>     # and subject to security issues.
+2026-10-07T13:48:29.2826543Z  128 | >>>     && ./configure --disable-lzo --disable-lz4 --enable-pkcs11 --enable-iproute2 --enable-async-push --enable-selinux \
+2026-10-07T13:48:29.2827165Z  129 | >>>         --enable-plugin-auth-pam --enable-plugin-down-root --disable-debug --disable-systemd --enable-comp-stub \
+2026-10-07T13:48:29.2827530Z  130 | >>>     # Do not try to install documentation
+2026-10-07T13:48:29.2827841Z  131 | >>>     && echo "Building OpenVPN using ${NPROC} cores..." \
+2026-10-07T13:48:29.2828410Z  132 | >>>     && make -j${NPROC} \
+2026-10-07T13:48:29.2828726Z  133 | >>>     # Compile and install plugins (only in directories that have Makefiles)
+2026-10-07T13:48:29.2829096Z  134 | >>>     && make -C src/plugins -j${NPROC} \
+2026-10-07T13:48:29.2829383Z  135 | >>>     && make -C src/plugins install \
+2026-10-07T13:48:29.2829641Z  136 | >>>     && make install-exec \
+2026-10-07T13:48:29.2829892Z  137 | >>>     && cd /usr/local/bin \
+2026-10-07T13:48:29.2830697Z  138 | >>>     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://raw.githubusercontent.com/***/scripts/f596677ab2f15da3a88a7b5f1e81b83ba25bf458/openvpn/setup.sh --output ovpn \
+2026-10-07T13:48:29.2831532Z  139 | >>>     && printf '%s  %s\n' "${OVPN_SHA256}" ovpn | sha256sum -c - \
+2026-10-07T13:48:29.2831798Z  140 | >>>     && chmod +x ovpn \
+2026-10-07T13:48:29.2832026Z  141 | >>>     # Bake EasyRSA at build time so first-run setup is hermetic (#918): fetch the
+2026-10-07T13:48:29.2832478Z  142 | >>>     # pinned tarball and its GPG signature and verify it against the vendored
+2026-10-07T13:48:29.2832786Z  143 | >>>     # EasyRSA maintainer key. The key is imported into a throwaway keyring holding
+2026-10-07T13:48:29.2833160Z  144 | >>>     # only it (asserted by fingerprint), so `gpg --verify` accepts only its
+2026-10-07T13:48:29.2833609Z  145 | >>>     # signatures. The archive is then checked to be the requested version with an
+2026-10-07T13:48:29.2834121Z  146 | >>>     # executable easyrsa, and the installer's one GitHub wget is rewritten to a cp
+2026-10-07T13:48:29.2834592Z  147 | >>>     # of the baked file. By design the image is pinned to its baked EASYRSA_VERSION:
+2026-10-07T13:48:29.2834902Z  148 | >>>     # a runtime override / "Update EasyRSA" to another version fails closed (baked
+2026-10-07T13:48:29.2835417Z  149 | >>>     # file absent) — update by rebuilding, not at runtime. Only the key is pinned
+2026-10-07T13:48:29.2835729Z  150 | >>>     # (the .sig is fetched per build); key rotation/expiry is watched in #921.
+2026-10-07T13:48:29.2836054Z  151 | >>>     && apk add --no-cache --virtual .gpg-deps gnupg \
+2026-10-07T13:48:29.2836327Z  152 | >>>     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 \
+2026-10-07T13:48:29.2836816Z  153 | >>>         "https://github.com/OpenVPN/easy-rsa/releases/download/v${EASYRSA_VERSION}/EasyRSA-${EASYRSA_VERSION}.tgz" \
+2026-10-07T13:48:29.2837185Z  154 | >>>         --output "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz" \
+2026-10-07T13:48:29.2837482Z  155 | >>>     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 \
+2026-10-07T13:48:29.2838006Z  156 | >>>         "https://github.com/OpenVPN/easy-rsa/releases/download/v${EASYRSA_VERSION}/EasyRSA-${EASYRSA_VERSION}.tgz.sig" \
+2026-10-07T13:48:29.2838620Z  157 | >>>         --output "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz.sig" \
+2026-10-07T13:48:29.2839066Z  158 | >>>     && GNUPGHOME="$(mktemp -d)" && export GNUPGHOME \
+2026-10-07T13:48:29.2839327Z  159 | >>>     && gpg --batch --import /usr/local/share/easyrsa/easyrsa-signing-key.asc \
+2026-10-07T13:48:29.2839923Z  160 | >>>     # The throwaway keyring must hold EXACTLY the one expected key, so
+2026-10-07T13:48:29.2840257Z  161 | >>>     # `gpg --verify` can only accept that key's signatures (a vendored file with a
+2026-10-07T13:48:29.2840694Z  162 | >>>     # second key would otherwise widen trust silently).
+2026-10-07T13:48:29.2841011Z  163 | >>>     && [ "$(gpg --batch --list-keys --with-colons | grep -c '^pub:')" = "1" ] \
+2026-10-07T13:48:29.2841359Z  164 | >>>     && [ "$(gpg --batch --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')" = "${EASYRSA_KEY_FPR}" ] \
+2026-10-07T13:48:29.2841939Z  165 | >>>     && gpg --batch --verify "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz.sig" "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz" \
+2026-10-07T13:48:29.2842470Z  166 | >>>     && rm -rf "$GNUPGHOME" "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz.sig" \
+2026-10-07T13:48:29.2842881Z  167 | >>>     && unset GNUPGHOME \
+2026-10-07T13:48:29.2843065Z  168 | >>>     && apk del .gpg-deps \
+2026-10-07T13:48:29.2843306Z  169 | >>>     # The signature covers the tarball bytes, so its top-level EasyRSA-<ver>/ dir is
+2026-10-07T13:48:29.2843731Z  170 | >>>     # authenticated: require it to equal the requested version (blocks a replayed
+2026-10-07T13:48:29.2844081Z  171 | >>>     # older signed release served from this version's URL). Then extract the way the
+2026-10-07T13:48:29.2844412Z  172 | >>>     # installer will (--strip-components=1) and require an executable easyrsa.
+2026-10-07T13:48:29.2844905Z  173 | >>>     # Same shape as the OpenVPN preflight above, and the same reason: tar's status
+2026-10-07T13:48:29.2845232Z  174 | >>>     # has to survive the pipe. Pre-existing; fixed here because it is the twin of
+2026-10-07T13:48:29.2845588Z  175 | >>>     # the line this change already had to correct.
+2026-10-07T13:48:29.2845952Z  176 | >>>     && tar tzf "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz" > /tmp/er-members.txt \
+2026-10-07T13:48:29.2846272Z  177 | >>>     && [ "$(head -1 /tmp/er-members.txt)" = "EasyRSA-${EASYRSA_VERSION}/" ] \
+2026-10-07T13:48:29.2846602Z  178 | >>>     && rm -f /tmp/er-members.txt \
+2026-10-07T13:48:29.2846908Z  179 | >>>     && rm -rf /tmp/erverify && mkdir -p /tmp/erverify \
+2026-10-07T13:48:29.2847396Z  180 | >>>     && tar xzf "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz" --strip-components=1 -C /tmp/erverify \
+2026-10-07T13:48:29.2848005Z  181 | >>>     && test -x /tmp/erverify/easyrsa \
+2026-10-07T13:48:29.2848267Z  182 | >>>     && rm -rf /tmp/erverify \
+2026-10-07T13:48:29.2848609Z  183 | >>>     # Assert the pinned installer still resolves its EasyRSA version from
+2026-10-07T13:48:29.2848974Z  184 | >>>     # EASYRSA_VERSION, so the version-specific baked file matches what its cp asks
+2026-10-07T13:48:29.2849272Z  185 | >>>     # for (else a future installer bump could request an unbaked version).
+2026-10-07T13:48:29.2849639Z  186 | >>>     && grep -qF 'LATEST_EASYRSA_VERSION=$EASYRSA_VERSION' ovpn \
+2026-10-07T13:48:29.2850150Z  187 | >>>     && sed -i 's#wget -O ~/easy-rsa.tgz https://github.com/OpenVPN/easy-rsa/releases/download/.*EasyRSA-.*\.tgz#cp /usr/local/share/easyrsa/EasyRSA-${version}.tgz ~/easy-rsa.tgz#' ovpn \
+2026-10-07T13:48:29.2850652Z  188 | >>>     && grep -qF 'cp /usr/local/share/easyrsa/EasyRSA-${version}.tgz ~/easy-rsa.tgz' ovpn \
+2026-10-07T13:48:29.2851028Z  189 | >>>     && ! grep -qE 'releases/download/[^ ]*EasyRSA' ovpn \
+2026-10-07T13:48:29.2851291Z  190 | >>>     && apk del .build-deps \
+2026-10-07T13:48:29.2851505Z  191 | >>>     && rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
+2026-10-07T13:48:29.2851709Z  192 |     
+2026-10-07T13:48:29.2851829Z --------------------
+2026-10-07T13:48:29.2862771Z ERROR: target openvpn_v2_7_8_alpine: failed to solve: process "/bin/sh -c set -ex     && DOWNLOAD_VERSION=\"${UPSTREAM_VERSION:?required — VERSION carries the base suffix and is not a release ref}\"     && RELEASE_VERSION=\"${DOWNLOAD_VERSION#v}\"     && apk add --update iptables bash ca-certificates curl linux-pam libselinux openssl nss gnutls gzip pkcs11-helper         google-authenticator libqrencode libcap-ng     && apk add --no-cache --virtual .build-deps         gcc         pkgconfig         build-base         coreutils         libconfig-dev         linux-headers         openssl-dev         linux-pam-dev         libselinux-dev         nss-dev         gnutls-dev         make         libcap-ng-dev         libcap-dev         pkcs11-helper-dev         gnupg     && cd /tmp     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 \"https://github.com/OpenVPN/openvpn/releases/download/v${RELEASE_VERSION}/openvpn-${RELEASE_VERSION}.tar.gz\" --output openvpn.tgz     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 \"https://github.com/OpenVPN/openvpn/releases/download/v${RELEASE_VERSION}/openvpn-${RELEASE_VERSION}.tar.gz.asc\" --output openvpn.tgz.asc     && GNUPGHOME=\"$(mktemp -d)\" && export GNUPGHOME     && gpg --batch --import /usr/local/share/openvpn/openvpn-signing-key.asc     && [ \"$(gpg --batch --list-keys --with-colons | grep -c '^pub:')\" = \"1\" ]     && [ \"$(gpg --batch --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')\" = \"${OPENVPN_KEY_FPR}\" ]     && gpg --batch --status-fd 3 --verify openvpn.tgz.asc openvpn.tgz 3>/tmp/ovpn-gpg.status     && grep -qE '^\\[GNUPG:\\] (GOODSIG|EXPKEYSIG) ' /tmp/ovpn-gpg.status     && ! grep -qE '^\\[GNUPG:\\] (REVKEYSIG|BADSIG|ERRSIG|NO_PUBKEY) ' /tmp/ovpn-gpg.status     && rm -f /tmp/ovpn-gpg.status     && rm -rf \"$GNUPGHOME\" openvpn.tgz.asc     && unset GNUPGHOME     && tar tzf openvpn.tgz > /tmp/ovpn-members.txt     && [ \"$(head -1 /tmp/ovpn-members.txt)\" = \"openvpn-${RELEASE_VERSION}/\" ]     && rm -f /tmp/ovpn-members.txt     && tar zxvf openvpn.tgz && cd \"openvpn-${RELEASE_VERSION}\"     && ./configure --disable-lzo --disable-lz4 --enable-pkcs11 --enable-iproute2 --enable-async-push --enable-selinux         --enable-plugin-auth-pam --enable-plugin-down-root --disable-debug --disable-systemd --enable-comp-stub     && echo \"Building OpenVPN using ${NPROC} cores...\"     && make -j${NPROC}     && make -C src/plugins -j${NPROC}     && make -C src/plugins install     && make install-exec     && cd /usr/local/bin     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://raw.githubusercontent.com/***/scripts/f596677ab2f15da3a88a7b5f1e81b83ba25bf458/openvpn/setup.sh --output ovpn     && printf '%s  %s\\n' \"${OVPN_SHA256}\" ovpn | sha256sum -c -     && chmod +x ovpn     && apk add --no-cache --virtual .gpg-deps gnupg     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30         \"https://github.com/OpenVPN/easy-rsa/releases/download/v${EASYRSA_VERSION}/EasyRSA-${EASYRSA_VERSION}.tgz\"         --output \"/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz\"     && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30         \"https://github.com/OpenVPN/easy-rsa/releases/download/v${EASYRSA_VERSION}/EasyRSA-${EASYRSA_VERSION}.tgz.sig\"         --output \"/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz.sig\"     && GNUPGHOME=\"$(mktemp -d)\" && export GNUPGHOME     && gpg --batch --import /usr/local/share/easyrsa/easyrsa-signing-key.asc     && [ \"$(gpg --batch --list-keys --with-colons | grep -c '^pub:')\" = \"1\" ]     && [ \"$(gpg --batch --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')\" = \"${EASYRSA_KEY_FPR}\" ]     && gpg --batch --verify \"/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz.sig\" \"/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz\"     && rm -rf \"$GNUPGHOME\" \"/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz.sig\"     && unset GNUPGHOME     && apk del .gpg-deps     && tar tzf \"/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz\" > /tmp/er-members.txt     && [ \"$(head -1 /tmp/er-members.txt)\" = \"EasyRSA-${EASYRSA_VERSION}/\" ]     && rm -f /tmp/er-members.txt     && rm -rf /tmp/erverify && mkdir -p /tmp/erverify     && tar xzf \"/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz\" --strip-components=1 -C /tmp/erverify     && test -x /tmp/erverify/easyrsa     && rm -rf /tmp/erverify     && grep -qF 'LATEST_EASYRSA_VERSION=$EASYRSA_VERSION' ovpn     && sed -i 's#wget -O ~/easy-rsa.tgz https://github.com/OpenVPN/easy-rsa/releases/download/.*EasyRSA-.*\\.tgz#cp /usr/local/share/easyrsa/EasyRSA-${version}.tgz ~/easy-rsa.tgz#' ovpn     && grep -qF 'cp /usr/local/share/easyrsa/EasyRSA-${version}.tgz ~/easy-rsa.tgz' ovpn     && ! grep -qE 'releases/download/[^ ]*EasyRSA' ovpn     && apk del .build-deps     && rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*" did not complete successfully: exit code: 22
+2026-10-07T13:48:29.2871806Z [0;31m❌ All 3 attempts failed[0m
+2026-10-07T13:48:29.2875634Z ##[error]Process completed with exit code 1.
+2026-10-07T13:48:29.2926639Z ##[group]Run set -euo pipefail
+2026-10-07T13:48:29.2926858Z [36;1mset -euo pipefail[0m
+2026-10-07T13:48:29.2927023Z [36;1mchmod +x helpers/bake-buildresult.sh[0m
+2026-10-07T13:48:29.2927213Z [36;1msource helpers/bake-buildresult.sh[0m
+2026-10-07T13:48:29.2927375Z [36;1m[0m
+2026-10-07T13:48:29.2927502Z [36;1mmkdir -p .build-lineage[0m
+2026-10-07T13:48:29.2927690Z [36;1m# BAKE_CONTAINERS is operator-set (trusted context)[0m
+2026-10-07T13:48:29.2928069Z [36;1mexport BAKE_GENERATE_ALL_RETAINED=false[0m
+2026-10-07T13:48:29.2928248Z [36;1m# shellcheck disable=SC2086[0m
+2026-10-07T13:48:29.2928408Z [36;1memit_bake_build_results \[0m
+2026-10-07T13:48:29.2928591Z [36;1m  "${RUNNER_TEMP}/bake-metadata-amd64.json" \[0m
+2026-10-07T13:48:29.2928771Z [36;1m  amd64 \[0m
+2026-10-07T13:48:29.2928907Z [36;1m  .build-lineage \[0m
+2026-10-07T13:48:29.2929056Z [36;1m  ${BAKE_CONTAINERS}[0m
+2026-10-07T13:48:29.2929203Z [36;1m[0m
+2026-10-07T13:48:29.2929458Z [36;1mif [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then[0m
+2026-10-07T13:48:29.2929793Z [36;1m  # The retained plan only covers BAKE_RETAINED_CONTAINERS; the generator refuses[0m
+2026-10-07T13:48:29.2930133Z [36;1m  # per-container filters keyed to containers outside the request, so narrow the map.[0m
+2026-10-07T13:48:29.2930403Z [36;1m  retained_scope_args=("${scope_args[@]}")[0m
+2026-10-07T13:48:29.2930602Z [36;1m  if [[ -n "${CONTAINER_SCOPES:-}" ]]; then[0m
+2026-10-07T13:48:29.2931024Z [36;1m    retained_container_scopes=$(jq -c --arg names "${BAKE_RETAINED_CONTAINERS}" '($names | split(" ")) as $n | with_entries(select(.key as $k | $n | index($k)))' <<< "$CONTAINER_SCOPES")[0m
+2026-10-07T13:48:29.2931443Z [36;1m    for i in "${!retained_scope_args[@]}"; do[0m
+2026-10-07T13:48:29.2931816Z [36;1m      [[ "${retained_scope_args[$i]}" == "$CONTAINER_SCOPES" ]] && retained_scope_args[i]="$retained_container_scopes"[0m
+2026-10-07T13:48:29.2932171Z [36;1m    done[0m
+2026-10-07T13:48:29.2932297Z [36;1m  fi[0m
+2026-10-07T13:48:29.2932436Z [36;1m  export BAKE_GENERATE_ALL_RETAINED=true[0m
+2026-10-07T13:48:29.2932674Z [36;1m  # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.[0m
+2026-10-07T13:48:29.2932909Z [36;1m  # shellcheck disable=SC2086[0m
+2026-10-07T13:48:29.2933069Z [36;1m  emit_bake_build_results \[0m
+2026-10-07T13:48:29.2933251Z [36;1m    "${RUNNER_TEMP}/bake-metadata-amd64.json" \[0m
+2026-10-07T13:48:29.2933429Z [36;1m    amd64 \[0m
+2026-10-07T13:48:29.2933561Z [36;1m    .build-lineage \[0m
+2026-10-07T13:48:29.2933717Z [36;1m    ${BAKE_RETAINED_CONTAINERS}[0m
+2026-10-07T13:48:29.2933873Z [36;1mfi[0m
+2026-10-07T13:48:29.2987848Z shell: /usr/bin/bash -e {0}
+2026-10-07T13:48:29.2988162Z env:
+2026-10-07T13:48:29.2988274Z   DRY_RUN: false
+2026-10-07T13:48:29.2988397Z   REBUILD_MODE: none
+2026-10-07T13:48:29.2988529Z   DOCKER_NO_CACHE: false
+2026-10-07T13:48:29.2988661Z   SCOPE_VERSIONS: 
+2026-10-07T13:48:29.2988989Z   SCOPE_FLAVORS: 
+2026-10-07T13:48:29.2989116Z   CONTAINER_SCOPES: 
+2026-10-07T13:48:29.2989240Z   BUILD_SCOPE: 
+2026-10-07T13:48:29.2989369Z   BUILD_ALL_RETAINED: false
+2026-10-07T13:48:29.2989512Z   FORCE_SCOPED_EXTENSION_REFS: 
+2026-10-07T13:48:29.2989660Z   PUBLISHED_EXTENSION_DIGESTS: 
+2026-10-07T13:48:29.2989838Z   BAKE_CONTAINERS: ansible github-runner openvpn vector
+2026-10-07T13:48:29.2990026Z   BAKE_RETAINED_CONTAINERS: 
+2026-10-07T13:48:29.2990172Z   BAKE_GENERATE_FINAL_BUILD: false
+2026-10-07T13:48:29.2990322Z ##[endgroup]
+2026-10-07T13:48:31.9401296Z ##[warning]bake-buildresult: metadata file /home/runner/work/_temp/bake-metadata-amd64.json absent or empty — all cells will be marked failure
+2026-10-07T13:48:32.0482967Z ##[notice]bake-buildresult: 0 success, 7 failure (arch amd64)
+2026-10-07T13:48:32.0519733Z ##[group]Run actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+2026-10-07T13:48:32.0519967Z with:
+2026-10-07T13:48:32.0520105Z   name: build-result-bake-amd64-37623415329
+2026-10-07T13:48:32.0520314Z   path: .build-lineage/build-result-*-amd64.json
+2026-10-07T13:48:32.0520482Z   if-no-files-found: ignore
+2026-10-07T13:48:32.0520626Z   include-hidden-files: true
+2026-10-07T13:48:32.0520764Z   retention-days: 1
+2026-10-07T13:48:32.0520886Z   compression-level: 6
+2026-10-07T13:48:32.0521012Z   overwrite: false
+2026-10-07T13:48:32.0521129Z   archive: true
+2026-10-07T13:48:32.0521242Z env:
+2026-10-07T13:48:32.0521346Z   DRY_RUN: false
+2026-10-07T13:48:32.0521463Z   REBUILD_MODE: none
+2026-10-07T13:48:32.0521586Z   DOCKER_NO_CACHE: false
+2026-10-07T13:48:32.0521712Z   SCOPE_VERSIONS: 
+2026-10-07T13:48:32.0521831Z   SCOPE_FLAVORS: 
+2026-10-07T13:48:32.0521949Z   CONTAINER_SCOPES: 
+2026-10-07T13:48:32.0522067Z   BUILD_SCOPE: 
+2026-10-07T13:48:32.0522215Z   BUILD_ALL_RETAINED: false
+2026-10-07T13:48:32.0522352Z   FORCE_SCOPED_EXTENSION_REFS: 
+2026-10-07T13:48:32.0522495Z   PUBLISHED_EXTENSION_DIGESTS: 
+2026-10-07T13:48:32.0522634Z ##[endgroup]
+2026-10-07T13:48:32.1578768Z With the provided path, there will be 7 files uploaded
+2026-10-07T13:48:32.1579718Z Artifact name is valid!
+2026-10-07T13:48:32.1580188Z Root directory input is valid!
+2026-10-07T13:48:32.4742103Z Uploading artifact: build-result-bake-amd64-37623415329.zip
+2026-10-07T13:48:32.4770048Z Beginning upload of artifact content to blob storage
+2026-10-07T13:48:32.7350546Z Uploaded bytes 2002
+2026-10-07T13:48:32.7962845Z Finished uploading artifact content to blob storage!
+2026-10-07T13:48:32.7963388Z SHA256 digest of uploaded artifact is 66286a4546282d103e08a40c8ed6f2ce8a4f89e89d7a87ebf17bac92ce929923
+2026-10-07T13:48:32.7963810Z Finalizing artifact upload
+2026-10-07T13:48:33.2053275Z Artifact build-result-bake-amd64-37623415329 successfully finalized. Artifact ID 11486610968
+2026-10-07T13:48:33.2053786Z Artifact build-result-bake-amd64-37623415329 has been successfully uploaded! Final size is 2002 bytes. Artifact ID is 11486610968
+2026-10-07T13:48:33.2056525Z Artifact download URL: https://github.com/***/docker-containers/actions/runs/37623415329/artifacts/11486610968
+2026-10-07T13:48:33.2218738Z Post job cleanup.
+2026-10-07T13:48:33.3490029Z ##[group]Removing builder
+2026-10-07T13:48:33.4400024Z [command]/usr/bin/docker buildx rm builder-45e7adfa-1b27-4893-8cb7-f6ff5c628258
+2026-10-07T13:48:39.3830691Z builder-45e7adfa-1b27-4893-8cb7-f6ff5c628258 removed
+2026-10-07T13:48:39.3873104Z ##[endgroup]
+2026-10-07T13:48:39.3873669Z ##[group]Cleaning up certificates
+2026-10-07T13:48:39.3875959Z ##[endgroup]
+2026-10-07T13:48:39.3876332Z ##[group]Post cache
+2026-10-07T13:48:39.3878159Z State not set
+2026-10-07T13:48:39.3878574Z ##[endgroup]
+2026-10-07T13:48:39.4020200Z Post job cleanup.
+2026-10-07T13:48:39.4061193Z Post job cleanup.
+2026-10-07T13:48:39.4063792Z ##[start-action display=Log in to Docker Hub;id=__6e460135-c68c-498b-baf8-6be468372422.dockerhub]
+2026-10-07T13:48:39.4084309Z Post job cleanup.
+2026-10-07T13:48:39.5594495Z ##[group]Logout from docker.io
+2026-10-07T13:48:39.5669080Z [command]/usr/bin/docker logout docker.io
+2026-10-07T13:48:39.5799950Z Removing login credentials for docker.io
+2026-10-07T13:48:39.5825399Z ##[endgroup]
+2026-10-07T13:48:39.5825867Z ##[group]Post cache
+2026-10-07T13:48:39.5826120Z State not set
+2026-10-07T13:48:39.5826455Z ##[endgroup]
+2026-10-07T13:48:39.5983605Z ##[end-action id=__6e460135-c68c-498b-baf8-6be468372422.dockerhub;outcome=success;conclusion=success;duration_ms=191]
+2026-10-07T13:48:39.6039533Z Post job cleanup.
+2026-10-07T13:48:39.6652026Z [command]/usr/bin/git version
+2026-10-07T13:48:39.6695912Z git version 2.55.0
+2026-10-07T13:48:39.6721340Z Temporarily overriding HOME='/home/runner/work/_temp/44d59636-4e91-4316-b0ec-bb7a8391935a' before making global git config changes
+2026-10-07T13:48:39.6722049Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-07T13:48:39.6738728Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/docker-containers/docker-containers
+2026-10-07T13:48:39.6759058Z Removing SSH command configuration
+2026-10-07T13:48:39.6763612Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-07T13:48:39.6805815Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-07T13:48:39.7032560Z Removing HTTP extra header
+2026-10-07T13:48:39.7049062Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-07T13:48:39.7085536Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-07T13:48:39.7300304Z Removing includeIf entries pointing to credentials config files
+2026-10-07T13:48:39.7309213Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-07T13:48:39.7339468Z includeif.gitdir:/home/runner/work/docker-containers/docker-containers/.git.path
+2026-10-07T13:48:39.7340026Z includeif.gitdir:/home/runner/work/docker-containers/docker-containers/.git/worktrees/*.path
+2026-10-07T13:48:39.7340455Z includeif.gitdir:/github/workspace/.git.path
+2026-10-07T13:48:39.7340789Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-10-07T13:48:39.7348826Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/docker-containers/docker-containers/.git.path
+2026-10-07T13:48:39.7373759Z /home/runner/work/_temp/git-credentials-e8c3a7c2-8149-47e9-921b-5bd1978b8555.config
+2026-10-07T13:48:39.7382597Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/docker-containers/docker-containers/.git.path \/home\/runner\/work\/_temp\/git\-credentials\-e8c3a7c2\-8149\-47e9\-921b\-5bd1978b8555\.config
+2026-10-07T13:48:39.7416866Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/docker-containers/docker-containers/.git/worktrees/*.path
+2026-10-07T13:48:39.7447093Z /home/runner/work/_temp/git-credentials-e8c3a7c2-8149-47e9-921b-5bd1978b8555.config
+2026-10-07T13:48:39.7454574Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/docker-containers/docker-containers/.git/worktrees/*.path \/home\/runner\/work\/_temp\/git\-credentials\-e8c3a7c2\-8149\-47e9\-921b\-5bd1978b8555\.config
+2026-10-07T13:48:39.7488696Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git.path
+2026-10-07T13:48:39.7512699Z /github/runner_temp/git-credentials-e8c3a7c2-8149-47e9-921b-5bd1978b8555.config
+2026-10-07T13:48:39.7518152Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path \/github\/runner_temp\/git\-credentials\-e8c3a7c2\-8149\-47e9\-921b\-5bd1978b8555\.config
+2026-10-07T13:48:39.7550265Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-10-07T13:48:39.7573098Z /github/runner_temp/git-credentials-e8c3a7c2-8149-47e9-921b-5bd1978b8555.config
+2026-10-07T13:48:39.7578763Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-e8c3a7c2\-8149\-47e9\-921b\-5bd1978b8555\.config
+2026-10-07T13:48:39.7614330Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-07T13:48:39.7814200Z Removing credentials config '/home/runner/work/_temp/git-credentials-e8c3a7c2-8149-47e9-921b-5bd1978b8555.config'
+2026-10-07T13:48:39.7961972Z Cleaning up orphan processes

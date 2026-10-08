@@ -1058,6 +1058,72 @@ COMMENT
 }
 
 # ---------------------------------------------------------------------------
+# comment_aborted_siblings <culprit> <siblings...>
+#
+# A bake aborted by <culprit>'s failure cancels its siblings; they do not get an
+# issue of their own (they stay in the failed set and are retried next run).
+# Comment once on the culprit's open issue so they are still visible.
+# Never creates an issue: returns 3 when there is no open issue to comment on or
+# the comment fails, so the checkpoint downgrades issue_mode to generic and the
+# summary's backstop alerts instead of the siblings going unmentioned.
+# ---------------------------------------------------------------------------
+comment_aborted_siblings() {
+    local culprit="$1"
+    shift
+    local sibling siblings_md=""
+    for sibling in "$@"; do
+        if ! [[ "$sibling" =~ ^[a-z0-9_-]+$ ]]; then
+            printf '::warning::comment_aborted_siblings: sibling name failed ^[a-z0-9_-]+$ validation\n' >&2
+            return 3
+        fi
+        siblings_md+="- \`${sibling}\`"$'\n'
+    done
+    [[ -n "$siblings_md" ]] || return 0
+
+    local run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+    local comment_body
+    comment_body="$(cat <<ABORTED_COMMENT
+## Sibling builds aborted by this failure
+
+The multi-target bake in [run ${GITHUB_RUN_ID}](${run_url}) was aborted because \`${culprit}\` failed. These containers' own builds did not fail; they have no image digest from this run and are retried on the next run, so they get no issue of their own:
+
+${siblings_md}
+_Auto-posted by \`scripts/open-dep-failure-issue.sh --mode aborted\`_
+ABORTED_COMMENT
+)"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY_RUN] Would comment on the open issue of ${culprit}:"
+        echo "$comment_body"
+        return 0
+    fi
+
+    local issue_number
+    if ! issue_number=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --label "build-failure" \
+            --label "dep-attributed" \
+            --label "dep:${culprit}" \
+            --state open \
+            --limit 1 \
+            --json number --jq '.[0].number // empty'); then
+        printf '::warning::comment_aborted_siblings: gh issue list failed for [%s]\n' "$culprit" >&2
+        return 3
+    fi
+    if ! [[ "$issue_number" =~ ^[0-9]+$ ]]; then
+        printf '::warning::comment_aborted_siblings: no open issue found for culprit [%s]\n' "$culprit" >&2
+        return 3
+    fi
+    if ! retry_with_backoff 3 5 gh issue comment \
+            --repo "$GITHUB_REPOSITORY" "$issue_number" \
+            --body "$comment_body" >&2; then
+        printf '::warning::comment_aborted_siblings: gh issue comment failed on #%s\n' "$issue_number" >&2
+        return 3
+    fi
+    echo "commented #${issue_number}"
+}
+
+# ---------------------------------------------------------------------------
 # close_container_build_failure_on_recovery <container>
 #
 # Container-scoped recovery: finds an open issue with labels
@@ -1217,6 +1283,18 @@ main() {
                 ;;
         esac
     done
+
+    if [[ "$mode" == "aborted" ]]; then
+        if ! [[ "$OVERRIDE_CONTAINER" =~ ^[a-z0-9_-]+$ ]]; then
+            printf '::warning::open-dep-failure-issue: --mode aborted needs --container <culprit> matching ^[a-z0-9_-]+$\n' >&2
+            return 3
+        fi
+        local -a siblings=()
+        read -r -a siblings <<< "${ABORTED_SIBLINGS:-}"
+        log_step "Aborted-siblings mode: commenting on the issue of ${OVERRIDE_CONTAINER}..."
+        comment_aborted_siblings "$OVERRIDE_CONTAINER" "${siblings[@]}"
+        return $?
+    fi
 
     if [[ "$mode" == "recovery" ]]; then
         if [[ -n "$OVERRIDE_CONTAINER" ]]; then
