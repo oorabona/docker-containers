@@ -581,7 +581,7 @@ STUB
 
 @test "replay run 37623415329: only openvpn gets an issue, the cancelled siblings are listed on it" {
     source "${HELPERS_DIR}/coverage-checkpoint-utils.sh"
-    _replay_run "${FIXTURES_DIR}/bake-abort-run-37623415329-amd64.log"
+    _replay_run "${FIXTURES_DIR}/bake-abort-run-37623415329-amd64.txt"
 
     [ "$(jq -r '.[] | select(.container=="openvpn") | .cause' <<< "$REPLAY_RESULTS")" = failed ]
     [ "$(jq -r '[.[] | select(.container!="openvpn") | .cause] | unique | join(",")' <<< "$REPLAY_RESULTS")" = aborted ]
@@ -601,7 +601,7 @@ STUB
 
 @test "replay run 37623415329: if buildx's 'ERROR: target' line changes, every failed container keeps its issue" {
     source "${HELPERS_DIR}/coverage-checkpoint-utils.sh"
-    sed 's/ERROR: target /ERROR: job /' "${FIXTURES_DIR}/bake-abort-run-37623415329-amd64.log" > "$TEST_OUT_DIR/changed.log"
+    sed 's/ERROR: target /ERROR: job /' "${FIXTURES_DIR}/bake-abort-run-37623415329-amd64.txt" > "$TEST_OUT_DIR/changed.log"
     _replay_run "$TEST_OUT_DIR/changed.log"
 
     [ "$(jq -c '[.[] | keys | length] | unique' <<< "$REPLAY_RESULTS")" = '[5]' ]
