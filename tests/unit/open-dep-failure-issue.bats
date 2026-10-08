@@ -1983,3 +1983,46 @@ GHEOF
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery --container "Bad.Name"
     [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# FAILURE_CAUSE_NOTE — root cause shown in the issue body
+#
+# Mutation guards:
+#   dropping the section would bring back "failure detail not provided" for
+#         containers a bake aborted
+#   not sanitising the note would let a build-result artifact inject markdown
+# ---------------------------------------------------------------------------
+
+@test "build_issue_body: FAILURE_CAUSE_NOTE adds a Likely cause section" {
+    export FAILURE_CAUSE_NOTE="No image digest was recorded for this container: the multi-target bake was aborted because openvpn failed (bake target(s): openvpn_v2_7_8_alpine)."
+    # shellcheck disable=SC1090
+    source "$SCRIPTS_DIR/open-dep-failure-issue.sh"
+    run build_issue_body vector "| vector | ? | 0.59.0 |" ""
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"## Likely cause"* ]]
+    [[ "$output" == *"aborted because openvpn failed"* ]]
+}
+
+@test "build_issue_body: without a note the body is unchanged (no Likely cause section)" {
+    unset FAILURE_CAUSE_NOTE
+    # shellcheck disable=SC1090
+    source "$SCRIPTS_DIR/open-dep-failure-issue.sh"
+    run build_issue_body vector "| vector | ? | 0.59.0 |" ""
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"(failure detail not provided)"* ]]
+    [[ "$output" != *"Likely cause"* ]]
+}
+
+@test "build_issue_body: FAILURE_CAUSE_NOTE cannot inject links, mentions, fences or newlines" {
+    export FAILURE_CAUSE_NOTE=$'boom [click](http://evil.example) www.evil.example @maintainer <b>x</b> `code`\n## Injected heading\n```'
+    # shellcheck disable=SC1090
+    source "$SCRIPTS_DIR/open-dep-failure-issue.sh"
+    [[ "$FAILURE_CAUSE_NOTE" != *$'\n'* ]]
+    run build_issue_body vector "| vector | ? | 0.59.0 |" ""
+    [[ "$output" != *"[click]"* && "$output" != *"://evil.example"* ]]
+    [[ "$output" != *"www.evil"* ]]
+    [[ "$output" != *"@maintainer"* ]]
+    [[ "$output" != *"<b>"* ]]
+    [[ "$output" != *'`code`'* ]]
+    [[ "$output" != *"## Injected heading"* ]]
+}

@@ -1170,3 +1170,42 @@ make_results_json() {
     json_eq "$failed"    '["github-runner"]'
     json_eq "$recovered" '["jekyll"]'
 }
+
+# ---------------------------------------------------------------------------
+# failure_cause_note — root cause for issues of containers a bake aborted
+# ---------------------------------------------------------------------------
+
+@test "failure_cause_note: a cancelled sibling names the container that failed" {
+    results='[{"container":"vector","result":"failure","cause":"aborted","culprits":["openvpn"],"failed_targets":["openvpn_v2_7_8_alpine"]}]'
+    run failure_cause_note "$results" vector
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No image digest was recorded"* ]]
+    [[ "$output" == *"openvpn failed"* ]]
+    [[ "$output" == *"openvpn_v2_7_8_alpine"* ]]
+    [[ "$output" == *"did not fail"* ]]
+}
+
+@test "failure_cause_note: the failing container says its own target failed" {
+    results='[{"container":"openvpn","result":"failure","cause":"failed","culprits":["openvpn"],"failed_targets":["openvpn_v2_7_8_alpine"]}]'
+    run failure_cause_note "$results" openvpn
+    [[ "$output" == *"A bake target of this container failed"* ]]
+    [[ "$output" == *"openvpn_v2_7_8_alpine"* ]]
+}
+
+@test "failure_cause_note: any own failed record wins over a aborted one" {
+    results='[{"container":"x","result":"failure","cause":"aborted","culprits":["y"],"failed_targets":["y_1"]},{"container":"x","result":"failure","cause":"failed","culprits":["x"],"failed_targets":["x_1"]}]'
+    run failure_cause_note "$results" x
+    [[ "$output" == *"A bake target of this container failed"* ]]
+}
+
+@test "failure_cause_note: empty without attribution, for other containers, success records and bad input" {
+    plain='[{"container":"vector","result":"failure"}]'
+    [ -z "$(failure_cause_note "$plain" vector)" ]
+    attributed='[{"container":"vector","result":"failure","cause":"aborted","culprits":["openvpn"],"failed_targets":["t"]}]'
+    [ -z "$(failure_cause_note "$attributed" ansible)" ]
+    ok='[{"container":"vector","result":"success"}]'
+    [ -z "$(failure_cause_note "$ok" vector)" ]
+    [ -z "$(failure_cause_note 'not json' vector)" ]
+    [ -z "$(failure_cause_note '{"a":1}' vector)" ]
+    [ -z "$(failure_cause_note "$attributed" '')" ]
+}
