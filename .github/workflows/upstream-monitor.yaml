@@ -25,6 +25,9 @@ jobs:
   check-upstream-versions:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write   # artifact-pending state tags (scripts/track-artifact-pending.sh)
+      issues: write     # open/close the artifact-pending escalation issue
     outputs:
       containers_with_updates: ${{ steps.check.outputs.containers_with_updates }}
       update_count: ${{ steps.check.outputs.update_count }}
@@ -41,6 +44,19 @@ jobs:
         with:
           container: ${{ github.event.inputs.container }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # A candidate held back as artifact-pending is non-fatal by design; this
+      # escalates one that stays pending past the threshold (default 3 days) and
+      # closes the issue once it resolves. Never fails the monitor.
+      - name: Track artifact-pending candidates
+        if: github.ref == 'refs/heads/master'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          VERSION_INFO: ${{ steps.check.outputs.version_info }}
+        shell: bash
+        run: printf '%s' "$VERSION_INFO" | scripts/track-artifact-pending.sh
 
       - name: Summary
         env:

@@ -151,9 +151,16 @@ artifact_build_args() {
 # timeout or a redirect loop is "not available"). HEAD first; servers that
 # refuse HEAD (403/405/501) get one ranged GET capped at a single byte, so the
 # archive itself is never downloaded.
+#
+# Side effect: ARTIFACT_LAST_STATUS is set to the last status seen, so a caller
+# can tell "404" from "503" from "timeout" from a terminal "302" instead of one
+# collapsed "not available". It is the HTTP code, or "timeout" when no response
+# arrived (curl reports 000). Callers must invoke this function directly (not
+# inside $(...)) to read it; the exit status is unchanged.
 # Usage: artifact_reachable <url>
 artifact_reachable() {
     local url="$1" code
+    ARTIFACT_LAST_STATUS=""
     code=$(curl -sSIL --max-redirs 5 --retry 2 --retry-delay 2 --connect-timeout 15 --max-time 60 \
         -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)
     case "$code" in
@@ -162,6 +169,11 @@ artifact_reachable() {
                 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)
             ;;
     esac
+    if [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
+        ARTIFACT_LAST_STATUS="$code"
+    else
+        ARTIFACT_LAST_STATUS="timeout"
+    fi
     [[ "$code" =~ ^2[0-9][0-9]$ ]]
 }
 
@@ -170,20 +182,32 @@ artifact_reachable() {
 #   0 = ready, or nothing declared (the gate is opt-in)
 #   1 = declared but not downloadable yet ("pending": the caller retries later)
 #   2 = configuration error (never downgraded to "pending")
+#
+# When pending, ARTIFACT_PENDING_URLS (space-separated: every URL probed, the
+# blocking one last) and ARTIFACT_PENDING_STATUS (the last status seen, see
+# artifact_reachable; "unresolvable" when the URL could not even be built) are
+# set for the caller's report; both are empty otherwise.
 # Usage: artifact_ready <container_dir> <tag>
 artifact_ready() {
     local dir="$1" tag="$2" lines rc=0
+    export ARTIFACT_PENDING_URLS="" ARTIFACT_PENDING_STATUS=""   # read by callers
     lines=$(artifact_build_args "$dir" "$tag") || rc=$?
     case "$rc" in
         0) ;;
         2) return 2 ;;
-        *) return 1 ;;
+        *) ARTIFACT_PENDING_STATUS="unresolvable"; return 1 ;;
     esac
 
-    local line
+    local line url
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
-        artifact_reachable "${line#*=}" || return 1
+        url="${line#*=}"
+        ARTIFACT_PENDING_URLS="${ARTIFACT_PENDING_URLS:+$ARTIFACT_PENDING_URLS }$url"
+        if ! artifact_reachable "$url"; then
+            ARTIFACT_PENDING_STATUS="$ARTIFACT_LAST_STATUS"
+            return 1
+        fi
     done <<< "$lines"
+    ARTIFACT_PENDING_URLS=""
     return 0
 }
