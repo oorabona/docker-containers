@@ -23,6 +23,23 @@
 #   key has a non-empty "containerimage.digest" value.  Everything else is
 #   "failure" (fail-closed: absent/partial = not built = failure).
 #
+# Failure attribution (optional):
+#   When BAKE_LOG_FILE points at the captured `docker buildx bake` output, every
+#   failed cell is annotated with WHY it has no digest. buildx writes no
+#   --metadata-file when any target fails and cancels the sibling targets, so
+#   "no metadata" alone cannot tell the target that failed from the ones that were
+#   merely cancelled. The log names the former ("ERROR: target <id>: failed to
+#   solve"), which gives each failed cell three extra keys:
+#     cause          "failed"    its own target failed
+#                    "aborted"   its target did not fail; the bake was aborted by
+#                                a sibling (it may even have been pushed: only
+#                                the metadata that would confirm it is missing)
+#     culprits       containers whose targets failed (to blame, not to rebuild)
+#     failed_targets the failing bake target ids, verbatim
+#   `result` is unchanged (still fail-closed: a cell without a digest is rebuilt
+#   next run). Without BAKE_LOG_FILE, or when the log names no target, the file
+#   keeps exactly the five original keys.
+#
 # Return codes:
 #   0  — all files written (individual results are in the files, not the exit code)
 #   1  — --cells invocation failed (cannot enumerate cells; no files written)
@@ -105,6 +122,22 @@ emit_bake_build_results() {
     fi
 
     # ------------------------------------------------------------------
+    # Step 2b: failure attribution from the captured bake log (optional).
+    # Target ids are matched against a strict charset so a hostile log line
+    # cannot smuggle anything else into the artifact files.
+    # ------------------------------------------------------------------
+    local failed_targets='[]' culprits='[]'
+    if [[ -n "${BAKE_LOG_FILE:-}" && -r "${BAKE_LOG_FILE}" ]]; then
+        failed_targets=$(grep -oE '(^|[[:space:]])ERROR: target [A-Za-z0-9_.-]+:' "$BAKE_LOG_FILE" 2>/dev/null \
+            | sed -E 's/.*ERROR: target ([A-Za-z0-9_.-]+):/\1/' \
+            | sort -u | jq -R . | jq -sc . || true)
+        [[ -n "$failed_targets" ]] || failed_targets='[]'
+        culprits=$(jq -c --argjson ft "$failed_targets" \
+            '[ .[] | select(.target_id as $t | $ft | index($t)) | .container ] | unique' \
+            <<< "$cells_json")
+    fi
+
+    # ------------------------------------------------------------------
     # Step 3 + 4: iterate cells, determine result, write artifact files
     # ------------------------------------------------------------------
     mkdir -p "$out_dir"
@@ -139,13 +172,27 @@ emit_bake_build_results() {
 
         # Write artifact — shape is IDENTICAL to auto-build.yaml:1054-1061
         local out_file="${out_dir}/build-result-${container}-${tag}-${arch}.json"
+        # Attribution keys: only for a failed cell, and only when the log named at
+        # least one failing target (otherwise the cause is unknown, not "aborted").
+        local cause=""
+        if [[ "$result" == "failure" && "$failed_targets" != "[]" ]]; then
+            if jq -e --arg tid "$target_id" 'index($tid)' <<< "$failed_targets" >/dev/null 2>&1; then
+                cause="failed"
+            else
+                cause="aborted"
+            fi
+        fi
         jq -cn \
             --arg c  "$container" \
             --arg v  "$variant" \
             --arg t  "$tag" \
             --arg a  "$arch" \
             --arg r  "$result" \
-            '{container:$c, variant:$v, tag:$t, arch:$a, result:$r}' \
+            --arg cause "$cause" \
+            --argjson culprits "$culprits" \
+            --argjson ft "$failed_targets" \
+            '{container:$c, variant:$v, tag:$t, arch:$a, result:$r}
+             + (if $cause != "" then {cause:$cause, culprits:$culprits, failed_targets:$ft} else {} end)' \
             > "$out_file"
 
         if [[ "$result" == "success" ]]; then

@@ -15,6 +15,35 @@
 #   merge_failed_set              <prior_json> <failed_this_json> <recovered_cand_json> <matrix_json> <unmapped_failure>
 #   compute_carry_forward         <queued_json> <baseline_failed_json> <valid_json>
 
+# failure_cause_note <results_json> <container>
+#
+# One plain-text sentence explaining WHY a container is in the failed set, from
+# the optional attribution keys of its bake build-result records (cause,
+# culprits, failed_targets; see helpers/bake-buildresult.sh). A bake aborts every
+# sibling target when one fails and writes no metadata, so several containers
+# are "failed" while only one actually failed; without this note their issues
+# all read "failure detail not provided".
+# Prints nothing when the records carry no attribution (flat-matrix builds, or no
+# bake log), so callers can pass the result straight through.
+failure_cause_note() {
+    local results_json="${1:-[]}" container="${2:-}"
+    [[ -n "$container" ]] || return 0
+    printf '%s' "$results_json" | jq -r --arg c "$container" '
+        [ .[]? | select(type == "object" and .container == $c and .result == "failure"
+                        and ((.cause // "") != "")) ] as $r
+        | if ($r | length) == 0 then ""
+          elif ([ $r[] | select(.cause == "failed") ] | length) > 0 then
+            "A bake target of this container failed. Failing target(s) in this run: "
+            + ([ $r[] | .failed_targets[]? ] | unique | join(", ")) + "."
+          else
+            "No image digest was recorded for this container: the multi-target bake was aborted because "
+            + ([ $r[] | .culprits[]? ] | unique | join(", "))
+            + " failed (bake target(s): "
+            + ([ $r[] | .failed_targets[]? ] | unique | join(", "))
+            + "). Its own build did not fail; it is retried on the next run."
+          end' 2>/dev/null || true
+}
+
 # checkpoint_failed_containers <state_str>
 #
 # Parse the annotated tag message (which is a JSON state record) and return

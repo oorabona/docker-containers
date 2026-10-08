@@ -443,3 +443,111 @@ _retained_cell_count() {
         -exec jq -r '.tag' {} \; | sort)
     [ "$actual_tags" = "$expected_tags" ]
 }
+
+# ---------------------------------------------------------------------------
+# Failure attribution from the captured bake log (BAKE_LOG_FILE).
+#
+# buildx writes no --metadata-file when a target fails and cancels the sibling
+# targets, so without the log every cell is an undifferentiated "failure".
+#
+# Mutation guards:
+#   marking every no-digest cell cause=failed would blame the cancelled siblings
+#   annotating success cells would change the 5-key shape for good builds
+#   ignoring BAKE_LOG_FILE unset would crash or annotate without evidence
+#   a loose target regex would let a log line inject arbitrary target ids
+# ---------------------------------------------------------------------------
+
+# Two real containers, one cell each. Sets: OVPN_TID VEC_TID CELLS
+_attribution_cells() {
+    CELLS=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells openvpn vector)
+    OVPN_TID=$(jq -r '[.[] | select(.container == "openvpn")][0].target_id' <<< "$CELLS")
+    VEC_TID=$(jq -r '[.[] | select(.container == "vector")][0].target_id' <<< "$CELLS")
+    [ -n "$OVPN_TID" ] && [ "$OVPN_TID" != null ]
+    [ -n "$VEC_TID" ] && [ "$VEC_TID" != null ]
+}
+
+_result_file() { # <container>
+    local f
+    f=$(find "$TEST_OUT_DIR" -name "build-result-${1}-*-amd64.json" | head -1)
+    cat "$f"
+}
+
+@test "attribution: the failing target is cause=failed, cancelled siblings are cause=aborted" {
+    _attribution_cells
+    local log="$TEST_OUT_DIR/bake.log"
+    printf 'some progress\nERROR: target %s: failed to solve: process "/bin/sh" did not complete\n' "$OVPN_TID" > "$log"
+
+    BAKE_LOG_FILE="$log" run bash "$BBR" "$TEST_OUT_DIR/absent.json" amd64 "$TEST_OUT_DIR" openvpn vector
+    [ "$status" -eq 0 ]
+
+    local o v
+    o=$(_result_file openvpn); v=$(_result_file vector)
+    # still fail-closed: neither has a digest, both are rebuilt next run
+    [ "$(jq -r .result <<< "$o")" = failure ]
+    [ "$(jq -r .result <<< "$v")" = failure ]
+    [ "$(jq -r .cause <<< "$o")" = failed ]
+    [ "$(jq -r .cause <<< "$v")" = aborted ]
+    [ "$(jq -c .culprits <<< "$v")" = '["openvpn"]' ]
+    [ "$(jq -c .failed_targets <<< "$v")" = "[\"$OVPN_TID\"]" ]
+}
+
+@test "attribution: a target that failed on every retry is listed once" {
+    _attribution_cells
+    local log="$TEST_OUT_DIR/bake.log"
+    for _ in 1 2 3; do
+        printf 'ERROR: target %s: failed to solve: boom\n' "$OVPN_TID"
+    done > "$log"
+
+    BAKE_LOG_FILE="$log" run bash "$BBR" "$TEST_OUT_DIR/absent.json" amd64 "$TEST_OUT_DIR" openvpn vector
+    [ "$status" -eq 0 ]
+    [ "$(_result_file vector | jq '.failed_targets | length')" -eq 1 ]
+}
+
+@test "attribution: no log, or a log naming no target, leaves exactly the five original keys" {
+    _attribution_cells
+    run bash "$BBR" "$TEST_OUT_DIR/absent.json" amd64 "$TEST_OUT_DIR" openvpn vector
+    [ "$status" -eq 0 ]
+    [ "$(_result_file openvpn | jq 'keys | length')" -eq 5 ]
+
+    local log="$TEST_OUT_DIR/bake.log"
+    printf 'ERROR: failed to build: unrelated\n' > "$log"
+    BAKE_LOG_FILE="$log" run bash "$BBR" "$TEST_OUT_DIR/absent.json" amd64 "$TEST_OUT_DIR" openvpn vector
+    [ "$status" -eq 0 ]
+    [ "$(_result_file openvpn | jq 'keys | length')" -eq 5 ]
+    [ "$(_result_file vector | jq 'keys | length')" -eq 5 ]
+}
+
+@test "attribution: a missing or unreadable log file is ignored, not fatal" {
+    _attribution_cells
+    BAKE_LOG_FILE="$TEST_OUT_DIR/does-not-exist.log" run bash "$BBR" "$TEST_OUT_DIR/absent.json" amd64 "$TEST_OUT_DIR" openvpn vector
+    [ "$status" -eq 0 ]
+    [ "$(_result_file openvpn | jq 'keys | length')" -eq 5 ]
+}
+
+@test "attribution: a built cell stays a plain success even when the log names another target" {
+    _attribution_cells
+    local meta="$TEST_OUT_DIR/meta.json" log="$TEST_OUT_DIR/bake.log"
+    jq -cn --arg t "$VEC_TID" '{($t): {"containerimage.digest": "sha256:abc"}}' > "$meta"
+    printf 'ERROR: target %s: failed to solve: boom\n' "$OVPN_TID" > "$log"
+
+    BAKE_LOG_FILE="$log" run bash "$BBR" "$meta" amd64 "$TEST_OUT_DIR" openvpn vector
+    [ "$status" -eq 0 ]
+    [ "$(_result_file vector | jq -r .result)" = success ]
+    [ "$(_result_file vector | jq 'keys | length')" -eq 5 ]
+    [ "$(_result_file openvpn | jq -r .cause)" = failed ]
+}
+
+@test "attribution: only well-formed target ids are accepted from the log" {
+    _attribution_cells
+    local log="$TEST_OUT_DIR/bake.log"
+    {
+        printf 'ERROR: target evil;touch /tmp/x: failed to solve\n'
+        printf 'x#ERROR: target %s: embedded mid-token\n' "$VEC_TID"
+        printf 'ERROR: target %s: failed to solve: boom\n' "$OVPN_TID"
+    } > "$log"
+
+    BAKE_LOG_FILE="$log" run bash "$BBR" "$TEST_OUT_DIR/absent.json" amd64 "$TEST_OUT_DIR" openvpn vector
+    [ "$status" -eq 0 ]
+    [ "$(_result_file vector | jq -c .failed_targets)" = "[\"$OVPN_TID\"]" ]
+    [ "$(_result_file vector | jq -r .cause)" = aborted ]
+}

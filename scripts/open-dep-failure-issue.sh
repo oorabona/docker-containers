@@ -46,6 +46,11 @@ PR_BODY="${PR_BODY:-}"
 PR_LABELS="${PR_LABELS:-}"
 FAILED_JOBS_JSON="${FAILED_JOBS_JSON:-}"
 TIMED_OUT_JOBS_JSON="${TIMED_OUT_JOBS_JSON:-}"
+# Optional one-line root-cause note (helpers/coverage-checkpoint-utils.sh
+# failure_cause_note). It ends up in a markdown issue body, so keep only a
+# conservative charset: no links, mentions, HTML, code fences or newlines.
+# No "/" (so no "scheme://" autolink) and "www." is defused for the same reason.
+FAILURE_CAUSE_NOTE="$(printf '%s' "${FAILURE_CAUSE_NOTE:-}" | tr -c "A-Za-z0-9 _.,:;()'-" '?' | sed -E 's/[Ww][Ww][Ww]\./www_/g' | cut -c1-600)"
 DRY_RUN="${DRY_RUN:-false}"
 
 # Version-drift issues and their retraction comments carry stable markers.
@@ -347,6 +352,15 @@ build_issue_body() {
         failing_jobs_section="## Failing jobs
 
 (failure detail not provided)"
+    fi
+
+    # Root cause, when the bake log attributed it (otherwise the section is empty)
+    if [[ -n "$FAILURE_CAUSE_NOTE" ]]; then
+        failing_jobs_section+="
+
+## Likely cause
+
+${FAILURE_CAUSE_NOTE}"
     fi
 
     # Timed-out jobs: GitHub reports them as cancelled, so they are not in the

@@ -2500,7 +2500,8 @@ jobs:
               -f "$bake_file" \
               --set "*.platform=linux/amd64" \
               ${no_cache_flag} \
-              --metadata-file "${RUNNER_TEMP}/bake-metadata-amd64.json"
+              --metadata-file "${RUNNER_TEMP}/bake-metadata-amd64.json" \
+                2> >(tee -a "${RUNNER_TEMP}/bake-log-amd64.txt" >&2)
             echo "::notice::Bake build (amd64) build-only (PR; no push)"
           else
             # shellcheck disable=SC2086
@@ -2509,7 +2510,8 @@ jobs:
               --set "*.platform=linux/amd64" \
               ${no_cache_flag} \
               --push \
-              --metadata-file "${RUNNER_TEMP}/bake-metadata-amd64.json"
+              --metadata-file "${RUNNER_TEMP}/bake-metadata-amd64.json" \
+                2> >(tee -a "${RUNNER_TEMP}/bake-log-amd64.txt" >&2)
             echo "::notice::Bake build (amd64) complete"
           fi
 
@@ -2523,6 +2525,9 @@ jobs:
           set -euo pipefail
           chmod +x helpers/bake-buildresult.sh
           source helpers/bake-buildresult.sh
+          # Captured bake output (tee in the build step): lets the emitter tell the target
+          # that failed from the siblings buildx cancelled. Absent file = no attribution.
+          export BAKE_LOG_FILE="${RUNNER_TEMP}/bake-log-amd64.txt"
 
           mkdir -p .build-lineage
           # BAKE_CONTAINERS is operator-set (trusted context)
@@ -3096,7 +3101,8 @@ jobs:
               -f "$bake_file" \
               --set "*.platform=linux/arm64" \
               ${no_cache_flag} \
-              --metadata-file "${RUNNER_TEMP}/bake-metadata-arm64.json"
+              --metadata-file "${RUNNER_TEMP}/bake-metadata-arm64.json" \
+                2> >(tee -a "${RUNNER_TEMP}/bake-log-arm64.txt" >&2)
             echo "::notice::Bake build (arm64) build-only (PR; no push)"
           else
             # shellcheck disable=SC2086
@@ -3105,7 +3111,8 @@ jobs:
               --set "*.platform=linux/arm64" \
               ${no_cache_flag} \
               --push \
-              --metadata-file "${RUNNER_TEMP}/bake-metadata-arm64.json"
+              --metadata-file "${RUNNER_TEMP}/bake-metadata-arm64.json" \
+                2> >(tee -a "${RUNNER_TEMP}/bake-log-arm64.txt" >&2)
             echo "::notice::Bake build (arm64) complete"
           fi
 
@@ -3119,6 +3126,9 @@ jobs:
           set -euo pipefail
           chmod +x helpers/bake-buildresult.sh
           source helpers/bake-buildresult.sh
+          # Captured bake output (tee in the build step): lets the emitter tell the target
+          # that failed from the siblings buildx cancelled. Absent file = no attribution.
+          export BAKE_LOG_FILE="${RUNNER_TEMP}/bake-log-arm64.txt"
 
           mkdir -p .build-lineage
           export BAKE_GENERATE_ALL_RETAINED=false
@@ -4059,7 +4069,10 @@ jobs:
             chmod +x scripts/open-dep-failure-issue.sh
             while IFS= read -r c; do
               [[ -z "$c" ]] && continue
-              ./scripts/open-dep-failure-issue.sh --mode failure --container "$c" || issue_open_failed=true
+              # One-line root cause from the bake log attribution (empty when none), so a
+              # container cancelled by a sibling's failure says so instead of "no detail".
+              cause_note=$(failure_cause_note "${results_json:-[]}" "$c")
+              FAILURE_CAUSE_NOTE="$cause_note" ./scripts/open-dep-failure-issue.sh --mode failure --container "$c" || issue_open_failed=true
             done < <(echo "$ftr" | jq -r '.[]' 2>/dev/null || true)
 
             # Close the per-container issue for each recovered container (prior − new_failed).
