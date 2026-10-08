@@ -4,12 +4,12 @@
 |-------|-------|
 | **Container** | `tor` |
 
-| **Version Change** | `0.4.9.12-alpine` → `0.4.9.13-alpine` |
+| **Version Change** | `0.4.9.13-alpine` → `0.4.9.14-alpine` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-09-24T10:55:11Z |
+| **Rebuild Date** | 2026-10-08T12:36:08Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/35989766055) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/37777890064) |
 
 ## Build Status
 
