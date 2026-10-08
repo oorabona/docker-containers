@@ -625,8 +625,8 @@ check_updates_artifact_ready() {
   case "$rc" in
     0) return 0 ;;
     1)
-      printf 'check-updates: %s: %s detected but its release artifact is not downloadable yet; retrying next run\n' \
-        "$container" "$candidate" >&2
+      printf 'check-updates: %s: %s detected but its release artifact is not downloadable yet (last status: %s); retrying next run\n' \
+        "$container" "$candidate" "${ARTIFACT_PENDING_STATUS:-unknown}" >&2
       return 1
       ;;
     *)
@@ -634,6 +634,14 @@ check_updates_artifact_ready() {
       exit 1
       ;;
   esac
+}
+
+# JSON fragment describing why the last artifact gate held a candidate back
+# (probed URLs + last status), merged into the entry of an artifact-pending
+# candidate so scripts/track-artifact-pending.sh can escalate a long-pending one.
+check_updates_pending_json() {
+  jq -nc --arg urls "${ARTIFACT_PENDING_URLS:-}" --arg status "${ARTIFACT_PENDING_STATUS:-}" \
+    '{pending_urls: ($urls | split(" ") | map(select(. != ""))), pending_status: $status}'
 }
 
 check_updates() {
@@ -781,6 +789,9 @@ check_updates() {
             upstream_lookup: $upstream_lookup,
             status: $status
           }')
+        if [[ "$status" == "artifact-pending" ]]; then
+          container_json=$(jq -c ". + $(check_updates_pending_json)" <<< "$container_json")
+        fi
 
         output_json=$(echo "$output_json" | jq ". + [$container_json]")
       done <<< "$majors"
@@ -885,6 +896,9 @@ check_updates() {
         upstream_lookup: $upstream_lookup,
         status: $status
       }')
+    if [[ "$status" == "artifact-pending" ]]; then
+      container_json=$(jq -c ". + $(check_updates_pending_json)" <<< "$container_json")
+    fi
 
     # Add to output array
     output_json=$(echo "$output_json" | jq ". + [$container_json]")
