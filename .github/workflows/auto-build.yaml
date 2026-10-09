@@ -2542,17 +2542,16 @@ jobs:
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
             # The retained plan only covers BAKE_RETAINED_CONTAINERS; the generator refuses
             # per-container filters keyed to containers outside the request, so narrow the map.
-            retained_scope_args=("${scope_args[@]}")
+            # emit_bake_build_results reads CONTAINER_SCOPES from the environment (not
+            # from argv), so hand the narrowed map over through the env for this call.
+            retained_container_scopes="${CONTAINER_SCOPES:-}"
             if [[ -n "${CONTAINER_SCOPES:-}" ]]; then
               retained_container_scopes=$(jq -c --arg names "${BAKE_RETAINED_CONTAINERS}" '($names | split(" ")) as $n | with_entries(select(.key as $k | $n | index($k)))' <<< "$CONTAINER_SCOPES")
-              for i in "${!retained_scope_args[@]}"; do
-                [[ "${retained_scope_args[$i]}" == "$CONTAINER_SCOPES" ]] && retained_scope_args[i]="$retained_container_scopes"
-              done
             fi
             export BAKE_GENERATE_ALL_RETAINED=true
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
-            emit_bake_build_results \
+            CONTAINER_SCOPES="$retained_container_scopes" emit_bake_build_results \
               "${RUNNER_TEMP}/bake-metadata-amd64.json" \
               amd64 \
               .build-lineage \
@@ -3142,17 +3141,16 @@ jobs:
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
             # The retained plan only covers BAKE_RETAINED_CONTAINERS; the generator refuses
             # per-container filters keyed to containers outside the request, so narrow the map.
-            retained_scope_args=("${scope_args[@]}")
+            # emit_bake_build_results reads CONTAINER_SCOPES from the environment (not
+            # from argv), so hand the narrowed map over through the env for this call.
+            retained_container_scopes="${CONTAINER_SCOPES:-}"
             if [[ -n "${CONTAINER_SCOPES:-}" ]]; then
               retained_container_scopes=$(jq -c --arg names "${BAKE_RETAINED_CONTAINERS}" '($names | split(" ")) as $n | with_entries(select(.key as $k | $n | index($k)))' <<< "$CONTAINER_SCOPES")
-              for i in "${!retained_scope_args[@]}"; do
-                [[ "${retained_scope_args[$i]}" == "$CONTAINER_SCOPES" ]] && retained_scope_args[i]="$retained_container_scopes"
-              done
             fi
             export BAKE_GENERATE_ALL_RETAINED=true
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
-            emit_bake_build_results \
+            CONTAINER_SCOPES="$retained_container_scopes" emit_bake_build_results \
               "${RUNNER_TEMP}/bake-metadata-arm64.json" \
               arm64 \
               .build-lineage \
@@ -3633,7 +3631,7 @@ jobs:
             export BAKE_GENERATE_ALL_RETAINED=true
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
-            mirror_to_dockerhub "${scope_args[@]}" ${BAKE_RETAINED_CONTAINERS}
+            mirror_to_dockerhub "${retained_scope_args[@]}" ${BAKE_RETAINED_CONTAINERS}
           fi
 
       - name: Emit manifest build-result artifacts (bake)

@@ -611,3 +611,52 @@ STUB
     [ "$(jq -c .open <<< "$output")" = "$ftr" ]
     [ "$(jq -c .aborted <<< "$output")" = '{}' ]
 }
+
+# ---------------------------------------------------------------------------
+# Retained-emission scope narrowing (workflow_dispatch 37929814215)
+#
+# emit_bake_build_results reads CONTAINER_SCOPES from the environment, so the
+# retained emission (containers = BAKE_RETAINED_CONTAINERS only) must receive the
+# map narrowed to those containers. The generator refuses a non-empty filter keyed
+# to a container outside the request ("matched no Linux build cells ...").
+#
+# Mutation guards:
+#   Pass the un-narrowed CONTAINER_SCOPES to the retained emission → status 1
+#   Drop the env hand-off in an emit step → workflow-wiring tests fail
+# ---------------------------------------------------------------------------
+_retained_scope_full='{"openvpn":{"versions":"0.0.0-none"},"terraform":{}}'
+_retained_scope_narrowed='{"terraform":{}}'
+
+_emit_retained_terraform() {
+    ( BAKE_GENERATE_ALL_RETAINED=true CONTAINER_SCOPES="$1"
+      source "$BBR"
+      emit_bake_build_results "$TEST_OUT_DIR/absent-meta.json" amd64 "$TEST_OUT_DIR" terraform )
+}
+
+@test "retained emission: map keyed to a container outside the request is refused" {
+    run _emit_retained_terraform "$_retained_scope_full"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"matched no Linux build cells for requested container(s): terraform"* ]]
+}
+
+@test "retained emission: map narrowed to the retained containers enumerates their cells" {
+    run _emit_retained_terraform "$_retained_scope_narrowed"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"matched no Linux build cells"* ]]
+    compgen -G "$TEST_OUT_DIR/build-result-terraform-*-amd64.json" >/dev/null
+}
+
+@test "auto-build.yaml: both emit steps hand the narrowed scope map to the retained emission" {
+    local wf="${PROJECT_ROOT}/.github/workflows/auto-build.yaml"
+    for arch in amd64 arm64; do
+        grep -qE "CONTAINER_SCOPES=\"\\\$retained_container_scopes\" emit_bake_build_results \\\\" "$wf"
+        grep -A1 'CONTAINER_SCOPES="$retained_container_scopes" emit_bake_build_results' "$wf" \
+            | grep -q "bake-metadata-${arch}.json"
+    done
+}
+
+@test "auto-build.yaml: the retained DockerHub mirror uses the narrowed scope args" {
+    local wf="${PROJECT_ROOT}/.github/workflows/auto-build.yaml"
+    grep -q 'mirror_to_dockerhub "${retained_scope_args\[@\]}" ${BAKE_RETAINED_CONTAINERS}' "$wf"
+    ! grep -q 'mirror_to_dockerhub "${scope_args\[@\]}" ${BAKE_RETAINED_CONTAINERS}' "$wf"
+}
