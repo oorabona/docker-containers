@@ -294,7 +294,7 @@ jobs:
 
       - name: Upload frozen staging digest
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: rotation-digest-${{ matrix.arch }}
           path: rotation-artifacts/digest
@@ -302,7 +302,7 @@ jobs:
 
       - name: Upload build attribution
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: rotation-status-build-${{ matrix.arch }}
           path: rotation-artifacts/build-${{ matrix.arch }}
@@ -320,7 +320,7 @@ jobs:
       arm64_digest: ${{ steps.read.outputs.arm64_digest }}
     steps:
       - name: Download frozen staging digests
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           pattern: rotation-digest-*
           path: rotation-artifacts/digests
@@ -591,7 +591,7 @@ jobs:
       issues: write
     steps:
       - name: Download failure attribution
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           pattern: rotation-status-*
           path: rotation-artifacts/status
