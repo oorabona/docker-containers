@@ -219,8 +219,10 @@ extract_step_run() {
     [[ "$collect_job" == *"still_missing: \${{ steps.collect.outputs.still_missing }}"* ]]
     [[ "$commit_job" == *"steps.persist.outputs.still_missing_after_reconcile"* ]]
 
-    [[ "$collect_job" == *"actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v4"* ]]
-    [[ "$commit_job" == *"actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v4"* ]]
+    # Pinned by full commit SHA with a "# v4" tag comment; the SHA itself moves
+    # with every Dependabot bump, so only its shape is asserted.
+    [[ "$collect_job" =~ actions/upload-artifact@[0-9a-f]{40}[[:space:]]+\#\ v4 ]]
+    [[ "$commit_job" =~ actions/download-artifact@[0-9a-f]{40}[[:space:]]+\#\ v4 ]]
     [[ "$collect_job" == *"name: dockerhub-stats-candidate"* ]]
     [[ "$collect_job" == *"overwrite: true"* ]]
     [[ "$commit_job" == *"name: dockerhub-stats-candidate"* ]]
