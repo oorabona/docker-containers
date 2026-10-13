@@ -72,7 +72,7 @@ _rotation_read_status() {
 
     run yq -r '
       .jobs[] | .steps[]?
-      | select(.uses == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a")
+      | select((.uses // "") | test("^actions/upload-artifact@[0-9a-f]{40}$"))
       | [.with.path, .with."if-no-files-found"] | @tsv
     ' "$PROJECT_ROOT/.github/workflows/rotation.yaml"
 
@@ -182,7 +182,7 @@ EOF
 
     run yq -r '
       .jobs[] | .steps[]?
-      | select(.uses == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a")
+      | select((.uses // "") | test("^actions/upload-artifact@[0-9a-f]{40}$"))
       | select(.with.name | test("^rotation-status-"))
       | .with.name
     ' "$PROJECT_ROOT/.github/workflows/rotation.yaml"
