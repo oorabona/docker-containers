@@ -600,7 +600,8 @@ case "${1:-} ${2:-}" in
     state_value=$(cat "$(pr_field_path "$number" state)")
     merged_at=$(cat "$(pr_field_path "$number" merged_at)")
     base_ref=$(cat "$(pr_field_path "$number" base)")
-    printf '%s|%s|%s\n' "$state_value" "$merged_at" "$base_ref"
+    printf '%s|%s|%s|%s\n' "$state_value" "$merged_at" "$base_ref" \
+      "${FAKE_GH_PR_VIEW_MERGE_STATE:-}"
     exit 0
     ;;
   "pr close")
@@ -847,6 +848,42 @@ configure_second_wait_timeout() {
     [ "$(get_output persisted)" = "false" ]
     [ ! -e "$FAKE_GIT_STATE/pr_close_called" ]
     [[ "$output" == *"deadline reconciliation read"* ]]
+}
+
+@test "commit-stats-snapshot closes a conflicting OPEN PR at once instead of waiting out the budget" {
+    export FAKE_GH_DIRECT_MERGE_MODE="queued"
+    export FAKE_GH_PR_VIEW_MODE="always_open"
+    export FAKE_GH_PR_VIEW_MERGE_STATE="DIRTY"
+    export STATS_PR_MERGE_TIMEOUT_SECONDS="600"
+    export STATS_PR_MERGE_POLL_SECONDS="5"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [[ "$output" == *"conflicts with master and cannot merge"* ]]
+    [ -e "$FAKE_GIT_STATE/pr_close_called" ]
+    # No poll loop ran: the fake clock stays far below the 600s budget.
+    [ "$(cat "$FAKE_GIT_STATE/fake_time_epoch")" -lt 100 ]
+}
+
+@test "commit-stats-snapshot does not treat a non-conflicting OPEN merge state as terminal" {
+    export FAKE_GH_DIRECT_MERGE_MODE="queued"
+    export FAKE_GH_PR_VIEW_MODE="always_open"
+    export FAKE_GH_PR_VIEW_MERGE_STATE="BLOCKED"
+    export STATS_PR_MERGE_TIMEOUT_SECONDS="5"
+    export STATS_PR_MERGE_POLL_SECONDS="5"
+    export STATS_PR_MIN_MERGE_WAIT_SECONDS="1"
+
+    run bash -c 'cd "$1" && ./scripts/commit-stats-snapshot.sh' _ "$TEST_REPO"
+    [[ "$output" != *"conflicts with master"* ]]
+}
+
+@test "commit-stats-snapshot caps the deadline reconciliation read with a usable timeout" {
+    run grep -nE 'query_timeout_seconds="\$STATS_PR_RECONCILIATION_READ_SECONDS"' "$PROJECT_ROOT/scripts/commit-stats-snapshot.sh"
+    [ "$status" -eq 0 ]
+    run grep -nE '^STATS_PR_RECONCILIATION_READ_SECONDS="\$\{STATS_PR_RECONCILIATION_READ_SECONDS:-([0-9]+)\}"' "$PROJECT_ROOT/scripts/commit-stats-snapshot.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ :-([0-9]+)\} ]]
+    [ "${BASH_REMATCH[1]}" -ge 5 ]
 }
 
 @test "commit-stats-snapshot leaves the PR open after a successful unusable view payload" {

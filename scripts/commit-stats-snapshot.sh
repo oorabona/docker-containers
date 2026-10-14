@@ -70,6 +70,10 @@ STATS_PERSIST_MAX_ATTEMPTS=3
 # across multiple polls while bounding time spent on an unknowable PR state.
 STATS_PR_VIEW_MAX_FAILURES="${STATS_PR_VIEW_MAX_FAILURES:-3}"
 STATS_PR_MIN_MERGE_WAIT_SECONDS="${STATS_PR_MIN_MERGE_WAIT_SECONDS:-30}"
+# The one-shot read made after the deadline. A real `gh pr view` needs several
+# seconds, so a 1s cap made it fail by construction and turned every
+# timeout into "uninspectable", which leaves the PR open and the run red.
+STATS_PR_RECONCILIATION_READ_SECONDS="${STATS_PR_RECONCILIATION_READ_SECONDS:-15}"
 
 push_token="${STATS_PUSH_TOKEN:-}"
 github_repository="${GITHUB_REPOSITORY:-}"
@@ -517,7 +521,7 @@ wait_for_pr_merge() {
   local return_when_open="${5:-false}"
   local consecutive_query_failures=0
   local now_epoch pr_view remaining_seconds sleep_seconds query_timeout_seconds
-  local state="" merged_at="" base_ref=""
+  local state="" merged_at="" base_ref="" merge_state=""
   local reconciliation_read=false
 
   STATS_PR_WAIT_OUTCOME=""
@@ -540,7 +544,7 @@ wait_for_pr_merge() {
       # A response may have been delayed across the deadline. Allow one short,
       # bounded reconciliation read and accept it only if mergedAt is in budget.
       reconciliation_read=true
-      query_timeout_seconds=1
+      query_timeout_seconds="$STATS_PR_RECONCILIATION_READ_SECONDS"
     else
       query_timeout_seconds="$remaining_seconds"
     fi
@@ -566,7 +570,8 @@ wait_for_pr_merge() {
       state=""
       merged_at=""
       base_ref=""
-      IFS='|' read -r state merged_at base_ref <<< "$pr_view"
+      merge_state=""
+      IFS='|' read -r state merged_at base_ref merge_state <<< "$pr_view"
       if [[ "$state" != "MERGED" && "$state" != "OPEN" && "$state" != "CLOSED" ]]; then
         gha_warning 'Could not inspect stats snapshot PR #%s merge state: received an unusable payload' "$pr_number"
         STATS_PR_WAIT_OUTCOME="uninspectable"
@@ -590,6 +595,17 @@ wait_for_pr_merge() {
 
       if [[ "$state" != "OPEN" ]]; then
         gha_warning 'Stats snapshot PR #%s did not persist to master (state=%s merged-at=%s base=%s)' "$pr_number" "$state" "$merged_at" "$base_ref"
+        STATS_PR_WAIT_OUTCOME="terminal"
+        return 1
+      fi
+
+      # An OPEN PR that conflicts with master can never merge: a sibling run
+      # landed the same stats file after this branch was cut. Waiting out the
+      # budget cannot change that, so treat it as terminal; the caller closes
+      # the PR and retries from fresh master, where the candidate is either
+      # already covered (nothing to persist) or re-applied cleanly.
+      if [[ "$merge_state" == "DIRTY" ]]; then
+        gha_warning 'Stats snapshot PR #%s conflicts with master and cannot merge; closing it and retrying from fresh master' "$pr_number"
         STATS_PR_WAIT_OUTCOME="terminal"
         return 1
       fi
@@ -666,21 +682,23 @@ inspect_stats_snapshot_pr() {
 
   if [[ -n "$query_timeout_seconds" ]]; then
     timeout "$query_timeout_seconds" gh pr view "$pr_number" \
-      --json state,mergedAt,baseRefName \
+      --json state,mergedAt,baseRefName,mergeStateStatus \
       --jq '[
         .state,
         (.mergedAt // ""),
-        (.baseRefName // "")
+        (.baseRefName // ""),
+        (.mergeStateStatus // "")
       ] | join("|")'
     return
   fi
 
   gh pr view "$pr_number" \
-    --json state,mergedAt,baseRefName \
+    --json state,mergedAt,baseRefName,mergeStateStatus \
     --jq '[
       .state,
       (.mergedAt // ""),
-      (.baseRefName // "")
+      (.baseRefName // ""),
+      (.mergeStateStatus // "")
     ] | join("|")'
 }
 
