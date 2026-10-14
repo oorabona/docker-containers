@@ -329,7 +329,7 @@ jobs:
         id: download-extension-lineage
         if: env.PUBLISHED_EXTENSION_DIGESTS != ''
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
@@ -756,7 +756,7 @@ jobs:
         id: upload_ext_lineage_per_version
         if: always() && hashFiles('.build-lineage/ext-*.json') != ''
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           # Arch-specific artifact name: the versionset artifact (with bundle_digest)
           # is written by merge-extension-manifests (stage B), not here.
@@ -773,7 +773,7 @@ jobs:
 
       - name: Upload extension per-version lineage files (${{ matrix.arch }}) (retry on transient failure)
         if: always() && steps.upload_ext_lineage_per_version.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           # Arch-specific artifact name: the versionset artifact (with bundle_digest)
           # is written by merge-extension-manifests (stage B), not here.
@@ -814,7 +814,7 @@ jobs:
         id: upload_build_result_ext
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-postgres-ext-${{ matrix.arch }}${{ matrix.pg != '' && format('-pg{0}', matrix.pg) || '' }}
           path: .build-lineage/build-result-postgres-ext-${{ matrix.arch }}.json
@@ -824,7 +824,7 @@ jobs:
 
       - name: Upload build-result artifact (retry on transient failure) (postgres extensions, ${{ matrix.arch }})
         if: always() && steps.upload_build_result_ext.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-postgres-ext-${{ matrix.arch }}${{ matrix.pg != '' && format('-pg{0}', matrix.pg) || '' }}
           path: .build-lineage/build-result-postgres-ext-${{ matrix.arch }}.json
@@ -906,7 +906,7 @@ jobs:
           driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Download amd64 arch-leg lineage (AX-3 duration files)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           pattern: ext-lineage-${{ github.run_id }}-amd64*
           merge-multiple: true
@@ -914,7 +914,7 @@ jobs:
         continue-on-error: true
 
       - name: Download arm64 arch-leg lineage (AX-3 duration files)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           pattern: ext-lineage-${{ github.run_id }}-arm64*
           merge-multiple: true
@@ -1033,7 +1033,7 @@ jobs:
         id: upload_ext_lineage_canonical
         if: always() && hashFiles('.build-lineage/ext-*.json') != ''
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           # Canonical artifact: consumed by the postgres build-and-push job.
           # Contains versionset artifacts (ext-*-versionset.json) and consolidated
@@ -1051,7 +1051,7 @@ jobs:
       - name: Upload canonical lineage (versionset + consolidated duration files) (retry on transient failure)
         id: upload_ext_lineage_canonical_retry
         if: always() && steps.upload_ext_lineage_canonical.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           # Canonical artifact: consumed by the postgres build-and-push job.
           # Contains versionset artifacts (ext-*-versionset.json) and consolidated
@@ -1105,7 +1105,7 @@ jobs:
         id: upload_build_result_extmerge
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-postgres-extmerge
           path: .build-lineage/build-result-postgres-extmerge.json
@@ -1115,7 +1115,7 @@ jobs:
 
       - name: Upload build-result artifact (retry on transient failure) (postgres extmerge)
         if: always() && steps.upload_build_result_extmerge.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-postgres-extmerge
           path: .build-lineage/build-result-postgres-extmerge.json
@@ -1320,7 +1320,7 @@ jobs:
         id: download-extension-lineage
         if: env.PUBLISHED_EXTENSION_DIGESTS != ''
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
@@ -1521,7 +1521,7 @@ jobs:
         id: upload_build_result
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}
           path: .build-lineage/build-result-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}.json
@@ -1531,7 +1531,7 @@ jobs:
 
       - name: Upload build-result artifact (retry on transient failure)
         if: always() && steps.upload_build_result.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}
           path: .build-lineage/build-result-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}.json
@@ -1639,7 +1639,7 @@ jobs:
         id: upload_build_lineage
         if: steps.build.outcome == 'success' && matrix.arch == 'amd64'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-lineage-${{ matrix.build.container }}-${{ matrix.build.tag }}
           path: .build-lineage/${{ matrix.build.container }}-${{ matrix.build.tag }}.json
@@ -1649,7 +1649,7 @@ jobs:
 
       - name: Upload build lineage (retry on transient failure)
         if: always() && steps.upload_build_lineage.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-lineage-${{ matrix.build.container }}-${{ matrix.build.tag }}
           path: .build-lineage/${{ matrix.build.container }}-${{ matrix.build.tag }}.json
@@ -1662,7 +1662,7 @@ jobs:
         id: upload_trivy_scan_history
         if: steps.build.outcome == 'success' && matrix.build.os != 'windows'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: trivy-scan-history-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}
           path: .trivy-scan-history/
@@ -1672,7 +1672,7 @@ jobs:
 
       - name: Upload Trivy scan history (retry on transient failure)
         if: always() && steps.upload_trivy_scan_history.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: trivy-scan-history-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}
           path: .trivy-scan-history/
@@ -1727,7 +1727,7 @@ jobs:
         id: upload_sbom_artifact
         if: steps.sbom.outcome == 'success'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: sbom-${{ matrix.build.container }}-${{ matrix.build.tag }}
           path: ${{ steps.sbom.outputs.sbom_file }}
@@ -1737,7 +1737,7 @@ jobs:
 
       - name: Upload SBOM artifact (retry on transient failure)
         if: always() && steps.upload_sbom_artifact.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: sbom-${{ matrix.build.container }}-${{ matrix.build.tag }}
           path: ${{ steps.sbom.outputs.sbom_file }}
@@ -1953,7 +1953,7 @@ jobs:
         id: upload_sbom_artifact_windows
         if: steps.sbom-windows.outcome == 'success'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: sbom-${{ matrix.build.container }}-${{ matrix.build.tag }}
           path: ${{ steps.sbom-windows.outputs.sbom_file }}
@@ -1963,7 +1963,7 @@ jobs:
 
       - name: Upload SBOM artifact (Windows) (retry on transient failure)
         if: always() && steps.upload_sbom_artifact_windows.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: sbom-${{ matrix.build.container }}-${{ matrix.build.tag }}
           path: ${{ steps.sbom-windows.outputs.sbom_file }}
@@ -2008,7 +2008,7 @@ jobs:
         id: upload_build_result_manifest
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-manifest-${{ matrix.build.container }}-${{ matrix.build.tag }}
           path: .build-lineage/build-result-manifest-${{ matrix.build.container }}-${{ matrix.build.tag }}.json
@@ -2018,7 +2018,7 @@ jobs:
 
       - name: Upload build-result artifact (retry on transient failure) (manifest)
         if: always() && steps.upload_build_result_manifest.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-manifest-${{ matrix.build.container }}-${{ matrix.build.tag }}
           path: .build-lineage/build-result-manifest-${{ matrix.build.container }}-${{ matrix.build.tag }}.json
@@ -2113,7 +2113,7 @@ jobs:
         id: download-extension-lineage
         if: env.PUBLISHED_EXTENSION_DIGESTS != ''
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
@@ -2220,7 +2220,7 @@ jobs:
           done
 
       - name: Upload bake lineage plan
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: bake-plan-${{ github.run_id }}
           path: |
@@ -2360,7 +2360,7 @@ jobs:
         id: download-extension-lineage
         if: env.PUBLISHED_EXTENSION_DIGESTS != ''
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
@@ -2384,7 +2384,7 @@ jobs:
           done
 
       - name: Download bake lineage plan
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           name: bake-plan-${{ github.run_id }}
           path: .bake-plan/
@@ -2562,7 +2562,7 @@ jobs:
         id: upload-bres-amd64
         if: always() && env.DRY_RUN != 'true'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-bake-amd64-${{ github.run_id }}
           path: .build-lineage/build-result-*-amd64.json
@@ -2572,7 +2572,7 @@ jobs:
 
       - name: Upload build-result artifacts (amd64, retry)
         if: always() && env.DRY_RUN != 'true' && steps.upload-bres-amd64.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-bake-amd64-${{ github.run_id }}
           path: .build-lineage/build-result-*-amd64.json
@@ -2798,7 +2798,7 @@ jobs:
         id: upload-bake-sboms
         if: steps.bake-sbom.outcome == 'success' && github.event_name != 'pull_request'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: bake-sboms-${{ github.run_id }}
           path: .build-lineage/*.sbom.json
@@ -2809,7 +2809,7 @@ jobs:
       - name: Upload bake SBOM artifact (retry on transient failure)
         if: steps.bake-sbom.outcome == 'success' && steps.upload-bake-sboms.outcome == 'failure' && github.event_name != 'pull_request'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: bake-sboms-${{ github.run_id }}
           path: .build-lineage/*.sbom.json
@@ -2822,7 +2822,7 @@ jobs:
         id: upload_build_lineage_bake_amd64
         if: steps.write-bake-lineage.outcome == 'success' && github.event_name != 'pull_request'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-lineage-bake-amd64-${{ github.run_id }}
           # Lineage sidecars only — exclude build-result records and SBOMs so the
@@ -2837,7 +2837,7 @@ jobs:
 
       - name: Upload build lineage (bake amd64) (retry on transient failure)
         if: always() && steps.upload_build_lineage_bake_amd64.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-lineage-bake-amd64-${{ github.run_id }}
           # Lineage sidecars only — exclude build-result records and SBOMs so the
@@ -2979,7 +2979,7 @@ jobs:
         id: download-extension-lineage
         if: env.PUBLISHED_EXTENSION_DIGESTS != ''
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
@@ -3161,7 +3161,7 @@ jobs:
         id: upload-bres-arm64
         if: always() && env.DRY_RUN != 'true'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-bake-arm64-${{ github.run_id }}
           path: .build-lineage/build-result-*-arm64.json
@@ -3171,7 +3171,7 @@ jobs:
 
       - name: Upload build-result artifacts (arm64, retry)
         if: always() && env.DRY_RUN != 'true' && steps.upload-bres-arm64.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-bake-arm64-${{ github.run_id }}
           path: .build-lineage/build-result-*-arm64.json
@@ -3390,7 +3390,7 @@ jobs:
         id: upload_sarif_bake
         if: steps.trivy-scan.outcome != 'skipped'
         continue-on-error: true  # SARIF upload is advisory — never gates the build
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'container-${{ matrix.build.container }}-${{ matrix.build.tag }}-linux/${{ matrix.arch }}'
@@ -3399,7 +3399,7 @@ jobs:
       - name: Upload SARIF to GitHub Security (retry on transient failure)
         if: always() && steps.upload_sarif_bake.outcome == 'failure'
         continue-on-error: true  # SARIF upload is advisory — never gates the build
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'container-${{ matrix.build.container }}-${{ matrix.build.tag }}-linux/${{ matrix.arch }}'
@@ -3409,7 +3409,7 @@ jobs:
         id: upload_trivy_scan_history_bake
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: trivy-scan-history-bake-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}-${{ github.run_id }}
           path: .trivy-scan-history/
@@ -3420,7 +3420,7 @@ jobs:
       - name: Upload Trivy scan history (bake) (retry on transient failure)
         if: always() && steps.upload_trivy_scan_history_bake.outcome == 'failure'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: trivy-scan-history-bake-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}-${{ github.run_id }}
           path: .trivy-scan-history/
@@ -3585,7 +3585,7 @@ jobs:
       - name: Upload bake merge receipts
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: bake-merge-receipts-${{ github.run_id }}
           path: .bake-merge-receipts/*.json
@@ -3706,7 +3706,7 @@ jobs:
         id: upload-bres-manifest-bake
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-bake-manifest-${{ github.run_id }}
           path: .build-lineage/build-result-manifest-*.json
@@ -3716,7 +3716,7 @@ jobs:
 
       - name: Upload manifest build-result artifacts (bake, retry)
         if: always() && steps.upload-bres-manifest-bake.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: build-result-bake-manifest-${{ github.run_id }}
           path: .build-lineage/build-result-manifest-*.json
@@ -3774,7 +3774,7 @@ jobs:
 
       - name: Download SBOM artifact
         id: download-sbom
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           name: bake-sboms-${{ github.run_id }}
           path: .sbom-attest/
@@ -4660,14 +4660,14 @@ jobs:
           restore-keys: trivy-scan-history-
 
       - name: Download current build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           pattern: build-lineage-*
           path: .build-lineage-artifacts/
           merge-multiple: false
 
       - name: Download bake merge receipts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           pattern: bake-merge-receipts-*
           path: .bake-merge-receipts-artifacts/
@@ -4675,7 +4675,7 @@ jobs:
         continue-on-error: true
 
       - name: Download Trivy scan history artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           pattern: trivy-scan-history-*
           path: .trivy-scan-history-artifacts/
@@ -4797,7 +4797,7 @@ jobs:
           ./scripts/enrich-lineage.sh --owner "${{ github.repository_owner }}"
 
       - name: Download SBOM artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           pattern: sbom-*
           path: .build-lineage-sbom-artifacts/
@@ -4805,7 +4805,7 @@ jobs:
         continue-on-error: true
 
       - name: Download bake SBOM artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4
         with:
           pattern: bake-sboms-*
           path: .build-lineage-sbom-artifacts/
@@ -4896,7 +4896,7 @@ jobs:
         id: upload_derived_lineage
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: lineage-derived-${{ github.run_id }}
           path: |
@@ -4909,7 +4909,7 @@ jobs:
 
       - name: Upload derived lineage files (changelog + history) (retry on transient failure)
         if: always() && steps.upload_derived_lineage.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: lineage-derived-${{ github.run_id }}
           path: |
