@@ -74,6 +74,12 @@ jobs:
         if: ${{ always() && (github.event_name == 'schedule' || inputs.purge_obsolete == true) }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # build_valid_tags runs `./make list-builds`, whose version.sh for
+          # opentofu/vector/web-shell calls the GitHub API via
+          # helpers/latest-github-release (reads GITHUB_TOKEN, not GH_TOKEN).
+          # Unauthenticated it hits the shared 60 req/h limit and the package is
+          # skipped, failing the run (same flake as #831).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           # Docker Hub deletion follows dry_run; candidates are tags not declared and whose digest GHCR no longer publishes.
           DOCKERHUB_DRY_RUN: ${{ inputs.dry_run || 'false' }}
