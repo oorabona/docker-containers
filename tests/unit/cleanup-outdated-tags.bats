@@ -2217,6 +2217,17 @@ run_orphan_phase_completion_case() {
     [[ "$output" == "true" ]]
 }
 
+@test "cleanup workflow authenticates the GitHub API calls made by version.sh" {
+    local workflow_path
+    workflow_path="$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml"
+
+    # list-builds resolves opentofu/vector/web-shell versions through
+    # helpers/latest-github-release, which only reads GITHUB_TOKEN (#831).
+    run yq -r '.jobs.cleanup.steps[] | select(.id == "purge_obsolete_images") | .env.GITHUB_TOKEN' "$workflow_path"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == '${{ secrets.GITHUB_TOKEN }}' ]]
+}
+
 @test "cleanup workflow serializes registry cleanup runs" {
     local workflow_path
     workflow_path="$PROJECT_ROOT/.github/workflows/cleanup-registry.yaml"
