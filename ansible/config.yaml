@@ -8,10 +8,10 @@ base_image_cache:
 build_args:
   OS_VERSION: "latest"
   PYASN1_VERSION: "0.6.4"
-  PARAMIKO_VERSION: "5.0.0"
+  PARAMIKO_VERSION: "5.1.0"
   CFFI_VERSION: "2.1.1"
   CRYPTOGRAPHY_VERSION: "50.0.2"
-  PYCRYPTODOME_VERSION: "4.0.0"
+  PYCRYPTODOME_VERSION: "4.0.1"
   PYNACL_VERSION: "1.6.2"
 dependency_sources:
   OS_VERSION:
