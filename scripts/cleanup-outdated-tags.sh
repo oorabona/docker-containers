@@ -48,6 +48,9 @@ REGISTRY_MANIFEST_ACCEPT='application/vnd.oci.image.index.v1+json,application/vn
 # listings, manifest reads, and DELETEs across every container, and is reserved
 # before each request.
 DOCKERHUB_REQUESTS_REMAINING=140
+# Base delay in seconds for retrying a GHCR version DELETE after an HTTP 5xx
+# (2s, then 4s; three attempts in total).
+GHCR_DELETE_RETRY_DELAY="${GHCR_DELETE_RETRY_DELAY:-2}"
 
 script_root() {
   local script_dir
@@ -168,8 +171,25 @@ _cleanup_outdated_tags_delete() {
   case "$deletion_target" in
     ghcr-version)
       local container="$2" version_id="$3"
-      gh api --method DELETE -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
-        "/users/${OWNER}/packages/container/${container}/versions/${version_id}" >/dev/null
+      local attempt=1 max_attempts=3 delete_status err_file
+      err_file=$(mktemp) || return 1
+      while :; do
+        delete_status=0
+        gh api --method DELETE -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+          "/users/${OWNER}/packages/container/${container}/versions/${version_id}" >/dev/null 2>"$err_file" \
+          || delete_status=$?
+        [[ "$delete_status" -ne 0 ]] || break
+        # Only a server-side 5xx is transient; 403/404/422 would fail the same way again.
+        if [[ "$attempt" -ge "$max_attempts" ]] || ! grep -qE 'HTTP 5[0-9]{2}' "$err_file"; then
+          cat "$err_file" >&2
+          rm -f "$err_file"
+          return "$delete_status"
+        fi
+        echo "    ⏳ DELETE of version ${version_id} hit a server error; retrying (${attempt}/$((max_attempts - 1)))" >&2
+        sleep "$((GHCR_DELETE_RETRY_DELAY * (1 << (attempt - 1))))"
+        attempt=$((attempt + 1))
+      done
+      rm -f "$err_file"
       ;;
     dockerhub-tag)
       local dh_jwt="$2" container="$3" tag="$4"
