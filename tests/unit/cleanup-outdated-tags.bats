@@ -2420,6 +2420,112 @@ EOF
     [[ "$output" == *"GHCR — delete failures: 1"* ]]
 }
 
+@test "GHCR version DELETE retries a transient HTTP 502 and then succeeds" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="false" \
+        GHCR_DELETE_RETRY_DELAY=0 \
+        DELETE_COUNT_FILE="$BATS_TEST_TMPDIR/delete-count" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            : > "$DELETE_COUNT_FILE"
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then
+                    echo x >> "$DELETE_COUNT_FILE"
+                    if [[ "$(wc -l < "$DELETE_COUNT_FILE")" -le 1 ]]; then
+                        echo "gh: Server Error (HTTP 502)" >&2
+                        return 1
+                    fi
+                    return 0
+                fi
+                if [[ "$*" == *"/versions/101"* ]]; then printf "%s\\n" "{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":1}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"retrying (1/2)"* ]]
+    [[ "$output" == *"✓ Deleted"* ]]
+    [[ "$output" != *"Failed to delete"* ]]
+    [[ "$(wc -l < "$BATS_TEST_TMPDIR/delete-count")" -eq 2 ]]
+}
+
+@test "GHCR version DELETE gives up after three attempts on persistent HTTP 5xx" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="false" \
+        GHCR_DELETE_RETRY_DELAY=0 \
+        DELETE_COUNT_FILE="$BATS_TEST_TMPDIR/delete-count" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            : > "$DELETE_COUNT_FILE"
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then
+                    echo x >> "$DELETE_COUNT_FILE"
+                    if [[ "$(wc -l < "$DELETE_COUNT_FILE")" -le 99 ]]; then
+                        echo "gh: Server Error (HTTP 503)" >&2
+                        return 1
+                    fi
+                    return 0
+                fi
+                if [[ "$*" == *"/versions/101"* ]]; then printf "%s\\n" "{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":1}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"Failed to delete"* ]]
+    [[ "$output" == *"GHCR — delete failures: 1"* ]]
+    [[ "$(wc -l < "$BATS_TEST_TMPDIR/delete-count")" -eq 3 ]]
+}
+
+@test "GHCR version DELETE does not retry a non-transient HTTP 403" {
+    run env \
+        PROJECT_ROOT="$PROJECT_ROOT" \
+        GH_TOKEN="$GH_TOKEN" \
+        OWNER="$OWNER" \
+        DRY_RUN="false" \
+        GHCR_DELETE_RETRY_DELAY=0 \
+        DELETE_COUNT_FILE="$BATS_TEST_TMPDIR/delete-count" \
+        bash -c '
+            set -euo pipefail
+            source "$PROJECT_ROOT/scripts/cleanup-outdated-tags.sh"
+            : > "$DELETE_COUNT_FILE"
+            build_valid_tags() { printf -v "$2" '%s' latest; printf -v "$3" '%s' ''; }
+            gh() {
+                if [[ "$*" == *"--method DELETE"* ]]; then
+                    echo x >> "$DELETE_COUNT_FILE"
+                    if [[ "$(wc -l < "$DELETE_COUNT_FILE")" -le 99 ]]; then
+                        echo "gh: Forbidden (HTTP 403)" >&2
+                        return 1
+                    fi
+                    return 0
+                fi
+                if [[ "$*" == *"/versions/101"* ]]; then printf "%s\\n" "{\"id\":101,\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}"; return 0; fi
+                if [[ "$*" != *"/versions"* ]]; then printf "%s\\n" "{\"version_count\":1}"; return 0; fi
+                printf "%s\\n" "[{\"id\":101,\"name\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"metadata\":{\"container\":{\"tags\":[\"stale\"]}}}]"
+            }
+            main stale
+        '
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"gh: Forbidden (HTTP 403)"* ]]
+    [[ "$output" == *"Failed to delete"* ]]
+    [[ "$(wc -l < "$BATS_TEST_TMPDIR/delete-count")" -eq 1 ]]
+}
+
 @test "a failed post-delete GHCR cleanup still reports successful deletions" {
     cat > "$_STUB_DIR/rm" <<'EOF'
 #!/usr/bin/env bash
