@@ -2904,7 +2904,7 @@ YAML
     local case_scope count
     for case_scope in \
         '{"terraform":{"versions":"1"}}' \
-        '{"terraform":{"versions":"1.16"}}' \
+        '{"terraform":{"versions":"1.17"}}' \
         '{"terraform":{"flavors":"aws"}}'; do
         _run_generator --cells --container-scopes "$case_scope" terraform
         [ "$status" -eq 0 ]
