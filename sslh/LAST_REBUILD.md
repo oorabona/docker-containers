@@ -66,3 +66,13 @@ Build status will be available in GitHub Actions after merge.
 - Variant: v2.3.1-alpine, base ghcr.io/oorabona/library/alpine:latest
   Old digest: sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
   New digest: sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+
+<!-- drift-content-hash: 37ad8bf574cb069b run:39766809199 -->
+## base-digest-drift (2026-10-22)
+
+- Variant: v2.3.0-alpine, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+  New digest: sha256:71e9b7bae160ba167fa17414401b94cbcdaf3c32feeab9298bd794a2a0614c35
+- Variant: v2.3.1-alpine, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+  New digest: sha256:71e9b7bae160ba167fa17414401b94cbcdaf3c32feeab9298bd794a2a0614c35
