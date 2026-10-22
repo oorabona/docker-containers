@@ -41,3 +41,10 @@ Build status will be available in GitHub Actions after merge.
 - Variant: trixie, base ghcr.io/oorabona/library/debian:trixie
   Old digest: sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5
   New digest: sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+
+<!-- drift-content-hash: 833c83919fe17079 run:39766809199 -->
+## base-digest-drift (2026-10-22)
+
+- Variant: trixie, base ghcr.io/oorabona/library/debian:trixie
+  Old digest: sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5
+  New digest: sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
