@@ -16,7 +16,7 @@ base_image_cache:
   - source: library/python
     tags: ["3.12-alpine"]
 build_args:
-  TFLINT_VERSION: "0.64.0"
+  TFLINT_VERSION: "0.65.0"
   TRIVY_VERSION: "0.76.1"
   TERRAGRUNT_VERSION: "1.2.0"
   TERRAFORM_DOCS_VERSION: "0.24.0"
