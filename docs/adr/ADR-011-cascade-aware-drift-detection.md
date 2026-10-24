@@ -128,7 +128,9 @@ helpers/dependency-graph.sh          ←── single source of truth
                    │     │  → leaf parents' PRs exist before consumers run (depth ≥ 2 via State B + resolver)
                    │     └── _eval_parent_state (A: open PR → B0: probe error → B: drift-set → C: no snapshot; fail-closed)
                    │
-                   └── cascade-resolver.yaml            (workflow_run on master build success → unblocks children once parent image publishes)
+                   └── cascade-resolver.yaml            (workflow_run on master build success → unblocks children once parent image publishes;
+                                                         hourly sweep via scripts/cascade-find-resolved-parents.sh recovers labels stranded
+                                                         when a burst of merges cancels the parent's own master build)
 ```
 
 ## Failure Modes
