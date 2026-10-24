@@ -21,6 +21,16 @@ name: Cascade Resolver
 # checks whether any other cascade:waiting-for-* labels remain.  Auto-merge is
 # enabled only when the child has no remaining wait labels (all parents resolved).
 #
+# Stranded labels: auto-build.yaml serialises master pushes, so when several drift
+# PRs merge in a burst the parent's own build is CANCELLED (a later run covers it)
+# and the workflow_run signal above never fires for it — the child then waits
+# forever (e.g. #2129 waiting on debian after #2120 merged).  The hourly
+# `sweep-stranded` job (scripts/cascade-find-resolved-parents.sh) finds parents whose
+# drift PR is merged and covered by a later successful master build, and dispatches
+# this workflow for each with `parent=<name>`; the dispatch path reuses the
+# unchanged "Unblock children" step.  A manual dispatch with `parent` does the same
+# on demand (the caller vouches that the parent image is published).
+#
 # If the parent PR was closed WITHOUT merging (abandoned), child PRs retain
 # their cascade:waiting-for-<parent> labels — a human must re-run the
 # upstream-monitor or manually remove the cascade:waiting-for-<parent> label.
@@ -30,12 +40,57 @@ on:
     workflows: ["Auto Build & Push"]
     branches: [master]
     types: [completed]
+  schedule:
+    - cron: '23 * * * *'  # hourly sweep for stranded cascade labels
+  workflow_dispatch:
+    inputs:
+      parent:
+        description: 'Parent container whose cascade:waiting-for-<parent> label to resolve (empty = run the stranded-label sweep)'
+        required: false
+        default: ''
 
 jobs:
+  sweep-stranded:
+    name: Sweep stranded cascade labels
+    # Schedule, or manual dispatch without a parent.
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.parent == '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write   # gh workflow run (dispatch the resolver per stranded parent)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Dispatch resolver for stranded parents
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          parents=$(./scripts/cascade-find-resolved-parents.sh)
+          if [[ -z "$parents" ]]; then
+            echo "::notice::No stranded cascade labels"
+            exit 0
+          fi
+          for parent in $parents; do
+            echo "::notice::Stranded cascade label for parent ${parent} — dispatching resolver"
+            gh workflow run cascade-resolver.yaml --ref master -f "parent=${parent}"
+          done
+
   unblock-children:
     name: Unblock cascade-waiting drift PRs
-    # Only process successful auto-build runs on master.
-    if: github.event.workflow_run.conclusion == 'success'
+    # Successful auto-build runs on master, or a dispatch naming a parent (sweep / manual).
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      || (github.event_name == 'workflow_dispatch' && inputs.parent != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -56,8 +111,20 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_PARENT: ${{ inputs.parent }}
         run: |
           set -euo pipefail
+          # Dispatch path (stranded-label sweep or manual): the parent is named
+          # explicitly; there is no merge commit to resolve.  Validate like below.
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if ! [[ "$INPUT_PARENT" =~ ^[a-z0-9_-]+$ ]]; then
+              echo "::error::Invalid parent input: ${INPUT_PARENT}"
+              exit 1
+            fi
+            echo "::notice::Dispatch for parent ${INPUT_PARENT}"
+            echo "name=${INPUT_PARENT}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Verify the triggering commit is a squash-merge of a drift PR by consulting
           # PR metadata — NOT the commit subject alone (which is spoofable by merge-right
           # holders crafting a commit matching the base-digest-drift(<name>) pattern).
