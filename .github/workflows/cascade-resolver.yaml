@@ -62,16 +62,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ vars.BOT_APP_ID }}
-          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
-
+      # GITHUB_TOKEN, not the App token: the App installation has no Actions:write, so
+      # `gh workflow run` got HTTP 403 from the App token. A workflow_dispatch made with
+      # GITHUB_TOKEN is exempt from recursion prevention, and the sweep merges nothing.
       - name: Dispatch resolver for stranded parents
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail

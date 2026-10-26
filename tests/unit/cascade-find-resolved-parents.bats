@@ -124,11 +124,10 @@ teardown() { teardown_temp_dir; }
     grep -q "^      parent:" "$wf"
 }
 
-@test "workflow: sweep dispatches the resolver per parent and uses the App token" {
+@test "workflow: sweep dispatches the resolver per parent (token locks live in cascade-resolver.bats)" {
     local wf="$PROJECT_ROOT/.github/workflows/cascade-resolver.yaml"
     grep -q "scripts/cascade-find-resolved-parents.sh" "$wf"
     grep -q 'gh workflow run cascade-resolver.yaml --ref master -f "parent=' "$wf"
-    ! grep -q "secrets.GITHUB_TOKEN" "$wf"
 }
 
 @test "workflow: dispatch parent input is regex-validated before use" {
