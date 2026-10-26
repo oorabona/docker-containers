@@ -1509,24 +1509,41 @@ EOF
 # ---------------------------------------------------------------------------
 
 @test "cascade-resolver unblock-children uses App token, not secrets.GITHUB_TOKEN (regression-lock)" {
-    local workflow=".github/workflows/cascade-resolver.yaml"
-    local wf_path="${PROJECT_ROOT}/${workflow}"
+    local wf_path="${PROJECT_ROOT}/.github/workflows/cascade-resolver.yaml"
+    local job
 
     # The workflow file must exist
     [ -f "$wf_path" ]
 
-    # The App token generation step must be present in the workflow
-    grep -q "actions/create-github-app-token" "$wf_path"
+    # Only the unblock-children job (it merges) is locked to the App token
+    job=$(awk '/^  unblock-children:/{f=1} f' "$wf_path")
+    [ -n "$job" ]
 
-    # The app-token step id must be present
-    grep -q "id: app-token" "$wf_path"
+    # The App token generation step, its id and its output must be present
+    grep -q "actions/create-github-app-token" <<< "$job"
+    grep -q "id: app-token" <<< "$job"
+    grep -q "steps.app-token.outputs.token" <<< "$job"
 
-    # Both GH_TOKEN usages in the unblock-children job must use the App token output
-    grep -q "steps.app-token.outputs.token" "$wf_path"
+    # secrets.GITHUB_TOKEN must NOT appear in this job
+    ! grep -q "secrets.GITHUB_TOKEN" <<< "$job"
+}
 
-    # secrets.GITHUB_TOKEN must NOT appear anywhere in this file
-    # (the only token used is the App token)
-    ! grep -q "secrets.GITHUB_TOKEN" "$wf_path"
+# The sweep-stranded job only reads PRs and dispatches the resolver. The App
+# installation lacks Actions:write, so with the App token `gh workflow run` fails
+# with HTTP 403 and the stranded label is never released; GITHUB_TOKEN (actions: write)
+# is what the other dispatchers (upstream-monitor.yaml) use.
+@test "cascade-resolver sweep-stranded dispatches with secrets.GITHUB_TOKEN, not the App token (regression-lock)" {
+    local wf_path="${PROJECT_ROOT}/.github/workflows/cascade-resolver.yaml"
+    local job
+
+    [ -f "$wf_path" ]
+    job=$(awk '/^  sweep-stranded:/{f=1} /^  unblock-children:/{f=0} f' "$wf_path")
+    [ -n "$job" ]
+
+    grep -q "gh workflow run cascade-resolver.yaml" <<< "$job"
+    grep -q "actions: write" <<< "$job"
+    grep -q 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' <<< "$job"
+    ! grep -q "app-token" <<< "$job"
 }
 
 # ---------------------------------------------------------------------------
