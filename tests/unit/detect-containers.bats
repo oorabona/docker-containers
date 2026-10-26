@@ -207,7 +207,7 @@ assert_extension_scope() {
 @test "changed declared extension version scopes and forces that extension" {
     make_classifier_workspace
     workspace="$CLASSIFIER_WORKSPACE"
-    yq -i '.extensions.hypopg.version = "1.4.4"' "$workspace/postgres/extensions/config.yaml"
+    yq -i '.extensions.hypopg.version = "999.0.0-test"' "$workspace/postgres/extensions/config.yaml"
     run_find_containers_step "postgres/extensions/config.yaml" "$workspace"
 
     [ "$status" -eq 0 ]
@@ -218,7 +218,7 @@ assert_extension_scope() {
 @test "changed declared rust version scopes and forces that extension" {
     make_classifier_workspace
     workspace="$CLASSIFIER_WORKSPACE"
-    yq -i '.extensions.paradedb.rust_version = "1.96.1"' "$workspace/postgres/extensions/config.yaml"
+    yq -i '.extensions.paradedb.rust_version = "999.0.0-test"' "$workspace/postgres/extensions/config.yaml"
     run_find_containers_step "postgres/extensions/config.yaml" "$workspace"
 
     [ "$status" -eq 0 ]
