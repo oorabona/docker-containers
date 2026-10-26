@@ -43,7 +43,7 @@ extensions:
       mode: create
     priority: 2
   hypopg:
-    version: "1.4.3"
+    version: "1.4.4"
     description: "Hypothetical indexes for query planning analysis"
     repo: "HypoPG/hypopg"
     build_deps:
