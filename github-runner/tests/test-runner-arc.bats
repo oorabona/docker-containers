@@ -9,6 +9,8 @@ SAMPLE_WORKDIR=/home/runner/actions-runner/_work
 SAMPLE_TOOL_CACHE=/home/runner/actions-runner/_tool
 
 setup() {
+    local arc_values expected_image runner
+
     CONTAINER_NAME=
     VOLUME_NAME=
     if [[ "${ARC_RUNTIME_TESTS:-}" != 1 ]]; then
@@ -20,6 +22,14 @@ setup() {
         podman|docker) ;;
         *) printf 'ARC_TEST_RUNTIME must be podman or docker, got %s\n' "$ARC_TEST_RUNTIME" >&2; return 1 ;;
     esac
+    arc_values="$BATS_TEST_DIRNAME/../examples/arc-values.yaml"
+    runner=$(yq -o=json '.template.spec.containers[] | select(.name == "runner")' "$arc_values") || return 1
+    expected_image=$(jq -er '.image' <<<"$runner") || return 1
+    if [[ "$ARC_TEST_IMAGE" != "$expected_image" ]]; then
+        printf 'ARC_TEST_IMAGE must equal the ARC sample runner image: expected %s, got %s\n' \
+            "$expected_image" "$ARC_TEST_IMAGE" >&2
+        return 1
+    fi
     command -v "$ARC_TEST_RUNTIME" >/dev/null || {
         printf 'ARC_TEST_RUNTIME is unavailable: %s\n' "$ARC_TEST_RUNTIME" >&2
         return 1

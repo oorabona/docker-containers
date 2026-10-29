@@ -34,7 +34,7 @@ helm template trusted-private-arc \
 
 The chart's `template.spec` is a runner PodSpec, and its documented `containerMode` options modify that PodSpec. Review the rendered `AutoscalingRunnerSet` against the [0.15.1 values contract](https://github.com/actions/actions-runner-controller/blob/23159a8e2d70ca4cece740fe43a8d9eb0c2818de/charts/gha-runner-scale-set/values.yaml#L1-L65) and its [template behavior](https://github.com/actions/actions-runner-controller/blob/23159a8e2d70ca4cece740fe43a8d9eb0c2818de/charts/gha-runner-scale-set/values.yaml#L341-L445).
 
-For an existing local image runtime, pull the exact platform manifest and run the opt-in, no-network image test. It uses a synthetic invalid JIT payload, never registers a runner, and requires the image to be pre-pulled when Bats starts.
+For an existing local image runtime, pull the exact platform manifest and run the opt-in, no-network image test. The local test host must be Linux with GNU `base64`, `jq`, `yq`, `tar`, and `grep`, plus a pre-pulled image available to Podman or Docker. This guide qualifies Podman on the measured host only; SELinux-enforcing hosts and Docker execution have not been qualified. Optional local test-host follow-up is [oorabona/docker-containers#2193](https://github.com/oorabona/docker-containers/issues/2193). The test uses a synthetic invalid JIT payload, never registers a runner, and requires the image to be pre-pulled when Bats starts.
 
 ```bash
 podman pull --platform linux/amd64 \
@@ -63,7 +63,7 @@ The test establishes local image/JIT behavior only. Its controlled-helper case r
 
 ## Cache and canary boundaries
 
-For dependency caches, use `actions/cache` for selected workflow paths. Do not cache the runner root, `.runner`, credentials, `_work`, or a shared catch-all PVC. The image layer and the pod's `_work` emptyDir disappear with each pod; any tool or package cache not restored by the workflow also disappears.
+For dependency caches, use `actions/cache` for selected workflow paths. Do not cache the runner root, `.runner`, credentials, `_work`, or a shared catch-all PVC. The container's writable layer and the pod's `_work` emptyDir disappear when the pod is removed; cached OCI image layers may remain on the node. Any tool or package cache not restored by the workflow also disappears.
 
 The following is an inert workflow example for a manually approved trusted-private canary. It belongs in the consuming private repository only after the platform has installed ARC and approved its secret, cluster capacity, namespace, RBAC, egress, and retention policy. This repository does not add a workflow or deploy anything.
 
@@ -72,6 +72,8 @@ name: trusted-private ARC canary
 
 on:
   workflow_dispatch:
+
+permissions: {}
 
 jobs:
   canary:
