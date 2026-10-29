@@ -20,9 +20,9 @@ This image fills a different gap:
 | Org-level runners | Via ARC | Via env var (`GITHUB_ORG`) |
 | Multi-distro (Ubuntu, Debian) | Ubuntu only | Ubuntu + Debian |
 
-**Use this image when:** you want self-hosted runners on Docker Desktop, Podman, or any Docker host — without Kubernetes.
+**Use this image for standalone runners when:** you want self-hosted runners on Docker Desktop, Podman, or any Docker host without Kubernetes.
 
-**Use the official image when:** you have a Kubernetes cluster and want to use ARC.
+**Use the official image by default for ARC:** it supplies ARC's standard runner layout and Kubernetes container hooks.
 
 For a constrained trusted-private Linux ARC canary using this published image, see [Use the published GitHub runner image with ARC](../docs/guides/how-to-use-github-runner-with-arc.md). It pins one tested linux/amd64 manifest and does not replace the standalone or Windows deployment paths.
 

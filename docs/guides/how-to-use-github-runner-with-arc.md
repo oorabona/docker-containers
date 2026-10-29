@@ -18,7 +18,9 @@ The pod security context supplies UID, GID, and filesystem group `1001`, and the
 
 ## Render and inspect before a canary
 
-Create the named GitHub configuration secret in the target namespace through the platform's approved secret workflow. Do not put a PAT, GitHub App key, or plaintext token in the values file.
+Before a platform canary, replace `OWNER/PRIVATE-REPOSITORY` in your local `github-runner/examples/arc-values.yaml` with the selected trusted-private repository. Set `githubConfigSecret` to the existing secret's name in the target namespace. Keep `runnerScaleSetName` and the workflow's `runs-on` identical if renamed. Review those values before passing them to the platform integration.
+
+Create the named GitHub configuration secret through the platform's approved secret workflow. Do not put a PAT, GitHub App key, or plaintext token in the values file.
 
 This command renders the pinned chart without installing it or contacting a Kubernetes API. It may download the chart if it is not already cached.
 
