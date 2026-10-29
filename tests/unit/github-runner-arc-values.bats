@@ -25,6 +25,7 @@ teardown() {
     [ "$(jq -r '.workingDir' <<< "$runner")" = /home/runner/actions-runner/_work ]
     [ "$(jq -r '.env[] | select(.name == "HOME") | .value' <<< "$runner")" = /home/runner ]
     [ "$(jq -r '.env[] | select(.name == "RUNNER_TOOL_CACHE") | .value' <<< "$runner")" = /home/runner/actions-runner/_tool ]
+    [ "$(jq -c '[.env[] | select(.name == "RUNNER_MANUALLY_TRAP_SIG") | .value]' <<< "$runner")" = '["1"]' ]
     [ "$(jq -r '.volumeMounts[] | select(.name == "work") | .mountPath' <<< "$runner")" = /home/runner/actions-runner/_work ]
     [ "$(yq -r '.template.spec.volumes | length' "$VALUES")" = 1 ]
     [ "$(yq -r '.template.spec.volumes[0].name' "$VALUES")" = work ]
@@ -50,9 +51,9 @@ teardown() {
 
 @test "ARC values reject unsafe mutations in an isolated copy" {
     cp "$VALUES" "$TEST_TEMP_DIR/unsafe.yaml"
-    yq -i '.template.spec.containers[0].command = ["/entrypoint.sh"] | .template.spec.containers[0].workingDir = "/home/runner/actions-runner" | .template.spec.securityContext.runAsUser = 0 | .template.spec.containers[0].securityContext.privileged = true | .template.spec.volumes += [{"name": "socket", "hostPath": {"path": "/var/run/docker.sock"}}] | .githubConfigSecret = {"github_token": "plaintext"}' "$TEST_TEMP_DIR/unsafe.yaml"
+    yq -i '.template.spec.containers[0].command = ["/entrypoint.sh"] | .template.spec.containers[0].workingDir = "/home/runner/actions-runner" | .template.spec.containers[0].env |= map(select(.name != "RUNNER_MANUALLY_TRAP_SIG")) | .template.spec.securityContext.runAsUser = 0 | .template.spec.containers[0].securityContext.privileged = true | .template.spec.volumes += [{"name": "socket", "hostPath": {"path": "/var/run/docker.sock"}}] | .githubConfigSecret = {"github_token": "plaintext"}' "$TEST_TEMP_DIR/unsafe.yaml"
 
-    run yq -e '.template.spec.containers[] | select(.name == "runner") | (.command == ["/home/runner/actions-runner/run.sh"] and .workingDir == "/home/runner/actions-runner/_work" and .securityContext.privileged != true)' "$TEST_TEMP_DIR/unsafe.yaml"
+    run yq -e '.template.spec.containers[] | select(.name == "runner") | (.command == ["/home/runner/actions-runner/run.sh"] and .workingDir == "/home/runner/actions-runner/_work" and ([.env[] | select(.name == "RUNNER_MANUALLY_TRAP_SIG" and .value == "1")] | length) == 1 and .securityContext.privileged != true)' "$TEST_TEMP_DIR/unsafe.yaml"
     [ "$status" -ne 0 ]
     run yq -e '(.template.spec.securityContext.runAsUser == 1001) and ([.template.spec.volumes[]? | has("hostPath")] | any | not) and (.githubConfigSecret | type == "!!str")' "$TEST_TEMP_DIR/unsafe.yaml"
     [ "$status" -ne 0 ]

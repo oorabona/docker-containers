@@ -30,6 +30,8 @@ template:
             value: /home/runner
           - name: RUNNER_TOOL_CACHE
             value: /home/runner/actions-runner/_tool
+          - name: RUNNER_MANUALLY_TRAP_SIG
+            value: "1"
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

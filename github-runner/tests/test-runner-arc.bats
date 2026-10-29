@@ -9,6 +9,8 @@ SAMPLE_WORKDIR=/home/runner/actions-runner/_work
 SAMPLE_TOOL_CACHE=/home/runner/actions-runner/_tool
 
 setup() {
+    CONTAINER_NAME=
+    VOLUME_NAME=
     if [[ "${ARC_RUNTIME_TESTS:-}" != 1 ]]; then
         skip "set ARC_RUNTIME_TESTS=1 to run the pre-pulled ARC image qualification"
     fi
@@ -22,7 +24,6 @@ setup() {
         printf 'ARC_TEST_RUNTIME is unavailable: %s\n' "$ARC_TEST_RUNTIME" >&2
         return 1
     }
-    TEST_TEMP_DIR="$(mktemp -d)"
     CONTAINER_NAME="arc-offline-${BATS_TEST_NUMBER}-$$"
     VOLUME_NAME="${CONTAINER_NAME}-work"
     "$ARC_TEST_RUNTIME" volume create "$VOLUME_NAME" >/dev/null
@@ -41,7 +42,6 @@ teardown() {
     if [[ -n "${ARC_TEST_RUNTIME:-}" && -n "${VOLUME_NAME:-}" ]]; then
         "$ARC_TEST_RUNTIME" volume rm -f "$VOLUME_NAME" >/dev/null 2>&1 || true
     fi
-    [[ -z "${TEST_TEMP_DIR:-}" ]] || rm -rf "$TEST_TEMP_DIR"
 }
 
 jit_payload() {
@@ -60,8 +60,34 @@ run_sample() {
         --workdir "$SAMPLE_WORKDIR" \
         --env HOME=/home/runner \
         --env RUNNER_TOOL_CACHE="$SAMPLE_TOOL_CACHE" \
+        --env RUNNER_MANUALLY_TRAP_SIG=1 \
         --env ACTIONS_RUNNER_INPUT_JITCONFIG="$payload" \
         --entrypoint "$SAMPLE_RUNNER_ROOT/run.sh" "$ARC_TEST_IMAGE"
+}
+
+wait_for_controlled_helper_file() {
+    local path="$1" attempt
+
+    for ((attempt = 0; attempt < 50; attempt++)); do
+        if "$ARC_TEST_RUNTIME" exec "$CONTAINER_NAME" test -f "$path"; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
+wait_for_container_stop() {
+    local running attempt
+
+    for ((attempt = 0; attempt < 50; attempt++)); do
+        running=$("$ARC_TEST_RUNTIME" inspect --format '{{.State.Running}}' "$CONTAINER_NAME") || return 1
+        if [[ "$running" == false ]]; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
 }
 
 @test "pinned Ubuntu image exposes the runner, Node, writable tool cache, and group-writable work directory" {
@@ -92,13 +118,13 @@ run_sample() {
     [ "$status" -eq 0 ]
     [[ "$output" == *'UInt64'* ]]
 
-    "$ARC_TEST_RUNTIME" cp "$CONTAINER_NAME:$SAMPLE_RUNNER_ROOT/.runner" "$TEST_TEMP_DIR/.runner"
-    [ "$(jq -r '.AgentId' "$TEST_TEMP_DIR/.runner")" = OFFLINE_JIT_PROBE ]
-    [ "$(jq -r '.WorkFolder' "$TEST_TEMP_DIR/.runner")" = "$SAMPLE_WORKDIR" ]
-    [ "$(jq -r '.Ephemeral' "$TEST_TEMP_DIR/.runner")" = true ]
+    "$ARC_TEST_RUNTIME" cp "$CONTAINER_NAME:$SAMPLE_RUNNER_ROOT/.runner" "$BATS_TEST_TMPDIR/.runner"
+    [ "$(jq -r '.AgentId' "$BATS_TEST_TMPDIR/.runner")" = OFFLINE_JIT_PROBE ]
+    [ "$(jq -r '.WorkFolder' "$BATS_TEST_TMPDIR/.runner")" = "$SAMPLE_WORKDIR" ]
+    [ "$(jq -r '.Ephemeral' "$BATS_TEST_TMPDIR/.runner")" = true ]
 
-    "$ARC_TEST_RUNTIME" export "$CONTAINER_NAME" > "$TEST_TEMP_DIR/container.tar"
-    tar --numeric-owner -tvf "$TEST_TEMP_DIR/container.tar" | grep -Eq '1001/1001 .*home/runner/actions-runner/\.runner$'
+    "$ARC_TEST_RUNTIME" export "$CONTAINER_NAME" > "$BATS_TEST_TMPDIR/container.tar"
+    tar --numeric-owner -tvf "$BATS_TEST_TMPDIR/container.tar" | grep -Eq '1001/1001 .*home/runner/actions-runner/\.runner$'
     "$ARC_TEST_RUNTIME" inspect "$CONTAINER_NAME" | jq -e --arg work "$SAMPLE_WORKDIR" --arg tool "$SAMPLE_TOOL_CACHE" '
         .[0].Config.WorkingDir == $work and
         ([.[0].Config.Env[] | select(. == "HOME=/home/runner" or . == "RUNNER_TOOL_CACHE=" + $tool)] | length) == 2 and
@@ -110,8 +136,40 @@ run_sample() {
     run run_sample 'not-base64'
     [ "$status" -eq 0 ]
     [[ "$output" == *'Base-64'* || "$output" == *'base64'* ]]
-    run "$ARC_TEST_RUNTIME" cp "$CONTAINER_NAME:$SAMPLE_RUNNER_ROOT/.runner" "$TEST_TEMP_DIR/.runner"
+    run "$ARC_TEST_RUNTIME" cp "$CONTAINER_NAME:$SAMPLE_RUNNER_ROOT/.runner" "$BATS_TEST_TMPDIR/.runner"
     [ "$status" -ne 0 ]
+}
+
+@test "run.sh PID 1 wrapper forwards TERM to a controlled helper without a job or ARC integration" {
+    local helper_template="$BATS_TEST_TMPDIR/controlled-helper-template.sh"
+    local ready_marker=/tmp/arc-controlled-helper-ready
+    local interrupt_marker=/tmp/arc-controlled-helper-int
+
+    cat > "$helper_template" <<'EOF'
+#!/bin/bash
+trap 'touch /tmp/arc-controlled-helper-int; exit 0' INT
+touch /tmp/arc-controlled-helper-ready
+while :; do sleep 0.1; done
+EOF
+    chmod +x "$helper_template"
+
+    run "$ARC_TEST_RUNTIME" run -d --name "$CONTAINER_NAME" --pull=never --network=none \
+        --user 1001:1001 --cap-drop=ALL --security-opt=no-new-privileges \
+        --env RUNNER_MANUALLY_TRAP_SIG=1 \
+        --volume "$helper_template:$SAMPLE_RUNNER_ROOT/run-helper.sh.template:ro" \
+        --entrypoint "$SAMPLE_RUNNER_ROOT/run.sh" "$ARC_TEST_IMAGE"
+    [ "$status" -eq 0 ]
+    wait_for_controlled_helper_file "$ready_marker"
+
+    run "$ARC_TEST_RUNTIME" kill --signal TERM "$CONTAINER_NAME"
+    [ "$status" -eq 0 ]
+    wait_for_container_stop
+
+    "$ARC_TEST_RUNTIME" cp "$CONTAINER_NAME:$interrupt_marker" "$BATS_TEST_TMPDIR/controlled-helper-int"
+    [ -f "$BATS_TEST_TMPDIR/controlled-helper-int" ]
+    run "$ARC_TEST_RUNTIME" inspect --format '{{.State.ExitCode}}' "$CONTAINER_NAME"
+    [ "$status" -eq 0 ]
+    [ "$output" -eq 143 ]
 }
 
 @test "standalone entrypoint reports the missing scope input first" {
