@@ -56,6 +56,7 @@ Run `./make list` for the live list. See each `<container>/README.md` for usage.
 | Test all containers | `./test-all-containers.sh` |
 | Validate version scripts | `./validate-version-scripts.sh` |
 | Local CI test (via `act`) | `./test-github-actions.sh` |
+| ARC reuse guide | [`docs/guides/how-to-use-github-runner-with-arc.md`](docs/guides/how-to-use-github-runner-with-arc.md) |
 
 ## Conventions
 

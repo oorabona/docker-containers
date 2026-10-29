@@ -1,0 +1,42 @@
+# Values for a trusted-private Linux canary. The GitHub configuration secret
+# already exists in the target namespace; this file does not contain credentials.
+githubConfigUrl: https://github.com/OWNER/PRIVATE-REPOSITORY
+githubConfigSecret: trusted-private-arc-github-config
+runnerScaleSetName: trusted-private-arc
+
+minRunners: 0
+maxRunners: 1
+
+template:
+  spec:
+    automountServiceAccountToken: false
+    nodeSelector:
+      kubernetes.io/os: linux
+      kubernetes.io/arch: amd64
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1001
+      runAsGroup: 1001
+      fsGroup: 1001
+      seccompProfile:
+        type: RuntimeDefault
+    containers:
+      - name: runner
+        image: ghcr.io/oorabona/github-runner:2.338.2@sha256:9df91c26565854fc5966ff98285789787d8e4aad0c2e3f60bc4076432d2a1877
+        command: ["/home/runner/actions-runner/run.sh"]
+        workingDir: /home/runner/actions-runner/_work
+        env:
+          - name: HOME
+            value: /home/runner
+          - name: RUNNER_TOOL_CACHE
+            value: /home/runner/actions-runner/_tool
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+          - name: work
+            mountPath: /home/runner/actions-runner/_work
+    volumes:
+      - name: work
+        emptyDir: {}

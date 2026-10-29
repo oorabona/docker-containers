@@ -24,6 +24,8 @@ This image fills a different gap:
 
 **Use the official image when:** you have a Kubernetes cluster and want to use ARC.
 
+For a constrained trusted-private Linux ARC canary using this published image, see [Use the published GitHub runner image with ARC](../docs/guides/how-to-use-github-runner-with-arc.md). It pins one tested linux/amd64 manifest and does not replace the standalone or Windows deployment paths.
+
 ## Verify this image
 
 Every build ships a Sigstore-signed SBOM and a full Trivy scan — verify them yourself, no login required:
