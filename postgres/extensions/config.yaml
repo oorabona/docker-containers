@@ -165,6 +165,8 @@ extensions:
       - json-c-dev
       - libxml2-dev
       - protobuf-c-dev
+      # PostGIS 3.7+ configure requires libgmp
+      - gmp-dev
     shared_preload: false
     initdb:
       mode: create
@@ -177,6 +179,7 @@ extensions:
       - json-c
       - libxml2
       - protobuf-c
+      - gmp
 # Built-in extensions (no compilation needed, just CREATE EXTENSION)
 builtin_extensions:
   # Statistics and monitoring
