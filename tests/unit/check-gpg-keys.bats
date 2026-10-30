@@ -863,7 +863,8 @@ EOF
     add_paths="$(yq -r '.jobs."refresh-vendored-gpg-keys".steps[] | select(.id == "create-pr") | .with."add-paths"' "$wf")"
 
     [[ "$matrix" == *"fromJson(needs.check-gpg-keys.outputs.refresh_candidates)"* ]]
-    [ "$pr_action" = "peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1" ]
+    # Pinned to a full commit SHA; which SHA is Dependabot's call, so only the shape is asserted.
+    [[ "$pr_action" =~ ^peter-evans/create-pull-request@[0-9a-f]{40}$ ]]
     [ "$add_paths" = '${{ matrix.key_file }}' ]
 }
 
