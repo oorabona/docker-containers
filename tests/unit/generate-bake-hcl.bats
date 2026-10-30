@@ -40,13 +40,14 @@ teardown() {
 }
 
 @test "--cells carries detector full_version for a postgres cell" {
-    local base_cells bake_plan cells
+    local base_cells bake_plan cells major
+    major=$(_postgres_oldest_major)
     base_cells=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --include-final-build postgres)
-    bake_plan=$(jq '[.[] | {
+    bake_plan=$(jq --arg tag "${major}-alpine-vector" --arg full "${major}.13-alpine" '[.[] | {
         container,
         version: .matrix_version,
         variant,
-        full_version: (if .tag == "16-alpine-vector" then "16.13-alpine" else "" end)
+        full_version: (if .tag == $tag then $full else "" end)
     }]' <<< "$base_cells")
 
     run env BAKE_BUILDS_JSON="$bake_plan" \
@@ -54,8 +55,8 @@ teardown() {
 
     [ "$status" -eq 0 ]
     cells="$output"
-    [ "$(jq -r '.[] | select(.tag == "16-alpine-vector") | .full_version' <<< "$cells")" = "16.13-alpine" ]
-    [ "$(jq -r '.[] | select(.tag == "16-alpine-vector") | .matrix_version' <<< "$cells")" = "16" ]
+    [ "$(jq -r --arg tag "${major}-alpine-vector" '.[] | select(.tag == $tag) | .full_version' <<< "$cells")" = "${major}.13-alpine" ]
+    [ "$(jq -r --arg tag "${major}-alpine-vector" '.[] | select(.tag == $tag) | .matrix_version' <<< "$cells")" = "$major" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -134,6 +135,46 @@ CALLER
 # ---------------------------------------------------------------------------
 _run_generator() {
     run bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" "$@"
+}
+
+# Latest terraform cell shape, read from the real variants.yaml: a minor bump
+# (1.17 -> 1.18) or a variant change must not require editing these tests.
+_terraform_latest_minor() {
+    yq -r '.versions[0].tag' "${PROJECT_ROOT}/terraform/variants.yaml" \
+        | sed -E 's/^([0-9]+\.[0-9]+).*/\1/'
+}
+
+_terraform_latest_cell_count() {
+    yq -r '.versions[0].variants | length' "${PROJECT_ROOT}/terraform/variants.yaml"
+}
+
+# Postgres major rotation (a new major added, the oldest dropped) changes the cell
+# topology; read it from the real variants.yaml instead of naming 16/17/18 and 21.
+_postgres_majors() {
+    yq -r '.versions[].tag' "${PROJECT_ROOT}/postgres/variants.yaml" | sort -n
+}
+
+_postgres_majors_joined() {
+    _postgres_majors | paste -sd' ' -
+}
+
+_postgres_newest_major() {
+    _postgres_majors | tail -n 1
+}
+
+_postgres_oldest_major() {
+    _postgres_majors | head -n 1
+}
+
+_postgres_expected_cell_count() {
+    local majors variants
+    majors=$(_postgres_majors | wc -l)
+    variants=$(yq -r '.versions[0].variants | length' "${PROJECT_ROOT}/postgres/variants.yaml")
+    echo $((majors * variants))
+}
+
+_postgres_expected_flavor_count() {
+    yq -r '[.versions[0].variants[].flavor] | unique | length' "${PROJECT_ROOT}/postgres/variants.yaml"
 }
 
 _run_generator_separate_stderr() {
@@ -1269,7 +1310,7 @@ YAML
 # F1 — postgres final image is explicitly bake-emittable when activated
 # Catches: dropping build.bake_final_build support would re-exclude postgres.
 # ---------------------------------------------------------------------------
-@test "postgres --include-final-build --cells emits 21 final-image cells across all supported majors/flavors" {
+@test "postgres --include-final-build --cells emits one final-image cell per supported major/flavor" {
     _run_generator --include-final-build --cells postgres
     [ "$status" -eq 0 ]
 
@@ -1278,9 +1319,9 @@ YAML
     majors=$(echo "$output" | jq -r '[.[].tag | capture("^(?<major>[0-9]+)").major] | unique | sort | join(" ")')
     flavor_count=$(echo "$output" | jq '[.[].flavor] | unique | length')
 
-    [ "$count" -eq 21 ]
-    [ "$majors" = "16 17 18" ]
-    [ "$flavor_count" -eq 7 ]
+    [ "$count" -eq "$(_postgres_expected_cell_count)" ]
+    [ "$majors" = "$(_postgres_majors_joined)" ]
+    [ "$flavor_count" -eq "$(_postgres_expected_flavor_count)" ]
 }
 
 @test "postgres bake graph materializes inline base/vector/timeseries Dockerfiles offline" {
@@ -1294,7 +1335,7 @@ YAML
 
     local target_count
     target_count=$(echo "$output" | jq '[.target | to_entries[] | select(.key | startswith("postgres_"))] | length')
-    [ "$target_count" -eq 21 ]
+    [ "$target_count" -eq "$(_postgres_expected_cell_count)" ]
 
     local base_inline vector_inline timeseries_inline
     base_inline=$(echo "$output" | jq -r '.target.postgres_18_base["dockerfile-inline"] // ""')
@@ -1341,10 +1382,13 @@ YAML
     # postgres declares base_suffix "-alpine" + FROM library/postgres:${VERSION};
     # the bake VERSION arg must be "<major>-alpine", not the bare major, else the
     # build pulls the Debian base and publishes *-alpine tags backed by it.
-    [ "$(echo "$output" | jq -r '.target.postgres_18_base.args.VERSION')" = "18-alpine" ]
-    [ "$(echo "$output" | jq -r '.target.postgres_17_vector.args.VERSION')" = "17-alpine" ]
-    [ "$(echo "$output" | jq -r '.target.postgres_16_full.args.VERSION')" = "16-alpine" ]
-    [ "$(echo "$output" | jq -r '.target.postgres_18_base.args.MAJOR_VERSION')" = "18" ]
+    local newest oldest
+    newest=$(_postgres_newest_major)
+    oldest=$(_postgres_oldest_major)
+    [ "$(echo "$output" | jq -r --arg t "postgres_${newest}_base" '.target[$t].args.VERSION')" = "${newest}-alpine" ]
+    [ "$(echo "$output" | jq -r --arg t "postgres_${newest}_vector" '.target[$t].args.VERSION')" = "${newest}-alpine" ]
+    [ "$(echo "$output" | jq -r --arg t "postgres_${oldest}_full" '.target[$t].args.VERSION')" = "${oldest}-alpine" ]
+    [ "$(echo "$output" | jq -r --arg t "postgres_${newest}_base" '.target[$t].args.MAJOR_VERSION')" = "$newest" ]
 }
 
 @test "postgres inline Dockerfiles escape bake interpolation triggers" {
@@ -2901,10 +2945,12 @@ YAML
 }
 
 @test "scope selection parity keeps terraform counts and active global filtering" {
-    local case_scope count
+    local case_scope count tf_minor tf_cells
+    tf_minor=$(_terraform_latest_minor)
+    tf_cells=$(_terraform_latest_cell_count)
     for case_scope in \
         '{"terraform":{"versions":"1"}}' \
-        '{"terraform":{"versions":"1.17"}}' \
+        "{\"terraform\":{\"versions\":\"${tf_minor}\"}}" \
         '{"terraform":{"flavors":"aws"}}'; do
         _run_generator --cells --container-scopes "$case_scope" terraform
         [ "$status" -eq 0 ]
@@ -2912,7 +2958,7 @@ YAML
         if [[ "$case_scope" == *'flavors'* ]]; then
             [ "$count" -eq 1 ]
         else
-            [ "$count" -eq 5 ]
+            [ "$count" -eq "$tf_cells" ]
         fi
     done
 
@@ -2922,7 +2968,7 @@ YAML
 
     _run_generator --cells terraform
     [ "$status" -eq 0 ]
-    [ "$(jq 'length' <<< "$output")" -eq 5 ]
+    [ "$(jq 'length' <<< "$output")" -eq "$tf_cells" ]
 }
 
 @test "empty per-container scope overrides globals while an absent entry inherits them" {
@@ -2933,7 +2979,7 @@ YAML
     local terraform_count postgres_bad_flavors
     terraform_count=$(jq '[.[] | select(.container == "terraform")] | length' <<< "$output")
     postgres_bad_flavors=$(jq '[.[] | select(.container == "postgres" and .flavor != "full")] | length' <<< "$output")
-    [ "$terraform_count" -eq 5 ]
+    [ "$terraform_count" -eq "$(_terraform_latest_cell_count)" ]
     [ "$postgres_bad_flavors" -eq 0 ]
 }
 

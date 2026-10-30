@@ -4,8 +4,23 @@
 bats_require_minimum_version 1.5.0
 load "../test_helper"
 
+# The syft pin (version + per-asset sha256) is declared in helpers/sbom-utils.sh.
+# These tests check the install logic against whatever that helper pins, so a syft
+# bump there needs no edit here.
+_sbom_pin() {
+    sed -nE "s/^[[:space:]]*local $1=\"([^\"]+)\"\$/\1/p" "$PROJECT_ROOT/helpers/sbom-utils.sh" | head -n 1
+}
+
 setup() {
     setup_temp_dir
+    PIN_SYFT_VERSION=$(_sbom_pin syft_version)
+    PIN_SYFT_SHA_LINUX_AMD64=$(_sbom_pin syft_linux_amd64_sha256)
+    PIN_SYFT_SHA_LINUX_ARM64=$(_sbom_pin syft_linux_arm64_sha256)
+    PIN_SYFT_SHA_DARWIN_AMD64=$(_sbom_pin syft_darwin_amd64_sha256)
+    PIN_SYFT_SHA_DARWIN_ARM64=$(_sbom_pin syft_darwin_arm64_sha256)
+    [ -n "$PIN_SYFT_VERSION" ] && [ -n "$PIN_SYFT_SHA_LINUX_AMD64" ] && [ -n "$PIN_SYFT_SHA_LINUX_ARM64" ] \
+        && [ -n "$PIN_SYFT_SHA_DARWIN_AMD64" ] && [ -n "$PIN_SYFT_SHA_DARWIN_ARM64" ]
+    export PIN_SYFT_VERSION PIN_SYFT_SHA_LINUX_AMD64 PIN_SYFT_SHA_LINUX_ARM64 PIN_SYFT_SHA_DARWIN_AMD64 PIN_SYFT_SHA_DARWIN_ARM64
     export COMPOSE_FREE_PATH="$TEST_TEMP_DIR/bin"
     mkdir -p "$COMPOSE_FREE_PATH"
 
@@ -30,7 +45,13 @@ run_make_with_controlled_path() {
     run_make_with_controlled_path list
 
     [ "$status" -eq 0 ]
-    [ "$output" = $'ansible\ndebian\ngithub-runner\njekyll\nopenresty\nopentofu\nopenvpn\nphp\npostgres\nsslh\nterraform\ntor\nvector\nweb-shell\nwordpress' ]
+    # Containers are the top-level directories holding a Dockerfile; derive the list
+    # so adding or removing a container does not require editing this test.
+    local expected
+    expected=$(cd "$PROJECT_ROOT" && find . -maxdepth 2 \( -name "Dockerfile" -o -name "Dockerfile.*" \) \
+        | sed 's|^\./||' | cut -d'/' -f1 | sort -u)
+    [ -n "$expected" ]
+    [ "$output" = "$expected" ]
     [ -z "$stderr" ]
 }
 
@@ -197,10 +218,10 @@ copy_sbom_utils_with_archive_digest() {
 
     mkdir -p "$helper_dir"
     sed \
-        -e "s/2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f/${archive_digest}/" \
-        -e "s/6c0466811541ea03add5213a60a1562f0851e4c0b0ecfdee1a694a9455285900/${archive_digest}/" \
-        -e "s/cddf9a044145caf0a1a3194d00d1dd51a1666f4814f2919cdb4768a0c062ad95/${archive_digest}/" \
-        -e "s/4f37f4c7fefce0a68e4cf71ba3f5f9829a99e65d89b29f7ee41b8c2c10ea8c59/${archive_digest}/" \
+        -e "s/${PIN_SYFT_SHA_LINUX_AMD64}/${archive_digest}/" \
+        -e "s/${PIN_SYFT_SHA_LINUX_ARM64}/${archive_digest}/" \
+        -e "s/${PIN_SYFT_SHA_DARWIN_AMD64}/${archive_digest}/" \
+        -e "s/${PIN_SYFT_SHA_DARWIN_ARM64}/${archive_digest}/" \
         "$PROJECT_ROOT/helpers/sbom-utils.sh" > "$helper_dir/sbom-utils.sh"
     cp "$PROJECT_ROOT/helpers/retry.sh" "$helper_dir/retry.sh"
     printf '%s\n' "$helper_dir/sbom-utils.sh"
@@ -320,10 +341,10 @@ EOF
     cat > "$helper_bin/sha256sum" <<'EOF'
 #!/bin/sh
 case "$1" in
-    *linux_amd64*) digest="2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f" ;;
-    *linux_arm64*) digest="6c0466811541ea03add5213a60a1562f0851e4c0b0ecfdee1a694a9455285900" ;;
-    *darwin_amd64*) digest="cddf9a044145caf0a1a3194d00d1dd51a1666f4814f2919cdb4768a0c062ad95" ;;
-    *darwin_arm64*) digest="4f37f4c7fefce0a68e4cf71ba3f5f9829a99e65d89b29f7ee41b8c2c10ea8c59" ;;
+    *linux_amd64*) digest="$PIN_SYFT_SHA_LINUX_AMD64" ;;
+    *linux_arm64*) digest="$PIN_SYFT_SHA_LINUX_ARM64" ;;
+    *darwin_amd64*) digest="$PIN_SYFT_SHA_DARWIN_AMD64" ;;
+    *darwin_arm64*) digest="$PIN_SYFT_SHA_DARWIN_ARM64" ;;
     *) exit 1 ;;
 esac
 printf '%s  %s\n' "$digest" "$1" > "$SYFT_DIGEST_INPUT"
@@ -359,14 +380,14 @@ EOF
         [[ "$output" == *"Failed to extract verified syft"* ]]
         grep -Fq "$asset" "$curl_args"
         [ "$(awk '{print $1}' "$digest_input")" = "$digest" ]
-    done <<'EOF'
-Linux|x86_64|syft_1.51.0_linux_amd64.tar.gz|2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f
-Linux|amd64|syft_1.51.0_linux_amd64.tar.gz|2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f
-Linux|aarch64|syft_1.51.0_linux_arm64.tar.gz|6c0466811541ea03add5213a60a1562f0851e4c0b0ecfdee1a694a9455285900
-Linux|arm64|syft_1.51.0_linux_arm64.tar.gz|6c0466811541ea03add5213a60a1562f0851e4c0b0ecfdee1a694a9455285900
-Darwin|x86_64|syft_1.51.0_darwin_amd64.tar.gz|cddf9a044145caf0a1a3194d00d1dd51a1666f4814f2919cdb4768a0c062ad95
-Darwin|amd64|syft_1.51.0_darwin_amd64.tar.gz|cddf9a044145caf0a1a3194d00d1dd51a1666f4814f2919cdb4768a0c062ad95
-Darwin|arm64|syft_1.51.0_darwin_arm64.tar.gz|4f37f4c7fefce0a68e4cf71ba3f5f9829a99e65d89b29f7ee41b8c2c10ea8c59
+    done <<EOF
+Linux|x86_64|syft_${PIN_SYFT_VERSION}_linux_amd64.tar.gz|${PIN_SYFT_SHA_LINUX_AMD64}
+Linux|amd64|syft_${PIN_SYFT_VERSION}_linux_amd64.tar.gz|${PIN_SYFT_SHA_LINUX_AMD64}
+Linux|aarch64|syft_${PIN_SYFT_VERSION}_linux_arm64.tar.gz|${PIN_SYFT_SHA_LINUX_ARM64}
+Linux|arm64|syft_${PIN_SYFT_VERSION}_linux_arm64.tar.gz|${PIN_SYFT_SHA_LINUX_ARM64}
+Darwin|x86_64|syft_${PIN_SYFT_VERSION}_darwin_amd64.tar.gz|${PIN_SYFT_SHA_DARWIN_AMD64}
+Darwin|amd64|syft_${PIN_SYFT_VERSION}_darwin_amd64.tar.gz|${PIN_SYFT_SHA_DARWIN_AMD64}
+Darwin|arm64|syft_${PIN_SYFT_VERSION}_darwin_arm64.tar.gz|${PIN_SYFT_SHA_DARWIN_ARM64}
 EOF
 }
 
@@ -383,7 +404,7 @@ EOF
     ' _ "$PROJECT_ROOT/helpers/sbom-utils.sh" "$helper_bin"
 
     [ "$status" -ne 0 ]
-    [[ "$output" == *"No verified syft 1.51.0 release asset for FreeBSD/x86_64"* ]]
+    [[ "$output" == *"No verified syft ${PIN_SYFT_VERSION} release asset for FreeBSD/x86_64"* ]]
 }
 
 @test "install_syft refuses altered bytes before installing anything" {
@@ -507,7 +528,7 @@ EOF
             [ ! -e "$destination" ]
         fi
         [ -z "$(find "$home_dir/.local/bin" -name 'syft.tmp.*' -print -quit 2>/dev/null)" ]
-        [[ "$output" == *"reported version 9.9.9-test, expected 1.51.0"* ]]
+        [[ "$output" == *"reported version 9.9.9-test, expected ${PIN_SYFT_VERSION}"* ]]
         [[ "$output" != *"installed successfully"* ]]
     done
 }
@@ -515,7 +536,7 @@ EOF
 @test "install_syft returns failure without installing or logging success when download fails" {
     local archive="$TEST_TEMP_DIR/syft.tar.gz"
     local archive_digest helper helper_bin home_dir system_destination system_mv_destination
-    archive_digest=$(make_syft_archive "$archive" "1.51.0")
+    archive_digest=$(make_syft_archive "$archive" "$PIN_SYFT_VERSION")
     helper=$(copy_sbom_utils_with_archive_digest "$archive_digest")
     helper_bin=$(make_syft_helper_bin)
     home_dir="$TEST_TEMP_DIR/home"
@@ -537,14 +558,14 @@ EOF
     [ ! -e "$home_dir/.local/bin/syft" ]
     [ ! -e "$system_destination" ]
     [ ! -e "$system_mv_destination" ]
-    [[ "$output" == *"Failed to download syft 1.51.0"* ]]
+    [[ "$output" == *"Failed to download syft ${PIN_SYFT_VERSION}"* ]]
     [[ "$output" != *"installed successfully"* ]]
 }
 
 @test "install_syft falls back to the user directory and exports PATH when the system directory is unavailable" {
     local archive="$TEST_TEMP_DIR/syft.tar.gz"
     local archive_digest helper helper_bin home_dir
-    archive_digest=$(make_syft_archive "$archive" "1.51.0")
+    archive_digest=$(make_syft_archive "$archive" "$PIN_SYFT_VERSION")
     helper=$(copy_sbom_utils_with_archive_digest "$archive_digest")
     helper_bin=$(make_syft_helper_bin)
     home_dir="$TEST_TEMP_DIR/home"
@@ -576,13 +597,13 @@ EOF
     ' _ "$helper" "$helper_bin" "$archive" "$home_dir"
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"syft 1.51.0 installed successfully"* ]]
+    [[ "$output" == *"syft ${PIN_SYFT_VERSION} installed successfully"* ]]
 }
 
 @test "install_syft installs a verified binary at the requested system destination" {
     local archive="$TEST_TEMP_DIR/syft.tar.gz"
     local archive_digest helper helper_bin home_dir system_destination system_mv_destination mktemp_path curl_calls
-    archive_digest=$(make_syft_archive "$archive" "1.51.0")
+    archive_digest=$(make_syft_archive "$archive" "$PIN_SYFT_VERSION")
     helper=$(copy_sbom_utils_with_archive_digest "$archive_digest")
     helper_bin=$(make_syft_helper_bin)
     home_dir="$TEST_TEMP_DIR/home"
@@ -613,7 +634,7 @@ EOF
 
     [ "$status" -eq 0 ]
     [ -x "$system_destination" ]
-    [ "$("$system_destination" version | awk '/^Version:/ { print $2 }')" = 1.51.0 ]
+    [ "$("$system_destination" version | awk '/^Version:/ { print $2 }')" = "$PIN_SYFT_VERSION" ]
     [ "$(cat "$system_mv_destination")" = /usr/local/bin/syft ]
     [ "$(wc -l < "$curl_calls")" -eq 1 ]
     [ ! -e "$home_dir/.local/bin/syft" ]
@@ -622,7 +643,7 @@ EOF
 @test "install_syft verifies a correct archive in a TMPDIR containing a backslash" {
     local archive="$TEST_TEMP_DIR/syft.tar.gz"
     local archive_digest helper helper_bin home_dir tmpdir
-    archive_digest=$(make_syft_archive "$archive" "1.51.0")
+    archive_digest=$(make_syft_archive "$archive" "$PIN_SYFT_VERSION")
     helper=$(copy_sbom_utils_with_archive_digest "$archive_digest")
     helper_bin=$(make_syft_helper_bin)
     home_dir="$TEST_TEMP_DIR/home"
@@ -653,7 +674,7 @@ EOF
 
     [ "$status" -eq 0 ]
     [ -x "$home_dir/.local/bin/syft" ]
-    [[ "$output" == *"syft 1.51.0 installed successfully"* ]]
+    [[ "$output" == *"syft ${PIN_SYFT_VERSION} installed successfully"* ]]
 }
 
 @test "install_syft leaves no new destination binary when validation fails" {
@@ -731,7 +752,7 @@ EOF
 @test "install_syft succeeds when logging success fails" {
     local archive="$TEST_TEMP_DIR/syft.tar.gz"
     local archive_digest helper helper_bin home_dir
-    archive_digest=$(make_syft_archive "$archive" "v1.51.0")
+    archive_digest=$(make_syft_archive "$archive" "v${PIN_SYFT_VERSION}")
     helper=$(copy_sbom_utils_with_archive_digest "$archive_digest")
     helper_bin=$(make_syft_helper_bin)
     home_dir="$TEST_TEMP_DIR/home"
