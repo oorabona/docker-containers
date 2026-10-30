@@ -5,7 +5,7 @@
 # Reference: https://github.com/postgis/docker-postgis (Alpine variant)
 #
 # IMPORTANT: Flavors using PostGIS must install runtime deps in the main
-# Dockerfile: geos gdal proj json-c libxml2 protobuf-c
+# Dockerfile: geos gdal proj json-c libxml2 protobuf-c gmp
 #
 # Usage:
 #   docker build -f postgis.Dockerfile \
@@ -32,7 +32,8 @@ RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}"
 # source below is a git checkout driven by autogen.sh, which does not ship the
 # pre-generated files a release tarball would, so both are required here. Their
 # absence surfaces only on a real compile — a cached extension image hides it —
-# and reads as "No yacc found, cannot build parser".
+# and reads as "No yacc found, cannot build parser". gmp-dev is likewise required
+# by PostGIS 3.7+ ("configure: error: Could not find required libgmp").
 #
 # PGXS hardcodes a specific clang-N for JIT bitcode (with_llvm=yes). Derive that
 # major from the postgres base's Makefile.global and install exactly it, so the
@@ -54,6 +55,7 @@ RUN set -eux \
         json-c-dev \
         libxml2-dev \
         protobuf-c-dev \
+        gmp-dev \
         pcre2-dev \
         perl \
     && pg_clang_major="$(grep -oE 'clang-[0-9]+' "$(dirname "$(pg_config --pgxs)")/../Makefile.global" | head -1 | grep -oE '[0-9]+')" \
