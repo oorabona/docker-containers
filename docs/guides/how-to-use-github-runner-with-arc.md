@@ -72,74 +72,17 @@ The test establishes local image/JIT behavior only. Its controlled-helper case r
 
 [Data, local] These eight probes consumed `ACTIONS_RUNNER_INPUT_JITCONFIG` with no command arguments. The synthetic `.runner` uses an intentionally invalid `AgentId` so the listener stops before registration. Both error cases can return `0` through `run.sh`: the tests check the saved file and explicit parse error, not only the exit code. UID `1001` failed with `Permission denied` on Debian. Group-only work-volume writes and the `_tool` cache override succeeded with each image's actual user. The reusable Bats suite above additionally exercises the sample's absolute work path. Its volume initialization runs separately as root with only `CHOWN`; the tested runner remains non-root. Kubernetes `fsGroup`, ARM64, Windows execution, and Docker runtime execution were not tested here.
 
-## Qualify separate rootless accounts on one Linux host
+## Local runtime ownership
 
-Use fresh unprivileged `arc-a`/`arc-b` logins in a disposable Linux guest; trust its kernel and administrator. Same-UID adversaries and shared daemon/socket credentials remain unsupported. Require `0700` homes/runtime parents, separate local rootless stores, subordinate UID/GID ranges disjoint from each other and real IDs, and no accessible privileged API. An inaccessible `/var/run/docker.sock` may remain.
+Run `github-runner/tests/test-runner-arc.bats` in a developer-owned local runtime.
+`remove_owned()` inspects `arc-offline-test` before a separate `rm`/`volume rm`; another process can replace the resource between those calls.
+Untrusted processes under the test Unix UID or using its Docker/Podman socket credentials remain unsupported.
 
-An administrator supplies root-owned, non-user-writable `/opt/arc-source` and preloads the pinned image into both stores. Use each login's environment; add no service, privilege or harness flag. Capture under both logins:
+On a shared Linux host, use separate Unix UIDs, `0700` homes and `$XDG_RUNTIME_DIR` parents, and private rootless Podman stores.
+Keep `/etc/subuid` and `/etc/subgid` ranges disjoint between users and from real UIDs/GIDs; use separate VMs when these prerequisites cannot be met.
+The Linux kernel and `root` administrators must be trusted.
 
-```bash
-id
-getent passwd; getent group
-cat /etc/subuid /etc/subgid
-stat -c '%U:%G:%a %n' "$HOME" "$XDG_RUNTIME_DIR" /opt/arc-source
-printf 'CONTAINER_HOST=%q CONTAINER_CONNECTION=%q DOCKER_HOST=%q\n' "${CONTAINER_HOST-}" "${CONTAINER_CONNECTION-}" "${DOCKER_HOST-}"
-podman system connection list --format json
-podman info --format json | jq '.host.security, .host.serviceIsRemote, .store'
-```
-
-Require `rootless=true`, `.host.serviceIsRemote=false`, private graphroot/runroot/volume paths and `[]` connections. Record `getenforce`, kernel/tool versions, source commit/hash and image digest.
-
-Choose the same fresh `name` under both logins. Set `image` to the pinned reference above:
-
-```bash
-name=arc-isolation-check
-podman volume create --label "arc-isolation-owner=$USER" "$name"
-podman run -d --name "$name" --label "arc-isolation-owner=$USER" --pull=never --network=none --cap-drop=ALL --security-opt=no-new-privileges --volume "$name:/probe" --entrypoint /bin/bash "$image" -c 'printf "%s\n" "$1" > /probe/owner; exec sleep infinity' -- "$USER"
-podman inspect "$name"
-podman volume inspect "$name"
-podman exec "$name" cat /probe/owner
-```
-
-Exchange full container IDs and inspection receipts. Under A, remove only A's resources:
-
-```bash
-podman rm -f "$name"
-podman volume rm "$name"
-podman container inspect "$name"
-podman volume inspect "$name"
-```
-
-Require A's lookups to report absence and B's ID, labels, volume metadata/content to remain unchanged. Recreate after each removal; reverse A/B. Use volume metadata/labels/content, not an immutable volume ID.
-
-Create foreign-only `arc-isolation-only-a`/`arc-isolation-only-b`; exchange IDs, names and private paths. Run under both logins:
-
-```bash
-podman inspect "$foreign_container_id"
-podman rm "$foreign_container_id"
-podman volume inspect "$foreign_volume"
-podman volume rm "$foreign_volume"
-ls -ld "$foreign_graphroot" "$foreign_runroot"
-podman --remote --url "unix://$foreign_socket" info
-```
-
-Require foreign lookup/removal failure, private-path/socket permission denial, successful own-resource controls, and unchanged owner receipts. A generic runtime failure alone proves nothing.
-
-Keep the other account’s `$name` container and volume present; run under each login:
-
-```bash
-cd /opt/arc-source
-TMPDIR=$(mktemp -d) || exit 1; export TMPDIR
-ARC_RUNTIME_TESTS=1 ARC_TEST_RUNTIME=podman ARC_TEST_IMAGE="$image" bats github-runner/tests/test-runner-arc.bats >"$TMPDIR/arc.tap" 2>&1
-bats_status=$?
-printf 'bats_status=%s\n' "$bats_status"; cat "$TMPDIR/arc.tap"
-podman ps -a --filter label=arc-offline-test --format json
-podman volume ls --filter label=arc-offline-test --format json
-```
-
-Require exit `0`, five passes, zero skips, `[]` harness resources and unchanged peer receipts. Preserve existing image assertions: `.runner` content/numeric owner and work-directory `0:1001:2770`.
-
-Copy commands, statuses and receipts outside the guest before deleting its identified resources. Publish measured results in [oorabona/docker-containers#2223](https://github.com/oorabona/docker-containers/issues/2223); the existing host table supplies no two-account result.
+See [oorabona/docker-containers#2223](https://github.com/oorabona/docker-containers/issues/2223) for Fedora CoreOS `44.20261023.3.1` / Podman `5.8.9` two-account evidence and its limits.
 
 ## Cache and canary boundaries
 
