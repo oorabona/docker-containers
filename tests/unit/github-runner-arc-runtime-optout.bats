@@ -2,6 +2,260 @@
 
 load "../test_helper"
 
+ARC_IMAGE='ghcr.io/oorabona/github-runner:2.338.2@sha256:9df91c26565854fc5966ff98285789787d8e4aad0c2e3f60bc4076432d2a1877'
+ARC_HARNESS="$PROJECT_ROOT/github-runner/tests/test-runner-arc.bats"
+
+setup() {
+    setup_temp_dir
+    ARC_FAKE_BIN="$TEST_TEMP_DIR/arc-fake-bin"
+    ARC_FAKE_STATE="$TEST_TEMP_DIR/arc-fake-state"
+    ARC_FAKE_LOG="$TEST_TEMP_DIR/arc-fake.log"
+    mkdir -p "$ARC_FAKE_BIN" "$ARC_FAKE_STATE"
+    : > "$ARC_FAKE_LOG"
+    create_arc_fake_runtime
+}
+
+teardown() {
+    teardown_temp_dir
+}
+
+create_arc_fake_runtime() {
+    cat > "$ARC_FAKE_BIN/podman" <<'EOF'
+#!/bin/bash
+
+log="$ARC_FAKE_LOG"
+state="$ARC_FAKE_STATE"
+printf '%q ' "$@" >> "$log"
+printf '\n' >> "$log"
+
+record_name() {
+    printf '%s\n' "$2" >> "$state/$1-names"
+}
+
+label_from_args() {
+    local arg next=0
+    for arg in "$@"; do
+        if [[ "$next" -eq 1 ]]; then
+            printf '%s\n' "${arg#arc-offline-test=}"
+            return
+        fi
+        [[ "$arg" == --label ]] && next=1
+    done
+}
+
+case "$1:$2" in
+    container:ls|volume:ls)
+        kind="$1"
+        if [[ -f "$state/created" && "${ARC_FAKE_FAIL_CLEANUP:-}" == "$kind-list" ]]; then
+            printf 'simulated %s listing failure\n' "$kind" >&2
+            exit 71
+        fi
+        if [[ ! -f "$state/created" && "${ARC_FAKE_FAIL_SETUP_LIST:-}" == "$kind" ]]; then
+            printf 'simulated %s listing failure\n' "$kind" >&2
+            exit 72
+        fi
+        if [[ "$kind" == container && ! -f "$state/created" && "${ARC_FAKE_EXISTING_EXACT:-}" == 1 ]]; then
+            candidate_pid="$PPID"
+            while [[ "$candidate_pid" -gt 1 ]]; do
+                printf 'arc-offline-%s-42-%s-%s\n' "$BATS_TEST_NUMBER" "$candidate_pid" "$ARC_FAKE_EXPECTED_RANDOM"
+                candidate_pid=$(ps -o ppid= -p "$candidate_pid")
+                candidate_pid=${candidate_pid//[[:space:]]/}
+            done
+        elif [[ "$kind" == container && ! -f "$state/created" && "${ARC_FAKE_SIMILAR_NAME:-}" == 1 ]]; then
+            printf 'arc-offline-%s-42-similar-resource\n' "$BATS_TEST_NUMBER"
+        elif [[ "${ARC_FAKE_HIDE_AFTER_SETUP:-}" != 1 && -f "$state/$kind-names" ]]; then
+            cat "$state/$kind-names"
+        fi
+        ;;
+    volume:create)
+        owner=$(label_from_args "$@")
+        printf '%s\n' "$owner" > "$state/owner"
+        record_name volume "${!#}"
+        touch "$state/created"
+        ;;
+    run:*)
+        if [[ "${ARC_FAKE_IGNORE_TERM:-}" == 1 ]]; then
+            trap '' TERM
+            while :; do sleep 1; done
+        fi
+        name=
+        previous=
+        for arg in "$@"; do
+            if [[ "$previous" == --name ]]; then
+                name="$arg"
+                break
+            fi
+            previous="$arg"
+        done
+        if [[ -n "$name" ]]; then
+            record_name container "$name"
+            exit 0
+        fi
+        printf '[ERROR] Must set GITHUB_REPOSITORY (owner/repo) or GITHUB_ORG (myorg).\n' >&2
+        exit 1
+        ;;
+    container:inspect|volume:inspect)
+        kind="$1"
+        if [[ "${ARC_FAKE_FAIL_CLEANUP:-}" == "$kind-inspect" ]]; then
+            printf 'simulated %s inspection failure\n' "$kind" >&2
+            exit 73
+        fi
+        case "${ARC_FAKE_OWNER:-own}" in
+            foreign) printf 'foreign-run\n' ;;
+            missing) printf '\n' ;;
+            *) cat "$state/owner" ;;
+        esac
+        ;;
+    rm:*|volume:rm)
+        if [[ "${ARC_FAKE_FAIL_CLEANUP:-}" == remove ]]; then
+            printf 'simulated removal failure\n' >&2
+            exit 74
+        fi
+        ;;
+esac
+EOF
+    chmod +x "$ARC_FAKE_BIN/podman"
+    cat > "$ARC_FAKE_BIN/date" <<'EOF'
+#!/bin/bash
+printf '42\n'
+EOF
+    chmod +x "$ARC_FAKE_BIN/date"
+}
+
+run_arc_harness() {
+    run env PATH="$ARC_FAKE_BIN:$PATH" ARC_RUNTIME_TESTS=1 ARC_TEST_RUNTIME=podman \
+        ARC_TEST_IMAGE="$ARC_IMAGE" ARC_FAKE_LOG="$ARC_FAKE_LOG" ARC_FAKE_STATE="$ARC_FAKE_STATE" \
+        "$@" bats --filter 'standalone entrypoint reports the missing scope input first' "$ARC_HARNESS"
+}
+
+@test "ARC runtime refuses a missing timeout before it mutates the runtime" {
+    local bash_env="$TEST_TEMP_DIR/no-timeout.bash"
+
+    cat > "$bash_env" <<'EOF'
+command() {
+    if [[ "$1" == -v && ( "$2" == timeout || "$2" == gtimeout ) ]]; then
+        return 1
+    fi
+    builtin command "$@"
+}
+EOF
+    run_arc_harness BASH_ENV="$bash_env"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'timeout or gtimeout with --kill-after is required'* ]]
+    run grep -qE '^(volume create|run )' "$ARC_FAKE_LOG"
+    [ "$status" -ne 0 ]
+}
+
+@test "ARC runtime validates timeout durations and accepts positive decimal seconds" {
+    local duration
+
+    for duration in 0 -1 1. invalid; do
+        run_arc_harness ARC_TEST_TIMEOUT="$duration"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *'ARC_TEST_TIMEOUT must be a positive number of seconds'* ]]
+    done
+
+    run_arc_harness ARC_TEST_TIMEOUT=0.1
+    [ "$status" -eq 0 ]
+}
+
+@test "ARC runtime force-kills a TERM-ignoring runtime call and reports its deadline" {
+    run env PATH="$ARC_FAKE_BIN:$PATH" ARC_RUNTIME_TESTS=1 ARC_TEST_RUNTIME=podman \
+        ARC_TEST_IMAGE="$ARC_IMAGE" ARC_TEST_TIMEOUT=0.1 ARC_FAKE_IGNORE_TERM=1 \
+        ARC_FAKE_LOG="$ARC_FAKE_LOG" ARC_FAKE_STATE="$ARC_FAKE_STATE" \
+        timeout 8s bats --filter 'standalone entrypoint reports the missing scope input first' "$ARC_HARNESS"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'runtime call exceeded 0.1s deadline'* ]]
+    [[ "$output" == *'status 137'* ]]
+}
+
+@test "ARC runtime accepts empty listings, rejects failed listings, and distinguishes exact names" {
+    local fixed_random_env="$TEST_TEMP_DIR/fixed-random.bash"
+
+    run_arc_harness
+    [ "$status" -eq 0 ]
+
+    : > "$ARC_FAKE_LOG"
+    rm -rf "$ARC_FAKE_STATE"
+    mkdir "$ARC_FAKE_STATE"
+    run_arc_harness ARC_FAKE_FAIL_SETUP_LIST=container
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'could not list containers while checking'* ]]
+    run grep -qE '^(volume create|run )' "$ARC_FAKE_LOG"
+    [ "$status" -ne 0 ]
+
+    : > "$ARC_FAKE_LOG"
+    rm -rf "$ARC_FAKE_STATE"
+    mkdir "$ARC_FAKE_STATE"
+    printf 'RANDOM=123\n' > "$fixed_random_env"
+    run_arc_harness ARC_FAKE_EXISTING_EXACT=1 ARC_FAKE_EXPECTED_RANDOM=2850 BASH_ENV="$fixed_random_env"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'stale container '* ]]
+    run grep -qE '^(volume create|run )' "$ARC_FAKE_LOG"
+    [ "$status" -ne 0 ]
+
+    : > "$ARC_FAKE_LOG"
+    rm -rf "$ARC_FAKE_STATE"
+    mkdir "$ARC_FAKE_STATE"
+    run_arc_harness ARC_FAKE_SIMILAR_NAME=1
+    [ "$status" -eq 0 ]
+    grep -q '^volume create ' "$ARC_FAKE_LOG"
+}
+
+@test "ARC runtime cleanup leaves absent resources, preserves foreign labels, and removes owned labels" {
+    run_arc_harness ARC_FAKE_HIDE_AFTER_SETUP=1
+    [ "$status" -eq 0 ]
+    run grep -qE '^(rm|volume rm) ' "$ARC_FAKE_LOG"
+    [ "$status" -ne 0 ]
+
+    : > "$ARC_FAKE_LOG"
+    rm -rf "$ARC_FAKE_STATE"
+    mkdir "$ARC_FAKE_STATE"
+    run_arc_harness ARC_FAKE_OWNER=foreign
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'not removing '* ]]
+    run grep -qE '^(rm|volume rm) ' "$ARC_FAKE_LOG"
+    [ "$status" -ne 0 ]
+
+    : > "$ARC_FAKE_LOG"
+    rm -rf "$ARC_FAKE_STATE"
+    mkdir "$ARC_FAKE_STATE"
+    run_arc_harness ARC_FAKE_OWNER=missing
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'not removing '* ]]
+    run grep -qE '^(rm|volume rm) ' "$ARC_FAKE_LOG"
+    [ "$status" -ne 0 ]
+
+    : > "$ARC_FAKE_LOG"
+    rm -rf "$ARC_FAKE_STATE"
+    mkdir "$ARC_FAKE_STATE"
+    run_arc_harness
+    [ "$status" -eq 0 ]
+    grep -q '^rm -f ' "$ARC_FAKE_LOG"
+    grep -q '^volume rm -f ' "$ARC_FAKE_LOG"
+}
+
+@test "ARC runtime cleanup reports failures and continues with other resources" {
+    local failure expected later
+
+    for failure in container-list container-inspect remove; do
+        : > "$ARC_FAKE_LOG"
+        rm -rf "$ARC_FAKE_STATE"
+        mkdir "$ARC_FAKE_STATE"
+        run_arc_harness ARC_FAKE_FAIL_CLEANUP="$failure"
+        [ "$status" -ne 0 ]
+        case "$failure" in
+            container-list) expected='cleanup failed: cannot establish whether container'; later='^volume ls ' ;;
+            container-inspect) expected='cleanup failed: could not inspect ownership label for container'; later='^volume inspect ' ;;
+            remove) expected='cleanup failed: container .* was not removed'; later='^volume rm -f ' ;;
+        esac
+        [[ "$output" =~ $expected ]]
+        grep -Eq "$later" "$ARC_FAKE_LOG"
+    done
+}
+
 @test "ARC runtime opt-out preserves an inherited caller temporary directory" {
     local inherited_temp_dir sentinel
 
