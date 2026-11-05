@@ -7,19 +7,21 @@
 # Host tools: Bash, Bats Core, jq, Mike Farah yq v4, tr, grep -E, base64 (GNU or
 # BSD; line wrapping is stripped with tr), and a tar that lists with -tv and
 # accepts --numeric-owner (GNU tar or bsdtar). `timeout` (or Homebrew's
-# `gtimeout`) bounds every runtime call to ARC_TEST_TIMEOUT seconds (default
-# 120); without either, calls are unbounded. Only Podman on Linux without
-# SELinux enforcement has been measured; the `z` relabel option and the BSD
-# tool paths below are not yet qualified on a real host.
+# `gtimeout`) is required to bound every runtime call to ARC_TEST_TIMEOUT
+# seconds (default 120), with a fixed five-second force-kill grace. See the dated
+# qualification matrix in docs/guides/how-to-use-github-runner-with-arc.md for
+# measured hosts and remaining platform checks.
 #
-# Every container and volume carries the label arc-offline-test=<run id>. A new
-# name must be unused, and teardown only removes resources carrying this run's
-# label, so a stale resource from an earlier run is reported, never reused or
-# deleted.
+# setup() labels containers and volumes; require_unused_name() checks new names.
+# remove_owned() checks the inspected label against this run, then makes a
+# separate removal call. A second actor can replace the resource between calls:
+# https://github.com/oorabona/docker-containers/issues/2223
 
 SAMPLE_RUNNER_ROOT=/home/runner/actions-runner
 SAMPLE_WORKDIR=/home/runner/actions-runner/_work
 SAMPLE_TOOL_CACHE=/home/runner/actions-runner/_tool
+RUN_LABEL=arc-offline-test
+RUNTIME_TIMEOUT=
 
 setup() {
     local arc_values expected_image runner
@@ -49,6 +51,7 @@ setup() {
         printf 'ARC_TEST_RUNTIME is unavailable: %s\n' "$ARC_TEST_RUNTIME" >&2
         return 1
     }
+    prepare_runtime_timeout || return 1
     RUN_ID="$(date +%s)-$$-${RANDOM}"
     CONTAINER_NAME="arc-offline-${BATS_TEST_NUMBER}-${RUN_ID}"
     INIT_NAME="${CONTAINER_NAME}-init"
@@ -61,66 +64,126 @@ setup() {
         --user 0:0 --cap-drop=ALL --cap-add=CHOWN --security-opt=no-new-privileges \
         --volume "$VOLUME_NAME:/probe" \
         --entrypoint /bin/bash "$ARC_TEST_IMAGE" -ec \
-        'chmod 2770 /probe && chown 0:1001 /probe'
+        'touch /probe/.arc-offline-volume-initialized && chmod 2770 /probe && chown 0:1001 /probe'
 }
 
 teardown() {
+    local cleanup_status=0
+
     if [[ -n "${ARC_TEST_RUNTIME:-}" && -n "${RUN_ID:-}" ]]; then
-        remove_owned container "$CONTAINER_NAME"
-        remove_owned container "$INIT_NAME"
-        remove_owned volume "$VOLUME_NAME"
+        remove_owned container "$CONTAINER_NAME" || cleanup_status=1
+        remove_owned container "$INIT_NAME" || cleanup_status=1
+        remove_owned volume "$VOLUME_NAME" || cleanup_status=1
     fi
+    return "$cleanup_status"
 }
 
-# Run the runtime under a deadline so a wedged daemon or container cannot hang
-# the suite silently; exit 124 is reported with the command that stalled.
-rt() {
-    local limit="${ARC_TEST_TIMEOUT:-120}" bound status=0
+prepare_runtime_timeout() {
+    local raw_limit="${ARC_TEST_TIMEOUT:-120}" limit candidate
 
-    bound=$(command -v timeout || command -v gtimeout || true)
-    if [[ -n "$bound" ]]; then
-        "$bound" "$limit" "$ARC_TEST_RUNTIME" "$@" || status=$?
-        if [[ "$status" -eq 124 ]]; then
-            printf 'runtime call timed out after %ss: %s %s\n' "$limit" "$ARC_TEST_RUNTIME" "$*" >&2
+    if ! limit=$(jq -ner --arg seconds "$raw_limit" '$seconds | tonumber | .+0 | select(isfinite and .>0)'); then
+        printf 'ARC_TEST_TIMEOUT must normalize to a finite positive number of seconds, got %s\n' "$raw_limit" >&2
+        return 1
+    fi
+    RUNTIME_TIMEOUT=
+    for candidate in timeout gtimeout; do
+        candidate=$(command -v "$candidate" || true)
+        if [[ -n "$candidate" ]] && "$candidate" --kill-after=5s 1s true >/dev/null 2>&1; then
+            RUNTIME_TIMEOUT="$candidate"
+            break
         fi
-        return "$status"
+    done
+    if [[ -z "$RUNTIME_TIMEOUT" ]]; then
+        printf 'timeout or gtimeout with --kill-after is required when ARC_RUNTIME_TESTS=1\n' >&2
+        return 1
     fi
-    "$ARC_TEST_RUNTIME" "$@"
+    ARC_TEST_TIMEOUT="$limit"
 }
 
-RUN_LABEL=arc-offline-test
+# rt() preserves statuses under the timeout wrapper; 124 and 137 alone do not
+# establish why the command failed.
+rt() {
+    local status=0
+
+    "$RUNTIME_TIMEOUT" --kill-after=5s "${ARC_TEST_TIMEOUT}s" "$ARC_TEST_RUNTIME" "$@" || status=$?
+    if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+        printf 'runtime call returned status %s under timeout wrapper (%ss): %s %s\n' \
+            "$status" "$ARC_TEST_TIMEOUT" "$ARC_TEST_RUNTIME" "$*" >&2
+    fi
+    return "$status"
+}
+
+resource_exists() {
+    local kind="$1" name="$2" names entry
+
+    case "$kind" in
+        container) names=$(rt container ls -a --format '{{.Names}}') ;;
+        volume) names=$(rt volume ls --format '{{.Name}}') ;;
+        *) printf 'unsupported runtime resource kind: %s\n' "$kind" >&2; return 2 ;;
+    esac || {
+        printf 'could not list %ss while checking %s\n' "$kind" "$name" >&2
+        return 2
+    }
+    while IFS= read -r entry; do
+        [[ "$entry" == "$name" ]] && return 0
+    done <<< "$names"
+    return 1
+}
 
 # The name must not exist yet: reusing a stale resource would test the wrong state.
 require_unused_name() {
-    local kind="$1" name="$2"
+    local kind="$1" name="$2" status
 
-    if rt "$kind" inspect "$name" >/dev/null 2>&1; then
+    if resource_exists "$kind" "$name"; then
         printf 'stale %s %s already exists; remove it manually, it is not owned by this run\n' "$kind" "$name" >&2
         return 1
+    else
+        status=$?
+    fi
+    if [[ "$status" -ne 1 ]]; then
+        printf 'cannot establish whether %s %s is unused\n' "$kind" "$name" >&2
+        return "$status"
     fi
 }
 
-# Remove a container or volume only if it carries this run's label; report anything else.
+# remove_owned() checks this run's inspected label before a separate removal call.
 remove_owned() {
-    local kind="$1" name="$2" fmt owner
+    local kind="$1" name="$2" fmt owner status
 
     [[ -n "$name" ]] || return 0
+    if resource_exists "$kind" "$name"; then
+        :
+    else
+        status=$?
+        if [[ "$status" -eq 1 ]]; then
+            return 0
+        fi
+        printf 'cleanup failed: cannot establish whether %s %s exists\n' "$kind" "$name" >&2
+        return "$status"
+    fi
     if [[ "$kind" == volume ]]; then
         fmt='{{index .Labels "arc-offline-test"}}'
     else
         fmt='{{index .Config.Labels "arc-offline-test"}}'
     fi
-    if ! owner=$(rt "$kind" inspect --format "$fmt" "$name" 2>/dev/null); then
-        return 0
+    if ! owner=$(rt "$kind" inspect --format "$fmt" "$name"); then
+        printf 'cleanup failed: could not inspect ownership label for %s %s\n' "$kind" "$name" >&2
+        return 1
     fi
     if [[ "$owner" != "$RUN_ID" ]]; then
         printf 'not removing %s %s: label %s=%q is not this run (%s)\n' "$kind" "$name" "$RUN_LABEL" "$owner" "$RUN_ID" >&2
-        return 0
+        return 1
     fi
     if [[ "$kind" == volume ]]; then
-        rt volume rm -f "$name" >/dev/null 2>&1 || printf 'cleanup failed: volume %s was not removed\n' "$name" >&2
+        rt volume rm -f "$name" >/dev/null || {
+            printf 'cleanup failed: volume %s was not removed\n' "$name" >&2
+            return 1
+        }
     else
-        rt rm -f "$name" >/dev/null 2>&1 || printf 'cleanup failed: container %s was not removed\n' "$name" >&2
+        rt rm -f "$name" >/dev/null || {
+            printf 'cleanup failed: container %s was not removed\n' "$name" >&2
+            return 1
+        }
     fi
 }
 
@@ -155,17 +218,27 @@ run_sample() {
 }
 
 wait_for_controlled_helper_file() {
-    local path="$1" attempt
+    local path="$1" status
 
-    for ((attempt = 0; attempt < 50; attempt++)); do
-        if rt exec "$CONTAINER_NAME" test -f "$path" 2>/dev/null; then
-            return 0
-        fi
-        sleep 0.1
-    done
-    printf 'controlled helper never created %s within 5s\n' "$path" >&2
+    # shellcheck disable=SC2016 # rt exec passes this loop to the container's Bash.
+    if rt exec "$CONTAINER_NAME" /bin/bash -c '
+        for ((attempt = 0; attempt < 50; attempt++)); do
+            if [[ -f "$1" ]]; then
+                exit 0
+            fi
+            sleep 0.1 || exit $?
+        done
+        printf "%s after %s checks with %ss sleeps\n" "marker not observed" 50 0.1 >&2
+        exit 1
+    ' -- "$path"; then
+        return 0
+    else
+        status=$?
+    fi
+    printf 'controlled helper readiness failed: container=%s path=%s status=%s\n' \
+        "$CONTAINER_NAME" "$path" "$status" >&2
     diagnose_container
-    return 1
+    return "$status"
 }
 
 wait_for_container_stop() {
@@ -181,7 +254,7 @@ wait_for_container_stop() {
         fi
         sleep 0.1
     done
-    printf 'container %s still running 5s after TERM\n' "$CONTAINER_NAME" >&2
+    printf 'container %s stop not observed after 50 status checks with 0.1s sleeps following TERM\n' "$CONTAINER_NAME" >&2
     diagnose_container
     return 1
 }
