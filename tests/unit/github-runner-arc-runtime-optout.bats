@@ -43,6 +43,13 @@ label_from_args() {
     done
 }
 
+unsupported_invocation() {
+    printf 'unsupported fake runtime invocation:' >&2
+    printf ' %q' "$@" >&2
+    printf '\n' >&2
+    exit 79
+}
+
 case "$1:$2" in
     container:ls|volume:ls)
         kind="$1"
@@ -112,6 +119,30 @@ case "$1:$2" in
             exit 74
         fi
         ;;
+    exec:*)
+        [[ "$#" -eq 7 && "$3" == /bin/bash && "$4" == -c && "$6" == -- &&
+            "$7" == /tmp/arc-controlled-helper-ready ]] || unsupported_invocation "$@"
+        grep -Fxq -- "$2" "$state/container-names" || unsupported_invocation "$@"
+        if [[ -n "${ARC_FAKE_READINESS_STATUS:-}" ]]; then
+            printf 'simulated readiness exec failure status %s\n' "$ARC_FAKE_READINESS_STATUS" >&2
+            exit "$ARC_FAKE_READINESS_STATUS"
+        fi
+        if [[ "${ARC_FAKE_ABSENT_MARKER:-}" == 1 ]]; then
+            exec "$3" "$4" "$5" "$6" "$state/absent-ready-marker"
+        fi
+        unsupported_invocation "$@"
+        ;;
+    inspect:--format)
+        [[ "$#" -eq 4 && "$3" == '{{.State.Status}} exit={{.State.ExitCode}}' ]] || unsupported_invocation "$@"
+        grep -Fxq -- "$4" "$state/container-names" || unsupported_invocation "$@"
+        printf 'running exit=0\n'
+        ;;
+    logs:--tail)
+        [[ "$#" -eq 4 && "$3" == 20 ]] || unsupported_invocation "$@"
+        grep -Fxq -- "$4" "$state/container-names" || unsupported_invocation "$@"
+        printf 'simulated controlled helper logs\n'
+        ;;
+    *) unsupported_invocation "$@" ;;
 esac
 EOF
     chmod +x "$ARC_FAKE_BIN/podman"
@@ -126,6 +157,66 @@ run_arc_harness() {
     run env PATH="$ARC_FAKE_BIN:$PATH" ARC_RUNTIME_TESTS=1 ARC_TEST_RUNTIME=podman \
         ARC_TEST_IMAGE="$ARC_IMAGE" ARC_FAKE_LOG="$ARC_FAKE_LOG" ARC_FAKE_STATE="$ARC_FAKE_STATE" \
         "$@" bats --filter 'standalone entrypoint reports the missing scope input first' "$ARC_HARNESS"
+}
+
+run_arc_helper_harness() {
+    run env PATH="$ARC_FAKE_BIN:$PATH" ARC_RUNTIME_TESTS=1 ARC_TEST_RUNTIME=podman \
+        ARC_TEST_IMAGE="$ARC_IMAGE" ARC_FAKE_LOG="$ARC_FAKE_LOG" ARC_FAKE_STATE="$ARC_FAKE_STATE" \
+        "$@" bats --filter 'run.sh PID 1 wrapper forwards TERM to a controlled helper' "$ARC_HARNESS"
+}
+
+assert_arc_readiness_failure() {
+    local readiness_status="$1" container_name
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *'not ok 1 run.sh PID 1 wrapper forwards TERM to a controlled helper'* ]]
+    container_name=$(tail -n 1 "$ARC_FAKE_STATE/container-names")
+    [[ "$output" == *"controlled helper readiness failed: container=$container_name path=/tmp/arc-controlled-helper-ready status=$readiness_status"* ]]
+    [[ "$output" == *"container $container_name state: running exit=0"* ]]
+    [[ "$output" == *'last log lines:'* ]]
+    [[ "$output" == *'simulated controlled helper logs'* ]]
+    [[ "$output" != *'unsupported fake runtime invocation:'* ]]
+    [ "$(grep -c '^exec ' "$ARC_FAKE_LOG")" -eq 1 ]
+    [ "$(grep -c '^inspect --format ' "$ARC_FAKE_LOG")" -eq 1 ]
+    grep -Fxq "logs --tail 20 $container_name " "$ARC_FAKE_LOG"
+    [ "$(grep -c '^rm -f ' "$ARC_FAKE_LOG")" -eq 2 ]
+    [ "$(grep -c '^volume rm -f ' "$ARC_FAKE_LOG")" -eq 1 ]
+    ! grep -qE '^(kill|cp) ' "$ARC_FAKE_LOG"
+}
+
+@test "ARC fake runtime rejects unsupported invocations with quoted arguments" {
+    run env ARC_FAKE_LOG="$ARC_FAKE_LOG" ARC_FAKE_STATE="$ARC_FAKE_STATE" \
+        "$ARC_FAKE_BIN/podman" unsupported 'argument with spaces'
+
+    [ "$status" -eq 79 ]
+    [[ "$output" == 'unsupported fake runtime invocation: unsupported argument\ with\ spaces' ]]
+}
+
+@test "ARC readiness exec failures retain status and diagnostics after one query" {
+    local failure
+
+    for failure in 1 3 124 125 137; do
+        : > "$ARC_FAKE_LOG"
+        rm -rf "$ARC_FAKE_STATE"
+        mkdir "$ARC_FAKE_STATE"
+        run_arc_helper_harness ARC_FAKE_READINESS_STATUS="$failure"
+
+        assert_arc_readiness_failure "$failure"
+        [[ "$output" == *"simulated readiness exec failure status $failure"* ]]
+        [[ "$output" != *'marker not observed after'* ]]
+        [[ "$output" != *'exceeded'* && "$output" != *'stalled'* && "$output" != *'deadline expired'* ]]
+        if [[ "$failure" -eq 124 || "$failure" -eq 137 ]]; then
+            [[ "$output" == *"runtime call returned status $failure under timeout wrapper (120s): podman exec "* ]]
+        fi
+    done
+}
+
+@test "ARC readiness runs the supplied Bash loop once and reports marker exhaustion" {
+    [ ! -e "$ARC_FAKE_STATE/absent-ready-marker" ]
+    run_arc_helper_harness ARC_FAKE_ABSENT_MARKER=1
+
+    assert_arc_readiness_failure 1
+    [[ "$output" == *'marker not observed after 50 checks with 0.1s sleeps'* ]]
 }
 
 @test "ARC runtime refuses a missing timeout before it mutates the runtime" {
@@ -160,15 +251,15 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "ARC runtime force-kills a TERM-ignoring runtime call and reports its deadline" {
+@test "ARC runtime force-kills a TERM-ignoring runtime call and reports its observed status" {
     run env PATH="$ARC_FAKE_BIN:$PATH" ARC_RUNTIME_TESTS=1 ARC_TEST_RUNTIME=podman \
         ARC_TEST_IMAGE="$ARC_IMAGE" ARC_TEST_TIMEOUT=0.1 ARC_FAKE_IGNORE_TERM=1 \
         ARC_FAKE_LOG="$ARC_FAKE_LOG" ARC_FAKE_STATE="$ARC_FAKE_STATE" \
         timeout 8s bats --filter 'standalone entrypoint reports the missing scope input first' "$ARC_HARNESS"
 
-    [ "$status" -ne 0 ]
-    [[ "$output" == *'runtime call exceeded 0.1s deadline'* ]]
-    [[ "$output" == *'status 137'* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *'not ok 1 standalone entrypoint reports the missing scope input first'* ]]
+    [[ "$output" == *'runtime call returned status 137 under timeout wrapper (0.1s): podman run '* ]]
 }
 
 @test "ARC runtime accepts empty listings, rejects failed listings, and distinguishes exact names" {

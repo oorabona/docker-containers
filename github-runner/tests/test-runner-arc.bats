@@ -8,14 +8,14 @@
 # BSD; line wrapping is stripped with tr), and a tar that lists with -tv and
 # accepts --numeric-owner (GNU tar or bsdtar). `timeout` (or Homebrew's
 # `gtimeout`) is required to bound every runtime call to ARC_TEST_TIMEOUT
-# seconds (default 120), with a fixed five-second force-kill grace. Only Podman on Linux without
-# SELinux enforcement has been measured; the `z` relabel option and the BSD
-# tool paths below are not yet qualified on a real host.
+# seconds (default 120), with a fixed five-second force-kill grace. See the dated
+# qualification matrix in docs/guides/how-to-use-github-runner-with-arc.md for
+# measured hosts and remaining platform checks.
 #
-# Every container and volume carries the label arc-offline-test=<run id>. A new
-# name must be unused, and teardown only removes resources carrying this run's
-# label, so a stale resource from an earlier run is reported, never reused or
-# deleted.
+# setup() labels containers and volumes; require_unused_name() checks new names.
+# remove_owned() checks the inspected label against this run, then makes a
+# separate removal call. A second actor can replace the resource between calls:
+# https://github.com/oorabona/docker-containers/issues/2223
 
 SAMPLE_RUNNER_ROOT=/home/runner/actions-runner
 SAMPLE_WORKDIR=/home/runner/actions-runner/_work
@@ -106,15 +106,15 @@ prepare_runtime_timeout() {
     ARC_TEST_TIMEOUT="$limit"
 }
 
-# Run the runtime under a deadline so a wedged daemon or container cannot hang
-# the suite silently; exits 124 and 137 are reported with the command that stalled.
+# rt() preserves statuses under the timeout wrapper; 124 and 137 alone do not
+# establish why the command failed.
 rt() {
     local status=0
 
     "$RUNTIME_TIMEOUT" --kill-after=5s "${ARC_TEST_TIMEOUT}s" "$ARC_TEST_RUNTIME" "$@" || status=$?
     if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
-        printf 'runtime call exceeded %ss deadline: %s %s (status %s)\n' \
-            "$ARC_TEST_TIMEOUT" "$ARC_TEST_RUNTIME" "$*" "$status" >&2
+        printf 'runtime call returned status %s under timeout wrapper (%ss): %s %s\n' \
+            "$status" "$ARC_TEST_TIMEOUT" "$ARC_TEST_RUNTIME" "$*" >&2
     fi
     return "$status"
 }
@@ -152,7 +152,7 @@ require_unused_name() {
     fi
 }
 
-# Remove a container or volume only if it carries this run's label; report anything else.
+# remove_owned() checks this run's inspected label before a separate removal call.
 remove_owned() {
     local kind="$1" name="$2" fmt owner status
 
@@ -224,17 +224,27 @@ run_sample() {
 }
 
 wait_for_controlled_helper_file() {
-    local path="$1" attempt
+    local path="$1" status
 
-    for ((attempt = 0; attempt < 50; attempt++)); do
-        if rt exec "$CONTAINER_NAME" test -f "$path" 2>/dev/null; then
-            return 0
-        fi
-        sleep 0.1
-    done
-    printf 'controlled helper never created %s within 5s\n' "$path" >&2
+    # shellcheck disable=SC2016 # rt exec passes this loop to the container's Bash.
+    if rt exec "$CONTAINER_NAME" /bin/bash -c '
+        for ((attempt = 0; attempt < 50; attempt++)); do
+            if [[ -f "$1" ]]; then
+                exit 0
+            fi
+            sleep 0.1 || exit $?
+        done
+        printf "%s after %s checks with %ss sleeps\n" "marker not observed" 50 0.1 >&2
+        exit 1
+    ' -- "$path"; then
+        return 0
+    else
+        status=$?
+    fi
+    printf 'controlled helper readiness failed: container=%s path=%s status=%s\n' \
+        "$CONTAINER_NAME" "$path" "$status" >&2
     diagnose_container
-    return 1
+    return "$status"
 }
 
 wait_for_container_stop() {
@@ -250,7 +260,7 @@ wait_for_container_stop() {
         fi
         sleep 0.1
     done
-    printf 'container %s still running 5s after TERM\n' "$CONTAINER_NAME" >&2
+    printf 'container %s stop not observed after 50 status checks with 0.1s sleeps following TERM\n' "$CONTAINER_NAME" >&2
     diagnose_container
     return 1
 }
