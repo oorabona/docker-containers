@@ -162,6 +162,50 @@ _run_cleanup_main_with_records() {
     ' <<< "$output" >/dev/null
 }
 
+@test "GHCR listing retries a transient HTTP 502 with backoff and then succeeds" {
+    local calls_file="$TEST_TEMP_DIR/ghcr-retry-calls"
+    : > "$calls_file"
+    export calls_file GHCR_LIST_BACKOFF_BASE=0
+    gh() {
+        echo x >> "$calls_file"
+        if [[ "$(wc -l < "$calls_file")" -lt 3 ]]; then
+            echo "gh: Bad Gateway (HTTP 502)" >&2
+            return 1
+        fi
+        printf '%s\n' '[{"id":1,"metadata":{"container":{"tags":["a"]}}}]'
+    }
+
+    run _list_ghcr_ext_version_records "ext-pg_cron"
+    unset -f gh
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(wc -l < "$calls_file")" -eq 3 ]]
+}
+
+@test "GHCR listing surfaces the HTTP status after exhausting retries" {
+    export GHCR_LIST_BACKOFF_BASE=0 GHCR_LIST_MAX_ATTEMPTS=2
+    gh() { echo "gh: Service Unavailable (HTTP 503)" >&2; return 1; }
+
+    run _list_ghcr_ext_version_records "ext-pg_cron"
+    unset -f gh
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"failed after 2 attempts"* && "$output" == *"HTTP 503"* ]]
+}
+
+@test "GHCR listing fails fast on a non-retryable HTTP 404" {
+    local calls_file="$TEST_TEMP_DIR/ghcr-404-calls"
+    : > "$calls_file"
+    export calls_file GHCR_LIST_BACKOFF_BASE=0
+    gh() { echo x >> "$calls_file"; echo "gh: Not Found (HTTP 404)" >&2; return 1; }
+
+    run _list_ghcr_ext_version_records "ext-missing"
+    unset -f gh
+
+    [[ "$status" -eq 1 ]]
+    [[ "$(wc -l < "$calls_file")" -eq 1 && "$output" == *"non-retryable"* ]]
+}
+
 @test "mixed-tag version record is kept; separate all-stale record is selected" {
     local records_file="$TEST_TEMP_DIR/mixed-records.json"
     local windows_dir="$TEST_TEMP_DIR/windows"

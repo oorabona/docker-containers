@@ -12,18 +12,49 @@
 # when GitHub returned the tags array (including an authoritative empty array);
 # it is false when tag metadata was absent or null, so callers can distinguish
 # an observed empty set from an incomplete observation.
-# Returns 1 when the API request fails; propagates jq's non-zero status when
+# Returns 1 when the API request still fails after retries; propagates jq's non-zero status when
 # the response cannot be normalized as a sequence of arrays.
 _list_ghcr_ext_version_records() {
     local package_name="$1"   # e.g. ext-timescaledb
     local owner="${OWNER:?OWNER is required}"
 
-    local raw_versions
-    raw_versions=$(gh api \
-        -H "Accept: application/vnd.github+json" \
-        -H "X-GitHub-Api-Version: 2022-11-28" \
-        "/users/${owner}/packages/container/${package_name}/versions" \
-        --paginate 2>/dev/null) || return 1
+    # Transient failures (network, 5xx, 429, secondary rate limit) are retried
+    # with exponential backoff; other 4xx (404, 401...) fail fast. The last
+    # gh error (which carries the HTTP status) is surfaced on stderr so callers
+    # can tell *why* the listing failed. Tunables: GHCR_LIST_MAX_ATTEMPTS,
+    # GHCR_LIST_BACKOFF_BASE (seconds, doubled each retry).
+    local max_attempts="${GHCR_LIST_MAX_ATTEMPTS:-4}"
+    local delay="${GHCR_LIST_BACKOFF_BASE:-2}"
+    local attempt=1 raw_versions err_file err_text
+    err_file=$(mktemp)
+    while :; do
+        if raw_versions=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/users/${owner}/packages/container/${package_name}/versions" \
+            --paginate 2>"$err_file"); then
+            break
+        fi
+        err_text=$(tr '\n' ' ' < "$err_file")
+        err_text="${err_text:-no error output}"
+        if [[ "$err_text" =~ HTTP\ (4[0-9][0-9]) ]] \
+            && [[ "${BASH_REMATCH[1]}" != "429" && "${BASH_REMATCH[1]}" != "403" ]]; then
+            printf 'GHCR list %s failed (non-retryable): %s\n' "$package_name" "$err_text" >&2
+            rm -f "$err_file"
+            return 1
+        fi
+        if (( attempt >= max_attempts )); then
+            printf 'GHCR list %s failed after %d attempts: %s\n' "$package_name" "$attempt" "$err_text" >&2
+            rm -f "$err_file"
+            return 1
+        fi
+        printf 'GHCR list %s attempt %d/%d failed (%s); retrying in %ss\n' \
+            "$package_name" "$attempt" "$max_attempts" "$err_text" "$delay" >&2
+        sleep "$delay"
+        delay=$((delay * 2))
+        attempt=$((attempt + 1))
+    done
+    rm -f "$err_file"
 
     jq -ce -s '
       # A successful transport with no JSON document is incomplete, not an
