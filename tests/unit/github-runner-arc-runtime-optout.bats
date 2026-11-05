@@ -199,7 +199,7 @@ assert_arc_readiness_failure() {
 }
 
 @test "ARC readiness exec failures retain status and diagnostics after one query" {
-    local failure
+    local failure exec_args
 
     for failure in 1 3 124 125 137; do
         : > "$ARC_FAKE_LOG"
@@ -212,8 +212,61 @@ assert_arc_readiness_failure() {
         [[ "$output" != *'marker not observed after'* ]]
         [[ "$output" != *'exceeded'* && "$output" != *'stalled'* && "$output" != *'deadline expired'* ]]
         if [[ "$failure" -eq 124 || "$failure" -eq 137 ]]; then
-            [[ "$output" == *"runtime call returned status $failure under timeout wrapper (120s): podman exec "* ]]
+            exec_args=$(grep '^exec ' "$ARC_FAKE_LOG")
+            grep -Fxq -- "# runtime call returned status $failure under timeout wrapper (120s): podman ${exec_args% }" <<< "$output"
         fi
+    done
+}
+
+@test "ARC runtime timeout diagnostics preserve empty, spaced, and newline arguments" {
+    local probe_root="$TEST_TEMP_DIR/arc-diagnostic-probe" failure shape
+    local probe_harness="$probe_root/tests/test-runner-arc.bats"
+
+    mkdir -p "$probe_root/tests" "$probe_root/examples"
+    cp "$ARC_HARNESS" "$probe_harness"
+    cp "$PROJECT_ROOT/github-runner/examples/arc-values.yaml" "$probe_root/examples/arc-values.yaml"
+    printf '\nbats_require_minimum_version 1.5.0\n\n@test "ARC diagnostic argument preservation probe" {\n' >> "$probe_harness"
+    cat >> "$probe_harness" <<'EOF'
+    local program quoted_program expected_args expected_stderr
+
+    case "$ARC_PROBE_SHAPE" in
+        empty) program=; quoted_program="''" ;;
+        spaces) program='two words'; quoted_program='two\ words' ;;
+        newline) program=$'line\nbreak'; quoted_program="\$'line\nbreak'" ;;
+        *) return 1 ;;
+    esac
+    run --keep-empty-lines --separate-stderr rt exec "$INIT_NAME" /bin/bash -c "$program" -- /tmp/arc-controlled-helper-ready
+
+    [ "$status" -eq "$ARC_FAKE_READINESS_STATUS" ]
+    [ -z "$output" ]
+    expected_args="exec $INIT_NAME /bin/bash -c $quoted_program -- /tmp/arc-controlled-helper-ready"
+    expected_stderr="simulated readiness exec failure status $ARC_FAKE_READINESS_STATUS"$'\n'
+    expected_stderr+="runtime call returned status $ARC_FAKE_READINESS_STATUS under timeout wrapper (120s): podman $expected_args"
+    [ "$stderr" = "$expected_stderr" ]
+    grep -Fxq -- "$expected_args " "$ARC_FAKE_LOG"
+}
+EOF
+
+    for failure in 124 137; do
+        for shape in empty spaces newline; do
+            : > "$ARC_FAKE_LOG"
+            rm -rf "$ARC_FAKE_STATE"
+            mkdir "$ARC_FAKE_STATE"
+            run env PATH="$ARC_FAKE_BIN:$PATH" ARC_RUNTIME_TESTS=1 ARC_TEST_RUNTIME=podman \
+                ARC_TEST_IMAGE="$ARC_IMAGE" ARC_TEST_TIMEOUT=120 \
+                ARC_FAKE_LOG="$ARC_FAKE_LOG" ARC_FAKE_STATE="$ARC_FAKE_STATE" \
+                ARC_FAKE_READINESS_STATUS="$failure" ARC_PROBE_SHAPE="$shape" \
+                bats --filter '^ARC diagnostic argument preservation probe$' "$probe_harness"
+
+            [ "$status" -eq 0 ]
+            [[ "$output" == *'ok 1 ARC diagnostic argument preservation probe'* ]]
+            [ "$(grep -c '^exec ' "$ARC_FAKE_LOG")" -eq 1 ]
+            [ "$(grep -c '^rm -f ' "$ARC_FAKE_LOG")" -eq 1 ]
+            [ "$(grep -c '^volume rm -f ' "$ARC_FAKE_LOG")" -eq 1 ]
+            grep -Fxq -- "rm -f $(cat "$ARC_FAKE_STATE/container-names") " "$ARC_FAKE_LOG"
+            grep -Fxq -- "volume rm -f $(cat "$ARC_FAKE_STATE/volume-names") " "$ARC_FAKE_LOG"
+            ! grep -qE '^(kill|cp) ' "$ARC_FAKE_LOG"
+        done
     done
 }
 
@@ -259,12 +312,33 @@ EOF
 
 @test "ARC runtime normalizes finite positive seconds and uses them in its timeout wrapper" {
     local duration normalized expected real_timeout timeout_log="$TEST_TEMP_DIR/timeout.log"
+    local rejected_output="$TEST_TEMP_DIR/rejected-timeout-output"
 
     for duration in 0 0.0 -0.0 +0 .0 0e3 -1 -0.5 invalid 1..2 1s 0x1 NaN Infinity 1e999 1e-999; do
         : > "$ARC_FAKE_LOG"
         run_arc_harness ARC_TEST_TIMEOUT="$duration"
         [ "$status" -ne 0 ]
         [[ "$output" == *"ARC_TEST_TIMEOUT must normalize to a finite positive number of seconds, got $duration"* ]]
+        [ ! -s "$ARC_FAKE_LOG" ]
+        [ ! -e "$ARC_FAKE_STATE/created" ]
+    done
+
+    for duration in ' ' $'\t' $'\n'; do
+        case "$duration" in
+            ' ') expected='\ ' ;;
+            $'\t') expected="\$'\t'" ;;
+            $'\n') expected="\$'\n'" ;;
+        esac
+        : > "$ARC_FAKE_LOG"
+        rm -rf "$rejected_output"
+        run env PATH="$ARC_FAKE_BIN:$PATH" ARC_RUNTIME_TESTS=1 ARC_TEST_RUNTIME=podman \
+            ARC_TEST_IMAGE="$ARC_IMAGE" ARC_TEST_TIMEOUT="$duration" \
+            ARC_FAKE_LOG="$ARC_FAKE_LOG" ARC_FAKE_STATE="$ARC_FAKE_STATE" \
+            bats --gather-test-outputs-in "$rejected_output" \
+            --filter 'standalone entrypoint reports the missing scope input first' "$ARC_HARNESS"
+        [ "$status" -ne 0 ]
+        grep -Fxq -- "ARC_TEST_TIMEOUT must normalize to a finite positive number of seconds, got $expected" \
+            "$rejected_output/1-standalone entrypoint reports the missing scope input first.log"
         [ ! -s "$ARC_FAKE_LOG" ]
         [ ! -e "$ARC_FAKE_STATE/created" ]
     done

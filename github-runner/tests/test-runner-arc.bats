@@ -82,7 +82,7 @@ prepare_runtime_timeout() {
     local raw_limit="${ARC_TEST_TIMEOUT:-120}" limit candidate
 
     if ! limit=$(jq -ner --arg seconds "$raw_limit" '$seconds | tonumber | .+0 | select(isfinite and .>0)'); then
-        printf 'ARC_TEST_TIMEOUT must normalize to a finite positive number of seconds, got %s\n' "$raw_limit" >&2
+        printf 'ARC_TEST_TIMEOUT must normalize to a finite positive number of seconds, got %q\n' "$raw_limit" >&2
         return 1
     fi
     RUNTIME_TIMEOUT=
@@ -107,8 +107,10 @@ rt() {
 
     "$RUNTIME_TIMEOUT" --kill-after=5s "${ARC_TEST_TIMEOUT}s" "$ARC_TEST_RUNTIME" "$@" || status=$?
     if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
-        printf 'runtime call returned status %s under timeout wrapper (%ss): %s %s\n' \
-            "$status" "$ARC_TEST_TIMEOUT" "$ARC_TEST_RUNTIME" "$*" >&2
+        printf 'runtime call returned status %s under timeout wrapper (%ss):' \
+            "$status" "$ARC_TEST_TIMEOUT" >&2
+        printf ' %q' "$ARC_TEST_RUNTIME" "$@" >&2
+        printf '\n' >&2
     fi
     return "$status"
 }

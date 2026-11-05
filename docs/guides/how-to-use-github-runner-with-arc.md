@@ -72,6 +72,18 @@ The test establishes local image/JIT behavior only. Its controlled-helper case r
 
 [Data, local] These eight probes consumed `ACTIONS_RUNNER_INPUT_JITCONFIG` with no command arguments. The synthetic `.runner` uses an intentionally invalid `AgentId` so the listener stops before registration. Both error cases can return `0` through `run.sh`: the tests check the saved file and explicit parse error, not only the exit code. UID `1001` failed with `Permission denied` on Debian. Group-only work-volume writes and the `_tool` cache override succeeded with each image's actual user. The reusable Bats suite above additionally exercises the sample's absolute work path. Its volume initialization runs separately as root with only `CHOWN`; the tested runner remains non-root. Kubernetes `fsGroup`, ARM64, Windows execution, and Docker runtime execution were not tested here.
 
+## Local runtime ownership
+
+Run `github-runner/tests/test-runner-arc.bats` in a developer-owned local runtime.
+`remove_owned()` inspects `arc-offline-test` before a separate `rm`/`volume rm`; another process can replace the resource between those calls.
+Untrusted processes under the test Unix UID or using its Docker/Podman socket credentials remain unsupported.
+
+On a shared Linux host, use separate Unix UIDs, `0700` homes and `$XDG_RUNTIME_DIR` parents, and private rootless Podman stores.
+Keep `/etc/subuid` and `/etc/subgid` ranges disjoint between users and from real UIDs/GIDs; use separate VMs when these prerequisites cannot be met.
+The Linux kernel and `root` administrators must be trusted.
+
+See [oorabona/docker-containers#2223](https://github.com/oorabona/docker-containers/issues/2223) for Fedora CoreOS `44.20261023.3.1` / Podman `5.8.9` two-account evidence and its limits.
+
 ## Cache and canary boundaries
 
 For dependency caches, use `actions/cache` for selected workflow paths. Do not cache the runner root, `.runner`, credentials, `_work`, or a shared catch-all PVC. The container's writable layer and the pod's `_work` emptyDir disappear when the pod is removed; cached OCI image layers may remain on the node. Any tool or package cache not restored by the workflow also disappears.
