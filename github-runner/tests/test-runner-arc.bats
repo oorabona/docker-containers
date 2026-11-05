@@ -79,16 +79,10 @@ teardown() {
 }
 
 prepare_runtime_timeout() {
-    local limit="${ARC_TEST_TIMEOUT:-120}" candidate
+    local raw_limit="${ARC_TEST_TIMEOUT:-120}" limit candidate
 
-    case "$limit" in
-        *[!0-9.]*|*.*.*|''|.*|*.)
-            printf 'ARC_TEST_TIMEOUT must be a positive number of seconds, got %s\n' "$limit" >&2
-            return 1
-            ;;
-    esac
-    if [[ "$limit" =~ ^0*([.]0*)?$ ]]; then
-        printf 'ARC_TEST_TIMEOUT must be a positive number of seconds, got %s\n' "$limit" >&2
+    if ! limit=$(jq -ner --arg seconds "$raw_limit" '$seconds | tonumber | .+0 | select(isfinite and .>0)'); then
+        printf 'ARC_TEST_TIMEOUT must normalize to a finite positive number of seconds, got %s\n' "$raw_limit" >&2
         return 1
     fi
     RUNTIME_TIMEOUT=

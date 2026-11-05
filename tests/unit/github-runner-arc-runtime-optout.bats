@@ -184,12 +184,18 @@ assert_arc_readiness_failure() {
     ! grep -qE '^(kill|cp) ' "$ARC_FAKE_LOG"
 }
 
-@test "ARC fake runtime rejects unsupported invocations with quoted arguments" {
+@test "ARC fake runtime rejects unknown command prefixes with quoted arguments" {
     run env ARC_FAKE_LOG="$ARC_FAKE_LOG" ARC_FAKE_STATE="$ARC_FAKE_STATE" \
         "$ARC_FAKE_BIN/podman" unsupported 'argument with spaces'
 
     [ "$status" -eq 79 ]
     [[ "$output" == 'unsupported fake runtime invocation: unsupported argument\ with\ spaces' ]]
+
+    run env ARC_FAKE_LOG="$ARC_FAKE_LOG" ARC_FAKE_STATE="$ARC_FAKE_STATE" \
+        "$ARC_FAKE_BIN/podman" container list
+
+    [ "$status" -eq 79 ]
+    [[ "$output" == 'unsupported fake runtime invocation: container list' ]]
 }
 
 @test "ARC readiness exec failures retain status and diagnostics after one query" {
@@ -219,7 +225,7 @@ assert_arc_readiness_failure() {
     [[ "$output" == *'marker not observed after 50 checks with 0.1s sleeps'* ]]
 }
 
-@test "ARC runtime refuses a missing timeout before it mutates the runtime" {
+@test "ARC runtime refuses missing tools before it mutates the runtime" {
     local bash_env="$TEST_TEMP_DIR/no-timeout.bash"
 
     cat > "$bash_env" <<'EOF'
@@ -236,19 +242,72 @@ EOF
     [[ "$output" == *'timeout or gtimeout with --kill-after is required'* ]]
     run grep -qE '^(volume create|run )' "$ARC_FAKE_LOG"
     [ "$status" -ne 0 ]
+
+    cat > "$bash_env" <<'EOF'
+jq() {
+    printf 'jq: command not found\n' >&2
+    return 127
+}
+EOF
+    run_arc_harness BASH_ENV="$bash_env" ARC_TEST_TIMEOUT=invalid
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'jq: command not found'* ]]
+    [[ "$output" != *'ARC_TEST_TIMEOUT must normalize'* ]]
+    [ ! -s "$ARC_FAKE_LOG" ]
 }
 
-@test "ARC runtime validates timeout durations and accepts positive decimal seconds" {
-    local duration
+@test "ARC runtime normalizes finite positive seconds and uses them in its timeout wrapper" {
+    local duration normalized expected real_timeout timeout_log="$TEST_TEMP_DIR/timeout.log"
 
-    for duration in 0 -1 1. invalid; do
+    for duration in 0 0.0 -0.0 +0 .0 0e3 -1 -0.5 invalid 1..2 1s 0x1 NaN Infinity 1e999 1e-999; do
+        : > "$ARC_FAKE_LOG"
         run_arc_harness ARC_TEST_TIMEOUT="$duration"
         [ "$status" -ne 0 ]
-        [[ "$output" == *'ARC_TEST_TIMEOUT must be a positive number of seconds'* ]]
+        [[ "$output" == *"ARC_TEST_TIMEOUT must normalize to a finite positive number of seconds, got $duration"* ]]
+        [ ! -s "$ARC_FAKE_LOG" ]
+        [ ! -e "$ARC_FAKE_STATE/created" ]
     done
 
-    run_arc_harness ARC_TEST_TIMEOUT=0.1
+    real_timeout=$(command -v timeout)
+    cat > "$ARC_FAKE_BIN/timeout" <<'EOF'
+#!/bin/bash
+printf '%q ' "$@" >> "$ARC_TIMEOUT_LOG"
+printf '\n' >> "$ARC_TIMEOUT_LOG"
+exec "$ARC_REAL_TIMEOUT" "$@"
+EOF
+    chmod +x "$ARC_FAKE_BIN/timeout"
+
+    while IFS='|' read -r duration normalized; do
+        : > "$timeout_log"
+        rm -rf "$ARC_FAKE_STATE"
+        mkdir "$ARC_FAKE_STATE"
+        run_arc_harness ARC_TEST_TIMEOUT="$duration" ARC_REAL_TIMEOUT="$real_timeout" ARC_TIMEOUT_LOG="$timeout_log"
+        [ "$status" -eq 0 ]
+        printf -v expected '%q ' --kill-after=5s "${normalized}s" podman container ls -a --format '{{.Names}}'
+        grep -Fxq -- "$expected" "$timeout_log"
+    done <<'EOF'
+.5|0.5
+0.5|0.5
+1.|1
++0.5|0.5
+ 0.5 |0.5
+1e-1|0.1
+1E+1|10
+0.1|0.1
+|120
+EOF
+
+    : > "$timeout_log"
+    rm -rf "$ARC_FAKE_STATE"
+    mkdir "$ARC_FAKE_STATE"
+    run env -u ARC_TEST_TIMEOUT PATH="$ARC_FAKE_BIN:$PATH" ARC_RUNTIME_TESTS=1 ARC_TEST_RUNTIME=podman \
+        ARC_TEST_IMAGE="$ARC_IMAGE" ARC_FAKE_LOG="$ARC_FAKE_LOG" ARC_FAKE_STATE="$ARC_FAKE_STATE" \
+        ARC_REAL_TIMEOUT="$real_timeout" ARC_TIMEOUT_LOG="$timeout_log" \
+        bats --filter 'standalone entrypoint reports the missing scope input first' "$ARC_HARNESS"
     [ "$status" -eq 0 ]
+    printf -v expected '%q ' --kill-after=5s 120s podman container ls -a --format '{{.Names}}'
+    grep -Fxq -- "$expected" "$timeout_log"
 }
 
 @test "ARC runtime force-kills a TERM-ignoring runtime call and reports its observed status" {
@@ -263,7 +322,7 @@ EOF
 }
 
 @test "ARC runtime accepts empty listings, rejects failed listings, and distinguishes exact names" {
-    local fixed_random_env="$TEST_TEMP_DIR/fixed-random.bash"
+    local fixed_random_env="$TEST_TEMP_DIR/fixed-random.bash" compatibility
 
     run_arc_harness
     [ "$status" -eq 0 ]
@@ -277,22 +336,25 @@ EOF
     run grep -qE '^(volume create|run )' "$ARC_FAKE_LOG"
     [ "$status" -ne 0 ]
 
-    : > "$ARC_FAKE_LOG"
-    rm -rf "$ARC_FAKE_STATE"
-    mkdir "$ARC_FAKE_STATE"
-    printf 'RANDOM=123\n' > "$fixed_random_env"
-    run_arc_harness ARC_FAKE_EXISTING_EXACT=1 ARC_FAKE_EXPECTED_RANDOM=2850 BASH_ENV="$fixed_random_env"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *'stale container '* ]]
-    run grep -qE '^(volume create|run )' "$ARC_FAKE_LOG"
-    [ "$status" -ne 0 ]
+    printf 'unset RANDOM\nRANDOM=2850\n' > "$fixed_random_env"
+    for compatibility in "${BASH_COMPAT:-}" 50; do
+        : > "$ARC_FAKE_LOG"
+        rm -rf "$ARC_FAKE_STATE"
+        mkdir "$ARC_FAKE_STATE"
+        run_arc_harness ARC_FAKE_EXISTING_EXACT=1 ARC_FAKE_EXPECTED_RANDOM=2850 \
+            BASH_ENV="$fixed_random_env" BASH_COMPAT="$compatibility"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *'stale container '* ]]
+        run grep -qE '^(volume create|run )' "$ARC_FAKE_LOG"
+        [ "$status" -ne 0 ]
 
-    : > "$ARC_FAKE_LOG"
-    rm -rf "$ARC_FAKE_STATE"
-    mkdir "$ARC_FAKE_STATE"
-    run_arc_harness ARC_FAKE_SIMILAR_NAME=1
-    [ "$status" -eq 0 ]
-    grep -q '^volume create ' "$ARC_FAKE_LOG"
+        : > "$ARC_FAKE_LOG"
+        rm -rf "$ARC_FAKE_STATE"
+        mkdir "$ARC_FAKE_STATE"
+        run_arc_harness ARC_FAKE_SIMILAR_NAME=1 BASH_ENV="$fixed_random_env" BASH_COMPAT="$compatibility"
+        [ "$status" -eq 0 ]
+        grep -q '^volume create ' "$ARC_FAKE_LOG"
+    done
 }
 
 @test "ARC runtime cleanup leaves absent resources, preserves foreign labels, and removes owned labels" {
