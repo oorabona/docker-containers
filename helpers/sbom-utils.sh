@@ -947,12 +947,12 @@ append_build_history() (
     local built_at version build_digest duration_seconds extensions_build_seconds extensions_present
     extensions_present="false"
     if [[ -f "$lineage_file" ]]; then
-        if ! built_at=$(jq -r '.built_at // empty' "$lineage_file" 2>/dev/null) \
-            || ! version=$(jq -r '.version // empty' "$lineage_file" 2>/dev/null) \
-            || ! build_digest=$(jq -r '.build_digest // empty' "$lineage_file" 2>/dev/null) \
-            || ! duration_seconds=$(jq -c '.duration_seconds // null' "$lineage_file" 2>/dev/null) \
-            || ! extensions_present=$(jq -r 'has("extensions_build_seconds")' "$lineage_file" 2>/dev/null) \
-            || ! extensions_build_seconds=$(jq -c '.extensions_build_seconds // null' "$lineage_file" 2>/dev/null); then
+        if ! built_at=$(jq -r '.built_at // empty' -- "$lineage_file" 2>/dev/null) \
+            || ! version=$(jq -r '.version // empty' -- "$lineage_file" 2>/dev/null) \
+            || ! build_digest=$(jq -r '.build_digest // empty' -- "$lineage_file" 2>/dev/null) \
+            || ! duration_seconds=$(jq -c '.duration_seconds // null' -- "$lineage_file" 2>/dev/null) \
+            || ! extensions_present=$(jq -r 'has("extensions_build_seconds")' -- "$lineage_file" 2>/dev/null) \
+            || ! extensions_build_seconds=$(jq -c '.extensions_build_seconds // null' -- "$lineage_file" 2>/dev/null); then
             log_error "Failed to read build lineage: $lineage_file"
             return 1
         fi
@@ -994,7 +994,7 @@ append_build_history() (
     # Load existing history or start fresh
     local existing_history="[]"
     if [[ -f "$history_file" ]]; then
-        if ! existing_history=$(jq -ce 'select(type == "array")' "$history_file" 2>/dev/null); then
+        if ! existing_history=$(jq -ce 'select(type == "array")' -- "$history_file" 2>/dev/null); then
             log_error "Failed to read build history: $history_file"
             return 1
         fi
@@ -1005,9 +1005,9 @@ append_build_history() (
     local changelog_file="${5:-${history_file%.history.json}.changelog.json}"
     if [[ -f "$changelog_file" ]]; then
         local added_count removed_count updated_count
-        if ! added_count=$(jq -er '.summary.added | select(type == "number" and . >= 0 and floor == .)' "$changelog_file" 2>/dev/null) \
-            || ! removed_count=$(jq -er '.summary.removed | select(type == "number" and . >= 0 and floor == .)' "$changelog_file" 2>/dev/null) \
-            || ! updated_count=$(jq -er '.summary.updated | select(type == "number" and . >= 0 and floor == .)' "$changelog_file" 2>/dev/null); then
+        if ! added_count=$(jq -er '.summary.added | select(type == "number" and . >= 0 and floor == .)' -- "$changelog_file" 2>/dev/null) \
+            || ! removed_count=$(jq -er '.summary.removed | select(type == "number" and . >= 0 and floor == .)' -- "$changelog_file" 2>/dev/null) \
+            || ! updated_count=$(jq -er '.summary.updated | select(type == "number" and . >= 0 and floor == .)' -- "$changelog_file" 2>/dev/null); then
             log_error "Failed to read build changelog summary: $changelog_file"
             return 1
         fi
@@ -1058,7 +1058,7 @@ append_build_history() (
         log_error "Generated build history is not readable valid JSON: $history_file"
         return 1
     fi
-    if ! entry_count=$(jq -er 'length | select(type == "number" and . >= 0 and floor == .)' "$staged_history"); then
+    if ! entry_count=$(jq -er 'length | select(type == "number" and . >= 0 and floor == .)' -- "$staged_history"); then
         log_error "Generated build history has an invalid entry count: $history_file"
         return 1
     fi

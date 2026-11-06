@@ -81,7 +81,7 @@ teardown() {
 prepare_runtime_timeout() {
     local raw_limit="${ARC_TEST_TIMEOUT:-120}" limit candidate
 
-    if ! limit=$(jq -ner --arg seconds "$raw_limit" '$seconds | tonumber | .+0 | select(isfinite and .>0)'); then
+    if ! limit=$(jq -ner --arg seconds "$raw_limit" '$seconds | gsub("^\\s+|\\s+$"; "") | tonumber | .+0 | select(isfinite and .>0)'); then
         printf 'ARC_TEST_TIMEOUT must normalize to a finite positive number of seconds, got %q\n' "$raw_limit" >&2
         return 1
     fi
