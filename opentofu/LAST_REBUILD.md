@@ -4,12 +4,12 @@
 |-------|-------|
 | **Container** | `opentofu` |
 
-| **Version Change** | `1.13.2-alpine` → `1.13.8-alpine` |
+| **Version Change** | `1.13.8-alpine` → `1.13.9-alpine` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-11-05T06:08:04Z |
+| **Rebuild Date** | 2026-11-06T06:07:42Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/41978195174) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/42172379808) |
 
 ## Build Status
 
