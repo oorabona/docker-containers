@@ -103,8 +103,13 @@ validate_cleanup_authority() {
 
 # Validate the retention policy used by the age-based cleanup.
 validate_age_retention() {
-  local variable value
+  local variable value maximum
   local -r maximum_retention_count=2147483647
+  # A month count is also turned into a calendar cutoff by `date -d`, whose
+  # representable range is implementation-dependent (GNU date accepts absurd
+  # offsets, newer coreutils do not). 1200 months (100 years) is far beyond any
+  # sane retention and stays representable everywhere.
+  local -r maximum_retention_months=1200
 
   for variable in KEEP_LATEST_COUNT KEEP_MONTHS; do
     value="${!variable-}"
@@ -112,12 +117,16 @@ validate_age_retention() {
       printf 'cleanup configuration rejected: %s must be 0 or [1-9][0-9]*\n' "$variable" >&2
       return 64
     fi
-    # This is an executable-domain bound, not a retention policy.  It is far
-    # below Bash's signed-integer limit, so every position <= count comparison
-    # is representable, while still allowing more than two billion versions or
-    # months.  Compare decimal strings so validation cannot overflow either.
-    if decimal_string_greater_than "$value" "$maximum_retention_count"; then
-      printf 'cleanup configuration rejected: %s must be between 0 and %s\n' "$variable" "$maximum_retention_count" >&2
+    # These are executable-domain bounds, not retention policies.  The count
+    # bound is far below Bash's signed-integer limit, so every position <= count
+    # comparison is representable, while still allowing more than two billion
+    # versions.  Compare decimal strings so validation cannot overflow either.
+    maximum="$maximum_retention_count"
+    if [[ "$variable" == KEEP_MONTHS ]]; then
+      maximum="$maximum_retention_months"
+    fi
+    if decimal_string_greater_than "$value" "$maximum"; then
+      printf 'cleanup configuration rejected: %s must be between 0 and %s\n' "$variable" "$maximum" >&2
       return 64
     fi
   done
