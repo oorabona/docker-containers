@@ -291,3 +291,70 @@ Build status will be available in GitHub Actions after merge.
 - Variant: 18-alpine, base ghcr.io/oorabona/library/postgres:18-alpine
   Old digest: sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
   New digest: sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+
+<!-- drift-content-hash: 285ba2089b7cf8e0 run:42172379808 -->
+## base-digest-drift (2026-11-06)
+
+- Variant: 16-alpine-analytics, base ghcr.io/oorabona/library/postgres:16-alpine
+  Old digest: sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+  New digest: sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+- Variant: 16-alpine-distributed, base ghcr.io/oorabona/library/postgres:16-alpine
+  Old digest: sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+  New digest: sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+- Variant: 16-alpine-full, base ghcr.io/oorabona/library/postgres:16-alpine
+  Old digest: sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+  New digest: sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+- Variant: 16-alpine-spatial, base ghcr.io/oorabona/library/postgres:16-alpine
+  Old digest: sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+  New digest: sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+- Variant: 16-alpine-timeseries, base ghcr.io/oorabona/library/postgres:16-alpine
+  Old digest: sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+  New digest: sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+- Variant: 16-alpine-vector, base ghcr.io/oorabona/library/postgres:16-alpine
+  Old digest: sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+  New digest: sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+- Variant: 16-alpine, base ghcr.io/oorabona/library/postgres:16-alpine
+  Old digest: sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+  New digest: sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+- Variant: 17-alpine-analytics, base ghcr.io/oorabona/library/postgres:17-alpine
+  Old digest: sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+  New digest: sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+- Variant: 17-alpine-distributed, base ghcr.io/oorabona/library/postgres:17-alpine
+  Old digest: sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+  New digest: sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+- Variant: 17-alpine-full, base ghcr.io/oorabona/library/postgres:17-alpine
+  Old digest: sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+  New digest: sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+- Variant: 17-alpine-spatial, base ghcr.io/oorabona/library/postgres:17-alpine
+  Old digest: sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+  New digest: sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+- Variant: 17-alpine-timeseries, base ghcr.io/oorabona/library/postgres:17-alpine
+  Old digest: sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+  New digest: sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+- Variant: 17-alpine-vector, base ghcr.io/oorabona/library/postgres:17-alpine
+  Old digest: sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+  New digest: sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+- Variant: 17-alpine, base ghcr.io/oorabona/library/postgres:17-alpine
+  Old digest: sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+  New digest: sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+- Variant: 18-alpine-analytics, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+  New digest: sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+- Variant: 18-alpine-distributed, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+  New digest: sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+- Variant: 18-alpine-full, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+  New digest: sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+- Variant: 18-alpine-spatial, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+  New digest: sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+- Variant: 18-alpine-timeseries, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+  New digest: sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+- Variant: 18-alpine-vector, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+  New digest: sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+- Variant: 18-alpine, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+  New digest: sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
