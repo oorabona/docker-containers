@@ -71,7 +71,7 @@ CASES
 @test "validate_age_retention accepts the executable retention maximum" {
     run env \
         KEEP_LATEST_COUNT=2147483647 \
-        KEEP_MONTHS=2147483647 \
+        KEEP_MONTHS=1200 \
         bash -c 'source "$1/helpers/version-record-validation.sh"; validate_age_retention' _ "$PROJECT_ROOT"
 
     [[ "$status" -eq 0 ]]
@@ -79,9 +79,9 @@ CASES
 }
 
 @test "validate_age_retention rejects retention values above the executable maximum" {
-    local variable value
+    local variable value maximum
 
-    while IFS='|' read -r variable value; do
+    while IFS='|' read -r variable value maximum; do
         run env \
             KEEP_LATEST_COUNT=10 \
             KEEP_MONTHS=6 \
@@ -89,12 +89,13 @@ CASES
             bash -c 'source "$1/helpers/version-record-validation.sh"; validate_age_retention' _ "$PROJECT_ROOT"
 
         [[ "$status" -eq 64 ]]
-        [[ "$output" == "cleanup configuration rejected: $variable must be between 0 and 2147483647" ]]
+        [[ "$output" == "cleanup configuration rejected: $variable must be between 0 and $maximum" ]]
     done <<'CASES'
-KEEP_LATEST_COUNT|2147483648
-KEEP_MONTHS|2147483648
-KEEP_LATEST_COUNT|9223372036854775808
-KEEP_MONTHS|9223372036854775808
+KEEP_LATEST_COUNT|2147483648|2147483647
+KEEP_MONTHS|1201|1200
+KEEP_LATEST_COUNT|9223372036854775808|2147483647
+KEEP_MONTHS|2147483647|1200
+KEEP_MONTHS|9223372036854775808|1200
 CASES
 }
 

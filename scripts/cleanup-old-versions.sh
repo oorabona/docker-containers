@@ -8,8 +8,8 @@
 # Required env vars: GH_TOKEN, OWNER
 # Optional env vars: DRY_RUN (default: false; exactly true or false),
 # KEEP_LATEST_COUNT (default: 10; range: 0 through 2147483647; 0 disables the
-# latest-version floor), and KEEP_MONTHS (default: 6; same range; 0 disables
-# the age-retention floor).
+# latest-version floor), and KEEP_MONTHS (default: 6; range: 0 through 1200;
+# 0 disables the age-retention floor).
 #
 # Usage: cleanup-old-versions.sh [container]
 # With an argument, process exactly one package. Multiple package names need a

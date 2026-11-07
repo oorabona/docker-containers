@@ -86,8 +86,10 @@ help() {
   log_help "$(echo $targets| tr ' ' '\n')"
 }
 
-# List all available containers (one per line, for automation)
-list_containers() {
+# List all available containers (one per line, for automation).
+# Named distinctly from helpers/logging.sh:list_containers (which takes a base
+# dir and is used above to build $targets) so the two are never confused.
+print_targets() {
   for target in $targets ; do
     echo "$target"
   done
@@ -1056,7 +1058,7 @@ case "${1:-}" in
   version ) shift; version "$@" ;;
   check-updates ) check_updates "${2:-}" ;;
   check-dep-updates ) check_dep_updates "${2:-}" ;;
-  list ) list_containers ;;
+  list ) print_targets ;;
   list-deps ) list_deps "${2:-}" ;;
   sizes ) show_sizes "${2:-}" ;;
   lineage ) show_lineage "${2:-}" ;;

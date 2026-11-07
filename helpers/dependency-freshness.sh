@@ -191,6 +191,43 @@ _freshness_http_download() {
     [[ "$status" =~ ^2[0-9][0-9]$ ]]
 }
 
+# Download with an optional cross-process cache. Many SBOMs processed in one
+# run resolve to the same APKINDEX URLs (same Alpine release + arch), so when
+# DEPENDENCY_FRESHNESS_DOWNLOAD_CACHE_DIR is set a successful download is stored
+# there (atomic rename, safe under parallel workers) and reused instead of
+# hitting the CDN once per SBOM. Unset = plain download.
+_freshness_http_download_cached() {
+    local url="$1"
+    local output_file="$2"
+    local max_filesize="${3:-}"
+    local cache_dir="${DEPENDENCY_FRESHNESS_DOWNLOAD_CACHE_DIR:-}"
+    local key cached tmp
+
+    if [[ -z "$cache_dir" ]] || ! mkdir -p "$cache_dir" 2>/dev/null; then
+        _freshness_http_download "$url" "$output_file" "$max_filesize"
+        return
+    fi
+
+    key=$(printf '%s' "$url" | sha256sum | cut -d' ' -f1)
+    cached="${cache_dir}/${key}"
+    if [[ -s "$cached" ]] && cp -- "$cached" "$output_file" 2>/dev/null; then
+        return 0
+    fi
+
+    tmp=$(mktemp "${cached}.tmp.XXXXXX") || {
+        _freshness_http_download "$url" "$output_file" "$max_filesize"
+        return
+    }
+    if _freshness_http_download "$url" "$tmp" "$max_filesize" && [[ -s "$tmp" ]]; then
+        cp -- "$tmp" "$output_file" && mv -f -- "$tmp" "$cached"
+        local rc=$?
+        rm -f -- "$tmp"
+        return "$rc"
+    fi
+    rm -f -- "$tmp"
+    return 1
+}
+
 _freshness_npm() {
     local name="${1:-}"
     [[ -n "$name" ]] || { _freshness_json_failure; return 0; }
@@ -559,7 +596,7 @@ _freshness_load_apk_indexes() {
     while IFS= read -r url; do
         [[ -n "$url" ]] || continue
         tmp=$(mktemp)
-        if _freshness_http_download "$url" "$tmp" "$max_download"; then
+        if _freshness_http_download_cached "$url" "$tmp" "$max_download"; then
             while IFS=$'\t' read -r pkg version; do
                 [[ -n "$pkg" && -n "$version" ]] || continue
                 if [[ -z "${_FRESHNESS_APK_PACKAGES[$pkg]:-}" ]] \

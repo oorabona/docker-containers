@@ -4636,7 +4636,8 @@ jobs:
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Headroom above the 25-min SBOM step budget so the save steps always run.
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4814,6 +4815,14 @@ jobs:
 
       - name: Process SBOMs (compare + history)
         id: process-sboms
+        # Bounded on its own so a slow pass can never consume the whole job
+        # budget: on overrun this step is stopped, the steps below (derived
+        # upload, lineage cache save) still run, and any SBOM not processed keeps
+        # its previous cached copy, so the next build compares against it and
+        # catches up. Without this bound a full-rebuild burst (several base-digest
+        # rebases merged together) hit the job timeout and the cache save was lost.
+        timeout-minutes: 25
+        continue-on-error: true
         run: |
           source helpers/sbom-utils.sh
           source helpers/dependency-freshness.sh
@@ -4824,19 +4833,27 @@ jobs:
             exit 0
           fi
 
-          # Find SBOM files (may be flat or in subdirectories depending on artifact count).
-          # Each SBOM is independent (own cache/changelog/history files) and the freshness
-          # enrichment is network-bound, so process them in parallel: a serial pass over a
-          # full rebuild exceeded the job timeout and lost the lineage cache save.
+          # Each SBOM is independent (own cache/changelog/history files) and the
+          # freshness enrichment is network-bound, so process them in parallel.
+          # SBOMs of one Alpine release/arch share the same APKINDEX downloads:
+          # keep them in a run-wide cache so each index is fetched once, not once
+          # per SBOM.
           sbom_failed_dir=$(mktemp -d)
           export SBOM_FAILED_DIR="$sbom_failed_dir"
+          DEPENDENCY_FRESHNESS_DOWNLOAD_CACHE_DIR=$(mktemp -d)
+          export DEPENDENCY_FRESHNESS_DOWNLOAD_CACHE_DIR
           sbom_count=$(find .build-lineage-sbom-artifacts -name '*.sbom.json' | wc -l)
+          echo "sbom_count=$sbom_count" >> "$GITHUB_OUTPUT"
           find .build-lineage-sbom-artifacts -name '*.sbom.json' -print0 \
             | xargs -0 -r -n1 -P 6 scripts/process-sbom.sh
           sbom_failed=$(find "$sbom_failed_dir" -type f | wc -l)
 
-          echo "sbom_count=$sbom_count" >> "$GITHUB_OUTPUT"
           echo "::notice::Processed $sbom_count SBOM(s); $sbom_failed processing error(s)"
+
+      - name: Report SBOM processing overrun
+        if: steps.process-sboms.outcome == 'failure' || steps.process-sboms.outcome == 'cancelled'
+        run: |
+          echo "::warning::SBOM processing did not finish within its time budget; unprocessed SBOMs keep their previous cached copy and are re-compared on the next build. Lineage cache is still saved."
 
       - name: Upload derived lineage files (changelog + history)
         id: upload_derived_lineage

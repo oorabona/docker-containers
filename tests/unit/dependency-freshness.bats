@@ -782,3 +782,65 @@ JSON
 
     [[ "$status" -ne 0 ]]
 }
+
+@test "http download cache fetches each URL once across separate processes" {
+    local cache_dir download_log out1 out2 out3
+    cache_dir="${TEST_TEMP_DIR}/dl-cache"
+    download_log="${TEST_TEMP_DIR}/cache-downloads.log"
+    out1="${TEST_TEMP_DIR}/out1"; out2="${TEST_TEMP_DIR}/out2"; out3="${TEST_TEMP_DIR}/out3"
+
+    for out in "$out1" "$out2"; do
+        run env DOWNLOAD_LOG="$download_log" DEPENDENCY_FRESHNESS_DOWNLOAD_CACHE_DIR="$cache_dir" \
+            bash -c '
+              source "$1"
+              _freshness_http_download() { echo "$1" >> "$DOWNLOAD_LOG"; printf "payload-%s" "$1" > "$2"; }
+              _freshness_http_download_cached "https://example.test/a/APKINDEX.tar.gz" "$2"
+            ' _ "$RESOLVER" "$out"
+        [[ "$status" -eq 0 ]]
+    done
+    # a different URL must not be served from the first entry
+    run env DOWNLOAD_LOG="$download_log" DEPENDENCY_FRESHNESS_DOWNLOAD_CACHE_DIR="$cache_dir" \
+        bash -c '
+          source "$1"
+          _freshness_http_download() { echo "$1" >> "$DOWNLOAD_LOG"; printf "payload-%s" "$1" > "$2"; }
+          _freshness_http_download_cached "https://example.test/b/APKINDEX.tar.gz" "$2"
+        ' _ "$RESOLVER" "$out3"
+    [[ "$status" -eq 0 ]]
+
+    [[ "$(wc -l < "$download_log")" -eq 2 ]]
+    cmp -s "$out1" "$out2"
+    grep -q 'example.test/a/' "$out2"
+    grep -q 'example.test/b/' "$out3"
+}
+
+@test "http download cache does not store failed downloads" {
+    local cache_dir download_log
+    cache_dir="${TEST_TEMP_DIR}/dl-cache-fail"
+    download_log="${TEST_TEMP_DIR}/fail-downloads.log"
+
+    for _ in 1 2; do
+        run env DOWNLOAD_LOG="$download_log" DEPENDENCY_FRESHNESS_DOWNLOAD_CACHE_DIR="$cache_dir" \
+            bash -c '
+              source "$1"
+              _freshness_http_download() { echo "$1" >> "$DOWNLOAD_LOG"; return 1; }
+              _freshness_http_download_cached "https://example.test/x" "$2"
+            ' _ "$RESOLVER" "${TEST_TEMP_DIR}/o"
+        [[ "$status" -ne 0 ]]
+    done
+    [[ "$(wc -l < "$download_log")" -eq 2 ]]
+    [[ -z "$(find "$cache_dir" -type f)" ]]
+}
+
+@test "http download without cache dir downloads every time" {
+    local download_log="${TEST_TEMP_DIR}/nocache.log"
+    for _ in 1 2; do
+        run env DOWNLOAD_LOG="$download_log" bash -c '
+          source "$1"
+          unset DEPENDENCY_FRESHNESS_DOWNLOAD_CACHE_DIR
+          _freshness_http_download() { echo "$1" >> "$DOWNLOAD_LOG"; echo ok > "$2"; }
+          _freshness_http_download_cached "https://example.test/y" "$2"
+        ' _ "$RESOLVER" "${TEST_TEMP_DIR}/o"
+        [[ "$status" -eq 0 ]]
+    done
+    [[ "$(wc -l < "$download_log")" -eq 2 ]]
+}
