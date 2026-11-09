@@ -72,3 +72,52 @@ Build status will be available in GitHub Actions after merge.
 - Variant: 1.13.8-alpine, base ghcr.io/oorabona/library/alpine:latest
   Old digest: sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
   New digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+
+<!-- drift-content-hash: e33339ad212bda78 run:42571296908 -->
+## base-digest-drift (2026-11-09)
+
+- Variant: 1.13.2-alpine-aws, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.2-alpine-azure, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.2-alpine-base, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.2-alpine-gcp, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.2-alpine, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.8-alpine-aws, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.8-alpine-azure, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.8-alpine-base, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.8-alpine-gcp, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.8-alpine, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.9-alpine-aws, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.9-alpine-azure, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.9-alpine-base, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.9-alpine-gcp, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+- Variant: 1.13.9-alpine, base ghcr.io/oorabona/library/alpine:latest
+  Old digest: sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+  New digest: sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
