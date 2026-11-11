@@ -23,31 +23,49 @@ dependency_sources:
     type: github-release
     repo: terraform-linters/tflint
     strip_v: true
+    artifact_urls:
+      - "https://github.com/terraform-linters/tflint/releases/download/v${VERSION}/tflint_linux_amd64.zip"
+      - "https://github.com/terraform-linters/tflint/releases/download/v${VERSION}/tflint_linux_arm64.zip"
   TRIVY_VERSION:
     lifecycle: tracked
     type: github-release
     repo: aquasecurity/trivy
     strip_v: true
+    artifact_urls:
+      - "https://github.com/aquasecurity/trivy/releases/download/v${VERSION}/trivy_${VERSION}_Linux-64bit.tar.gz"
+      - "https://github.com/aquasecurity/trivy/releases/download/v${VERSION}/trivy_${VERSION}_Linux-ARM64.tar.gz"
   TERRAGRUNT_VERSION:
     lifecycle: tracked
     type: github-release
     repo: gruntwork-io/terragrunt
     strip_v: true
+    artifact_urls:
+      - "https://github.com/gruntwork-io/terragrunt/releases/download/v${VERSION}/terragrunt_linux_amd64"
+      - "https://github.com/gruntwork-io/terragrunt/releases/download/v${VERSION}/terragrunt_linux_arm64"
   TERRAFORM_DOCS_VERSION:
     lifecycle: tracked
     type: github-release
     repo: terraform-docs/terraform-docs
     strip_v: true
+    artifact_urls:
+      - "https://github.com/terraform-docs/terraform-docs/releases/download/v${VERSION}/terraform-docs-v${VERSION}-linux-amd64.tar.gz"
+      - "https://github.com/terraform-docs/terraform-docs/releases/download/v${VERSION}/terraform-docs-v${VERSION}-linux-arm64.tar.gz"
   INFRACOST_VERSION:
     lifecycle: tracked
     type: github-release
     repo: infracost/infracost
     strip_v: true
+    artifact_urls:
+      - "https://github.com/infracost/infracost/releases/download/v${VERSION}/infracost-linux-amd64.tar.gz"
+      - "https://github.com/infracost/infracost/releases/download/v${VERSION}/infracost-linux-arm64.tar.gz"
   GITHUB_CLI_VERSION:
     lifecycle: tracked
     type: github-release
     repo: cli/cli
     strip_v: true
+    artifact_urls:
+      - "https://github.com/cli/cli/releases/download/v${VERSION}/gh_${VERSION}_linux_amd64.tar.gz"
+      - "https://github.com/cli/cli/releases/download/v${VERSION}/gh_${VERSION}_linux_arm64.tar.gz"
   AWS_CLI_VERSION:
     lifecycle: tracked
     type: pypi

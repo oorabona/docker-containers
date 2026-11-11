@@ -369,3 +369,87 @@ SH
     done
     [ "$declared" -ge 1 ]
 }
+
+# --- per-dependency gate (dependency_sources.<dep>.artifact_urls) ------------
+# Mutation guards:
+#   probing only the first URL would let a bump through when the arm64 asset is
+#         still missing.
+#   returning "pending" (1) for an invalid declaration would silently disable the gate.
+
+write_dep_config() {
+    cat > dep.yaml <<'YAML'
+build_args:
+  TOOL_VERSION: "1.0.0"
+dependency_sources:
+  TOOL_VERSION:
+    type: github-release
+    repo: example/tool
+    artifact_urls:
+      - "https://example.org/tool/v${VERSION}/tool_linux_amd64.zip"
+      - "https://example.org/tool/v${VERSION}/tool_linux_arm64.zip"
+  OTHER_VERSION:
+    type: github-release
+    repo: example/other
+YAML
+}
+
+@test "dep_artifact_ready is ready (0) when every asset answers 2xx" {
+    write_dep_config
+    run dep_artifact_ready dep.yaml TOOL_VERSION 1.1.0
+    [ "$status" -eq 0 ]
+    grep -q "v1.1.0/tool_linux_amd64.zip" "$CURL_LOG"
+    grep -q "v1.1.0/tool_linux_arm64.zip" "$CURL_LOG"
+}
+
+@test "dep_artifact_ready is ready (0) when nothing is declared" {
+    write_dep_config
+    run dep_artifact_ready dep.yaml OTHER_VERSION 1.1.0
+    [ "$status" -eq 0 ]
+    [ ! -s "$CURL_LOG" ]
+}
+
+@test "dep_artifact_ready is pending (1) when only the second asset is missing" {
+    write_dep_config
+    CURL_RULES='arm64.zip 404 404' run dep_artifact_ready dep.yaml TOOL_VERSION 1.1.0
+    [ "$status" -eq 1 ]
+}
+
+@test "dep_artifact_ready reports the blocking URL and status" {
+    write_dep_config
+    export CURL_RULES='arm64.zip 404 404'
+    dep_artifact_ready dep.yaml TOOL_VERSION 1.1.0 || true
+    [ "$ARTIFACT_PENDING_STATUS" = "404" ]
+    [[ "$ARTIFACT_PENDING_URLS" == *"tool_linux_arm64.zip" ]]
+}
+
+@test "dep_artifact_ready is a configuration error (2) when artifact_urls is not a list" {
+    cat > dep.yaml <<'YAML'
+dependency_sources:
+  TOOL_VERSION:
+    artifact_urls: "https://example.org/tool/v${VERSION}/tool.zip"
+YAML
+    run dep_artifact_ready dep.yaml TOOL_VERSION 1.1.0
+    [ "$status" -eq 2 ]
+}
+
+@test "dep_artifact_ready is a configuration error (2) when a template lacks \${VERSION}" {
+    cat > dep.yaml <<'YAML'
+dependency_sources:
+  TOOL_VERSION:
+    artifact_urls:
+      - "https://example.org/tool/latest/tool.zip"
+YAML
+    run dep_artifact_ready dep.yaml TOOL_VERSION 1.1.0
+    [ "$status" -eq 2 ]
+}
+
+@test "dep_artifact_ready is a configuration error (2) for a non-https template" {
+    cat > dep.yaml <<'YAML'
+dependency_sources:
+  TOOL_VERSION:
+    artifact_urls:
+      - "http://example.org/tool/v${VERSION}/tool.zip"
+YAML
+    run dep_artifact_ready dep.yaml TOOL_VERSION 1.1.0
+    [ "$status" -eq 2 ]
+}

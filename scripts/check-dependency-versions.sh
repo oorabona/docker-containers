@@ -29,6 +29,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$PROJECT_ROOT/helpers/logging.sh"
 # shellcheck source=../helpers/collect-lines.sh
 source "$PROJECT_ROOT/helpers/collect-lines.sh"
+# shellcheck source=../helpers/artifact-utils.sh
+source "$PROJECT_ROOT/helpers/artifact-utils.sh"
 
 # Named constant: days before supported_until to emit a ::warning:: countdown
 # Configurable via env; named so it is never a magic number.
@@ -471,6 +473,18 @@ check_container_deps() {
         fi
 
         if [[ "$current_version" != "$latest_version" ]]; then
+            # Optional asset gate (dependency_sources.<dep>.artifact_urls): hold the
+            # bump back until the release assets answer 2xx. Pending is not an error;
+            # an invalid declaration is.
+            local gate_rc=0
+            dep_artifact_ready "$config" "$dep_name" "$latest_version" || gate_rc=$?
+            if [[ "$gate_rc" -eq 2 ]]; then
+                errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: invalid artifact_urls declaration" '. + [$msg]')
+                continue
+            elif [[ "$gate_rc" -eq 1 ]]; then
+                log_warning "${container}/${dep_name}: ${latest_version} held back, release assets not downloadable yet (status ${ARTIFACT_PENDING_STATUS}): ${ARTIFACT_PENDING_URLS}"
+                continue
+            fi
             local change_type
             change_type=$(classify_version_change "$current_version" "$latest_version")
             local source_url
