@@ -16,6 +16,15 @@ USER root
 ARG VERSION
 ARG TARGETARCH
 
+# DIAGNOSTIC (temporary; PR ci/diag-ubuntu-dns, do not merge): shows what DNS and apt
+# look like inside the build container right before the first `apt-get update`.
+RUN echo "== date"; date -u; \
+    echo "== resolv.conf"; cat /etc/resolv.conf || true; \
+    echo "== getent"; for h in archive.ubuntu.com ports.ubuntu.com security.ubuntu.com deb.debian.org github.com ghcr.io; do printf '%s: ' "$h"; getent hosts "$h" || echo FAIL; done; \
+    echo "== apt sources"; cat /etc/apt/sources.list.d/* /etc/apt/sources.list 2>/dev/null | grep -vE '^#|^$' | head -12 || true; \
+    echo "== apt proxy conf"; grep -rIi proxy /etc/apt/apt.conf.d 2>/dev/null || echo none; \
+    true
+
 @@LABELS@@
 
 # Install base packages with BuildKit cache mounts for faster rebuilds
