@@ -14,6 +14,8 @@ dependency_sources:
     type: github-release
     repo: composer/composer
     strip_v: false
+    artifact_urls:
+      - "https://github.com/composer/composer/releases/download/${VERSION}/composer.phar"
   APCU_VERSION:
     lifecycle: tracked
     type: github-release

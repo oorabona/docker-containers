@@ -23,6 +23,9 @@ dependency_sources:
       release_asset_template: "wp-cli-{version}.phar"
       release_tag_template: "v{version}"
       signature_suffix: ".asc"
+    artifact_urls:
+      - "https://github.com/wp-cli/wp-cli/releases/download/v${VERSION}/wp-cli-${VERSION}.phar"
+      - "https://github.com/wp-cli/wp-cli/releases/download/v${VERSION}/wp-cli-${VERSION}.phar.asc"
   WPCLI_KEY_FPR:
     monitor: false
     lifecycle: untracked

@@ -211,3 +211,76 @@ artifact_ready() {
     ARTIFACT_PENDING_URLS=""
     return 0
 }
+
+# --- Per-dependency artifact gate -------------------------------------------
+# A dependency_sources entry may list the release assets its Dockerfile
+# downloads, so a dependency bump is only proposed once they answer 2xx
+# (a git tag/release can exist before its assets are uploaded):
+#
+#   dependency_sources:
+#     TFLINT_VERSION:
+#       type: github-release
+#       repo: terraform-linters/tflint
+#       artifact_urls:
+#         - "https://github.com/terraform-linters/tflint/releases/download/v${VERSION}/tflint_linux_amd64.zip"
+#         - "https://github.com/terraform-linters/tflint/releases/download/v${VERSION}/tflint_linux_arm64.zip"
+#
+# ${VERSION} is the candidate version exactly as written in build_args.
+# Same failure split as the container-level gate: an invalid declaration is a
+# configuration error (never "pending"); a non-2xx answer is "pending".
+
+# Resolve one dependency artifact template for <version>.
+# Usage: resolve_dep_artifact_url <template> <version>
+# Fails (nothing on stdout) on an empty version, a template without ${VERSION},
+# or a result that is not a plain https URL.
+resolve_dep_artifact_url() {
+    local template="$1" version="$2"
+    [[ -n "$template" && -n "$version" && "$template" == *'${VERSION}'* ]] || return 1
+    local url="${template//\$\{VERSION\}/$version}"
+    [[ "$url" =~ ^https://[A-Za-z0-9._~:/?@%+,=-]+$ ]] || return 1
+    printf '%s\n' "$url"
+}
+
+# Are the assets declared for <dep> in <config> downloadable for <version>?
+#   0 = ready, or nothing declared (opt-in)
+#   1 = pending (ARTIFACT_PENDING_URLS / ARTIFACT_PENDING_STATUS set, blocking URL last)
+#   2 = configuration error (reason on stderr)
+# Usage: dep_artifact_ready <config.yaml> <dep_name> <version>
+dep_artifact_ready() {
+    local cfg="$1" dep="$2" version="$3" kind urls url rc=0
+    export ARTIFACT_PENDING_URLS="" ARTIFACT_PENDING_STATUS=""
+    kind=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].artifact_urls | tag' "$cfg" 2>/dev/null) || {
+        printf 'artifact: %s: cannot parse config.yaml\n' "$dep" >&2; return 2; }
+    [[ "$kind" == "!!null" ]] && return 0
+    if [[ "$kind" != "!!seq" ]]; then
+        printf 'artifact: %s: artifact_urls must be a list of URL templates\n' "$dep" >&2
+        return 2
+    fi
+    urls=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].artifact_urls[]' "$cfg" 2>/dev/null) || {
+        printf 'artifact: %s: cannot read artifact_urls\n' "$dep" >&2; return 2; }
+    [[ -n "$urls" ]] || { printf 'artifact: %s: artifact_urls is empty\n' "$dep" >&2; return 2; }
+
+    local tpl resolved=()
+    while IFS= read -r tpl; do
+        url=$(resolve_dep_artifact_url "$tpl" "$version") || rc=1
+        if [[ $rc -ne 0 ]]; then
+            # Distinguish a bad template from a bad version.
+            if resolve_dep_artifact_url "$tpl" "0" >/dev/null; then
+                ARTIFACT_PENDING_STATUS="unresolvable"; return 1
+            fi
+            printf 'artifact: %s: artifact_urls entries must be plain https URLs containing ${VERSION}\n' "$dep" >&2
+            return 2
+        fi
+        resolved+=("$url")
+    done <<< "$urls"
+
+    for url in "${resolved[@]}"; do
+        ARTIFACT_PENDING_URLS="${ARTIFACT_PENDING_URLS:+$ARTIFACT_PENDING_URLS }$url"
+        if ! artifact_reachable "$url"; then
+            ARTIFACT_PENDING_STATUS="$ARTIFACT_LAST_STATUS"
+            return 1
+        fi
+    done
+    ARTIFACT_PENDING_URLS=""
+    return 0
+}
