@@ -63,11 +63,15 @@ jobs:
 
       - name: Install yq
         timeout-minutes: 5
-        run: |
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
-          sudo chmod +x /usr/local/bin/yq
-          yq --version
+        uses: ./.github/actions/retry-run
+        with:
+          run: |
+            sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+            echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+            sudo chmod +x /usr/local/bin/yq
+            yq --version
+          max-attempts: '3'
+          timeout: '60s'
 
       - name: Generate bake file
         env:
@@ -185,10 +189,14 @@ jobs:
 
       - name: Install yq
         timeout-minutes: 5
-        run: |
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
-          sudo chmod +x /usr/local/bin/yq
+        uses: ./.github/actions/retry-run
+        with:
+          run: |
+            sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+            echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+            sudo chmod +x /usr/local/bin/yq
+          max-attempts: '3'
+          timeout: '60s'
 
       - name: Log in to GHCR
         uses: ./.github/actions/docker-login
@@ -291,10 +299,14 @@ jobs:
 
       - name: Install yq
         timeout-minutes: 5
-        run: |
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_arm64
-          echo "4c2cc022a129be5cc1187959bb4b09bebc7fb543c5837b93001c68f97ce39a5d  /usr/local/bin/yq" | sha256sum -c -
-          sudo chmod +x /usr/local/bin/yq
+        uses: ./.github/actions/retry-run
+        with:
+          run: |
+            sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_arm64
+            echo "4c2cc022a129be5cc1187959bb4b09bebc7fb543c5837b93001c68f97ce39a5d  /usr/local/bin/yq" | sha256sum -c -
+            sudo chmod +x /usr/local/bin/yq
+          max-attempts: '3'
+          timeout: '60s'
 
       - name: Log in to GHCR
         uses: ./.github/actions/docker-login
@@ -389,10 +401,14 @@ jobs:
 
       - name: Install yq
         timeout-minutes: 5
-        run: |
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
-          sudo chmod +x /usr/local/bin/yq
+        uses: ./.github/actions/retry-run
+        with:
+          run: |
+            sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+            echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+            sudo chmod +x /usr/local/bin/yq
+          max-attempts: '3'
+          timeout: '60s'
 
       - name: Merge manifests (dry-run)
         env:
