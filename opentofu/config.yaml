@@ -6,6 +6,12 @@ base_image_cache:
     tags: ["latest"]
   - source: library/python
     tags: ["3.12-alpine"]
+# Upstream release artifact gate: `make check-updates` only proposes a new version once
+# this URL answers 2xx (the git tag appears before the release assets). Probes the amd64
+# tarball; the arm64 one and the SHA256SUMS ship in the same release. The Dockerfile
+# derives its own URL from UPSTREAM_VERSION and declares ARTIFACT_URL only to accept
+# the build-arg.
+artifact_url: "https://github.com/opentofu/opentofu/releases/download/v${RELEASE_VERSION}/tofu_${RELEASE_VERSION}_linux_amd64.tar.gz"
 build_args:
   TFLINT_VERSION: "0.66.0"
   TRIVY_VERSION: "0.76.2"

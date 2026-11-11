@@ -11,6 +11,9 @@ FROM ${REMOTE_CR}/library/alpine:${OS_IMAGE_TAG}
 
 ARG UPSTREAM_VERSION
 ARG TARGETARCH
+# Probed by `make check-updates` (config.yaml artifact_url); accepted here so the
+# build-arg is not reported as unused. The download below derives its own URL.
+ARG ARTIFACT_URL
 
 # Validate required build args
 RUN : "${UPSTREAM_VERSION:?required}"
