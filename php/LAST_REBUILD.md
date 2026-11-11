@@ -44,3 +44,10 @@ Build status will be available in GitHub Actions after merge.
 - Variant: 8.5.12-fpm-alpine, base ghcr.io/oorabona/library/php:8.5.12-fpm-alpine
   Old digest: sha256:4c2818074ec49f6abe46620f3965e0cb75bc3a5f2b417edd1aacaba6f091c40e
   New digest: sha256:64535609509e0fd5c8529359e6b599a68ce42089defd565f7881efdae7687cea
+
+<!-- drift-content-hash: da1920166a2e3d63 run:42970109716 -->
+## base-digest-drift (2026-11-11)
+
+- Variant: 8.5.12-fpm-alpine, base ghcr.io/oorabona/library/php:8.5.12-fpm-alpine
+  Old digest: sha256:64535609509e0fd5c8529359e6b599a68ce42089defd565f7881efdae7687cea
+  New digest: sha256:951fb5b1780219b81d5daffa4cebef8e0077c537f3893d9790a5dfcd66ca334d
