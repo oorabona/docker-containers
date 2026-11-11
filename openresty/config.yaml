@@ -49,6 +49,8 @@ dependency_sources:
     liveness_url: "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.gz"
     liveness_url_template: "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-{version}/pcre2-{version}.tar.gz"
     reason: "PCRE2 10.x (active); tracked for latest patch releases"
+    artifact_urls:
+      - "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${VERSION}/pcre2-${VERSION}.tar.gz"
   RESTY_PCRE_SHA256:
     monitor: false
     lifecycle: untracked
