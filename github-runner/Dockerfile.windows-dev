@@ -27,12 +27,23 @@ RUN if (-not $env:PWSH_VERSION) { throw 'PWSH_VERSION is required' }; \
     if (-not $env:GIT_VERSION) { throw 'GIT_VERSION is required' }; \
     if (-not $env:JQ_VERSION) { throw 'JQ_VERSION is required' }
 
-# Install PowerShell 7 via MSI
-RUN Invoke-WebRequest -Uri ('https://github.com/PowerShell/PowerShell/releases/download/v' + $env:PWSH_VERSION + '/PowerShell-' + $env:PWSH_VERSION + '-win-x64.msi') -OutFile C:\pwsh.msi; \
-    $installer = Start-Process -Wait -PassThru -FilePath msiexec.exe -ArgumentList '/i', 'C:\pwsh.msi', '/quiet', '/norestart'; \
-    # 3010 is a successful install awaiting reboot; /norestart prevents reboot-initiated 1641. \
-    if ($installer.ExitCode -notin 0, 3010) { throw ('PowerShell MSI failed with exit code ' + $installer.ExitCode) }; \
-    Remove-Item C:\pwsh.msi -Force
+# Install PowerShell 7 from the release zip. 7.7.0 stopped publishing the MSI, and
+# the zip needs no installer. The release's hashes.sha256 (UTF-16 text, one
+# "<sha256> *<file>" line per asset) is checked before extraction.
+RUN $zip = 'PowerShell-' + $env:PWSH_VERSION + '-win-x64.zip'; \
+    $base = 'https://github.com/PowerShell/PowerShell/releases/download/v' + $env:PWSH_VERSION; \
+    $zipPath = Join-Path $env:TEMP $zip; \
+    $sumsPath = Join-Path $env:TEMP 'pwsh-hashes.sha256'; \
+    Invoke-WebRequest -Uri ($base + '/' + $zip) -OutFile $zipPath; \
+    Invoke-WebRequest -Uri ($base + '/hashes.sha256') -OutFile $sumsPath; \
+    $m = [regex]::Match((Get-Content -Raw $sumsPath), '(?im)^([0-9a-f]{64})\s+\*?' + [regex]::Escape($zip) + '\s*$'); \
+    if (-not $m.Success) { throw ('No SHA256 listed for ' + $zip + ' in hashes.sha256') }; \
+    $actual = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash; \
+    if ($actual -ne $m.Groups[1].Value) { throw ('SHA256 mismatch for ' + $zip + ': expected ' + $m.Groups[1].Value + ', got ' + $actual) }; \
+    Expand-Archive -Path $zipPath -DestinationPath 'C:\Program Files\PowerShell\7' -Force; \
+    Remove-Item $zipPath, $sumsPath -Force; \
+    $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
+    [System.Environment]::SetEnvironmentVariable('Path', ($machPath + ';C:\Program Files\PowerShell\7'), 'Machine')
 
 # Install Git for Windows
 RUN $p = $env:GIT_VERSION -split '\.windows\.'; \
