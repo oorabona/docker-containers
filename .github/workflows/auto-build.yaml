@@ -68,36 +68,12 @@ on:
   # Triggered by container file changes (main automation via PR)
   pull_request:
     branches: [main, master]
-    paths:
-      # Match the detection logic: ANY file inside a first-level subdir is a
-      # potential build input (Dockerfile, build hook, entrypoint, prepare-build
-      # scripts, COPYed assets, generated context, etc.). Explicit allowlist
-      # was brittle — new file types kept slipping through (e.g. build hooks,
-      # prepare-build-context.sh). The denylist below excludes non-container
-      # top-level dirs.
-      - '*/**'
-      - 'make'                                  # Top-level build orchestrator
-      - '.github/actions/build-container/**'    # Composite action used by build matrix
-      - '.github/actions/preflight-buildkit/**' # Preflight action (shared build infra)
-      - '.github/actions/retry-run/**'          # Reusable retry wrapper (shared build infra)
-      - '!docs/**'                              # Jekyll site + ADRs (no build impact)
-      - '!examples/**'                          # Docker Compose usage examples
-      - '!tests/**'                             # Test suite (has its own CI)
-      - '!test-harness/**'                      # Test fixtures
-      - '!test-logs/**'                         # Generated test logs
-      - '!archive/**'                           # Archived containers
-      - '!stats/**'                             # Docker Hub stats snapshots
-      - '!**/*.md'                              # Markdown anywhere — READMEs, ADRs, notes (never a build input)
-      - '!**/README*'                           # README without .md suffix
-      - '!**/LICENSE*'                          # License files
-      - '!**/CHANGELOG*'                        # Changelogs
-      - '!**/docs/**'                           # Nested docs subdirs inside container dirs
-      - '!**/tests/**'                          # Nested test subdirs inside container dirs
-      - '*/tests/**'                             # Re-include container tests: verification only, never a production build input
-      - 'tests/e2e-test.sh'                      # Re-include shared e2e harness: verifies all opted-in containers
-      - 'test-harness/*.sh'                      # Re-include the assertion library: every opted-in suite's verdict comes from it
-      - 'test-harness/**/*.sh'                   # …including any nested helper — `*` does not span `/` in a path filter
-      - '**/LAST_REBUILD.md'                    # Re-include — upstream-monitor's explicit retained-rebuild trigger marker (overrides !**/*.md)
+    # No `paths:` filter on purpose. `build-gate` below is a required status
+    # check on the default branch, and a required check that is never reported
+    # (a workflow skipped by a path filter) blocks the pull request forever.
+    # detect-containers already decides what, if anything, to build: a pull
+    # request that touches no build input gets an empty matrix, every build job
+    # is skipped and `build-gate` passes.
   # Triggered on merge to master (actual deployment)
   push:
     branches: [main, master]
@@ -4133,6 +4109,8 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      build_failed: ${{ steps.summary.outputs.build_failed }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -4636,6 +4614,36 @@ jobs:
               echo "::warning::version-drift advisory: drift detected but issue open/refresh failed (rc=${advisory_issue_rc})"
             fi
           done < <(printf '%s' "$containers_json" | jq -r '.[]' 2>/dev/null || true)
+
+  # Required status check (see the `pull_request` trigger above). Turns the
+  # summary job's build_failed signal into a check result, so that auto-merge
+  # cannot complete on a pull request whose build, bake or e2e jobs failed:
+  # summary itself stays green on a red build because it only reports it.
+  build-gate:
+    name: build-gate
+    needs: [summary]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - shell: bash
+        # Through the environment, not expression interpolation (same reason as
+        # e2e-gate): values are read by bash, never parsed as script text.
+        env:
+          SUMMARY_RESULT: ${{ needs.summary.result }}
+          BUILD_FAILED: ${{ needs.summary.outputs.build_failed }}
+        run: |
+          # No usable verdict (summary failed, was cancelled or emitted nothing)
+          # is a failure: the gate never passes on a missing signal.
+          if [ "$SUMMARY_RESULT" != "success" ]; then
+            echo "build-gate FAIL (summary=$SUMMARY_RESULT)"; exit 1
+          fi
+          case "$BUILD_FAILED" in
+            false) echo "build-gate PASS (no failed or cancelled build job)" ;;
+            true)  echo "build-gate FAIL: a build, bake or e2e job failed or was cancelled"; exit 1 ;;
+            *)     echo "build-gate FAIL (build_failed='$BUILD_FAILED')"; exit 1 ;;
+          esac
 
   cache-lineage:
     name: Cache build lineage
