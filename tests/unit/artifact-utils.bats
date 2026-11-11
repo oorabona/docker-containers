@@ -453,35 +453,3 @@ YAML
     run dep_artifact_ready dep.yaml TOOL_VERSION 1.1.0
     [ "$status" -eq 2 ]
 }
-
-# --- shipped declarations: vector and opentofu ---------------------------------
-# Mutation guard: dropping the "v" in front of ${RELEASE_VERSION} (or the arch/name
-# part of the asset) would probe a URL that never exists, so every bump would be
-# held back as "pending" forever.
-
-@test "vector declares an artifact URL built from the frozen tag" {
-    run artifact_build_args "$ORIG_DIR/vector" "0.53.0-alpine"
-    [ "$status" -eq 0 ]
-    [ "$output" = "ARTIFACT_URL=https://github.com/vectordotdev/vector/releases/download/v0.53.0/vector-0.53.0-x86_64-unknown-linux-musl.tar.gz" ]
-}
-
-@test "opentofu declares an artifact URL built from the frozen tag" {
-    run artifact_build_args "$ORIG_DIR/opentofu" "1.13.9-alpine"
-    [ "$status" -eq 0 ]
-    [ "$output" = "ARTIFACT_URL=https://github.com/opentofu/opentofu/releases/download/v1.13.9/tofu_1.13.9_linux_amd64.tar.gz" ]
-}
-
-@test "vector is held back (1) while its release asset is missing" {
-    CURL_RULES='vector-0.53.0-x86_64 404 404' run artifact_ready "$ORIG_DIR/vector" "0.53.0-alpine"
-    [ "$status" -eq 1 ]
-}
-
-@test "opentofu is held back (1) while its release tarball is missing" {
-    CURL_RULES='tofu_1.13.9_linux_amd64 404 404' run artifact_ready "$ORIG_DIR/opentofu" "1.13.9-alpine"
-    [ "$status" -eq 1 ]
-}
-
-@test "vector and opentofu Dockerfiles accept the ARTIFACT_URL build-arg" {
-    grep -q '^ARG ARTIFACT_URL' "$ORIG_DIR/vector/Dockerfile"
-    grep -q '^ARG ARTIFACT_URL' "$ORIG_DIR/opentofu/Dockerfile"
-}

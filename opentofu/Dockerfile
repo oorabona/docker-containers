@@ -23,9 +23,6 @@ FROM ${REMOTE_CR}/library/alpine:latest AS tofu
 ARG VERSION
 ARG UPSTREAM_VERSION
 ARG TARGETARCH
-# Probed by `make check-updates` (config.yaml artifact_url); accepted here so the
-# build-arg is not reported as unused. The download below derives its own URL.
-ARG ARTIFACT_URL
 RUN apk add --no-cache curl tar ca-certificates && \
     V="${UPSTREAM_VERSION:-${VERSION}}"; V="${V%-alpine}"; \
     tarball="tofu_${V}_linux_${TARGETARCH}.tar.gz"; \

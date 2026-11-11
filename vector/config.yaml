@@ -6,11 +6,6 @@ base_image_cache:
   - source: library/alpine
     tags: ["latest"]
 
-# Upstream release artifact gate: `make check-updates` only proposes a new version once
-# this URL answers 2xx (the git tag appears before the release assets). Probes the
-# x86_64 asset; the aarch64 one ships in the same release. The Dockerfile derives its
-# own URL from UPSTREAM_VERSION and declares ARTIFACT_URL only to accept the build-arg.
-artifact_url: "https://github.com/vectordotdev/vector/releases/download/v${RELEASE_VERSION}/vector-${RELEASE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
 build_args:
   OS_IMAGE_TAG: "latest"
 dependency_sources:
