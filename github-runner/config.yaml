@@ -15,6 +15,9 @@ dependency_sources:
     type: github-release
     repo: PowerShell/PowerShell
     strip_v: true
+    artifact_urls:
+      - "https://github.com/PowerShell/PowerShell/releases/download/v${VERSION}/PowerShell-${VERSION}-win-x64.zip"
+      - "https://github.com/PowerShell/PowerShell/releases/download/v${VERSION}/hashes.sha256"
   GIT_VERSION:
     lifecycle: tracked
     type: github-release
@@ -25,6 +28,8 @@ dependency_sources:
     type: github-release
     repo: jqlang/jq
     strip_v: true
+    artifact_urls:
+      - "https://github.com/jqlang/jq/releases/download/jq-${VERSION}/jq-windows-amd64.exe"
   UBUNTU_2404_BASE:
     monitor: false
     lifecycle: untracked
