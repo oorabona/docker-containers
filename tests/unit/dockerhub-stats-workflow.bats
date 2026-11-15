@@ -293,3 +293,34 @@ extract_step_run() {
     [[ "$generate_step" == *"TRIGGER_REASON:"* ]]
     [[ "$generate_step" == *'"$TRIGGER_REASON"'* ]]
 }
+
+@test "unit-tests keeps the required check name and gates the heavy jobs on change detection" {
+    # master requires the `unit-tests` status. It must stay a real job id so
+    # stats-only PRs get the status from the cheap aggregator, not a skipped
+    # (never-reported) workflow. The heavy jobs must not be named unit-tests.
+    wf="${PROJECT_ROOT}/.github/workflows/unit-tests.yaml"
+
+    job_ids="$(awk '/^jobs:/ {f=1; next} f && /^  [a-z][a-z-]*:$/ {print}' "$wf" | tr -d ' :' | sort | paste -sd, -)"
+    [ "$job_ids" = "changes,unit-tests,unit-tests-bats,unit-tests-site" ]
+
+    job_block() { awk -v job="  $1:" '$0 == job {f=1; print; next} f && /^  [a-z][a-z-]*:$/ {exit} f {print}' "$wf"; }
+
+    gate="$(job_block unit-tests)"
+    [[ "$gate" == *"if: always()"* ]]
+    [[ "$gate" == *"needs: [changes, unit-tests-bats, unit-tests-site]"* ]]
+    [[ "$gate" != *$'\n    name:'* ]]
+    # Fail closed: skipped is only accepted when code=false.
+    [[ "$gate" == *"expected=skipped"* ]]
+    [[ "$gate" == *"expected=success"* ]]
+
+    for job in unit-tests-bats unit-tests-site; do
+        block="$(job_block "$job")"
+        [[ "$block" == *"needs: changes"* ]]
+        [[ "$block" == *"if: needs.changes.outputs.code == 'true'"* ]]
+    done
+
+    # Detection covers rename sources and treats a truncated list as unknown.
+    detect="$(job_block changes)"
+    [[ "$detect" == *"previous_filename"* ]]
+    [[ "$detect" == *"-lt 3000"* ]]
+}

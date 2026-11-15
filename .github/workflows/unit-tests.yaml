@@ -1,8 +1,9 @@
 name: Unit Tests
 
 on:
-  # Stats-only bot PRs still need a real unit-tests check because master
-  # requires this status before auto-merge can complete.
+  # Stats-only bot PRs still need a `unit-tests` status because master
+  # requires it before auto-merge can complete. They get it from the cheap
+  # aggregator job below instead of the ~20 min heavy suite.
   pull_request:
   push:
     # The stats PR already ran the required unit-tests check before merge.
@@ -15,7 +16,47 @@ permissions:
   contents: read
 
 jobs:
-  unit-tests:
+  # Decide whether the PR touches anything besides the daily stats snapshot.
+  # Fails closed: any doubt (API error, empty or truncated file list, a rename
+  # whose source is outside stats/) means the full suite runs.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - name: Detect stats-only pull request
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          code=true
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if files=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" \
+                --jq '.[] | .filename, (.previous_filename // empty)'); then
+              # The files API caps at 3000 entries; treat that as unknown.
+              count=$(printf '%s\n' "$files" | grep -c . || true)
+              outside=$(printf '%s\n' "$files" | grep -v '^$' | grep -vc '^stats/' || true)
+              if [[ "$count" -gt 0 && "$count" -lt 3000 && "$outside" -eq 0 ]]; then
+                code=false
+              fi
+            else
+              echo "::warning::Could not list PR files; running the full unit suite"
+            fi
+          fi
+          echo "code=${code}" >> "$GITHUB_OUTPUT"
+          echo "Full unit suite required: ${code}"
+
+  unit-tests-bats:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -23,6 +64,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
 
       - name: Install html5lib
         timeout-minutes: 5
@@ -51,6 +93,7 @@ jobs:
           "$rendered_html_venv/bin/python" -c 'import html5lib; assert html5lib.__version__ == "1.1"'
           echo "$rendered_html_venv/bin" >> "$GITHUB_PATH"
 
+
       - name: Exercise rendered HTML skipped-subtree extractor
         run: |
           python3 --version
@@ -63,6 +106,7 @@ jobs:
 
       - name: Exercise variant selection model
         run: ./tests/variant-selection-model.sh
+
 
       - name: Install jq
         timeout-minutes: 5
@@ -109,6 +153,7 @@ jobs:
         shell: bash
         run: bats --version
 
+
       - name: Run unit tests
         shell: bash
         run: |
@@ -118,6 +163,47 @@ jobs:
           # run-tests.sh runs all unit/*.bats in one `bats --jobs 4` pass (~9-12 min
           # on the 2-core runner; see timeout-minutes above).
           ./tests/run-tests.sh 2>&1 | tee /tmp/unit-tests.log
+
+
+  unit-tests-site:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+
+      - name: Install html5lib
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          rendered_html_venv="$RUNNER_TEMP/rendered-html-venv"
+          requirement_file="tests/requirements-rendered-html.txt"
+
+          if ! python3 -m venv "$rendered_html_venv"; then
+            echo "::error::html5lib installation failed: could not create isolated virtual environment at $rendered_html_venv"
+            exit 1
+          fi
+
+          timeout --kill-after=5s 60s "$rendered_html_venv/bin/python" -m pip install \
+            --disable-pip-version-check --retries 2 --timeout 15 --no-deps --only-binary=:all: \
+            --force-reinstall --require-hashes -r "$requirement_file" || status=$?
+          if [[ -n ${status:-} ]]; then
+            if [[ $status -eq 124 || $status -eq 137 ]]; then
+              echo "::error::html5lib installation timed out after 60 seconds while fetching or installing the rendered-HTML requirements from PyPI"
+            else
+              echo "::error::html5lib installation could not fetch or install the rendered-HTML requirements from PyPI (pip exited $status); see pip output above"
+            fi
+            exit "$status"
+          fi
+
+          "$rendered_html_venv/bin/python" -c 'import html5lib; assert html5lib.__version__ == "1.1"'
+          echo "$rendered_html_venv/bin" >> "$GITHUB_PATH"
+
 
       - name: Build rendered site for verification assertion
         uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1
@@ -147,3 +233,38 @@ jobs:
 
       - name: Assert rendered container page fixture variants
         run: ./tests/assert-container-page-fixtures.sh ./_site-container-page-fixture
+
+  # Required status check on master (name must stay `unit-tests`). A job
+  # skipped by `if:` counts as success for branch protection, so the gate
+  # states the expectation explicitly: heavy jobs succeed when code changed,
+  # and are skipped only for stats-only PRs.
+  unit-tests:
+    needs: [changes, unit-tests-bats, unit-tests-site]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify unit test results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          BATS_RESULT: ${{ needs.unit-tests-bats.result }}
+          SITE_RESULT: ${{ needs.unit-tests-site.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            echo "::error::change detection did not succeed (${CHANGES_RESULT})"
+            exit 1
+          fi
+          if [[ "$CODE" == "true" ]]; then
+            expected=success
+          else
+            expected=skipped
+          fi
+          for pair in "unit-tests-bats:${BATS_RESULT}" "unit-tests-site:${SITE_RESULT}"; do
+            if [[ "${pair#*:}" != "$expected" ]]; then
+              echo "::error::${pair%%:*} was ${pair#*:}, expected ${expected}"
+              exit 1
+            fi
+          done
+          echo "unit-tests OK (code=${CODE})"
