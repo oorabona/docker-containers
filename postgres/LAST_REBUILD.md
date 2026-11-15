@@ -471,3 +471,28 @@ Build status will be available in GitHub Actions after merge.
 - Variant: 18-alpine, base ghcr.io/oorabona/library/postgres:18-alpine
   Old digest: sha256:9ba53c7d41ea093baf5c1ba635ba5434c4f979880527d49bb7d9237d3193085b
   New digest: sha256:1018733457011bf88d81db98cf43aac6d5150afc18787dbe204771fedf80ff95
+
+<!-- drift-content-hash: 3545f465d43f7385 run:43683861665 -->
+## base-digest-drift (2026-11-15)
+
+- Variant: 18-alpine-analytics, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:1018733457011bf88d81db98cf43aac6d5150afc18787dbe204771fedf80ff95
+  New digest: sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
+- Variant: 18-alpine-distributed, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:1018733457011bf88d81db98cf43aac6d5150afc18787dbe204771fedf80ff95
+  New digest: sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
+- Variant: 18-alpine-full, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:1018733457011bf88d81db98cf43aac6d5150afc18787dbe204771fedf80ff95
+  New digest: sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
+- Variant: 18-alpine-spatial, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:1018733457011bf88d81db98cf43aac6d5150afc18787dbe204771fedf80ff95
+  New digest: sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
+- Variant: 18-alpine-timeseries, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:1018733457011bf88d81db98cf43aac6d5150afc18787dbe204771fedf80ff95
+  New digest: sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
+- Variant: 18-alpine-vector, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:1018733457011bf88d81db98cf43aac6d5150afc18787dbe204771fedf80ff95
+  New digest: sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
+- Variant: 18-alpine, base ghcr.io/oorabona/library/postgres:18-alpine
+  Old digest: sha256:1018733457011bf88d81db98cf43aac6d5150afc18787dbe204771fedf80ff95
+  New digest: sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
