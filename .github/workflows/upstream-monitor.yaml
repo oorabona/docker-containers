@@ -470,7 +470,7 @@ jobs:
       - name: Open or update GPG key refresh PR
         if: steps.refresh.outputs.ready == 'true'
         id: create-pr
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8
         with:
           token: ${{ steps.app-token.outputs.token }}
           commit-message: "build(${{ matrix.container }}): refresh vendored GPG signing key"
@@ -834,7 +834,7 @@ jobs:
       - name: Create Pull Request
         if: steps.close_duplicates.outputs.existing_pr_found != 'true' && steps.env_check.outputs.is_local_test != 'true'
         id: create_pr
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8
         with:
           token: ${{ steps.app-token.outputs.token }}
           commit-message: "build(${{ steps.resolve.outputs.container_name }}): update to ${{ steps.classify.outputs.new_version }}"
@@ -1609,7 +1609,7 @@ jobs:
       - name: Create Pull Request
         if: steps.env_check.outputs.is_local_test != 'true' && steps.prepare.outputs.update_count != '0'
         id: create_pr
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8
         with:
           token: ${{ steps.app-token.outputs.token }}
           commit-message: "deps(${{ matrix.container }}): update ${{ steps.prepare.outputs.update_count }} dependencies"
@@ -2308,7 +2308,7 @@ jobs:
       - name: Open or update PR (branch-upsert)
         if: steps.drift-data.outputs.has_drift == 'true'
         id: create-pr
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8
         with:
           token: ${{ steps.app-token.outputs.token }}
           # No date suffix in branch name → peter-evans upserts on re-run (idempotent dedup)
@@ -2604,7 +2604,7 @@ jobs:
       - name: Open or update PR (branch-upsert)
         if: steps.drift-data.outputs.has_drift == 'true'
         id: create-pr
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8
         with:
           token: ${{ steps.app-token.outputs.token }}
           # No date suffix in branch name → peter-evans upserts on re-run (idempotent dedup)
@@ -3006,7 +3006,7 @@ jobs:
       - name: Open or update PR (branch-upsert)
         if: steps.detect.outputs.changed == 'true'
         id: create-pr
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8
         with:
           token: ${{ steps.app-token.outputs.token }}
           # No date suffix in branch name → peter-evans upserts on re-run (idempotent dedup)
