@@ -36,3 +36,16 @@ Build status will be available in GitHub Actions after merge.
 - Variant: 14.6.0-ubuntu, base ghcr.io/oorabona/library/ubuntu:latest
   Old digest: sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
   New digest: sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+
+<!-- drift-content-hash: f742dcbff150ef80 run:43814890940 -->
+## base-digest-drift (2026-11-16)
+
+- Variant: 14.4.0-ubuntu, base ghcr.io/oorabona/library/ubuntu:latest
+  Old digest: sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+  New digest: sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
+- Variant: 14.5.0-ubuntu, base ghcr.io/oorabona/library/ubuntu:latest
+  Old digest: sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+  New digest: sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
+- Variant: 14.6.0-ubuntu, base ghcr.io/oorabona/library/ubuntu:latest
+  Old digest: sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+  New digest: sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
