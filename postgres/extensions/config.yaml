@@ -33,7 +33,7 @@ extensions:
       sql_name: vector
     priority: 1 # Build order (lower = first)
   pg_partman:
-    version: "5.5.0"
+    version: "5.5.1"
     description: "Partition management for time-series and large tables"
     repo: "pgpartman/pg_partman"
     build_deps:
@@ -63,7 +63,7 @@ extensions:
       mode: create
     priority: 2
   paradedb:
-    version: "0.26.7"
+    version: "0.26.8"
     rust_version: "1.96.0" # Pinned Rust toolchain; update manually when adopting new stable Rust (see postgres/version-extension.sh).
     description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
     repo: "paradedb/paradedb"
