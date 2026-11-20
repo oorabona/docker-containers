@@ -37,20 +37,23 @@ The job log shows where the time went:
 
 The `base` flavor installs five tiny packages (`git curl jq unzip ca-certificates`) and still took 37–50 min on Ubuntu amd64. So the problem is **not** the size of the dev package set; it is that every Ubuntu amd64 leg depends on a slow `archive.ubuntu.com` path, and **each leg repeats the same download**. Source for the table: job `started_at`/`completed_at` of run `44475644611`. I did not read the logs of the legs other than the two dev ones.
 
-### Why the existing caches did not help
+### Why the existing caches did not help (corrected)
 
-- `scripts/build-container.sh:88-90` already uses `--cache-from/--cache-to type=registry,mode=max`.
-- `generate-dockerfile.sh` already emits `--mount=type=cache` for `/var/cache/apt` and `/var/lib/apt/lists`.
-- The trigger was a **base digest drift**: the `FROM` changed, so BuildKit invalidates every layer after it, `apt` included. No layer cache can avoid that rebuild.
-- CI runners are ephemeral, so the `--mount=type=cache` directories start empty on each job.
-- `github-runner` is built through **two engines at once** (`variants.yaml`: `version_retention: 3`, `bake_latest_only: true`). The latest version (`2.338.2`) goes through Bake. The retained versions (`2.338.1`, `2.338.0`) go through the flat `build × arch` matrix. Each retained version is a separate runner job with an empty cache, and the apt layers are **identical across versions** (`runner.tar.gz` is copied after them). Concurrent jobs cannot share a cache that no one has exported yet.
+An earlier revision of this section blamed the base digest drift. **That was wrong for the failing leg.** `adf7ab37` (`github-runner/LAST_REBUILD.md`) records drift only for `ghcr.io/oorabona/debian:trixie` (variants `2.338.0/2.338.1-debian-trixie[-dev]`). The `ubuntu-2404` base (`library/ubuntu:24.04`) did not drift in that commit, so the Ubuntu apt layers were valid cache candidates and still ran for 1 652 s. The drift only explains why the Debian legs rebuilt; those were fast (4-10 min) because their mirror was fast.
 
-So on every drift or template change, the same `apt` layer is built by each retained-version leg per (distro, flavor, arch), on separate runners, at the same time, with no shared cache between them.
+What the code shows instead:
+
+- **Flat-matrix legs share one cache ref.** `scripts/build-container.sh:464` passes `ghcr.io/<owner>/github-runner:buildcache` to `_configure_cache`, with `--cache-to ...,mode=max`. That single ref is used by every variant, every retained version and both architectures. Concurrent jobs exporting to the same registry ref replace each other's cache manifest (last writer wins), so any one leg's layers are only in the cache until the next leg finishes.
+- **Bake cells use a per-tag, per-arch ref.** `scripts/generate-bake-hcl.sh:1586` uses `${remote_cr}/${container}:buildcache-${tag}${ARCH_SUFFIX}`. No two cells write the same ref. This is consistent with the Bake cell for `2.338.2` completing all variants in 1-3 minutes in the same run while the flat legs for retained versions took up to an hour.
+- `generate-dockerfile.sh` emits `--mount=type=cache` for `/var/cache/apt` and `/var/lib/apt/lists`, but CI runners are ephemeral so these start empty on each job.
+- The apt layers are identical across versions (`runner.tar.gz` is copied after them) and, in the flat matrix, are built by each retained-version leg on its own runner at the same time.
+
+**Status of this explanation:** the code paths and the timing agree, but I have not been able to observe the registry cache contents or a `CACHED` marker for these steps (no registry access from the analysis session). Verifying it is step 0 of the rollout.
 
 ## Problem
 
 1. **Duplicated, version-independent work.** The OS-package layer does not depend on the runner version, yet it is rebuilt per version.
-2. **Coupling to base drift.** Any base digest change forces a full re-download for every version.
+2. **Cache ref shared across unrelated legs (flat matrix).** One `:buildcache` ref for all variants, versions and arches, so a leg's apt layer rarely survives to the next run.
 3. **No isolation from mirror slowness.** The timeout is a symptom: the underlying exposure is the number of times we download the same packages from a mirror we do not control.
 4. **Blunt failure mode.** A timeout is reported as a build failure of the whole container (`build-gate`), producing a "Build failed" issue with no detail (separate defect, addressed outside this ADR).
 
@@ -73,9 +76,13 @@ So on every drift or template change, the same `apt` layer is built by each reta
 
 **E. A `github-runner-deps` image, built once per (distro, flavor, arch) and consumed by the runner image through `FROM` (proposed).** Detailed below.
 
+**G. Build the retained versions through Bake as well, then re-evaluate E.** Bake cells have per-tag, per-arch cache refs, order dependencies in memory, and BuildKit deduplicates identical build steps inside one invocation. Blocked today by `bake_latest_only` because all variants share one `runner.tar.gz` in the container directory; needs per-version build contexts. Likely removes most of the observed cost on its own, at lower blast radius than E. Proposed as the **first** step; E remains justified only if measurement after G still shows meaningful repeated apt downloads.
+
 **F. Stop rebuilding retained versions on drift.** Would remove the duplication but also stop patching retained images, which is a security-policy change, not a build optimisation. Out of scope; noted as an open question.
 
-## Proposed decision
+## Proposed decision (revised)
+
+Stage the work. **Step 1 is option G** (retained versions through Bake with per-version contexts). **Option E below is the follow-up**, adopted only if measurement after step 1 still shows repeated version-independent apt downloads or a need to decouple package patching from runner releases. The design of E is kept here so the decision does not have to be re-derived.
 
 Introduce an **internal, project-built container `github-runner-deps`** that holds everything in the Linux Dockerfile up to the runner agent:
 
@@ -107,7 +114,7 @@ The runner Dockerfile (`Dockerfile.linux`) becomes: `FROM <deps image>` + `COPY 
 
 - The one download that remains still depends on the mirror. Option A (retries, timeouts) should be kept in the deps template for that reason.
 
-## Open questions (to resolve before moving to Accepted)
+## Open questions for option E (re-examined after Step 2)
 
 1. **Retained versions and ordering.** The retained versions are built by the flat matrix, which ADR-013 identifies as having no inter-cell ordering and a mutable-tag handoff (Gaps B and C). A retained-version leg consuming the deps image from the registry could race the Bake job that publishes it. Candidate answers: (a) a dedicated job that builds and publishes the deps image (with a verified multi-arch manifest) before both engines start, and retained legs reference it by `@sha256:` digest; (b) move retained github-runner versions to Bake (the `bake_latest_only` comment says this needs per-version build contexts). Needs a decision; (a) is smaller, (b) removes a whole class of problem.
 2. **Digest pinning for reproducibility.** Should the runner image record the deps digest in its lineage (as `sibling_target` / `base_image_digest` do today)? Proposed: yes, same schema.
@@ -138,12 +145,20 @@ The runner Dockerfile (`Dockerfile.linux`) becomes: `FROM <deps image>` + `COPY 
 
 ## Rollout (once Accepted)
 
-1. **Measure first.** Record apt-layer time per variant and arch over the last N runs (the same discipline #2063 asks for), to confirm the expected saving before building anything.
-2. Land the apt retry/timeout settings in the current generator (independent, low risk).
-3. Add `github-runner-deps` for one distro (`debian-trixie`, the fast one) and consume it from the Bake path only; verify `bake --print` shows the `target:` edge and that lineage records the deps digest.
-4. Resolve open question 1 and extend to the retained-version path.
-5. Add the remaining distros and the dev flavors.
-6. Update `README.md` container table, `docs/DOCUMENTATION_INDEX.md`, ADR-005/006 cross-references.
+**Step 0 — verify the diagnosis and measure.** Check in the logs of recent flat-matrix github-runner legs whether the apt steps show `CACHED`, and read the manifest of `ghcr.io/<owner>/github-runner:buildcache` (what it currently contains). Record apt-layer time per variant and arch over the last N runs (the discipline #2063 asks for). If the shared-ref explanation does not hold, revisit this ADR before any code change.
+
+**Step 1 — independent, low risk (own PR).** apt `Acquire::Retries` / `Acquire::http::Timeout` in the generator; make `scripts/open-dep-failure-issue.sh` report `cancelled`/timeout and job duration instead of "failure detail not provided".
+
+**Step 2 — option G: retained versions through Bake.**
+- Per-version runner context: stage `runner.tar.gz` per version (for example a bake named context per version, consumed with `COPY --from=`), instead of the single `github-runner/runner.tar.gz`. The "Prepare build contexts" loop in `auto-build.yaml` (amd64 and arm64) currently writes the same file once per version and would clobber it.
+- Remove `build.bake_latest_only` for github-runner (`variants.yaml`, `helpers/bake-managed.sh`, `scripts/generate-bake-hcl.sh`) and update the bake bats suites that assert the retained cell stays in the matrix (`tests/unit/bake-managed.bats`, `tests/unit/bake-buildresult.bats`).
+- Windows variants stay on the flat matrix (they use `runner.zip`, one version at a time).
+- Check the bake job timeout against a cold run (all versions × variants in one job per arch).
+- Validate on a forced drift: `bake --print`, then compare apt time per variant with Step 0.
+
+**Step 3 — re-measure; decide on option E.** Adopt E only if repeated version-independent apt downloads or patch-cadence coupling remain material. If adopted: one deps cell per (distro, flavor, arch) as a Bake target, handed to the runner cells with `target:` contexts (ADR-013).
+
+**Step 4 — documentation.** `README.md` container table (only if E adds a container), `docs/DOCUMENTATION_INDEX.md`, ADR-005/006 cross-references.
 
 ## Validation
 
