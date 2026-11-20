@@ -33,6 +33,7 @@
 | [ADR-015](adr/ADR-015-postgres-final-build-to-bake.md) | postgres final build → bake (extension-container framework) |
 | [ADR-016](adr/ADR-016-dependency-tracking-and-supply-chain-strategy.md) | Dependency tracking & supply-chain strategy |
 | [ADR-017](adr/ADR-017-trivy-evidence-channels.md) | Trivy evidence channels — two observations, one named display source |
+| [ADR-018](adr/ADR-018-github-runner-deps-image.md) | github-runner deps image — decouple the OS-package layer (Proposed) |
 
 ## Container Documentation
 
