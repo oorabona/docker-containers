@@ -332,6 +332,32 @@ GHEOF
     [[ "$output" == *"18.2"* ]]
 }
 
+@test "DRY_RUN: timed-out job with no failed job explains the run (#2338)" {
+    export COMMIT_SUBJECT="build(github-runner): base image digest drift"
+    export TIMED_OUT_JOBS_JSON='[{"name":"Build github-runner:ubuntu-2404-dev (amd64)","id":1}]'
+    export FAILED_ALLOWLIST='["github-runner"]'
+    unset FAILED_JOBS_JSON
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Timed-out jobs"* ]]
+    [[ "$output" == *"ubuntu-2404-dev (amd64)"* ]]
+    [[ "$output" == *"no job concluded as failure"* ]]
+    [[ "$output" != *"failure detail not provided"* ]]
+}
+
+@test "DRY_RUN: no failed and no timed-out job keeps the generic line" {
+    export COMMIT_SUBJECT="build(github-runner): base image digest drift"
+    export FAILED_ALLOWLIST='["github-runner"]'
+    unset FAILED_JOBS_JSON TIMED_OUT_JOBS_JSON
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"failure detail not provided"* ]]
+}
+
 @test "DRY_RUN: no-match exits 1 (caller uses generic issue logic)" {
     export COMMIT_SUBJECT="fix(ci): corrected shellcheck warning"
     export DRY_RUN="true"

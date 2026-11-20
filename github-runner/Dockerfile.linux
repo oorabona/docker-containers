@@ -13,6 +13,11 @@ ARG REMOTE_CR=ghcr.io/oorabona
 # Ensure root for package installation (some base images set a non-root USER)
 USER root
 
+# Retry transient mirror failures instead of failing (or stalling) the build: a slow
+# archive made an apt step run for 20+ minutes in CI (#2338). apt-only template.
+RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "60";\nAcquire::https::Timeout "60";\n' \
+    > /etc/apt/apt.conf.d/80-ci-network
+
 ARG VERSION
 ARG TARGETARCH
 
