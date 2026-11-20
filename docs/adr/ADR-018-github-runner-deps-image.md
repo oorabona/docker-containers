@@ -48,7 +48,13 @@ What the code shows instead:
 - `generate-dockerfile.sh` emits `--mount=type=cache` for `/var/cache/apt` and `/var/lib/apt/lists`, but CI runners are ephemeral so these start empty on each job.
 - The apt layers are identical across versions (`runner.tar.gz` is copied after them) and, in the flat matrix, are built by each retained-version leg on its own runner at the same time.
 
-**Status of this explanation:** the code paths and the timing agree, but I have not been able to observe the registry cache contents or a `CACHED` marker for these steps (no registry access from the analysis session). Verifying it is step 0 of the rollout.
+**Step 0 findings (run `44475644611`, logs of the `ubuntu-2404-base` amd64 and `debian-trixie-dev` amd64 flat legs):**
+
+- Both legs print `Using registry cache: ghcr.io/<owner>/github-runner:buildcache` and import the cache manifest in about 0.5 s, yet **no step is marked `CACHED`**: every `RUN` executed.
+- On `ubuntu-2404-base` amd64, each of the three `apt-get update && install` steps took about 1 230 s (1 231 s, 1 234 s, and 283 s for `installdependencies.sh`) for a handful of tiny packages. The same steps took 3 s and 14 s on Debian. Time is dominated by repeated `apt-get update` index downloads (about 34 MB each) from a slow mirror, and `Dockerfile.linux` runs `apt-get update` four times per image.
+- The cache ref being shared explains missing layers, but a second candidate is not excluded: `ARG VERSION` is declared **before** the apt layers, and BuildKit passes declared build args to every following `RUN`, so a different runner version may change the cache key of those layers. To be tested (needs a builder; none was available in the analysis session). If true, every new runner release re-runs the apt layers for every variant, whatever the cache ref. The cheap fix would be to declare `ARG VERSION` after the OS-package layers.
+
+**Status of the shared-ref explanation:** the code paths and the timing agree, but I have not been able to observe the registry cache contents or a `CACHED` marker for these steps (no registry access from the analysis session). Step 0 (partly done, see findings above) is to verify it.
 
 ## Problem
 
