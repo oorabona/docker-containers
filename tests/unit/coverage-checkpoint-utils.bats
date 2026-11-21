@@ -1327,3 +1327,36 @@ _abort_records() {
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq -c .open)" = '[]' ]
 }
+
+# ---------------------------------------------------------------------------
+# workflow_job_timeout_limits (#2338)
+# ---------------------------------------------------------------------------
+
+@test "workflow_job_timeout_limits: reads literal and expression values" {
+    wf="$BATS_TEST_TMPDIR/wf.yaml"
+    cat > "$wf" <<'YAML'
+jobs:
+  a:
+    timeout-minutes: 30
+    steps:
+      - name: x
+        timeout-minutes: 7
+  b:
+    timeout-minutes: ${{ matrix.build.os == 'windows' && 120 || 60 }}
+YAML
+    run workflow_job_timeout_limits "$wf"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | tr '\n' ' ')" = "30 60 120 " ]
+}
+
+@test "workflow_job_timeout_limits: missing file fails" {
+    run workflow_job_timeout_limits "$BATS_TEST_TMPDIR/nope.yaml"
+    [ "$status" -ne 0 ]
+}
+
+@test "workflow_job_timeout_limits: auto-build matrix build limits (60 and 120) are recognised" {
+    run workflow_job_timeout_limits "$ORIG_DIR/.github/workflows/auto-build.yaml"
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -qx 60
+    echo "$output" | grep -qx 120
+}

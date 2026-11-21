@@ -391,6 +391,12 @@ budget problem, not evidence that the dependency bump itself fails to build.
         fi
     fi
 
+    # No job concluded as failure but a job timed out: the generic "not provided"
+    # line would hide the one fact that explains the run.
+    if [[ -n "$timeout_section" && "$failing_jobs_section" == *"(failure detail not provided)" ]]; then
+        failing_jobs_section="${failing_jobs_section%"(failure detail not provided)"}(no job concluded as failure; see the timed-out jobs below)"
+    fi
+
     # Log excerpt section
     local log_section=""
     if [[ -n "$log_excerpt" ]]; then
