@@ -64,7 +64,7 @@ extensions:
     priority: 2
   paradedb:
     version: "0.27.0"
-    rust_version: "1.96.0" # Pinned Rust toolchain; update manually when adopting new stable Rust (see postgres/version-extension.sh).
+    rust_version: "1.100.0" # Pinned Rust toolchain; update manually when adopting new stable Rust (see postgres/version-extension.sh). Must be >= the rustc required by the pgrx version in paradedb's Cargo.toml (pgrx 0.20.0 -> 1.99.1; paradedb 0.27.0 pins channel 1.100.0).
     description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
     repo: "paradedb/paradedb"
     license: "AGPL-3.0"

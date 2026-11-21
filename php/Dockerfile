@@ -45,7 +45,14 @@ RUN set -ex \
 # assumption about an input rather than a fact, so it is asserted explicitly
 # further down instead of being trusted.
 	&& docker-php-ext-install -j$(nproc) gd mysqli zip \
-	&& pecl install apcu-${APCU_VERSION} && docker-php-ext-enable apcu \
+# apcu is built from its release tag with phpize instead of `pecl install`:
+# the php:8.6 image no longer ships pecl/pear (docker-library/php dropped
+# --with-pear), so `pecl` is "not found" there. phpize works on every PHP
+# version; the tag (v${APCU_VERSION}) is fetched over TLS from the same
+# upstream repo that APCU_VERSION is tracked against.
+	&& git clone --quiet --depth 1 --branch "v${APCU_VERSION}" https://github.com/krakjoe/apcu.git /tmp/apcu \
+	&& ( cd /tmp/apcu && phpize && ./configure --enable-apcu && make -j"$(nproc)" && make install ) \
+	&& docker-php-ext-enable apcu \
 # - Detect Runtime Dependencies of the installed extensions. \
 # - src: https://github.com/docker-library/wordpress/blob/master/latest/php8.0/fpm-alpine/Dockerfile \
     && out="$(php -r 'exit(0);')"; \
