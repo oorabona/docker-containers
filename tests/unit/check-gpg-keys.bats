@@ -1122,8 +1122,18 @@ EOF
         | awk -F: '$1 == "fpr" {print $10; exit}')"
     PRIMARY_FPR="$primary_fpr" yq -i '.build_args.EASYRSA_KEY_FPR = strenv(PRIMARY_FPR)' "$TEST_PROJECT_ROOT/openvpn/config.yaml"
     export GPG_KEYS_NOW_TS=1784332800
-    export RUN_GPG_BIN
-    RUN_GPG_BIN="$(command -v gpg)"
+    # The checker's clock is pinned above, but the real gpg judges key validity
+    # against the wall clock: once the vendored key expires (2026-11-21) it
+    # reports the signer as expired and this test fails for a reason unrelated
+    # to the code under test. Run gpg on the same pinned clock ("!" freezes it).
+    local real_gpg
+    real_gpg="$(command -v gpg)"
+    cat > "$TEST_PROJECT_ROOT/helpers/gpg-pinned-clock" <<EOF
+#!/usr/bin/env bash
+exec "$real_gpg" --faked-system-time "\${GPG_KEYS_NOW_TS}!" "\$@"
+EOF
+    chmod +x "$TEST_PROJECT_ROOT/helpers/gpg-pinned-clock"
+    export RUN_GPG_BIN="$TEST_PROJECT_ROOT/helpers/gpg-pinned-clock"
 
     run run_check openvpn --json
 
