@@ -19,6 +19,7 @@ FROM ${REMOTE_CR}/library/alpine:${RESTY_IMAGE_TAG} AS builder
 ARG ENABLE_HTTP_PROXY_CONNECT="false"
 ARG NGX_PROXY_CONNECT_VERSION
 ARG UPSTREAM_VERSION
+ARG ARTIFACT_URL
 ARG RESTY_OPENSSL_VERSION
 ARG RESTY_OPENSSL_PATCH_VERSION
 ARG RESTY_OPENSSL_URL_BASE="https://www.openssl.org/source"
@@ -71,7 +72,7 @@ ARG _RESTY_CONFIG_DEPS="--with-pcre \
 ARG LUAROCKS_VERSION
 
 # Validate required build args
-RUN : "${UPSTREAM_VERSION:?UPSTREAM_VERSION build-arg is required}" "${RESTY_OPENSSL_VERSION:?required}" "${RESTY_OPENSSL_PATCH_VERSION:?required}" "${RESTY_PCRE_VERSION:?required}" "${RESTY_PCRE_SHA256:?required}" "${RESTY_J:?required}" "${NGX_PROXY_CONNECT_VERSION:?required}" "${LUAROCKS_VERSION:?required}"
+RUN : "${UPSTREAM_VERSION:?UPSTREAM_VERSION build-arg is required}" "${ARTIFACT_URL:?ARTIFACT_URL build-arg is required}" "${RESTY_OPENSSL_VERSION:?required}" "${RESTY_OPENSSL_PATCH_VERSION:?required}" "${RESTY_PCRE_VERSION:?required}" "${RESTY_PCRE_SHA256:?required}" "${RESTY_J:?required}" "${NGX_PROXY_CONNECT_VERSION:?required}" "${LUAROCKS_VERSION:?required}"
 
 # STEP 1 - Bootstrap : download and build prerequisites
 RUN set -ex \
@@ -146,7 +147,7 @@ RUN set -ex \
     && CFLAGS="-g -O3" make -j${RESTY_J} \
     && CFLAGS="-g -O3" make -j${RESTY_J} install \
     && cd /tmp \
-    && curl -fSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://openresty.org/download/openresty-${UPSTREAM_VERSION}.tar.gz -o openresty-${UPSTREAM_VERSION}.tar.gz \
+    && curl -fSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "${ARTIFACT_URL}" -o openresty-${UPSTREAM_VERSION}.tar.gz \
     && tar xzf openresty-${UPSTREAM_VERSION}.tar.gz
 
 # STEP 2 - Configure OpenResty
