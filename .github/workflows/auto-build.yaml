@@ -4321,8 +4321,10 @@ jobs:
           # cancelled job whose wall-clock duration lands on one of the job-level
           # timeout-minutes values declared in this workflow (post-job cleanup can
           # add a few minutes) ran into its limit rather than being superseded.
-          timeouts_json=$(grep -oP '^    timeout-minutes:\s*\K[0-9]+' .github/workflows/auto-build.yaml \
-            | sort -un | awk '$1 >= 30' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)' \
+          # shellcheck source=helpers/coverage-checkpoint-utils.sh
+          source ./helpers/coverage-checkpoint-utils.sh
+          timeouts_json=$(workflow_job_timeout_limits .github/workflows/auto-build.yaml \
+            | awk '$1 >= 30' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)' \
             2>/dev/null || echo '[]')
           timed_out_jobs_json=$(gh run view "$GH_RUN_ID" --repo "$GH_REPOSITORY" --json jobs \
             --jq '[.jobs[] | select(.conclusion == "cancelled" and .startedAt != null and .completedAt != null)

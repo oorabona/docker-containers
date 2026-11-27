@@ -16,6 +16,22 @@
 #   split_aborted_failures        <results_json> <failed_this_json>  ← issue routing (open vs. comment-only)
 #   compute_carry_forward         <queued_json> <baseline_failed_json> <valid_json>
 
+# workflow_job_timeout_limits <workflow_file>
+#
+# Prints, one per line and sorted, every number that appears in a job-level
+# `timeout-minutes:` value (4-space indent) of the workflow, literal or inside a
+# `${{ ... }}` expression. A job that hits its limit reports conclusion=cancelled,
+# so callers infer a timeout from "cancelled and ran for about N minutes". The
+# matrix build job declares `${{ cond && 120 || 60 }}`; reading only literal
+# values missed both limits (#2338: a 60-minute build was not recognised as a timeout).
+workflow_job_timeout_limits() {
+    local workflow_file="${1:-}"
+    [[ -f "$workflow_file" ]] || return 1
+    grep -oP '^    timeout-minutes:\K.*' "$workflow_file" \
+        | grep -oP '\b[0-9]+\b' \
+        | sort -un
+}
+
 # failure_cause_note <results_json> <container>
 #
 # One plain-text sentence explaining WHY a container is in the failed set, from
